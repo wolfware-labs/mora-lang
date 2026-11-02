@@ -207,7 +207,11 @@ pub fn body_resolution(
     let mut lower = LowerTypes {
         db,
         scope,
-        type_params: type_params(db, file, scope.within),
+        type_params: type_params(
+            crate::item_tree(db, file),
+            crate::items::signature_refs(db, file),
+            scope.within,
+        ),
         field: None,
         // A body is visible to no one, so no type is less visible than it.
         member: Visibility::Private,

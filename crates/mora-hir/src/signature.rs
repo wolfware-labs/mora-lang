@@ -1,12 +1,12 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::defs::ItemId;
-use crate::items::{ItemIdx, ItemKind, Visibility, item_tree, signature_refs};
+use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
-use crate::type_ref::{PathRef, SignatureRefKind, TypeRef};
+use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
 
 /// The signature of an item, with the names in its types looked up (§14.5).
 /// It reads no text range, so an edit inside a body does not run it again.
@@ -65,13 +65,14 @@ fn item_signature(
     file: SourceFile,
     item: ItemIdx,
 ) -> LoweredSignature {
+    let tree = item_tree(db, file);
     let refs = signature_refs(db, file);
     let id = ItemId {
         project,
         file,
         item,
     };
-    let type_params = type_params(db, file, Some(item));
+    let type_params = type_params(tree, refs, Some(item));
     let mut lower = LowerTypes {
         db,
         scope: Scope {
@@ -151,9 +152,11 @@ pub(crate) struct LowerTypes<'db> {
 }
 
 /// The type parameters in scope inside `within` and the types around it.
-pub(crate) fn type_params(db: &dyn Db, file: SourceFile, within: Option<ItemIdx>) -> Vec<String> {
-    let tree = item_tree(db, file);
-    let refs = signature_refs(db, file);
+pub(crate) fn type_params(
+    tree: &ItemTree,
+    refs: &[SignatureRef],
+    within: Option<ItemIdx>,
+) -> Vec<String> {
     enclosing_types(tree, within)
         .flat_map(|ty| refs[index(ty)].type_params.iter().cloned())
         .collect()
