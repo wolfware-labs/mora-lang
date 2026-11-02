@@ -7,7 +7,7 @@ use mora_syntax::lexer::ident_name;
 
 use super::lower::Lower;
 use super::{BodyKind, BodyOwner, Expr, FileBodies, LocalKind, Lowered};
-use crate::items::{ItemIdx, item_nodes};
+use crate::items::{ItemIdx, Visibility, item_nodes, visibility};
 
 /// Lowers every body of `file`: the top-level statements first, then the
 /// others in the order of the text.
@@ -66,6 +66,8 @@ struct Callable {
     /// Whether the parameters' defaults are lowered here: false for every
     /// accessor of an indexer but the first.
     with_defaults: bool,
+    /// The visibility written on the declaration, for `MR0123`.
+    visibility: Visibility,
     /// The return type, or the type of a getter or an indexer.
     ret: Option<ast::Type>,
     /// A `set` accessor's implicit `value`, and where it is declared.
@@ -84,6 +86,7 @@ impl Default for Callable {
             type_params: Vec::new(),
             check_types: false,
             with_defaults: true,
+            visibility: Visibility::Private,
             ret: None,
             value: None,
             this_call: None,
@@ -95,6 +98,7 @@ impl Default for Callable {
 
 fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
     let mut lower = Lower::new(kind, name);
+    lower.body.visibility = it.visibility;
     for list in &it.type_params {
         lower.push_type_params(list);
     }
@@ -130,12 +134,14 @@ fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
 /// An initializer, and the type it is checked against when no signature
 /// holds it.
 fn initializer(
+    visibility: Visibility,
     kind: BodyKind,
     name: String,
     ty: Option<ast::Type>,
     init: Option<ast::Expr>,
 ) -> Lowered {
     let mut lower = Lower::new(kind, name);
+    lower.body.visibility = visibility;
     if ty.is_some() {
         let ty = lower.ty(ty);
         lower.body.signature_types.push(ty);
@@ -145,6 +151,14 @@ fn initializer(
         lower.body.root = Some(lower.expr(Some(init), range));
     }
     lower.finish()
+}
+
+/// The visibility the modifiers write; none written is the folder's (D-97).
+fn written(modifiers: ast::AstChildren<ast::Modifier>) -> Visibility {
+    modifiers
+        .filter_map(|modifier| modifier.kind())
+        .find_map(|token| visibility(token.kind()))
+        .unwrap_or(Visibility::Folder)
 }
 
 fn name_of(name: Option<ast::Name>) -> Option<String> {
@@ -189,7 +203,13 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         // signature.
         let init = it.variable_declarator().and_then(|v| v.init());
         if init.is_some() {
-            let body = initializer(BodyKind::Initializer, String::new(), None, init);
+            let body = initializer(
+                Visibility::Private,
+                BodyKind::Initializer,
+                String::new(),
+                None,
+                init,
+            );
             found.push((start(node), BodyOwner::Item(item), body));
         }
         return;
@@ -203,7 +223,13 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         for (index, member) in named.enumerate() {
             if let Some(value) = member.value() {
                 let name = name_of(member.name()).unwrap_or_default();
-                let body = initializer(BodyKind::Initializer, name, None, Some(value));
+                let body = initializer(
+                    Visibility::Private,
+                    BodyKind::Initializer,
+                    name,
+                    None,
+                    Some(value),
+                );
                 let owner = BodyOwner::Value(item, index as u32);
                 found.push((start(member.syntax()), owner, body));
             }
@@ -238,6 +264,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
                 BodyKind::Case,
                 name_of(case.name()).unwrap_or_default(),
                 Callable {
+                    visibility: Visibility::Public,
                     params: params(Some(list)),
                     check_types: true,
                     ..Callable::default()
@@ -294,7 +321,13 @@ fn member_bodies(
                 let ty = if is_struct { None } else { declarator.ty() };
                 let init = declarator.init();
                 if ty.is_some() || init.is_some() {
-                    let body = initializer(BodyKind::Initializer, name, ty, init);
+                    let body = initializer(
+                        written(it.modifiers()),
+                        BodyKind::Initializer,
+                        name,
+                        ty,
+                        init,
+                    );
                     found.push((at, BodyOwner::Value(owner, value), body));
                 }
                 value += 1;
@@ -309,6 +342,11 @@ fn member_bodies(
                     BodyKind::Getter,
                     explicit(&name, explicit_impl),
                     Callable {
+                        visibility: if is_value {
+                            written(it.modifiers())
+                        } else {
+                            Visibility::Private
+                        },
                         check_types: true,
                         ret: it.ty(),
                         expr: it.expr_body(),
@@ -345,6 +383,7 @@ fn member_bodies(
                     BodyKind::Constructor,
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
+                        visibility: written(it.modifiers()),
                         params: params(it.param_list()),
                         check_types: true,
                         this_call: it
@@ -375,6 +414,7 @@ fn member_bodies(
                     BodyKind::Operator,
                     op,
                     Callable {
+                        visibility: written(it.modifiers()),
                         params: params(it.param_list()),
                         check_types: true,
                         ret: it.ret(),
@@ -393,6 +433,7 @@ fn member_bodies(
                         BodyKind::Get,
                         name.clone(),
                         Callable {
+                            visibility: written(it.modifiers()),
                             params: indexer_params.clone(),
                             check_types: true,
                             ret: it.ty(),
@@ -413,6 +454,7 @@ fn member_bodies(
                         BodyKind::Get,
                         name.clone(),
                         Callable {
+                            visibility: written(it.modifiers()),
                             params: indexer_params.clone(),
                             check_types: true,
                             ret: it.ty(),
@@ -431,6 +473,7 @@ fn member_bodies(
                         if is_set { BodyKind::Set } else { BodyKind::Get },
                         name.clone(),
                         Callable {
+                            visibility: written(it.modifiers()),
                             params: indexer_params.clone(),
                             check_types,
                             with_defaults: check_types,
@@ -461,6 +504,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
     let receiver = extension.param();
     let own: Vec<_> = extension.type_param_list().into_iter().collect();
     let mut header = Lower::new(BodyKind::Extension, String::new());
+    header.body.visibility = written(extension.modifiers());
     for list in &own {
         header.push_type_params(list);
     }
@@ -481,6 +525,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                     BodyKind::Function,
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
+                        visibility: written(it.modifiers()),
                         receiver: receiver.clone(),
                         params: params(it.param_list()),
                         type_params,
@@ -496,6 +541,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                 BodyKind::Getter,
                 name_of(it.name()).unwrap_or_default(),
                 Callable {
+                    visibility: written(it.modifiers()),
                     receiver: receiver.clone(),
                     type_params,
                     check_types: true,

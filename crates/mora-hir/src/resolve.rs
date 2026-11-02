@@ -176,6 +176,13 @@ pub(crate) fn resolve_expr_path(
         },
     };
     for (segment, name) in path.iter().enumerate().skip(1) {
+        // After a constant or a static, the segments are member accesses on
+        // its value.
+        if let Resolved::Item(item) = current
+            && item_data(db, item).kind == ItemKind::Field
+        {
+            return Ok((ExprTarget::Item(current), segment));
+        }
         match resolve_static_member(db, scope, &current, name)
             .map_err(|kind| ResolveError { segment, kind })?
         {
@@ -204,6 +211,18 @@ pub(crate) fn resolve_static_member(
         if let Some(index) = found {
             return Ok(ExprTarget::Value(ty, index));
         }
+        // Then its nested types and static functions, as `using static`
+        // opens them.
+        let mut hidden = None;
+        return match pick(db, scope, static_members(db, ty, name), &mut hidden)? {
+            Some(found) => Ok(ExprTarget::Item(found)),
+            None => Err(hidden.map_or_else(
+                || ResolveErrorKind::Unresolved {
+                    within: Some(current.clone()),
+                },
+                ResolveErrorKind::NotVisible,
+            )),
+        };
     }
     member(db, scope, current, name).map(ExprTarget::Item)
 }

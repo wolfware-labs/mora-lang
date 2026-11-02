@@ -158,9 +158,10 @@ pub enum ItemKind {
 
 /// Who can see a declaration (§4.5), narrowest first, so the effective
 /// visibility of a nested item is the minimum along its parents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Visibility {
     /// `private`: the enclosing type.
+    #[default]
     Private,
     /// `file`: the declaring file.
     File,

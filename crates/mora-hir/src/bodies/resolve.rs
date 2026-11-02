@@ -8,7 +8,8 @@ use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, body};
 use crate::defs::ItemId;
 use crate::items::{ItemKind, Visibility};
 use crate::resolve::{
-    ExprTarget, ResolveErrorKind, Resolved, Scope, resolve_expr_path, resolve_static_member,
+    ExprTarget, ResolveErrorKind, Resolved, Scope, effective_visibility, resolve_expr_path,
+    resolve_static_member,
 };
 use crate::signature::{LowerTypes, SignatureError, type_params};
 use crate::ty::Ty;
@@ -108,6 +109,30 @@ pub(crate) fn body_scope(project: Project, file: SourceFile, owner: BodyOwner) -
                 Some(item)
             }
         },
+    }
+}
+
+/// How far a declaration whose types a body checks is visible (§4.5): its
+/// written visibility, narrowed by the types around it.
+fn exposed_visibility(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    written: Visibility,
+) -> Visibility {
+    match body_scope(project, file, owner).within {
+        Some(ty) => written.min(effective_visibility(
+            db,
+            ItemId {
+                project,
+                file,
+                item: ty,
+            },
+        )),
+        // `private` at namespace level means the declaring file.
+        None if written == Visibility::Private => Visibility::File,
+        None => written,
     }
 }
 
@@ -216,16 +241,25 @@ pub fn body_resolution(
             scope.within,
         ),
         field: None,
-        // A body is visible to no one, so no type is less visible than it.
+        // Set per type below.
         member: Visibility::Private,
         errors: Vec::new(),
     };
+    // A declaration's signature types are checked against how far it is
+    // visible; any other type of a body is visible to no other code, so
+    // no type is less visible than it.
+    let exposed = exposed_visibility(db, project, file, owner, body.visibility);
     let outer = lower.type_params.len();
     resolution.types = body
         .types
         .iter()
         .map(|(id, ty)| {
             lower.type_params.truncate(outer);
+            lower.member = if body.signature_types.contains(&id) {
+                exposed
+            } else {
+                Visibility::Private
+            };
             if let Some(own) = body.type_params.get(&id) {
                 lower.type_params.extend(own.iter().cloned());
             }

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use la_arena::{Arena, Idx};
 use mora_span::{Db, SourceFile, TextRange};
 
-use crate::items::{ItemIdx, parse};
+use crate::items::{ItemIdx, Visibility, parse};
 use crate::type_ref::TypeRef;
 
 pub use dump::hir_dump;
@@ -114,6 +114,10 @@ pub struct Body {
     /// The parameter and return types of a declaration whose signature the
     /// item tree does not hold, which are checked with the body.
     pub signature_types: Vec<TypeId>,
+    /// The visibility written on that declaration, against which
+    /// [`Body::signature_types`] are checked (`MR0123`). `Private`, which
+    /// nothing is narrower than, for one the body checks nothing for.
+    pub visibility: Visibility,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
@@ -1487,5 +1491,38 @@ get extension#0.Empty(items#0) => items#0[0];
             dumped.contains("Address{field UsersApi.User.Address}.Line"),
             "{dumped}"
         );
+    }
+
+    #[test]
+    fn member_signatures_mention_no_less_visible_type() {
+        let text = "struct Secret {}\ninterface IShape {\n    Area(x: Secret): int;\n}\n\
+                    public class Vault {\n    public Vault(s: Secret) {}\n    \
+                    public Current: Secret;\n    \
+                    public operator +(a: Vault, b: Secret): Vault => a;\n    \
+                    public this[k: Secret]: int => 1;\n    \
+                    public Kept: Secret => default;\n    \
+                    IShape.Area(x: Secret): int => 1;\n    \
+                    Folder(s: Secret) {}\n}\n\
+                    public extension (s: Secret) {\n    public F(x: Secret): int => 1;\n}\n";
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let reported = diagnostics(&db, project);
+        assert_eq!(codes(reported), ["MR0123"; 7]);
+        let names: Vec<_> = reported
+            .iter()
+            .map(|d| d.message.split('`').nth(1).unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["Vault", "Current", "+", "this[]", "Kept", "extension", "F"]
+        );
+    }
+
+    #[test]
+    fn a_type_name_reaches_only_static_functions() {
+        let text = "public class Counter {\n    public Bump() {}\n    \
+                    public static Make(): int => 1;\n}\nlet n = Counter.Make();\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(reported(&format!("{text}Counter.Bump();\n")), ["MR0127"]);
     }
 }
