@@ -54,7 +54,6 @@ fn top_level(file: &ast::SourceFile) -> Lowered {
 }
 
 /// What a function-like declaration gives its body.
-#[derive(Default)]
 struct Callable {
     /// The receiver of an extension member, a parameter before the others.
     receiver: Option<ast::Param>,
@@ -64,6 +63,9 @@ struct Callable {
     /// Whether its parameter and return types are checked here, because
     /// no signature of the item tree holds them.
     check_types: bool,
+    /// Whether the parameters' defaults are lowered here: false for every
+    /// accessor of an indexer but the first.
+    with_defaults: bool,
     /// The return type, or the type of a getter or an indexer.
     ret: Option<ast::Type>,
     /// A `set` accessor's implicit `value`, and where it is declared.
@@ -74,16 +76,36 @@ struct Callable {
     expr: Option<ast::ExprBody>,
 }
 
+impl Default for Callable {
+    fn default() -> Self {
+        Self {
+            receiver: None,
+            params: Vec::new(),
+            type_params: Vec::new(),
+            check_types: false,
+            with_defaults: true,
+            ret: None,
+            value: None,
+            this_call: None,
+            block: None,
+            expr: None,
+        }
+    }
+}
+
 fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
     let mut lower = Lower::new(kind, name);
     for list in &it.type_params {
         lower.push_type_params(list);
     }
-    // The extension's own body checks the receiver's type.
-    if let Some(receiver) = &it.receiver {
-        lower.params(std::slice::from_ref(receiver), false);
-    }
-    lower.params(&it.params, it.check_types);
+    // The extension's own body checks the receiver's type and lowers its
+    // default.
+    lower.params(
+        it.receiver.as_ref(),
+        &it.params,
+        it.check_types,
+        it.with_defaults,
+    );
     if let Some(at) = it.value {
         let local = lower.declare_named("value".to_owned(), at, LocalKind::Param, None);
         lower.body.params.push(local);
@@ -202,6 +224,28 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
             .flat_map(|body| body.union_cases())
             .filter(|case| case.name().and_then(|n| n.ident_token()).is_some())
             .count();
+        let named = body
+            .iter()
+            .flat_map(|body| body.union_cases())
+            .filter(|case| case.name().and_then(|n| n.ident_token()).is_some());
+        for (index, case) in named.enumerate() {
+            // A case's fields are typed like parameters, which no signature
+            // holds yet.
+            let Some(list) = case.param_list() else {
+                continue;
+            };
+            let body = callable(
+                BodyKind::Case,
+                name_of(case.name()).unwrap_or_default(),
+                Callable {
+                    params: params(Some(list)),
+                    check_types: true,
+                    ..Callable::default()
+                },
+            );
+            let owner = BodyOwner::Value(item, index as u32);
+            found.push((start(case.syntax()), owner, body));
+        }
         let members = body.iter().flat_map(|body| body.members()).collect();
         (members, cases, false)
     } else {
@@ -358,11 +402,26 @@ fn member_bodies(
                     );
                     add_member(found, body);
                 }
-                let accessors = it
+                let accessors: Vec<_> = it
                     .accessor_list()
                     .into_iter()
-                    .flat_map(|list| list.accessors());
-                for (index, accessor) in accessors.enumerate() {
+                    .flat_map(|list| list.accessors())
+                    .collect();
+                if it.expr_body().is_none() && accessors.is_empty() {
+                    // No accessor to check the types with.
+                    let body = callable(
+                        BodyKind::Get,
+                        name.clone(),
+                        Callable {
+                            params: indexer_params.clone(),
+                            check_types: true,
+                            ret: it.ty(),
+                            ..Callable::default()
+                        },
+                    );
+                    add_member(found, body);
+                }
+                for (index, accessor) in accessors.into_iter().enumerate() {
                     let keyword = accessor.kind();
                     let is_set = keyword.as_ref().is_some_and(|kw| kw.text() == "set");
                     let at = keyword.map_or(accessor.syntax().text_range(), |kw| kw.text_range());
@@ -374,6 +433,7 @@ fn member_bodies(
                         Callable {
                             params: indexer_params.clone(),
                             check_types,
+                            with_defaults: check_types,
                             ret: if check_types { it.ty() } else { None },
                             value: is_set.then_some(at),
                             block: accessor.block(),
@@ -404,7 +464,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
     for list in &own {
         header.push_type_params(list);
     }
-    header.params(receiver.as_slice(), true);
+    header.params(None, receiver.as_slice(), true, true);
     found.push((
         start(extension.syntax()),
         BodyOwner::Extension(index, 0),

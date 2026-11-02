@@ -134,7 +134,9 @@ impl SyntaxNode {
     /// `shape`. Tokens are never empty, so its range finds it.
     pub(crate) fn child_token(&self, shape: ChildShape) -> Option<SyntaxToken> {
         match self.0.child_or_token_at_range(shape.range)? {
-            rowan::NodeOrToken::Token(token) if token.text_range() == shape.range => {
+            rowan::NodeOrToken::Token(token)
+                if token.text_range() == shape.range && token.kind() == shape.kind =>
+            {
                 Some(SyntaxToken(token))
             }
             // Not reached for a well-formed tree; fall back to a scan.
@@ -142,7 +144,7 @@ impl SyntaxNode {
                 .0
                 .children_with_tokens()
                 .filter_map(|element| element.into_token())
-                .find(|token| token.text_range() == shape.range)
+                .find(|token| token.text_range() == shape.range && token.kind() == shape.kind)
                 .map(SyntaxToken),
         }
     }

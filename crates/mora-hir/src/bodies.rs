@@ -40,7 +40,8 @@ pub enum BodyOwner {
     /// constant or static at namespace level.
     Item(ItemIdx),
     /// A value member of a type, by its position in [`crate::Item::values`]:
-    /// a field's type and initializer, a getter, or an enum member's value.
+    /// a field's type and initializer, a getter, an enum member's value, or
+    /// the field types of a union case.
     Value(ItemIdx, u32),
     /// A member of a type that is neither an item nor a value member, by
     /// its position among those in the order of the text: a constructor, a
@@ -71,6 +72,8 @@ pub enum BodyKind {
     Set,
     /// An extension block itself.
     Extension,
+    /// A union case, whose fields' types are checked with it.
+    Case,
 }
 
 pub type ExprId = Idx<Expr>;
@@ -870,6 +873,29 @@ mod tests {
         );
         // A default cannot read a parameter.
         assert_eq!(reported("F(a: int, b: int = a) {}\n"), ["MR0127"]);
+    }
+
+    #[test]
+    fn shared_parameters_report_their_defaults_once() {
+        let indexer = "class A {\n    this[i: int = Unknwn]: int { get => 1; set {} }\n}\n";
+        assert_eq!(reported(indexer), ["MR0127"]);
+        let receiver = "struct M { C: int; }\nextension (m: M = zz) {\n    A(): int => 1;\n    B(): int => 2;\n}\n";
+        assert_eq!(reported(receiver), ["MR0127"]);
+    }
+
+    #[test]
+    fn an_extension_member_default_cannot_read_the_receiver() {
+        let text = "struct M { C: int; }\nextension (m: M) {\n    F(x: int = m.C): int => x;\n}\n";
+        assert_eq!(reported(text), ["MR0127"]);
+    }
+
+    #[test]
+    fn an_indexer_without_accessors_and_union_case_fields_check_their_types() {
+        assert_eq!(
+            reported("class A {\n    this[i: Strng]: Strng { }\n}\n"),
+            ["MR0127", "MR0127"]
+        );
+        assert_eq!(reported("union U { C(x: Flaot), D }\n"), ["MR0127"]);
     }
 
     #[test]

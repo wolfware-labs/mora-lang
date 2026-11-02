@@ -100,6 +100,7 @@ impl Printer<'_> {
             BodyKind::Destructor => "drop",
             BodyKind::Operator => "operator",
             BodyKind::Extension => "extension",
+            BodyKind::Case => "case",
         };
         let _ = write!(self.out, "{keyword} {name}");
         let callable = !matches!(self.body.kind, BodyKind::Initializer | BodyKind::Getter);

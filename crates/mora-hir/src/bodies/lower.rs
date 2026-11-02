@@ -130,20 +130,33 @@ impl Lower {
         );
     }
 
-    /// Declares the parameters of the body. Their default values are lowered
-    /// first, so a default cannot read a parameter. With `check_types` the
+    /// Declares the parameters of the body: an extension member's
+    /// receiver first, then `params`. Their default values are lowered
+    /// first, so a default reads no parameter, and only with
+    /// `with_defaults`, so a parameter shared by several bodies, as an
+    /// indexer's, has its default lowered once. With `check_types` the
     /// parameter types are lowered too, for a signature the item tree does
     /// not hold.
-    pub(super) fn params(&mut self, params: &[ast::Param], check_types: bool) {
+    pub(super) fn params(
+        &mut self,
+        receiver: Option<&ast::Param>,
+        params: &[ast::Param],
+        check_types: bool,
+        with_defaults: bool,
+    ) {
         let defaults: Vec<_> = params
             .iter()
             .map(|param| {
-                param.default().map(|default| {
-                    let range = default.syntax().text_range();
-                    self.scoped(|this| this.expr(Some(default), range))
-                })
+                let default = param.default().filter(|_| with_defaults)?;
+                let range = default.syntax().text_range();
+                Some(self.scoped(|this| this.expr(Some(default), range)))
             })
             .collect();
+        if let Some(receiver) = receiver
+            && let Some(local) = self.declare(receiver.name(), LocalKind::Param, None)
+        {
+            self.body.params.push(local);
+        }
         for (param, default) in params.iter().zip(defaults) {
             let ty = if check_types {
                 let ty = self.ty(param.ty());
