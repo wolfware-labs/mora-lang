@@ -1,6 +1,6 @@
 //! Types (§5), and a lookahead that recognizes a type without parsing it.
 
-use super::{Input, Parser, describe, exprs};
+use super::{Input, MAX_DEPTH, Parser, describe, exprs};
 use crate::SyntaxKind;
 
 use SyntaxKind as K;
@@ -43,6 +43,10 @@ pub(crate) fn member_ty(p: &mut Parser<'_>) {
 }
 
 fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+    let _ = p.nested_type(|p| ty_inner(p, arrays, functions));
+}
+
+fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
     if !at_type_start(p) {
         p.error("expected a type");
         return;
@@ -301,6 +305,11 @@ pub(crate) fn generic_args_follow(input: &Input<'_>, at: usize) -> bool {
 /// The index after `<...>` at `at`, if it holds a list of types. Like
 /// `generic_arg_list`, it takes an empty list and a trailing comma.
 pub(crate) fn scan_generic_args(input: &Input<'_>, at: usize) -> Option<usize> {
+    generic_args_at(input, at, 0)
+}
+
+/// [`scan_generic_args`] inside `depth` levels of types.
+fn generic_args_at(input: &Input<'_>, at: usize, depth: usize) -> Option<usize> {
     if input.kind(at) != K::Lt {
         return None;
     }
@@ -309,7 +318,7 @@ pub(crate) fn scan_generic_args(input: &Input<'_>, at: usize) -> Option<usize> {
         if input.kind(i) == K::Gt {
             return Some(i + 1);
         }
-        i = scan_type(input, i)?;
+        i = scan(input, i, true, depth)?;
         match input.kind(i) {
             K::Comma => i += 1,
             K::Gt => return Some(i + 1),
@@ -321,14 +330,14 @@ pub(crate) fn scan_generic_args(input: &Input<'_>, at: usize) -> Option<usize> {
 /// The index after a type that starts at `at`, if one does. Used to decide
 /// between a declaration and an expression before parsing either.
 pub(crate) fn scan_type(input: &Input<'_>, at: usize) -> Option<usize> {
-    scan(input, at, true)
+    scan(input, at, true, 0)
 }
 
 /// Like [`scan_type`], but parentheses followed by `=>` end the type
 /// instead of starting a function type: where a lambda can stand, as in
 /// `((x) => x)(5)`, `(x) => x` is read as a lambda.
 pub(crate) fn scan_type_no_fn(input: &Input<'_>, at: usize) -> Option<usize> {
-    scan(input, at, false)
+    scan(input, at, false, 0)
 }
 
 /// After a `uses` bound at `at`, if there is one, the index after it:
@@ -352,11 +361,17 @@ fn scan_uses(input: &Input<'_>, at: usize) -> usize {
     i
 }
 
-fn scan(input: &Input<'_>, at: usize, functions: bool) -> Option<usize> {
+/// The type at `at`, inside `depth` levels of types. A type nested past
+/// [`MAX_DEPTH`] is not one, which also keeps this recursion bounded.
+fn scan(input: &Input<'_>, at: usize, functions: bool, depth: usize) -> Option<usize> {
+    if depth == MAX_DEPTH {
+        return None;
+    }
+    let depth = depth + 1;
     let mut i = match input.kind(at) {
         kind if PREDEFINED.contains(&kind) => at + 1,
-        K::WeakKw => return scan(input, at + 1, functions),
-        K::Ident if at_any(input, at) => return scan(input, at + 1, functions),
+        K::WeakKw => return scan(input, at + 1, functions, depth),
+        K::Ident if at_any(input, at) => return scan(input, at + 1, functions, depth),
         // `$t`, `$..ts`, `$(expr)` (§9.3).
         K::Dollar => scan_splice(input, at)?,
         K::LParen => {
@@ -370,7 +385,7 @@ fn scan(input: &Input<'_>, at: usize, functions: bool) -> Option<usize> {
                     if input.kind(i) == K::Ident && input.kind(i + 1) == K::Colon {
                         i += 2;
                     }
-                    i = scan_type(input, i)?;
+                    i = scan(input, i, true, depth)?;
                     match input.kind(i) {
                         // A trailing comma, as `tuple_type` takes: `(int, string,)`.
                         K::Comma if input.kind(i + 1) == K::RParen => break i + 2,
@@ -383,7 +398,7 @@ fn scan(input: &Input<'_>, at: usize, functions: bool) -> Option<usize> {
             // `(int) => bool`: the result type, and a `uses` bound after it,
             // end the function type.
             if functions && matches!(input.kind(end), K::FatArrow | K::ThinArrow) {
-                return scan_type(input, end + 1).map(|i| scan_uses(input, i));
+                return scan(input, end + 1, true, depth).map(|i| scan_uses(input, i));
             }
             end
         }
@@ -395,7 +410,7 @@ fn scan(input: &Input<'_>, at: usize, functions: bool) -> Option<usize> {
                 }
                 i += 1;
                 if input.kind(i) == K::Lt {
-                    i = scan_generic_args(input, i)?;
+                    i = generic_args_at(input, i, depth)?;
                 }
                 if input.kind(i) == K::Dot && input.kind(i + 1) == K::Ident {
                     i += 1;

@@ -33,7 +33,9 @@ pub(crate) fn block(p: &mut Parser<'_>) {
 /// One statement. Always takes at least one token.
 pub(crate) fn statement(p: &mut Parser<'_>) {
     let before = p.pos();
-    statement_inner(p);
+    if p.nested(statement_inner).is_err() {
+        p.eat(K::Semicolon);
+    }
     if p.pos() == before {
         let e = p.start();
         p.error("expected a statement");

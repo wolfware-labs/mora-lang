@@ -93,6 +93,7 @@ registry! {
     MR0015 = 15: "a character literal that is empty or holds more than one character",
     MR0016 = 16: "a raw or interpolated string breaks its delimiter, brace or indentation rules",
     MR0017 = 17: "a character that cannot start a token",
+    MR0018 = 18: "expressions, statements, types or patterns nested more than 256 levels deep",
     MR0107 = 107: "an `unsafe` block outside the standard library",
     MR0110 = 110: "a token that the grammar does not allow where it appears",
     MR0121 = 121: "a folder under `src/` does not give a namespace name, or two folders give the same one",
