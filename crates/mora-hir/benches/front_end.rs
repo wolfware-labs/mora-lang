@@ -88,13 +88,15 @@ fn file_text(folder: usize, file: usize, edit: u32) -> String {
     )
     .unwrap();
     for f in 0..6 {
+        // Only the first helper's body depends on `edit`.
+        let factor = if f == 0 { edit } else { 1 };
         writeln!(
             text,
             "public Helper{n}_{f}(a: int, b: string, flag: bool): int {{\n\
              \x20   var sum = 0;\n\
              \x20   for (var i = 0; i < a; i++) {{\n\
              \x20       if (flag && i % 2 == 0) {{\n\
-             \x20           sum += i * {edit};\n\
+             \x20           sum += i * {factor};\n\
              \x20       }} else {{\n\
              \x20           sum -= 1;\n\
              \x20       }}\n\

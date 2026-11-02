@@ -40,14 +40,24 @@ pub fn run(
             .no_deps()
             .exec()
             .map_err(|err| format!("cargo metadata on {}: {err}", options.base))?;
-        let (present, missing) = split_by_base(&crate::bench_compare::targets(&base), &targets);
-        for target in missing {
+        let base_targets = crate::bench_compare::targets(&base);
+        let (_, added) = split_by_base(&base_targets, &targets);
+        for target in added {
             println!(
                 "bench-compare: {} has no {}/{}; its results are new",
                 options.base, target.package, target.name
             );
         }
-        for target in present {
+        let (_, removed) = split_by_base(&targets, &base_targets);
+        for target in removed {
+            println!(
+                "bench-compare: the working tree has no {}/{}; its results are removed",
+                target.package, target.name
+            );
+        }
+        // Every target of the base runs, so a target the working tree
+        // removed is reported as removed.
+        for target in &base_targets {
             println!("bench-compare: {} on {}", target.name, options.base);
             bench(&checkout, &base_target, &home, target, "--save-baseline")?;
         }
@@ -118,7 +128,12 @@ fn bench(
     let status = Command::new(cargo)
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("CRITERION_HOME", home)
+        // Criterion names results by group and function only, so each
+        // target gets its own directory, which also prefixes its ids.
+        .env(
+            "CRITERION_HOME",
+            home.join(&target.package).join(&target.name),
+        )
         .args([
             "bench",
             "--locked",

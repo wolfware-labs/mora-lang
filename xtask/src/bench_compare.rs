@@ -106,7 +106,8 @@ pub fn targets(metadata: &Metadata) -> Vec<Target> {
 /// How one benchmark compares with the base.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comparison {
-    /// The benchmark's id, such as `cold/parse`.
+    /// The benchmark's id: package, bench target, then criterion's group
+    /// and function, such as `mora-hir/front_end/cold/parse`.
     pub id: String,
     /// The mean time on the base, in nanoseconds, when the base has it.
     pub base: Option<f64>,
