@@ -489,7 +489,7 @@ impl Lower {
                     .interp_parts()
                     .map(|part| match part {
                         ast::InterpPart::InterpTextPart(text) => {
-                            InterpPart::Text(text.syntax().text().to_string())
+                            InterpPart::Text(text.syntax().text())
                         }
                         ast::InterpPart::InterpHole(hole) => {
                             let at = hole.syntax().text_range();

@@ -63,7 +63,10 @@ pub enum SyntaxElement<'a> {
 
 // Two views are equal when they are the same part of the same tree: one
 // green node can appear at several offsets, and equal text can be two
-// different nodes.
+// different nodes. `rowan` keeps one green node for equal subtrees, so two
+// empty nodes of one kind at one offset, which the parser can leave where
+// it recovered, are equal: nothing tells them apart but their position
+// among the children.
 impl PartialEq for SyntaxNode<'_> {
     fn eq(&self, other: &Self) -> bool {
         ptr::eq(self.green, other.green) && self.offset == other.offset
@@ -106,7 +109,11 @@ impl<'a> SyntaxNode<'a> {
 
     /// The text of the node, exactly as in the source.
     pub fn text(&self) -> String {
-        self.green.to_string()
+        let mut text = String::with_capacity(u32::from(self.green.text_len()) as usize);
+        for token in self.tokens() {
+            text.push_str(token.text());
+        }
+        text
     }
 
     /// The child nodes, without tokens.
@@ -119,6 +126,7 @@ impl<'a> SyntaxNode<'a> {
         SyntaxElementChildren {
             inner: self.green.children(),
             offset: self.offset,
+            end: self.offset + self.green.text_len(),
         }
     }
 
@@ -136,7 +144,8 @@ impl<'a> SyntaxNode<'a> {
     fn preorder(&self) -> Preorder<'a> {
         Preorder {
             first: Some(*self),
-            stack: Vec::new(),
+            // Deep enough for most trees without growing.
+            stack: Vec::with_capacity(32),
         }
     }
 
@@ -148,11 +157,12 @@ impl<'a> SyntaxNode<'a> {
     }
 
     pub fn last_token(&self) -> Option<SyntaxToken<'a>> {
-        let children: Vec<_> = self.children_with_tokens().collect();
-        children.into_iter().rev().find_map(|child| match child {
-            SyntaxElement::Token(token) => Some(token),
-            SyntaxElement::Node(node) => node.last_token(),
-        })
+        self.children_with_tokens()
+            .rev()
+            .find_map(|child| match child {
+                SyntaxElement::Token(token) => Some(token),
+                SyntaxElement::Node(node) => node.last_token(),
+            })
     }
 
     /// The tree below this node as indented lines of `Kind@start..end`,
@@ -192,7 +202,10 @@ impl fmt::Display for SyntaxNode<'_> {
 #[derive(Debug, Clone)]
 pub struct SyntaxElementChildren<'a> {
     inner: rowan::Children<'a>,
+    /// Where the next child from the front starts.
     offset: TextSize,
+    /// Where the next child from the back ends.
+    end: TextSize,
 }
 
 impl<'a> Iterator for SyntaxElementChildren<'a> {
@@ -202,10 +215,26 @@ impl<'a> Iterator for SyntaxElementChildren<'a> {
         let child = self.inner.next()?;
         let offset = self.offset;
         self.offset += child.text_len();
-        Some(match child {
-            rowan::NodeOrToken::Node(green) => SyntaxElement::Node(SyntaxNode { green, offset }),
-            rowan::NodeOrToken::Token(green) => SyntaxElement::Token(SyntaxToken { green, offset }),
-        })
+        Some(element(child, offset))
+    }
+}
+
+impl DoubleEndedIterator for SyntaxElementChildren<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let child = self.inner.next_back()?;
+        self.end -= child.text_len();
+        Some(element(child, self.end))
+    }
+}
+
+/// The view of a green child that starts at `offset`.
+fn element<'a>(
+    child: rowan::NodeOrToken<&'a rowan::GreenNodeData, &'a rowan::GreenTokenData>,
+    offset: TextSize,
+) -> SyntaxElement<'a> {
+    match child {
+        rowan::NodeOrToken::Node(green) => SyntaxElement::Node(SyntaxNode { green, offset }),
+        rowan::NodeOrToken::Token(green) => SyntaxElement::Token(SyntaxToken { green, offset }),
     }
 }
 

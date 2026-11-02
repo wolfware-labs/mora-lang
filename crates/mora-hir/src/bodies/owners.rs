@@ -170,7 +170,7 @@ fn name_of(name: Option<ast::Name>) -> Option<String> {
 fn explicit(name: &str, explicit: Option<ast::ExplicitImpl>) -> String {
     let path = explicit
         .and_then(|it| it.path())
-        .map(|path| path.syntax().text().to_string());
+        .map(|path| path.syntax().text());
     match path {
         Some(path) => format!("{path}.{name}"),
         None => name.to_owned(),

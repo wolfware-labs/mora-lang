@@ -343,3 +343,26 @@ fn equal_text_at_two_places_is_two_nodes() {
         .collect();
     assert_eq!(tokens.len(), 2);
 }
+
+#[test]
+fn children_read_from_the_back_have_the_same_ranges() {
+    let parse = mora_syntax::parse("struct P { X: int; Y: string; }\n");
+    for node in parse.syntax().descendants() {
+        let forward: Vec<_> = node
+            .children_with_tokens()
+            .map(|c| c.text_range())
+            .collect();
+        let mut backward: Vec<_> = node
+            .children_with_tokens()
+            .rev()
+            .map(|c| c.text_range())
+            .collect();
+        backward.reverse();
+        assert_eq!(forward, backward, "{node:?}");
+    }
+    let root = parse.syntax();
+    assert_eq!(root.last_token().unwrap().text(), "\n");
+    let decl = root.children().next().unwrap();
+    assert_eq!(decl.last_token().unwrap().text(), "}");
+    assert_eq!(decl.text(), "struct P { X: int; Y: string; }");
+}
