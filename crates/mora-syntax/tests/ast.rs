@@ -404,11 +404,9 @@ fn equality_and_hash_follow_the_place_in_the_tree() {
     assert_ne!(first, x);
 }
 
-#[test]
-fn a_very_deep_tree_prints_and_walks_without_recursion() {
-    // As deep as `rowan` itself can build and drop a tree on a test
-    // thread; the walks keep their own stacks.
-    let depth = 5_000;
+/// A tree of nested `ParenExpr` nodes around one token, `depth` deep.
+/// Building one takes time that grows faster than its depth in `rowan`.
+fn nested(depth: usize) -> mora_syntax::GreenNode {
     let mut builder = TreeBuilder::new();
     builder.start_node(K::SourceFile);
     for _ in 0..depth {
@@ -419,11 +417,36 @@ fn a_very_deep_tree_prints_and_walks_without_recursion() {
         builder.finish_node();
     }
     builder.finish_node();
-    let green = builder.finish();
-    let root = green.root();
-    assert_eq!(root.first_token().unwrap().text(), "x");
-    assert_eq!(root.last_token().unwrap().text(), "x");
-    assert_eq!(root.tokens().count(), 1);
-    assert_eq!(root.debug_tree().lines().count(), depth + 2);
-    assert_eq!(root.text(), "x");
+    builder.finish()
+}
+
+#[test]
+fn a_very_deep_tree_prints_and_walks_without_recursion() {
+    // `rowan` builds and drops a green tree recursively, so that happens on
+    // a thread with a large stack. The walks run on a thread with a 64 KiB
+    // stack, which a walk recursing once per level would overflow.
+    let depth = 5_000;
+    let big = std::thread::Builder::new().stack_size(256 << 20);
+    let handle = big
+        .spawn(move || {
+            let tree = nested(depth);
+            std::thread::scope(|scope| {
+                std::thread::Builder::new()
+                    .stack_size(64 << 10)
+                    .spawn_scoped(scope, || {
+                        let root = tree.root();
+                        assert_eq!(root.first_token().unwrap().text(), "x");
+                        assert_eq!(root.last_token().unwrap().text(), "x");
+                        assert_eq!(root.tokens().count(), 1);
+                        assert_eq!(root.descendants().count(), depth + 1);
+                        assert_eq!(root.text(), "x");
+                        assert_eq!(root.debug_tree().lines().count(), depth + 2);
+                    })
+                    .unwrap()
+                    .join()
+                    .unwrap();
+            });
+        })
+        .unwrap();
+    handle.join().unwrap();
 }
