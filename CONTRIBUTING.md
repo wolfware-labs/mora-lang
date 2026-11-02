@@ -40,6 +40,17 @@ These are the checks CI runs on every pull request (§20.5 of the spec). They ar
 
 CI sets `RUSTFLAGS=-D warnings`, so a warning fails the build. Set the same flags locally: `export RUSTFLAGS="-D warnings" RUSTDOCFLAGS="-D warnings"` in a Unix shell, or `$env:RUSTFLAGS="-D warnings"` and `$env:RUSTDOCFLAGS="-D warnings"` in PowerShell.
 
+## Benchmarks
+
+The criterion benchmarks in `crates/*/benches/` time the compiler on generated projects: each query layer from a cold database, and the work after an edit (§14.3). Before opening a pull request that changes Rust code, compare it with `main`:
+
+```sh
+git fetch origin
+cargo xtask bench-compare
+```
+
+It checks `origin/main` out under the target directory, runs every benchmark there and then on your working tree, and prints the change of each mean with its 95% confidence interval. A benchmark that is more than 10% slower, with the whole interval above zero, fails the command (§20.6). `--base <rev>` compares with another revision and `--threshold <percent>` changes the limit. Close other programs while it runs; the base build is kept in `target/bench-compare/base-target`, so later runs only rebuild what changed. A pull request that accepts a slowdown says why in its description. Run one suite directly with `cargo bench -p mora-hir --bench front_end`.
+
 A pull request that changes only Markdown files skips the Rust build, except for `docs/design/mora.md`, `docs/errors/` and `docs/guide/`: they contain executable examples, so the example checks always run for them.
 
 ## Spec first
@@ -49,7 +60,7 @@ The specification, its examples and the golden files under `tests/` define how M
 ## Code rules
 
 - `unsafe` Rust is allowed only in `mora-rt-core`, `mora-rt`, `mora-codegen` (calling JIT-compiled code) and `mora-macro` (running macros). Every `unsafe` block carries a `// SAFETY:` comment.
-- `unwrap()` and `expect()` are denied in product code. Tests, `mora-testkit` and `xtask` may use them. An `expect` in product code that encodes an invariant needs `#[allow(clippy::expect_used)]` and a comment stating the invariant.
+- `unwrap()` and `expect()` are denied in product code. Tests, benchmarks, `mora-testkit` and `xtask` may use them. An `expect` in product code that encodes an invariant needs `#[allow(clippy::expect_used)]` and a comment stating the invariant.
 - No code outside `mora-target`, `mora-link` and the backends may branch on a target name, and no code outside `mora-target` may assume a pointer width or byte order (§19.4).
 - Every compiler diagnostic has a registered `MR` code and a page in `docs/errors/` (§17.6).
 

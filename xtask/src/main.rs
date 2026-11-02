@@ -4,6 +4,7 @@
 // Test and tooling code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod bench_compare;
 mod codegen;
 mod error_codes;
 mod layers;
@@ -18,7 +19,7 @@ use std::process::ExitCode;
 use cargo_metadata::MetadataCommand;
 use mora_diag::registry;
 
-const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | runtime [--test] [target...] | sysroot>";
+const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | runtime [--test] [target...] | sysroot | bench-compare [--base <rev>] [--threshold <percent>]>";
 
 /// `cargo metadata --no-deps` for the workspace that contains this crate.
 fn metadata_command() -> MetadataCommand {
@@ -242,6 +243,49 @@ fn run_codegen(check: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Benchmarks a base revision and the working tree, and fails when a
+/// benchmark regresses by more than the threshold.
+fn run_bench_compare(args: &[&str]) -> ExitCode {
+    let options = match bench_compare::parse_args(args) {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("bench-compare: {err}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let metadata = match metadata_command().exec() {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("bench-compare: cargo metadata failed: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let target_dir = metadata.target_directory.clone().into_std_path_buf();
+    let comparisons = match bench_compare::run(&root(), &target_dir, &metadata, &options) {
+        Ok(comparisons) => comparisons,
+        Err(err) => {
+            eprintln!("bench-compare: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (text, regressions) = bench_compare::report(&comparisons, &options);
+    println!(
+        "\nbench-compare: the working tree against {}, failing over {:.0}%\n\n{text}",
+        options.base,
+        options.threshold * 100.0
+    );
+    if regressions == 0 {
+        println!(
+            "bench-compare: {} benchmarks, no regression, ok",
+            comparisons.len()
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("bench-compare: {regressions} regression(s)");
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -252,6 +296,7 @@ fn main() -> ExitCode {
         ["codegen", "--check"] => run_codegen(true),
         ["runtime", ref rest @ ..] => run_runtime(rest),
         ["sysroot"] => run_sysroot(),
+        ["bench-compare", ref rest @ ..] => run_bench_compare(rest),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)

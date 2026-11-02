@@ -17,3 +17,10 @@ mora-diag.workspace = true
 mora-span.workspace = true
 mora-syntax.workspace = true
 salsa.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "front_end"
+harness = false
