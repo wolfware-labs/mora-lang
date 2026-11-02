@@ -154,14 +154,16 @@ impl Comparison {
     }
 }
 
-/// The targets whose source the base checkout has, and those it lacks.
+/// The targets the base also has, by package and name, and those it lacks.
+/// A source file left behind without its `[[bench]]` entry is not a target.
 pub fn split_by_base<'a>(
-    checkout: &Path,
+    base: &[Target],
     targets: &'a [Target],
 ) -> (Vec<&'a Target>, Vec<&'a Target>) {
-    targets
-        .iter()
-        .partition(|target| checkout.join(&target.source).is_file())
+    targets.iter().partition(|target| {
+        base.iter()
+            .any(|other| other.package == target.package && other.name == target.name)
+    })
 }
 
 /// Deletes the `new` results under `home`. The base's run leaves its own
@@ -178,7 +180,11 @@ pub fn clear_new(home: &Path) -> Result<(), String> {
             if !path.is_dir() {
                 continue;
             }
-            if path.file_name().is_some_and(|name| name == "new") {
+            // A benchmark group may be named `new` too; only a directory
+            // with results is one to remove.
+            if path.file_name().is_some_and(|name| name == "new")
+                && path.join("estimates.json").is_file()
+            {
                 fs::remove_dir_all(&path).map_err(|err| format!("{}: {err}", path.display()))?;
             } else {
                 pending.push(path);
@@ -354,29 +360,16 @@ mod tests {
 
     #[test]
     fn targets_the_base_lacks_are_new() {
-        let dir = scratch("split");
-        fs::create_dir_all(dir.join("a/benches")).unwrap();
-        fs::write(dir.join("a/benches/old.rs"), "").unwrap();
-        // A directory where the file was is not the file.
-        fs::create_dir_all(dir.join("a/benches/dir.rs")).unwrap();
-        let target = |name: &str| Target {
-            package: "a".to_owned(),
+        let target = |package: &str, name: &str| Target {
+            package: package.to_owned(),
             name: name.to_owned(),
-            source: PathBuf::from(format!("a/benches/{name}.rs")),
+            source: PathBuf::from(format!("{package}/benches/{name}.rs")),
         };
-        let all = vec![target("old"), target("new"), target("dir")];
-        let (present, missing) = split_by_base(&dir, &all);
-        fs::remove_dir_all(&dir).unwrap();
+        let base = vec![target("a", "old"), target("b", "same")];
+        let all = vec![target("a", "old"), target("a", "same"), target("a", "new")];
+        let (present, missing) = split_by_base(&base, &all);
         assert_eq!(present, vec![&all[0]]);
         assert_eq!(missing, vec![&all[1], &all[2]]);
-    }
-
-    /// A fresh directory under the system's temporary directory.
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bench-compare-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     #[test]
@@ -503,16 +496,22 @@ mod tests {
         let parse = home.join("cold/parse");
         write_estimates(&parse.join("new"), 2000.0, 1900.0, 2100.0);
         write_estimates(&parse.join("base"), 1000.0, 950.0, 1050.0);
-        // A file named `new` is not a result directory.
+        // A file named `new` is not a result directory, and neither is a
+        // group named `new`.
         fs::write(home.join("cold/new"), "").unwrap();
+        write_estimates(&home.join("new/case/new"), 7.0, 6.0, 8.0);
+        write_estimates(&home.join("new/case/base"), 7.0, 6.0, 8.0);
         clear_new(&home).unwrap();
         let found = collect(&home).unwrap();
         let file_kept = home.join("cold/new").is_file();
         fs::remove_dir_all(&home).unwrap();
         assert!(file_kept);
-        assert_eq!(found.len(), 1);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].id, "cold/parse");
         assert_eq!(found[0].new, None);
         assert_eq!(found[0].base, Some(1000.0));
+        assert_eq!(found[1].id, "new/case");
+        assert_eq!(found[1].new, None);
         assert!(clear_new(&home).is_err());
     }
 

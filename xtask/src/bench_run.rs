@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cargo_metadata::Metadata;
+use cargo_metadata::{Metadata, MetadataCommand};
 
 use crate::bench_compare::{
     BASELINE, Comparison, Options, Target, clear_new, collect, split_by_base, targets,
@@ -35,7 +35,12 @@ pub fn run(
     fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
     add_worktree(root, &checkout, &options.base)?;
     let result = (|| {
-        let (present, missing) = split_by_base(&checkout, &targets);
+        let base = MetadataCommand::new()
+            .manifest_path(checkout.join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .map_err(|err| format!("cargo metadata on {}: {err}", options.base))?;
+        let (present, missing) = split_by_base(&crate::bench_compare::targets(&base), &targets);
         for target in missing {
             println!(
                 "bench-compare: {} has no {}/{}; its results are new",
