@@ -1474,4 +1474,18 @@ get extension#0.Empty(items#0) => items#0[0];
             assert!(dumped.contains(expected), "{expected}\n{dumped}");
         }
     }
+
+    #[test]
+    fn a_field_may_take_the_name_of_its_type() {
+        let text = "public struct Address {\n    public Line: string;\n}\n\
+                    public class User {\n    public Address: Address;\n    \
+                    public Street(): string => Address.Line;\n}\n\
+                    public struct Order {\n    public Address: Address;\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        let dumped = dump(text);
+        assert!(
+            dumped.contains("Address{field UsersApi.User.Address}.Line"),
+            "{dumped}"
+        );
+    }
 }
