@@ -20,9 +20,6 @@ exclude_globs = [
 exclude_re = [
     # The overflow fallback: reached only after 584 years of uptime.
     '^crates/mora-rt/src/pal\.rs:89:57: replace - with / in mora_pal_now$',
-    # Not called yet: codegen emits it only when no token separates two
-    # children of one type, and the grammar has no such pair today.
-    '^crates/mora-syntax/src/ast\.rs:56:9: replace support::nth_child -> Option<N> with None$',
     # Lexer arithmetic that lands on the same result: index 0 of an
     # identifier is always an identifier character, number errors always
     # start at offset 0, and the raw-string indent scan only gains or loses

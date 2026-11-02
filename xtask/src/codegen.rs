@@ -1182,6 +1182,20 @@ mod tests {
     }
 
     #[test]
+    fn children_of_one_type_without_a_token_between_are_counted() {
+        let defs = lower_text("Name = 'ident'\nPair = first:Name second:Name\n").unwrap();
+        let rendered = render_nodes(&defs);
+        assert!(
+            rendered.contains("support::child(&self.syntax)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("support::nth_child(&self.syntax, 1)"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn repeated_accessors_merge() {
         let token = |kind: &str| Field::Token {
             name: "op".into(),

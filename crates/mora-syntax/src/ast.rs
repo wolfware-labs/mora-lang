@@ -117,5 +117,23 @@ mod tests {
         assert!(arg.syntax().text_range().is_empty());
         let after: Arg = support::child_between(&index, &[SyntaxKind::LBracket], &[]).unwrap();
         assert_eq!(after.syntax(), arg.syntax());
+        // An empty node has no token at all.
+        assert!(arg.syntax().first_token().is_none());
+        assert!(arg.syntax().last_token().is_none());
+        // No `after` token, no child.
+        assert!(support::child_between::<Arg>(&index, &[SyntaxKind::LParen], &[]).is_none());
+    }
+
+    #[test]
+    fn the_nth_child_of_a_type_counts_only_that_type() {
+        let parse = crate::parse("let x = a + b;\n");
+        let bin = parse
+            .syntax()
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::BinExpr)
+            .unwrap();
+        let rhs: Expr = support::nth_child(&bin, 1).unwrap();
+        assert_eq!(rhs.syntax().text(), "b");
+        assert!(support::nth_child::<Expr>(&bin, 2).is_none());
     }
 }
