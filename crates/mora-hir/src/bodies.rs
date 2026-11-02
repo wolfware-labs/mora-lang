@@ -7,12 +7,18 @@
 //! [`crate::body_resolution`] looks up. A body holds no text ranges, so an
 //! edit elsewhere in the file leaves it equal; the ranges are in
 //! [`body_source_map`].
+//!
+//! The owners are the functions of the item tree and the top-level
+//! statements. The bodies of getters, constructors, operators and indexers,
+//! and the initializers of fields and constants, are lowered with type
+//! checking (M1.9), which gives them owners of their own.
 
 mod dump;
 mod lower;
 mod resolve;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use la_arena::{Arena, Idx};
 use mora_span::{Db, SourceFile, TextRange};
@@ -55,6 +61,9 @@ pub struct Body {
     pub scopes: Arena<ScopeData>,
     /// Every type written in the body, as written.
     pub types: Arena<TypeRef>,
+    /// The type parameters of the local functions around a type, for the
+    /// types inside a generic local function.
+    pub type_params: HashMap<TypeId, Vec<String>>,
     /// The parameters of the function, in order.
     pub params: Vec<LocalId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
@@ -509,9 +518,13 @@ impl BodySourceMap {
 /// that has no body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FileBodies {
-    top_level: (Body, BodySourceMap),
-    items: Vec<Option<(Body, BodySourceMap)>>,
+    top_level: Lowered,
+    items: Vec<Option<Lowered>>,
 }
+
+/// A body and its source map, shared so that [`body`] and
+/// [`body_source_map`] hand them out without copying.
+type Lowered = (Arc<Body>, Arc<BodySourceMap>);
 
 #[salsa::tracked(returns(ref))]
 fn file_bodies(db: &dyn Db, file: SourceFile) -> FileBodies {
@@ -520,21 +533,17 @@ fn file_bodies(db: &dyn Db, file: SourceFile) -> FileBodies {
 
 /// The body of `owner` in `file`: empty for an item without one.
 #[salsa::tracked(returns(ref))]
-pub fn body(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Body {
-    lowered(db, file, owner)
-        .map(|(body, _)| body.clone())
-        .unwrap_or_default()
+pub fn body(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Arc<Body> {
+    lowered(db, file, owner).map_or_else(Arc::default, |(body, _)| Arc::clone(body))
 }
 
 /// Where the parts of [`body`] are.
 #[salsa::tracked(returns(ref))]
-pub fn body_source_map(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> BodySourceMap {
-    lowered(db, file, owner)
-        .map(|(_, map)| map.clone())
-        .unwrap_or_default()
+pub fn body_source_map(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Arc<BodySourceMap> {
+    lowered(db, file, owner).map_or_else(Arc::default, |(_, map)| Arc::clone(map))
 }
 
-fn lowered(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<&(Body, BodySourceMap)> {
+fn lowered(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<&Lowered> {
     let bodies = file_bodies(db, file);
     match owner {
         BodyOwner::TopLevel => Some(&bodies.top_level),
@@ -764,6 +773,19 @@ mod tests {
             reported(
                 "let conn = 1;\nlet f = [move conn] () => conn;\nlet g = [weak this] () => 1;\nlet h = [move other] () => 1;\n"
             ),
+            ["MR0127"]
+        );
+    }
+
+    #[test]
+    fn a_capture_without_a_name_reports_only_the_syntax_error() {
+        assert_eq!(reported("let f = [move] () => 1;\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_generic_local_function_sees_its_type_parameters() {
+        assert_eq!(
+            reported("F() {\n    Id<T>(x: T): T => x;\n    let y: T = 1;\n}\n"),
             ["MR0127"]
         );
     }

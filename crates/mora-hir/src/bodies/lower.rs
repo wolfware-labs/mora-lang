@@ -1,5 +1,7 @@
 //! Lowering of syntax to [`Body`], with the scopes of §7.10.
 
+use std::sync::Arc;
+
 use mora_span::TextRange;
 use mora_syntax::ast::{self, AstNode};
 use mora_syntax::lexer::ident_name;
@@ -7,8 +9,8 @@ use mora_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use super::{
     Arg, ArgMode, BinaryOp, Body, BodySourceMap, Capture, CaptureTarget, Expr, ExprId, FileBodies,
-    InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, MatchArm, Pat, PatId,
-    Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
+    InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
+    PatId, Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
 };
 use crate::items::item_nodes;
 use crate::type_ref::{LowerTypes, TypeRef, predefined};
@@ -35,7 +37,7 @@ pub(super) fn file(file: &ast::SourceFile) -> FileBodies {
 }
 
 /// The body of a function item; `None` for any other item.
-fn function(node: &SyntaxNode) -> Option<(Body, BodySourceMap)> {
+fn function(node: &SyntaxNode) -> Option<Lowered> {
     let function = ast::FunctionDecl::cast(node.clone())?;
     let mut lower = Lower::new();
     for param in function.param_list().iter().flat_map(|list| list.params()) {
@@ -53,6 +55,9 @@ struct Lower {
     types: LowerTypes,
     /// The innermost scope.
     scope: ScopeId,
+    /// The type parameters of the local functions around the code being
+    /// lowered, innermost last.
+    type_params: Vec<String>,
 }
 
 impl Lower {
@@ -67,12 +72,13 @@ impl Lower {
             map: BodySourceMap::default(),
             types: LowerTypes::default(),
             scope,
+            type_params: Vec::new(),
         }
     }
 
-    fn finish(mut self) -> (Body, BodySourceMap) {
+    fn finish(mut self) -> Lowered {
         self.map.type_paths = self.types.into_paths();
-        (self.body, self.map)
+        (Arc::new(self.body), Arc::new(self.map))
     }
 
     fn alloc_expr(&mut self, expr: Expr, range: TextRange) -> ExprId {
@@ -90,7 +96,11 @@ impl Lower {
 
     fn ty(&mut self, ty: Option<ast::Type>) -> TypeId {
         let ty = self.types.optional(ty.as_ref());
-        self.body.types.alloc(ty)
+        let id = self.body.types.alloc(ty);
+        if !self.type_params.is_empty() {
+            self.body.type_params.insert(id, self.type_params.clone());
+        }
+        id
     }
 
     fn opt_ty(&mut self, ty: Option<ast::Type>) -> Option<TypeId> {
@@ -314,6 +324,19 @@ impl Lower {
 
     /// A local function: its name is in scope after it and in its own body.
     fn local_function(&mut self, function: &ast::FunctionDecl) -> LocalFunction {
+        let outer = self.type_params.len();
+        let own = function.type_param_list();
+        let own = own.iter().flat_map(|list| list.type_params());
+        self.type_params.extend(
+            own.filter_map(|param| param.name()?.ident_token())
+                .map(|token| ident_name(token.text()).into_owned()),
+        );
+        let function = self.local_function_inner(function);
+        self.type_params.truncate(outer);
+        function
+    }
+
+    fn local_function_inner(&mut self, function: &ast::FunctionDecl) -> LocalFunction {
         let ret = self.opt_ty(function.ret());
         let local = self.declare(function.name(), LocalKind::Function, None);
         let local = local.unwrap_or_else(|| {
@@ -550,15 +573,14 @@ impl Lower {
             ast::Expr::LambdaExpr(it) => {
                 // The capture list names locals of the enclosing scope, so
                 // it is lowered before the parameters.
-                let captures = it
+                // A capture without a name declares nothing; the parser has
+                // reported it.
+                let (captures, unresolved): (Vec<_>, Vec<_>) = it
                     .capture_list()
                     .iter()
                     .flat_map(|list| list.captures())
-                    .collect::<Vec<_>>();
-                let captures = captures
-                    .iter()
-                    .map(|capture| self.capture(capture))
-                    .collect::<Vec<_>>();
+                    .filter_map(|capture| self.capture(&capture))
+                    .unzip();
                 let is_async = has_modifier(it.modifiers(), SyntaxKind::AsyncKw);
                 let is_static = has_modifier(it.modifiers(), SyntaxKind::StaticKw);
                 let (params, body) = self.scoped(|this| {
@@ -583,18 +605,15 @@ impl Lower {
                 });
                 let lambda = Lambda {
                     params,
-                    captures: captures
-                        .iter()
-                        .map(|(capture, _)| capture.clone())
-                        .collect(),
+                    captures,
                     is_async,
                     is_static,
                     body,
                 };
                 let id = self.alloc_expr(Expr::Lambda(lambda), range);
-                for (index, (_, unresolved)) in captures.iter().enumerate() {
-                    if let Some(at) = unresolved {
-                        self.map.captures.insert((id, index), *at);
+                for (index, at) in unresolved.into_iter().enumerate() {
+                    if let Some(at) = at {
+                        self.map.captures.insert((id, index), at);
                     }
                 }
                 return id;
@@ -705,8 +724,9 @@ impl Lower {
         )
     }
 
-    /// A capture, and where its name is when it names no local in scope.
-    fn capture(&mut self, capture: &ast::Capture) -> (Capture, Option<TextRange>) {
+    /// A capture, and where its name is when it names no local in scope;
+    /// `None` for a capture the parser recovered from.
+    fn capture(&mut self, capture: &ast::Capture) -> Option<(Capture, Option<TextRange>)> {
         let weak = capture
             .mode()
             .is_some_and(|mode| mode.kind() == SyntaxKind::WeakKw);
@@ -714,20 +734,17 @@ impl Lower {
         let target = if capture.this_token().is_some() {
             CaptureTarget::This
         } else {
-            let token = capture.name_ref().and_then(|name| name.ident_token());
-            let name = token
-                .as_ref()
-                .map(|token| ident_name(token.text()).into_owned())
-                .unwrap_or_default();
+            let token = capture.name_ref()?.ident_token()?;
+            let name = ident_name(token.text()).into_owned();
             match self.lookup(&name) {
                 Some(local) => CaptureTarget::Local(local),
                 None => {
-                    unresolved = token.map(|token| token.text_range());
+                    unresolved = Some(token.text_range());
                     CaptureTarget::Unresolved(name)
                 }
             }
         };
-        (Capture { weak, target }, unresolved)
+        Some((Capture { weak, target }, unresolved))
     }
 
     fn opt_pattern(&mut self, pattern: Option<ast::Pattern>) -> PatId {

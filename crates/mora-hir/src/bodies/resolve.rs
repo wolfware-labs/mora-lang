@@ -121,10 +121,17 @@ pub fn body_resolution(
     let mut resolution = BodyResolution::default();
     // A receiver comes before its member in the arena, so it is looked up
     // first.
+    // Every path of a body is looked up from the same scope, so a name used
+    // again gives the same answer.
+    let mut cache = HashMap::new();
     for (id, expr) in body.exprs.iter() {
         match expr {
             Expr::Path(path) => {
-                let (target, segments) = match resolve_expr_path(db, scope, &path.segments) {
+                let found = cache
+                    .entry(&path.segments[..])
+                    .or_insert_with(|| resolve_expr_path(db, scope, &path.segments))
+                    .clone();
+                let (target, segments) = match found {
                     Ok((target, segments)) => (target.into(), segments),
                     Err(error) => {
                         resolution.errors.push(BodyError::Path {
@@ -204,7 +211,18 @@ pub fn body_resolution(
         member: Visibility::Private,
         errors: Vec::new(),
     };
-    resolution.types = body.types.iter().map(|(_, ty)| lower.ty(ty)).collect();
+    let outer = lower.type_params.len();
+    resolution.types = body
+        .types
+        .iter()
+        .map(|(id, ty)| {
+            lower.type_params.truncate(outer);
+            if let Some(own) = body.type_params.get(&id) {
+                lower.type_params.extend(own.iter().cloned());
+            }
+            lower.ty(ty)
+        })
+        .collect();
     resolution
         .errors
         .extend(lower.errors.into_iter().map(BodyError::Type));
