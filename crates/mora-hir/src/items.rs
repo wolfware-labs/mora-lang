@@ -259,25 +259,25 @@ fn lower(file: &ast::SourceFile) -> Lowered {
 }
 
 /// The parts of a declaration the item tree keeps.
-struct Decl {
+struct Decl<'a> {
     kind: ItemKind,
-    name: Option<ast::Name>,
-    modifiers: Vec<ast::Modifier>,
-    members: Vec<ast::Member>,
+    name: Option<ast::Name<'a>>,
+    modifiers: Vec<ast::Modifier<'a>>,
+    members: Vec<ast::Member<'a>>,
     values: Vec<(ValueMember, TextRange)>,
 }
 
 /// The syntax node of every item of `file`, indexed like
 /// [`ItemTree::items`]: the walk is the one [`lower`] makes.
-pub(crate) fn item_nodes(file: &ast::SourceFile) -> Vec<SyntaxNode> {
-    fn walk(node: &SyntaxNode, member: bool, out: &mut Vec<SyntaxNode>) {
+pub(crate) fn item_nodes<'a>(file: &ast::SourceFile<'a>) -> Vec<SyntaxNode<'a>> {
+    fn walk<'a>(node: &SyntaxNode<'a>, member: bool, out: &mut Vec<SyntaxNode<'a>>) {
         let Some(decl) = decl(node, member) else {
             return;
         };
         if decl.name.and_then(|name| name.ident_token()).is_none() {
             return;
         }
-        out.push(node.clone());
+        out.push(*node);
         for member in &decl.members {
             walk(member.syntax(), true, out);
         }
@@ -375,28 +375,29 @@ impl Lowered {
 
 /// The parts of a declaration. Members keep nested types and functions
 /// only; namespace level keeps every named item.
-fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
-    let node = node.clone();
-    let decl = |kind, name, modifiers: ast::AstChildren<ast::Modifier>, members: Vec<_>| Decl {
-        kind,
-        name,
-        modifiers: modifiers.collect(),
-        values: member_values(&members),
-        members,
-    };
-    let members = |list: Option<ast::MemberList>| {
+fn decl<'a>(node: &SyntaxNode<'a>, member: bool) -> Option<Decl<'a>> {
+    let node = *node;
+    let decl =
+        |kind, name, modifiers: ast::AstChildren<'a, ast::Modifier<'a>>, members: Vec<_>| Decl {
+            kind,
+            name,
+            modifiers: modifiers.collect(),
+            values: member_values(&members),
+            members,
+        };
+    let members = |list: Option<ast::MemberList<'a>>| {
         list.map(|list| list.members().collect())
             .unwrap_or_default()
     };
-    if let Some(it) = ast::StructDecl::cast(node.clone()) {
+    if let Some(it) = ast::StructDecl::cast(node) {
         let list = members(it.member_list());
         return Some(decl(ItemKind::Struct, it.name(), it.modifiers(), list));
     }
-    if let Some(it) = ast::ClassDecl::cast(node.clone()) {
+    if let Some(it) = ast::ClassDecl::cast(node) {
         let list = members(it.member_list());
         return Some(decl(ItemKind::Class, it.name(), it.modifiers(), list));
     }
-    if let Some(it) = ast::UnionDecl::cast(node.clone()) {
+    if let Some(it) = ast::UnionDecl::cast(node) {
         let body = it.union_body();
         let list = body.iter().flat_map(|body| body.members()).collect();
         let mut union = decl(ItemKind::Union, it.name(), it.modifiers(), list);
@@ -405,7 +406,7 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
         union.values.splice(0..0, cases);
         return Some(union);
     }
-    if let Some(it) = ast::EnumDecl::cast(node.clone()) {
+    if let Some(it) = ast::EnumDecl::cast(node) {
         let mut decl = decl(ItemKind::Enum, it.name(), it.modifiers(), Vec::new());
         let members = it
             .enum_body()
@@ -416,11 +417,11 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
             .collect();
         return Some(decl);
     }
-    if let Some(it) = ast::InterfaceDecl::cast(node.clone()) {
+    if let Some(it) = ast::InterfaceDecl::cast(node) {
         let list = members(it.member_list());
         return Some(decl(ItemKind::Interface, it.name(), it.modifiers(), list));
     }
-    if let Some(it) = ast::FunctionDecl::cast(node.clone()) {
+    if let Some(it) = ast::FunctionDecl::cast(node) {
         // `IShape.Area(): float => ...` implements an interface member; it
         // declares no name of its own.
         if it.explicit_impl().is_some() {
@@ -436,7 +437,7 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
     if member {
         return None;
     }
-    if let Some(it) = ast::MacroDecl::cast(node.clone()) {
+    if let Some(it) = ast::MacroDecl::cast(node) {
         return Some(decl(ItemKind::Macro, it.name(), it.modifiers(), Vec::new()));
     }
     if let Some(it) = ast::FieldDecl::cast(node) {

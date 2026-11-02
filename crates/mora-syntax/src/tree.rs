@@ -1,11 +1,21 @@
 //! The lossless syntax tree (§14.4).
 //!
-//! `rowan` stores the tree: immutable green nodes shared between versions
-//! of a file, and red nodes that add parents and offsets on demand. It is an
-//! alpha release (§14.2), so it stays behind the types of this module and
-//! no other crate names it.
+//! `rowan` stores the tree: immutable green nodes, shared between versions
+//! of a file, that hold each node's kind, text length and children. It is
+//! an alpha release (§14.2), so it stays behind the types of this module
+//! and no other crate names it.
+//!
+//! The views of this module read the green tree in place. A [`SyntaxNode`]
+//! is a green node and its offset in the file, two words that borrow the
+//! tree and are copied freely, so creating a view and iterating the
+//! children of a node allocate nothing; a walk over a whole subtree
+//! (`descendants`, `tokens`) keeps one stack of the nodes it is inside. A
+//! view has no link to its parent: the compiler walks the tree only from
+//! the root down.
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::ptr;
 
 use mora_span::{TextRange, TextSize};
 
@@ -28,210 +38,288 @@ impl rowan::Language for Mora {
     }
 }
 
+fn kind(raw: rowan::SyntaxKind) -> SyntaxKind {
+    <Mora as rowan::Language>::kind_from_raw(raw)
+}
+
 /// A node of the tree: a kind, its children and its place in the file.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SyntaxNode(rowan::SyntaxNode<Mora>);
+#[derive(Clone, Copy)]
+pub struct SyntaxNode<'a> {
+    green: &'a rowan::GreenNodeData,
+    offset: TextSize,
+}
 
 /// A token of the tree, trivia included.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SyntaxToken(rowan::SyntaxToken<Mora>);
-
-/// What [`SyntaxNode::child_shapes`] tells about a child.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ChildShape {
-    pub(crate) kind: SyntaxKind,
-    pub(crate) is_node: bool,
-    pub(crate) range: TextRange,
+#[derive(Clone, Copy)]
+pub struct SyntaxToken<'a> {
+    green: &'a rowan::GreenTokenData,
+    offset: TextSize,
 }
 
 /// A child of a node: a node or a token.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SyntaxElement {
-    Node(SyntaxNode),
-    Token(SyntaxToken),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyntaxElement<'a> {
+    Node(SyntaxNode<'a>),
+    Token(SyntaxToken<'a>),
 }
 
-impl SyntaxNode {
+// Two views are equal when they are the same part of the same tree: one
+// green node can appear at several offsets, and equal text can be two
+// different nodes. `rowan` keeps one green node for equal subtrees, so two
+// empty nodes of one kind at one offset, which the parser can leave where
+// it recovered, are equal: nothing tells them apart but their position
+// among the children.
+impl PartialEq for SyntaxNode<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self.green, other.green) && self.offset == other.offset
+    }
+}
+
+impl Eq for SyntaxNode<'_> {}
+
+impl Hash for SyntaxNode<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        ptr::hash(self.green, state);
+        self.offset.hash(state);
+    }
+}
+
+impl PartialEq for SyntaxToken<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self.green, other.green) && self.offset == other.offset
+    }
+}
+
+impl Eq for SyntaxToken<'_> {}
+
+impl Hash for SyntaxToken<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        ptr::hash(self.green, state);
+        self.offset.hash(state);
+    }
+}
+
+impl<'a> SyntaxNode<'a> {
     pub fn kind(&self) -> SyntaxKind {
-        self.0.kind()
+        kind(self.green.kind())
     }
 
     /// Where the node is, trivia inside it included.
     pub fn text_range(&self) -> TextRange {
-        self.0.text_range()
+        TextRange::at(self.offset, self.green.text_len())
     }
 
     /// The text of the node, exactly as in the source.
     pub fn text(&self) -> String {
-        self.0.text().to_string()
-    }
-
-    pub fn parent(&self) -> Option<SyntaxNode> {
-        self.0.parent().map(SyntaxNode)
-    }
-
-    /// The node and its parents, innermost first.
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode> + use<> {
-        self.0.ancestors().map(SyntaxNode)
+        let mut text = String::with_capacity(u32::from(self.green.text_len()) as usize);
+        for token in self.tokens() {
+            text.push_str(token.text());
+        }
+        text
     }
 
     /// The child nodes, without tokens.
-    pub fn children(&self) -> SyntaxNodeChildren {
-        SyntaxNodeChildren(self.0.children())
+    pub fn children(&self) -> SyntaxNodeChildren<'a> {
+        SyntaxNodeChildren(self.children_with_tokens())
     }
 
     /// The child nodes and tokens, in order.
-    pub fn children_with_tokens(&self) -> impl Iterator<Item = SyntaxElement> + use<> {
-        self.0.children_with_tokens().map(SyntaxElement::from)
+    pub fn children_with_tokens(&self) -> SyntaxElementChildren<'a> {
+        SyntaxElementChildren {
+            inner: self.green.children(),
+            offset: self.offset,
+            end: self.offset + self.green.text_len(),
+        }
     }
 
     /// The node and every node below it, in preorder.
-    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode> + use<> {
-        self.0.descendants().map(SyntaxNode)
+    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode<'a>> + use<'a> {
+        self.preorder().filter_map(SyntaxElement::into_node)
     }
 
     /// The tokens of the node and every node below it, in order.
-    pub fn tokens(&self) -> impl Iterator<Item = SyntaxToken> + use<> {
-        self.0
-            .descendants_with_tokens()
-            .filter_map(|element| element.into_token().map(SyntaxToken))
+    pub fn tokens(&self) -> impl Iterator<Item = SyntaxToken<'a>> + use<'a> {
+        self.preorder().filter_map(SyntaxElement::into_token)
     }
 
-    /// The kind, start and length of each direct child, read from the
-    /// green tree. Unlike [`SyntaxNode::children_with_tokens`], this creates
-    /// no node or token, so the typed views use it to find a child before
-    /// they create the one they return.
-    pub(crate) fn child_shapes(&self) -> impl Iterator<Item = ChildShape> + '_ {
-        let mut offset = self.0.text_range().start();
-        self.0.green().children().map(move |child| {
-            let start = offset;
-            let len = child.text_len();
-            offset += len;
-            ChildShape {
-                kind: <Mora as rowan::Language>::kind_from_raw(child.kind()),
-                is_node: matches!(child, rowan::NodeOrToken::Node(_)),
-                range: TextRange::at(start, len),
+    /// The node and everything below it, in preorder.
+    fn preorder(&self) -> Preorder<'a> {
+        Preorder {
+            first: Some(*self),
+            // One allocation for the whole walk: deep enough for most trees,
+            // where growing from empty would allocate several times.
+            stack: Vec::with_capacity(32),
+        }
+    }
+
+    pub fn first_token(&self) -> Option<SyntaxToken<'a>> {
+        self.tokens().next()
+    }
+
+    pub fn last_token(&self) -> Option<SyntaxToken<'a>> {
+        // From the back, into the last child node until a token: a loop
+        // with its own stack, so a deep tree cannot overflow the call stack.
+        let mut stack = vec![self.children_with_tokens()];
+        while let Some(children) = stack.last_mut() {
+            match children.next_back() {
+                Some(SyntaxElement::Token(token)) => return Some(token),
+                Some(SyntaxElement::Node(node)) => stack.push(node.children_with_tokens()),
+                None => {
+                    stack.pop();
+                }
             }
-        })
-    }
-
-    /// The child node that [`SyntaxNode::child_shapes`] described as
-    /// `shape`, the `nodes_before`th child node. A non-empty child is the
-    /// only one that covers its range, so the range finds it without
-    /// creating the nodes before it. An empty one, which the parser leaves
-    /// where it recovered, may share its offset with others, so it is
-    /// counted out among the child nodes.
-    pub(crate) fn child_node(&self, shape: ChildShape, nodes_before: usize) -> Option<SyntaxNode> {
-        let node = if shape.range.is_empty() {
-            self.children().nth(nodes_before)?
-        } else {
-            SyntaxNode(self.0.child_or_token_at_range(shape.range)?.into_node()?)
-        };
-        debug_assert_eq!(node.kind(), shape.kind);
-        debug_assert_eq!(node.text_range(), shape.range);
-        Some(node)
-    }
-
-    /// The child token that [`SyntaxNode::child_shapes`] described as
-    /// `shape`. The lexer makes no empty token, so no other child covers
-    /// its range.
-    pub(crate) fn child_token(&self, shape: ChildShape) -> Option<SyntaxToken> {
-        let token = self.0.child_or_token_at_range(shape.range)?.into_token()?;
-        debug_assert_eq!(token.text_range(), shape.range);
-        debug_assert_eq!(token.kind(), shape.kind);
-        Some(SyntaxToken(token))
-    }
-
-    pub fn first_token(&self) -> Option<SyntaxToken> {
-        self.0.first_token().map(SyntaxToken)
-    }
-
-    pub fn last_token(&self) -> Option<SyntaxToken> {
-        self.0.last_token().map(SyntaxToken)
+        }
+        None
     }
 
     /// The tree below this node as indented lines of `Kind@start..end`,
-    /// with each token's text: the form snapshot tests compare.
+    /// with each token's text: the form snapshot tests compare. It walks
+    /// with its own stack, so a deep tree cannot overflow the call stack.
     pub fn debug_tree(&self) -> String {
-        let mut out = String::new();
-        let mut depth = 0;
-        for event in self.0.preorder_with_tokens() {
-            match event {
-                rowan::WalkEvent::Enter(element) => {
-                    let range = element.text_range();
-                    let indent = "  ".repeat(depth);
-                    let span = format!("{:?}@{:?}", element.kind(), range);
-                    match element {
-                        rowan::NodeOrToken::Node(_) => {
-                            out.push_str(&format!("{indent}{span}\n"));
-                            depth += 1;
-                        }
-                        rowan::NodeOrToken::Token(token) => {
-                            out.push_str(&format!("{indent}{span} {:?}\n", token.text()));
-                        }
-                    }
+        let mut out = format!(
+            "{self:?}
+"
+        );
+        let mut stack = vec![self.children_with_tokens()];
+        loop {
+            let indent = "  ".repeat(stack.len());
+            let Some(children) = stack.last_mut() else {
+                break;
+            };
+            match children.next() {
+                Some(SyntaxElement::Node(node)) => {
+                    out.push_str(&format!(
+                        "{indent}{node:?}
+"
+                    ));
+                    stack.push(node.children_with_tokens());
                 }
-                rowan::WalkEvent::Leave(rowan::NodeOrToken::Node(_)) => depth -= 1,
-                rowan::WalkEvent::Leave(rowan::NodeOrToken::Token(_)) => {}
+                Some(SyntaxElement::Token(token)) => {
+                    out.push_str(&format!(
+                        "{indent}{token:?}
+"
+                    ));
+                }
+                None => {
+                    stack.pop();
+                }
             }
         }
         out
     }
 }
 
-impl fmt::Debug for SyntaxNode {
+impl fmt::Debug for SyntaxNode<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}@{:?}", self.kind(), self.text_range())
     }
 }
 
-impl fmt::Display for SyntaxNode {
+impl fmt::Display for SyntaxNode<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0.text(), f)
+        fmt::Display::fmt(self.green, f)
+    }
+}
+
+/// The child nodes and tokens of a node, with their offsets.
+#[derive(Debug, Clone)]
+pub struct SyntaxElementChildren<'a> {
+    inner: rowan::Children<'a>,
+    /// Where the next child from the front starts.
+    offset: TextSize,
+    /// Where the next child from the back ends.
+    end: TextSize,
+}
+
+impl<'a> Iterator for SyntaxElementChildren<'a> {
+    type Item = SyntaxElement<'a>;
+
+    fn next(&mut self) -> Option<SyntaxElement<'a>> {
+        let child = self.inner.next()?;
+        let offset = self.offset;
+        self.offset += child.text_len();
+        Some(element(child, offset))
+    }
+}
+
+impl DoubleEndedIterator for SyntaxElementChildren<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let child = self.inner.next_back()?;
+        self.end -= child.text_len();
+        Some(element(child, self.end))
+    }
+}
+
+/// The view of a green child that starts at `offset`.
+fn element<'a>(
+    child: rowan::NodeOrToken<&'a rowan::GreenNodeData, &'a rowan::GreenTokenData>,
+    offset: TextSize,
+) -> SyntaxElement<'a> {
+    match child {
+        rowan::NodeOrToken::Node(green) => SyntaxElement::Node(SyntaxNode { green, offset }),
+        rowan::NodeOrToken::Token(green) => SyntaxElement::Token(SyntaxToken { green, offset }),
     }
 }
 
 /// The child nodes of a node.
 #[derive(Debug, Clone)]
-pub struct SyntaxNodeChildren(rowan::SyntaxNodeChildren<Mora>);
+pub struct SyntaxNodeChildren<'a>(SyntaxElementChildren<'a>);
 
-impl Iterator for SyntaxNodeChildren {
-    type Item = SyntaxNode;
+impl<'a> Iterator for SyntaxNodeChildren<'a> {
+    type Item = SyntaxNode<'a>;
 
-    fn next(&mut self) -> Option<SyntaxNode> {
-        self.0.next().map(SyntaxNode)
+    fn next(&mut self) -> Option<SyntaxNode<'a>> {
+        self.0.find_map(SyntaxElement::into_node)
     }
 }
 
-impl SyntaxToken {
+/// A node and everything below it, in preorder.
+struct Preorder<'a> {
+    /// The node itself, until it is returned.
+    first: Option<SyntaxNode<'a>>,
+    /// The children still to visit of each node entered.
+    stack: Vec<SyntaxElementChildren<'a>>,
+}
+
+impl<'a> Iterator for Preorder<'a> {
+    type Item = SyntaxElement<'a>;
+
+    fn next(&mut self) -> Option<SyntaxElement<'a>> {
+        if let Some(node) = self.first.take() {
+            self.stack.push(node.children_with_tokens());
+            return Some(SyntaxElement::Node(node));
+        }
+        loop {
+            let children = self.stack.last_mut()?;
+            match children.next() {
+                Some(SyntaxElement::Node(node)) => {
+                    self.stack.push(node.children_with_tokens());
+                    return Some(SyntaxElement::Node(node));
+                }
+                Some(token) => return Some(token),
+                None => {
+                    self.stack.pop();
+                }
+            }
+        }
+    }
+}
+
+impl<'a> SyntaxToken<'a> {
     pub fn kind(&self) -> SyntaxKind {
-        self.0.kind()
+        kind(self.green.kind())
     }
 
-    pub fn text(&self) -> &str {
-        self.0.text()
+    pub fn text(&self) -> &'a str {
+        self.green.text()
     }
 
     pub fn text_range(&self) -> TextRange {
-        self.0.text_range()
-    }
-
-    pub fn parent(&self) -> Option<SyntaxNode> {
-        self.0.parent().map(SyntaxNode)
-    }
-
-    /// The next token in the file, possibly trivia.
-    pub fn next_token(&self) -> Option<SyntaxToken> {
-        self.0.next_token().map(SyntaxToken)
-    }
-
-    /// The previous token in the file, possibly trivia.
-    pub fn prev_token(&self) -> Option<SyntaxToken> {
-        self.0.prev_token().map(SyntaxToken)
+        TextRange::at(self.offset, self.green.text_len())
     }
 }
 
-impl fmt::Debug for SyntaxToken {
+impl fmt::Debug for SyntaxToken<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -243,13 +331,13 @@ impl fmt::Debug for SyntaxToken {
     }
 }
 
-impl fmt::Display for SyntaxToken {
+impl fmt::Display for SyntaxToken<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.text())
     }
 }
 
-impl SyntaxElement {
+impl<'a> SyntaxElement<'a> {
     pub fn kind(&self) -> SyntaxKind {
         match self {
             SyntaxElement::Node(node) => node.kind(),
@@ -264,26 +352,17 @@ impl SyntaxElement {
         }
     }
 
-    pub fn into_node(self) -> Option<SyntaxNode> {
+    pub fn into_node(self) -> Option<SyntaxNode<'a>> {
         match self {
             SyntaxElement::Node(node) => Some(node),
             SyntaxElement::Token(_) => None,
         }
     }
 
-    pub fn into_token(self) -> Option<SyntaxToken> {
+    pub fn into_token(self) -> Option<SyntaxToken<'a>> {
         match self {
             SyntaxElement::Node(_) => None,
             SyntaxElement::Token(token) => Some(token),
-        }
-    }
-}
-
-impl From<rowan::SyntaxElement<Mora>> for SyntaxElement {
-    fn from(element: rowan::SyntaxElement<Mora>) -> Self {
-        match element {
-            rowan::NodeOrToken::Node(node) => SyntaxElement::Node(SyntaxNode(node)),
-            rowan::NodeOrToken::Token(token) => SyntaxElement::Token(SyntaxToken(token)),
         }
     }
 }
@@ -294,9 +373,12 @@ impl From<rowan::SyntaxElement<Mora>> for SyntaxElement {
 pub struct GreenNode(rowan::GreenNode);
 
 impl GreenNode {
-    /// The tree with this node at its root.
-    pub fn root(&self) -> SyntaxNode {
-        SyntaxNode(rowan::SyntaxNode::new_root(self.0.clone()))
+    /// The tree with this node at its root, borrowing this node.
+    pub fn root(&self) -> SyntaxNode<'_> {
+        SyntaxNode {
+            green: &self.0,
+            offset: TextSize::new(0),
+        }
     }
 
     pub fn text_len(&self) -> TextSize {

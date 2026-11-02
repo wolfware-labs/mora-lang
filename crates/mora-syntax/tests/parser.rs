@@ -77,7 +77,8 @@ fn snapshots() {
 }
 
 fn class_members(text: &str) -> Vec<String> {
-    let file = parse(text).tree();
+    let parsed = parse(text);
+    let file = parsed.tree();
     let Some(ast::TopLevelItem::Item(ast::Item::ClassDecl(class))) = file.top_level_items().next()
     else {
         panic!("no class in {text}");

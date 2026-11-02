@@ -8,29 +8,29 @@
 
 use std::marker::PhantomData;
 
-use crate::{SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken};
+use crate::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken};
 
 pub use crate::generated::nodes::*;
 
-/// A typed view of a node.
-pub trait AstNode: Sized {
+/// A typed view of a node of a tree that lives for `'a`.
+pub trait AstNode<'a>: Sized {
     /// Whether a node of this kind can be viewed as `Self`.
     fn can_cast(kind: SyntaxKind) -> bool;
 
     /// The view of `node`, if its kind fits.
-    fn cast(node: SyntaxNode) -> Option<Self>;
+    fn cast(node: SyntaxNode<'a>) -> Option<Self>;
 
-    fn syntax(&self) -> &SyntaxNode;
+    fn syntax(&self) -> &SyntaxNode<'a>;
 }
 
 /// The children of a node that can be viewed as `N`.
 #[derive(Debug, Clone)]
-pub struct AstChildren<N> {
-    inner: SyntaxNodeChildren,
+pub struct AstChildren<'a, N> {
+    inner: SyntaxNodeChildren<'a>,
     _node: PhantomData<N>,
 }
 
-impl<N: AstNode> Iterator for AstChildren<N> {
+impl<'a, N: AstNode<'a>> Iterator for AstChildren<'a, N> {
     type Item = N;
 
     fn next(&mut self) -> Option<N> {
@@ -42,21 +42,8 @@ impl<N: AstNode> Iterator for AstChildren<N> {
 pub(crate) mod support {
     use super::*;
 
-    // These read the kinds of the children from the green tree and create
-    // only the child they return: creating a node or a token allocates, and
-    // most children are whitespace.
-
-    pub(crate) fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
-        let mut nodes = 0;
-        for shape in parent.child_shapes() {
-            if shape.is_node {
-                if N::can_cast(shape.kind) {
-                    return parent.child_node(shape, nodes).and_then(N::cast);
-                }
-                nodes += 1;
-            }
-        }
-        None
+    pub(crate) fn child<'a, N: AstNode<'a>>(parent: &SyntaxNode<'a>) -> Option<N> {
+        parent.children().find_map(N::cast)
     }
 
     /// The `n`th child that can be viewed as `N`, counting from zero: the
@@ -65,36 +52,35 @@ pub(crate) mod support {
         dead_code,
         reason = "generated only when no token separates two children of one type"
     )]
-    pub(crate) fn nth_child<N: AstNode>(parent: &SyntaxNode, n: usize) -> Option<N> {
+    pub(crate) fn nth_child<'a, N: AstNode<'a>>(parent: &SyntaxNode<'a>, n: usize) -> Option<N> {
         parent.children().filter_map(N::cast).nth(n)
     }
 
     /// The first child viewable as `N` that comes after a token of one of
     /// `after` (anywhere, when `after` is empty) and before any token of
     /// `before`: the `end` of `start..end` is the `Expr` after `..`.
-    pub(crate) fn child_between<N: AstNode>(
-        parent: &SyntaxNode,
+    pub(crate) fn child_between<'a, N: AstNode<'a>>(
+        parent: &SyntaxNode<'a>,
         after: &[SyntaxKind],
         before: &[SyntaxKind],
     ) -> Option<N> {
         let mut started = after.is_empty();
-        let mut nodes = 0;
-        for shape in parent.child_shapes() {
-            if shape.is_node {
-                if started && N::can_cast(shape.kind) {
-                    return parent.child_node(shape, nodes).and_then(N::cast);
+        for element in parent.children_with_tokens() {
+            match element {
+                SyntaxElement::Token(token) if !started => started = after.contains(&token.kind()),
+                SyntaxElement::Token(token) if before.contains(&token.kind()) => return None,
+                SyntaxElement::Node(node) if started => {
+                    if let Some(found) = N::cast(node) {
+                        return Some(found);
+                    }
                 }
-                nodes += 1;
-            } else if !started {
-                started = after.contains(&shape.kind);
-            } else if before.contains(&shape.kind) {
-                return None;
+                _ => {}
             }
         }
         None
     }
 
-    pub(crate) fn children<N: AstNode>(parent: &SyntaxNode) -> AstChildren<N> {
+    pub(crate) fn children<'a, N: AstNode<'a>>(parent: &SyntaxNode<'a>) -> AstChildren<'a, N> {
         AstChildren {
             inner: parent.children(),
             _node: PhantomData,
@@ -102,11 +88,14 @@ pub(crate) mod support {
     }
 
     /// The first direct child token whose kind is one of `kinds`.
-    pub(crate) fn token(parent: &SyntaxNode, kinds: &[SyntaxKind]) -> Option<SyntaxToken> {
-        let shape = parent
-            .child_shapes()
-            .find(|shape| !shape.is_node && kinds.contains(&shape.kind))?;
-        parent.child_token(shape)
+    pub(crate) fn token<'a>(
+        parent: &SyntaxNode<'a>,
+        kinds: &[SyntaxKind],
+    ) -> Option<SyntaxToken<'a>> {
+        parent
+            .children_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .find(|token| kinds.contains(&token.kind()))
     }
 }
 
@@ -116,20 +105,35 @@ mod tests {
 
     /// `a[]` with an empty argument after the base, as the parser leaves
     /// `a[, 1]`: the argument is the second child node.
-    fn index_with_an_empty_arg() -> SyntaxNode {
-        crate::parse("let x = a[, 1];\n")
+    #[test]
+    fn an_empty_child_after_other_nodes_is_found_by_its_position() {
+        let parse = crate::parse("let x = a[, 1];\n");
+        let index = parse
             .syntax()
             .descendants()
             .find(|node| node.kind() == SyntaxKind::IndexExpr)
-            .unwrap()
-    }
-
-    #[test]
-    fn an_empty_child_after_other_nodes_is_found_by_its_position() {
-        let index = index_with_an_empty_arg();
+            .unwrap();
         let arg: Arg = support::child(&index).unwrap();
         assert!(arg.syntax().text_range().is_empty());
         let after: Arg = support::child_between(&index, &[SyntaxKind::LBracket], &[]).unwrap();
         assert_eq!(after.syntax(), arg.syntax());
+        // An empty node has no token at all.
+        assert!(arg.syntax().first_token().is_none());
+        assert!(arg.syntax().last_token().is_none());
+        // No `after` token, no child.
+        assert!(support::child_between::<Arg>(&index, &[SyntaxKind::LParen], &[]).is_none());
+    }
+
+    #[test]
+    fn the_nth_child_of_a_type_counts_only_that_type() {
+        let parse = crate::parse("let x = a + b;\n");
+        let bin = parse
+            .syntax()
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::BinExpr)
+            .unwrap();
+        let rhs: Expr = support::nth_child(&bin, 1).unwrap();
+        assert_eq!(rhs.syntax().text(), "b");
+        assert!(support::nth_child::<Expr>(&bin, 2).is_none());
     }
 }

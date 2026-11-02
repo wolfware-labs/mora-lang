@@ -851,10 +851,10 @@ fn render_nodes(defs: &[AstDef]) -> String {
             AstDef::Struct { name, rule, fields } => {
                 let _ = writeln!(
                     out,
-                    "\n/// ```text\n/// {name} = {rule}\n/// ```\n#[derive(Debug, Clone, PartialEq, Eq, Hash)]\npub struct {name} {{\n    pub(crate) syntax: SyntaxNode,\n}}\n"
+                    "\n/// ```text\n/// {name} = {rule}\n/// ```\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub struct {name}<'a> {{\n    pub(crate) syntax: SyntaxNode<'a>,\n}}\n"
                 );
                 if !fields.is_empty() {
-                    let _ = writeln!(out, "impl {name} {{");
+                    let _ = writeln!(out, "impl<'a> {name}<'a> {{");
                     for field in fields {
                         match field {
                             Field::Token { name, kinds } => {
@@ -862,7 +862,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                                     kinds.iter().map(|k| format!("SyntaxKind::{k}")).collect();
                                 let _ = writeln!(
                                     out,
-                                    "    pub fn {name}(&self) -> Option<SyntaxToken> {{\n        support::token(&self.syntax, &[{}])\n    }}",
+                                    "    pub fn {name}(&self) -> Option<SyntaxToken<'a>> {{\n        support::token(&self.syntax, &[{}])\n    }}",
                                     kinds.join(", ")
                                 );
                             }
@@ -874,7 +874,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                             } => {
                                 let _ = writeln!(
                                     out,
-                                    "    pub fn {name}(&self) -> AstChildren<{ty}> {{\n        support::children(&self.syntax)\n    }}"
+                                    "    pub fn {name}(&self) -> AstChildren<'a, {ty}<'a>> {{\n        support::children(&self.syntax)\n    }}"
                                 );
                             }
                             Field::Node {
@@ -893,7 +893,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                                 };
                                 let _ = writeln!(
                                     out,
-                                    "    pub fn {name}(&self) -> Option<{ty}> {{\n        support::child_between(&self.syntax, &[{}], &[{}])\n    }}",
+                                    "    pub fn {name}(&self) -> Option<{ty}<'a>> {{\n        support::child_between(&self.syntax, &[{}], &[{}])\n    }}",
                                     list(after),
                                     list(before)
                                 );
@@ -903,13 +903,13 @@ fn render_nodes(defs: &[AstDef]) -> String {
                             } => {
                                 let _ = writeln!(
                                     out,
-                                    "    pub fn {name}(&self) -> Option<{ty}> {{\n        support::child(&self.syntax)\n    }}"
+                                    "    pub fn {name}(&self) -> Option<{ty}<'a>> {{\n        support::child(&self.syntax)\n    }}"
                                 );
                             }
                             Field::Node { name, ty, nth, .. } => {
                                 let _ = writeln!(
                                     out,
-                                    "    pub fn {name}(&self) -> Option<{ty}> {{\n        support::nth_child(&self.syntax, {nth})\n    }}"
+                                    "    pub fn {name}(&self) -> Option<{ty}<'a>> {{\n        support::nth_child(&self.syntax, {nth})\n    }}"
                                 );
                             }
                         }
@@ -918,7 +918,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                 }
                 let _ = writeln!(
                     out,
-                    "\nimpl AstNode for {name} {{\n    fn can_cast(kind: SyntaxKind) -> bool {{\n        kind == SyntaxKind::{name}\n    }}\n\n    fn cast(node: SyntaxNode) -> Option<Self> {{\n        Self::can_cast(node.kind()).then_some(Self {{ syntax: node }})\n    }}\n\n    fn syntax(&self) -> &SyntaxNode {{\n        &self.syntax\n    }}\n}}"
+                    "\nimpl<'a> AstNode<'a> for {name}<'a> {{\n    fn can_cast(kind: SyntaxKind) -> bool {{\n        kind == SyntaxKind::{name}\n    }}\n\n    fn cast(node: SyntaxNode<'a>) -> Option<Self> {{\n        Self::can_cast(node.kind()).then_some(Self {{ syntax: node }})\n    }}\n\n    fn syntax(&self) -> &SyntaxNode<'a> {{\n        &self.syntax\n    }}\n}}"
                 );
             }
             AstDef::Enum {
@@ -928,10 +928,10 @@ fn render_nodes(defs: &[AstDef]) -> String {
             } => {
                 let _ = writeln!(
                     out,
-                    "\n/// ```text\n/// {name} = {rule}\n/// ```\n#[derive(Debug, Clone, PartialEq, Eq, Hash)]\npub enum {name} {{"
+                    "\n/// ```text\n/// {name} = {rule}\n/// ```\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub enum {name}<'a> {{"
                 );
                 for variant in variants {
-                    let _ = writeln!(out, "    {variant}({variant}),");
+                    let _ = writeln!(out, "    {variant}({variant}<'a>),");
                 }
                 let can_cast: Vec<_> = variants
                     .iter()
@@ -939,7 +939,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                     .collect();
                 let _ = writeln!(
                     out,
-                    "}}\n\nimpl AstNode for {name} {{\n    fn can_cast(kind: SyntaxKind) -> bool {{\n        {}\n    }}\n\n    fn cast(node: SyntaxNode) -> Option<Self> {{\n        let kind = node.kind();",
+                    "}}\n\nimpl<'a> AstNode<'a> for {name}<'a> {{\n    fn can_cast(kind: SyntaxKind) -> bool {{\n        {}\n    }}\n\n    fn cast(node: SyntaxNode<'a>) -> Option<Self> {{\n        let kind = node.kind();",
                     can_cast.join(" || ")
                 );
                 for variant in variants {
@@ -948,7 +948,7 @@ fn render_nodes(defs: &[AstDef]) -> String {
                         "        if {variant}::can_cast(kind) {{\n            return {variant}::cast(node).map(Self::{variant});\n        }}"
                     );
                 }
-                out.push_str("        None\n    }\n\n    fn syntax(&self) -> &SyntaxNode {\n        match self {\n");
+                out.push_str("        None\n    }\n\n    fn syntax(&self) -> &SyntaxNode<'a> {\n        match self {\n");
                 for variant in variants {
                     let _ = writeln!(out, "            Self::{variant}(it) => it.syntax(),");
                 }
@@ -1178,6 +1178,20 @@ mod tests {
                 ("params", vec![], vec!["FatArrow".to_owned()]),
                 ("ret", vec!["FatArrow".to_owned()], vec![]),
             ]
+        );
+    }
+
+    #[test]
+    fn children_of_one_type_without_a_token_between_are_counted() {
+        let defs = lower_text("Name = 'ident'\nPair = first:Name second:Name\n").unwrap();
+        let rendered = render_nodes(&defs);
+        assert!(
+            rendered.contains("support::child(&self.syntax)"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("support::nth_child(&self.syntax, 1)"),
+            "{rendered}"
         );
     }
 

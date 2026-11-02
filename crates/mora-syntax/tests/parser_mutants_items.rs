@@ -35,9 +35,10 @@ fn has_token(text: &str, kind: K) -> bool {
         .contains(&format!("{kind:?}@"))
 }
 
-/// The first node of `kind`, which must be there.
-fn node(text: &str, kind: K) -> SyntaxNode {
-    parse(text)
+/// The first node of `kind`, which must be there. The parse is leaked, so
+/// the node can outlive the call.
+fn node(text: &str, kind: K) -> SyntaxNode<'static> {
+    Box::leak(Box::new(parse(text)))
         .syntax()
         .descendants()
         .find(|n| n.kind() == kind)
@@ -126,7 +127,8 @@ fn an_unclosed_index_is_not_an_array_type() {
 
 #[test]
 fn conditional_parts_skip_whitespace() {
-    let cond = parse("var x = a ? b : c;")
+    let parsed = parse("var x = a ? b : c;");
+    let cond = parsed
         .syntax()
         .descendants()
         .find_map(ast::ConditionalExpr::cast)
