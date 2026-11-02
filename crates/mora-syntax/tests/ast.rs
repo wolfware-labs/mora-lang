@@ -316,3 +316,15 @@ fn an_empty_child_node_is_found() {
     assert!(first.syntax().text_range().is_empty());
     assert!(first.expr().is_none());
 }
+
+#[test]
+fn a_function_type_tells_its_result_from_its_parameters() {
+    let parse = mora_syntax::parse("let f: (int) => string = g;\n");
+    let fn_type = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::FnType::cast)
+        .unwrap();
+    assert_eq!(fn_type.params().unwrap().syntax().text(), "(int)");
+    assert_eq!(fn_type.ret().unwrap().syntax().text(), "string");
+}

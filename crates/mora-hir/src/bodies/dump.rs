@@ -106,21 +106,8 @@ impl Printer<'_> {
         let callable = !matches!(self.body.kind, BodyKind::Initializer | BodyKind::Getter);
         if callable || !self.body.params.is_empty() {
             self.out.push('(');
-            for (index, &param) in self.body.params.iter().enumerate() {
-                if index > 0 {
-                    self.out.push_str(", ");
-                }
-                self.local(param);
-                if let Some(&(_, default)) = self
-                    .body
-                    .defaults
-                    .iter()
-                    .find(|&&(local, _)| local == param)
-                {
-                    self.out.push_str(" = ");
-                    self.expr(default);
-                }
-            }
+            let body = self.body;
+            self.params(&body.params, &body.defaults);
             self.out.push(')');
         }
         if let Some(call) = self.body.this_call {
@@ -173,6 +160,20 @@ impl Printer<'_> {
         self.out.push('}');
     }
 
+    /// Parameters, each with its default value when it has one.
+    fn params(&mut self, params: &[LocalId], defaults: &[(LocalId, ExprId)]) {
+        for (index, &param) in params.iter().enumerate() {
+            if index > 0 {
+                self.out.push_str(", ");
+            }
+            self.local(param);
+            if let Some(&(_, default)) = defaults.iter().find(|&&(local, _)| local == param) {
+                self.out.push_str(" = ");
+                self.expr(default);
+            }
+        }
+    }
+
     fn local(&mut self, local: LocalId) {
         let name = &self.body.locals[local].name;
         let _ = write!(self.out, "{name}#{}", u32::from(local.into_raw()));
@@ -217,12 +218,7 @@ impl Printer<'_> {
             Stmt::Function(function) => {
                 self.local(function.local);
                 self.out.push('(');
-                for (index, &param) in function.params.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.local(param);
-                }
+                self.params(&function.params, &function.defaults);
                 self.out.push(')');
                 if let Some(ret) = function.ret {
                     self.out.push_str(": ");
@@ -587,12 +583,7 @@ impl Printer<'_> {
                     self.out.push_str("async ");
                 }
                 self.out.push('(');
-                for (index, &param) in lambda.params.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.local(param);
-                }
+                self.params(&lambda.params, &lambda.defaults);
                 self.out.push_str(") ");
                 self.body_expr(lambda.body);
             }
@@ -714,9 +705,13 @@ impl Printer<'_> {
             Pat::Constant(expr) => self.expr(*expr),
             Pat::Type { ty, binding } => {
                 self.ty(*ty);
-                if let Some(binding) = binding {
+                // `User u`: the binding is written without a keyword.
+                if let Some(binding) = *binding {
                     self.out.push(' ');
-                    self.pat(*binding);
+                    match self.body.pats[binding] {
+                        Pat::Bind(local) => self.local(local),
+                        _ => self.pat(binding),
+                    }
                 }
             }
             Pat::Bind(local) => self.local_decl(*local),

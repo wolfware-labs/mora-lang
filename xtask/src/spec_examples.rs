@@ -475,10 +475,6 @@ F();
             &[Backend::Jit]
         }
 
-        fn hir(&self, _: &str, _: &str) -> Result<String, Checked> {
-            Ok(String::new())
-        }
-
         fn run(&self, _: &str, text: &str, _: Backend) -> Result<Output, Checked> {
             let expected = run::expected(text).unwrap();
             Ok(Output {
@@ -573,9 +569,6 @@ F();
             fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
                 unreachable!()
             }
-            fn hir(&self, _: &str, _: &str) -> Result<String, Checked> {
-                unreachable!()
-            }
         }
         let example = &repo("").examples[2];
         assert_eq!(
@@ -597,9 +590,6 @@ F();
                 &[]
             }
             fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
-                unreachable!()
-            }
-            fn hir(&self, _: &str, _: &str) -> Result<String, Checked> {
                 unreachable!()
             }
         }

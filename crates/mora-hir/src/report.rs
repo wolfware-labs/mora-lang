@@ -2,7 +2,7 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
 use crate::bodies::{
-    BodyError, Expr, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
+    BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
@@ -173,18 +173,16 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
             out.push(match error {
                 BodyError::Path {
                     expr,
+                    scope: at,
                     segment,
                     name,
                     error,
                 } => {
                     let span = Span::new(id, map.path_segments[expr][*segment]);
-                    let Expr::Path(path) = &body.exprs[*expr] else {
-                        unreachable!("a path error is about a path");
-                    };
                     let mut extra: Vec<String> = Vec::new();
                     if *segment == 0 {
                         extra.extend(
-                            body.locals_in_scope(path.scope)
+                            body.locals_in_scope(*at)
                                 .map(|local| body.locals[local].name.clone()),
                         );
                         for ty in enclosing_types(tree, scope.within) {

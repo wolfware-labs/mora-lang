@@ -109,3 +109,27 @@ pub(crate) mod support {
         parent.child_token(shape)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `a[]` with an empty argument after the base, as the parser leaves
+    /// `a[, 1]`: the argument is the second child node.
+    fn index_with_an_empty_arg() -> SyntaxNode {
+        crate::parse("let x = a[, 1];\n")
+            .syntax()
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::IndexExpr)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_empty_child_after_other_nodes_is_found_by_its_position() {
+        let index = index_with_an_empty_arg();
+        let arg: Arg = support::child(&index).unwrap();
+        assert!(arg.syntax().text_range().is_empty());
+        let after: Arg = support::child_between(&index, &[SyntaxKind::LBracket], &[]).unwrap();
+        assert_eq!(after.syntax(), arg.syntax());
+    }
+}

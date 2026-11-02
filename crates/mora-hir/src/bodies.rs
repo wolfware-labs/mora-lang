@@ -929,8 +929,9 @@ mod tests {
     #[test]
     fn item_nodes_follow_the_item_tree() {
         let db = TestDb::new();
-        let text = "class A {\n    F() {}\n    IShape.Area(): float => 1.0;\n    struct B { G() {} }\n}\n\
-                    extension (a: A) {}\nH() {}\nconst K: int = 1;\n";
+        let text = "class A {\n    F() {}\n    IShape.Area(): float => 1.0;\n    X: int = 1;\n    \
+                    struct B { G() {} }\n}\n\
+                    extension (a: A) {}\nH() {}\nconst K: int = 1;\nlet top = 1;\n";
         let file = db.file("src/A.mr", text);
         let nodes = crate::items::item_nodes(&parse(&db, file).tree());
         let tree = item_tree(&db, file);
@@ -945,7 +946,10 @@ mod tests {
                 BodyOwner::Extension(index, member) => format!("extension{index}.{member}"),
             })
             .collect();
-        assert_eq!(owners, ["F", "A#0", "G", "extension0.0", "H", "K"]);
+        assert_eq!(
+            owners,
+            ["top", "F", "A#0", "A.0", "G", "extension0.0", "H", "K"]
+        );
     }
 
     #[test]
@@ -1319,6 +1323,123 @@ get extension#0.Empty(items#0) => items#0[0];
         assert_eq!(
             reported("class A {\n    this[n: Bool]: Flt { get => 1.0; }\n}\n"),
             ["MR0127", "MR0127"]
+        );
+    }
+
+    #[test]
+    fn using_static_opens_static_value_members() {
+        let text = "using static UsersApi.Counter;\n\
+                    public class Counter {\n    public const Max: int = 3;\n    public Count: int => 1;\n}\n\
+                    let n = Max;\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert!(dump(text).contains("let n#0 = Max{const UsersApi.Counter.Max};"));
+        // An instance member is not opened.
+        assert_eq!(reported(&format!("{text}let c = Count;\n")), ["MR0127"]);
+        // Two types that both have it make it ambiguous.
+        let two = "using static UsersApi.A;\nusing static UsersApi.B;\n\
+                   public class A {\n    public const Max: int = 1;\n}\n\
+                   public class B {\n    public const Max: int = 2;\n}\nlet n = Max;\n";
+        assert_eq!(reported(two), ["MR0128"]);
+    }
+
+    #[test]
+    fn local_function_and_lambda_defaults_are_printed() {
+        let dumped =
+            dump("F() {\n    G(x: int = 1): int => x;\n    let h = (y: int = 2) => y;\n}\n");
+        assert!(dumped.contains("G#0(x#1 = 1): int => x#1;"), "{dumped}");
+        assert!(dumped.contains("let h#3 = (y#2 = 2) => y#2;"), "{dumped}");
+    }
+
+    /// Every prefix of `text`, cut at each character, lowers and reports
+    /// without panicking: the parser recovers from each, and lowering must
+    /// handle whatever it leaves.
+    fn every_prefix_lowers(text: &str) {
+        for (cut, _) in text.char_indices() {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", &text[..cut])]);
+            let file = file_named(&db, project, "src/Program.mr");
+            let _ = hir_dump(&db, project, file);
+            let _ = diagnostics(&db, project);
+        }
+    }
+
+    #[test]
+    fn broken_code_lowers_without_panicking() {
+        every_prefix_lowers(
+            "class C {\n    private _x: int = 1;\n    public X: int => _x;\n    \
+             public C(a: int = 2) : this(a) { _x = a; }\n    ~C() {}\n    \
+             public operator +(a: C, b: C): C => a;\n    \
+             public this[i: int]: int { get => i; set { _x = value; } }\n    \
+             IShape.Area(): float => 1.0;\n}\n\
+             enum E { A = 1 }\nunion U { K(x: int) }\n\
+             extension (c: C) {\n    F(): int => c.X;\n}\n\
+             G(o: U, xs: int[]) {\n    let (a, _) = (1, 2);\n    \
+             foreach (let (p, q) in xs) {}\n    \
+             match (o) { U.K(let k) when k > 0 => { return; } _ => {} }\n    \
+             let f = [move a] async (x: int = 1) => await x?;\n    \
+             H<T>(t: T): T => t;\n    if (o is U.K(var z) and not null) {}\n}\n",
+        );
+    }
+
+    #[test]
+    fn rarer_constructs_and_every_kind_of_target_print() {
+        let text = "public struct P {\n    public X: int;\n}\n\
+                    union Shape { Circle(r: float) }\n\
+                    interface IShape {\n    Area(): float;\n}\n\
+                    macro M(x: Expr) {\n}\n\
+                    const Limit: int = 3;\n\
+                    class Box {\n    public Count: int => 1;\n    \
+                    public Twice(): int => Helper() * 2;\n    Helper(): int => Count;\n}\n\
+                    F(o: Shape) {\n    \
+                    let t: (int, Name: string) = (1, \"a\");\n    \
+                    let g: (int) => string = x => \"\";\n    \
+                    let a: int[] = [];\n    let s: string? = none;\n    \
+                    let w: weak Box = this;\n    let i: any IShape = this;\n    \
+                    let l: List<int> = [];\n    \
+                    let ns = UsersApi;\n    let p = P;\n    let u = Shape;\n    \
+                    let sh = IShape;\n    let m = M;\n    let lim = Limit;\n    \
+                    let n = int.Parse(\"1\");\n    let skipped = F.Name;\n    \
+                    match (o) {\n        UsersApi.Shape.Circle(let r) => { return; }\n        \
+                    Shape s1 => {}\n        Shape => {}\n        (_) => {}\n    }\n    \
+                    foreach (let (x, _) in [(1, 2)]) {}\n    let e = unknown;\n}\n";
+        let dumped = dump(text);
+        for expected in [
+            "let t#1: (int, Name: string) = (1, \"a\");",
+            "let g#3: (int) => string = (x#2) => \"\";",
+            "let a#4: int[] = [];",
+            "let s#5: string? = none;",
+            "let w#6: weak Box = this;",
+            "let i#7: any IShape = this;",
+            "let l#8: List<int> = [];",
+            "let ns#9 = UsersApi{namespace UsersApi};",
+            "let p#10 = P{struct UsersApi.P};",
+            "let u#11 = Shape{union UsersApi.Shape};",
+            "let sh#12 = IShape{interface UsersApi.IShape};",
+            "let m#13 = M{macro UsersApi.M};",
+            "let lim#14 = Limit{value UsersApi.Limit};",
+            "let n#15 = int.Parse(\"1\");",
+            "let skipped#16 = F{fn UsersApi.F}.Name;",
+            "UsersApi.Shape.Circle{case UsersApi.Shape.Circle}(let r#17) => {",
+            "Shape s1#18 => {},",
+            "Shape{union UsersApi.Shape} => {},",
+            "_ => {},",
+            "foreach ((let x#19, _) in [(1, 2)]) {}",
+            "let e#20 = unknown{error};",
+            "fn UsersApi.Box.Twice() => Helper{fn UsersApi.Box.Helper}() * 2;",
+            "fn UsersApi.Box.Helper() => Count{getter UsersApi.Box.Count};",
+        ] {
+            assert!(dumped.contains(expected), "{expected}\n{dumped}");
+        }
+    }
+
+    #[test]
+    fn unknown_members_of_namespaces_and_hidden_members_are_reported() {
+        assert_eq!(reported("let x = UsersApi.Nope;\n"), ["MR0127"]);
+        let hidden = "public class A {\n    private class Inner {}\n}\nlet x = A.Inner;\n";
+        assert_eq!(reported(hidden), ["MR0129"]);
+        assert_eq!(
+            reported("Twice(): int => 2;\nlet x: Twice = 1;\n"),
+            ["MR0127"]
         );
     }
 }

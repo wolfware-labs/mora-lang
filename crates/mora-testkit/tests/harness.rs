@@ -404,3 +404,34 @@ fn finish_fails_only_when_a_case_failed() {
         "run result: FAILED. 1 passed; 1 failed"
     );
 }
+
+#[test]
+fn run_reports_a_bad_exit_line() {
+    let root = suite_dir(
+        "run-bad-exit",
+        "run",
+        &[("a.mr", "// exit: one\nprint a\n")],
+    );
+    let report = run(&Fake { backends: &[] }, &root);
+    assert_eq!(failure(&report), "line 1: `one` is not an exit code");
+}
+
+#[test]
+fn blessing_an_empty_hir_writes_no_snapshot() {
+    let root = suite_dir("run-bless-empty", "run", &[("a.mr", "print a\n")]);
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert!(!root.join("tests/run/a.hir").exists());
+}
+
+#[test]
+fn a_snapshot_that_cannot_be_written_fails_its_case() {
+    let root = suite_dir("run-bless-dir", "run", &[("a.mr", "hir one\n")]);
+    fs::create_dir(root.join("tests/run/a.hir")).unwrap();
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert!(
+        failure(&report).starts_with("cannot "),
+        "{:?}",
+        report.failures
+    );
+}

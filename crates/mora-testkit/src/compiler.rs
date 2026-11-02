@@ -20,8 +20,11 @@ pub trait Compiler: Sync {
     fn run(&self, path: &str, text: &str, backend: Backend) -> Result<Output, Checked>;
 
     /// Compiles `text` as the file `path` and returns the text form of its
-    /// HIR, or the diagnostics when it reports an error.
-    fn hir(&self, path: &str, text: &str) -> Result<String, Checked>;
+    /// HIR, or the diagnostics when it reports an error. A compiler that
+    /// cannot compile panics, which fails only the case.
+    fn hir(&self, _path: &str, _text: &str) -> Result<String, Checked> {
+        unimplemented!("this compiler cannot compile");
+    }
 }
 
 /// The compiler the suites and `cargo xtask spec-examples` use. It is
@@ -46,10 +49,6 @@ impl Compiler for Unbuilt {
 
     fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
         unimplemented!("the driver cannot run programs yet");
-    }
-
-    fn hir(&self, _: &str, _: &str) -> Result<String, Checked> {
-        unimplemented!("the driver cannot compile yet");
     }
 }
 

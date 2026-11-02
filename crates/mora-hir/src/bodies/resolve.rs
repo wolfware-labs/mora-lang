@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use mora_span::{Db, Project, SourceFile};
 
-use super::{BodyOwner, CaptureTarget, Expr, ExprId, body};
+use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, body};
 use crate::defs::ItemId;
 use crate::items::{ItemKind, Visibility};
 use crate::resolve::{
@@ -59,9 +59,11 @@ pub struct ValueRef {
 /// A name of a body that does not resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BodyError {
-    /// A segment of the [`Expr::Path`] `expr` (`MR0127`, `MR0128`, `MR0129`).
+    /// A segment of the [`Expr::Path`] `expr`, used in `scope` (`MR0127`,
+    /// `MR0128`, `MR0129`).
     Path {
         expr: ExprId,
+        scope: ScopeId,
         segment: usize,
         name: String,
         error: ResolveErrorKind,
@@ -138,6 +140,7 @@ pub fn body_resolution(
                     Err(error) => {
                         resolution.errors.push(BodyError::Path {
                             expr: id,
+                            scope: path.scope,
                             segment: error.segment,
                             name: path.segments[error.segment].clone(),
                             error: error.kind,
