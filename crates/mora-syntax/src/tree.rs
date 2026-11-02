@@ -7,7 +7,9 @@
 //!
 //! The views of this module read the green tree in place. A [`SyntaxNode`]
 //! is a green node and its offset in the file, two words that borrow the
-//! tree and are copied freely, so walking the tree allocates nothing. A
+//! tree and are copied freely, so creating a view and iterating the
+//! children of a node allocate nothing; a walk over a whole subtree
+//! (`descendants`, `tokens`) keeps one stack of the nodes it is inside. A
 //! view has no link to its parent: the compiler walks the tree only from
 //! the root down.
 
@@ -144,7 +146,8 @@ impl<'a> SyntaxNode<'a> {
     fn preorder(&self) -> Preorder<'a> {
         Preorder {
             first: Some(*self),
-            // Deep enough for most trees without growing.
+            // One allocation for the whole walk: deep enough for most trees,
+            // where growing from empty would allocate several times.
             stack: Vec::with_capacity(32),
         }
     }
