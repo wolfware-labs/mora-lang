@@ -969,4 +969,356 @@ mod tests {
             .count();
         assert_eq!(resolved, 1);
     }
+
+    #[test]
+    fn every_construct_lowers_and_prints() {
+        let text = r#"public struct P {
+    public X: int;
+    public Y: int;
+}
+union Shape { Circle(r: float), Rect(w: float, h: float) }
+Use(a: int): int => a;
+Use(a: string): int => 0;
+Id<T>(x: T): T => x;
+G(o: Shape, p: P, xs: int[], n: int, s: string?, flag: bool) {
+    var i = 0;
+    var j = 1;
+    for (i = 0, j = 1; i < n; i++, j--) {}
+    let (a, b) = (1, 2);
+    @Obsolete let marked = 1;
+    let lits = (1, 2.5, 'c', "s", true, false, none);
+    let one = (n,);
+    let named = (Left: a, Right: b);
+    let ops = (-n, !flag, ~n, ++i, --i, ^1, +n);
+    let bins = (n / 2, n *% 2, n + 1, n +% 1, n -% 1, n << 1, n >> 1, n >>> 1, n <= 1, n >= 1, n != 1, n & 1, n ^ 1, n | 1, flag || flag, s ?? "d");
+    i -= 1;
+    i *= 2;
+    i /= 2;
+    i %= 2;
+    i &= 1;
+    i |= 1;
+    i ^= 1;
+    i <<= 1;
+    i >>= 1;
+    i >>>= 1;
+    s ??= "x";
+    i +%= 1;
+    i -%= 1;
+    i *%= 1;
+    Use(ref i, in n, move s);
+    let g = Id<int>(1);
+    let m = p.Get<int, string>(name: 1);
+    let f = [weak this, move p] async (u: int, v: int) => u + v;
+    let st = static () => 1;
+    let all = [1, ..xs];
+    let q = new P { X = 1, Y = 2 };
+    let k = match (o) {
+        Shape.Circle(let r) => 1,
+        Shape.Rect(> 0.0 and < 1.0, not 2.0 or 3.0) => 2,
+        _ => 0,
+    };
+    let lp = xs is [1, .. var rest] && p is P { X: 1, Y: _ } pq;
+    let e = xs?[0];
+    let w = q with { X = 3, Y = 4 };
+    let c = (long)n as long;
+    let arr = new int[n];
+    let sa = stackalloc int[2];
+    let d = default(int);
+    let nm = nameof(n);
+    let sz = sizeof(int);
+    let r = 1..n;
+    let str = $"{n,4:x} {flag}";
+    foreach (ref var x in xs) {}
+    do { i++; } while (i < 3);
+    unsafe { i = 0; }
+    Pair(left: int, right: int): int => left + right;
+}
+"#;
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            dump(text),
+            r#"fn UsersApi.Use(a#0) => a#0;
+
+fn UsersApi.Use(a#0) => 0;
+
+fn UsersApi.Id(x#0) => x#0;
+
+fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
+    var i#6 = 0;
+    var j#7 = 1;
+    for (i#6 = 0, j#7 = 1; i#6 < n#3; i#6++, j#7--) {}
+    let (let a#8, let b#9) = (1, 2);
+    let marked#10 = 1;
+    let lits#11 = (1, 2.5, 'c', "s", true, false, none);
+    let one#12 = (n#3,);
+    let named#13 = (Left: a#8, Right: b#9);
+    let ops#14 = (-n#3, !flag#5, ~n#3, ++i#6, --i#6, ^1, +n#3);
+    let bins#15 = (n#3 / 2, n#3 *% 2, n#3 + 1, n#3 +% 1, n#3 -% 1, n#3 << 1, n#3 >> 1, n#3 >>> 1, n#3 <= 1, n#3 >= 1, n#3 != 1, n#3 & 1, n#3 ^ 1, n#3 | 1, flag#5 || flag#5, s#4 ?? "d");
+    i#6 -= 1;
+    i#6 *= 2;
+    i#6 /= 2;
+    i#6 %= 2;
+    i#6 &= 1;
+    i#6 |= 1;
+    i#6 ^= 1;
+    i#6 <<= 1;
+    i#6 >>= 1;
+    i#6 >>>= 1;
+    s#4 ??= "x";
+    i#6 +%= 1;
+    i#6 -%= 1;
+    i#6 *%= 1;
+    Use{overloads UsersApi.Use}(ref i#6, in n#3, move s#4);
+    let g#16 = Id<int>{fn UsersApi.Id}(1);
+    let m#17 = p#1.Get<int, string>(name: 1);
+    let f#20 = [weak this, move p#1] async (u#18, v#19) => u#18 + v#19;
+    let st#21 = static () => 1;
+    let all#22 = [1, ..xs#2];
+    let q#23 = new P { X = 1, Y = 2 };
+    let k#25 = match (o#0) {
+        Shape.Circle{case UsersApi.Shape.Circle}(let r#24) => 1,
+        Shape.Rect{case UsersApi.Shape.Rect}((> 0.0 and < 1.0), (not 2.0 or 3.0)) => 2,
+        _ => 0,
+    };
+    let lp#28 = (xs#2 is [1, .. var rest#26]) && (p#1 is P {X: 1, Y: _} let pq#27);
+    let e#29 = xs#2?[0];
+    let w#30 = q#23 with { X = 3, Y = 4 };
+    let c#31 = ((long)n#3) as long;
+    let arr#32 = new int[n#3];
+    let sa#33 = stackalloc int[2];
+    let d#34 = default(int);
+    let nm#35 = nameof(n#3);
+    let sz#36 = sizeof(int);
+    let r#37 = 1..n#3;
+    let str#38 = $"{n#3,4:x} {flag#5}";
+    foreach (ref var x#39 in xs#2) {}
+    do {
+        i#6++;
+    } while (i#6 < 3);
+    unsafe {
+        i#6 = 0;
+    }
+    Pair#40(left#41, right#42): int => left#41 + right#42;
+}
+"#
+        );
+    }
+
+    #[test]
+    fn members_outside_the_item_tree_lower_and_print() {
+        let text = r#"interface IShape {
+    Area(): float;
+    Name: string;
+}
+class Square {
+    private _side: float;
+    IShape.Area<T>(scale: T, extra: float): float {
+        return _side * extra;
+    }
+    IShape.Name: string => "square";
+    ~Square() => Release(_side);
+    public operator +(a: Square, b: Square): Square {
+        return a;
+    }
+    public this[i: int]: float => _side * i;
+    public this[name: string]: float {
+        get => _side;
+        set { _side = value; }
+    }
+}
+Release(x: float) {}
+extension<T> (items: T[]) {
+    public First<U>(fallback: U, other: T): T {
+        return other;
+    }
+    public Empty: T => items[0];
+}
+"#;
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            dump(text),
+            r#"fn UsersApi.Square.IShape.Area(scale#0, extra#1) {
+    return _side{field UsersApi.Square._side} * extra#1;
+}
+
+get UsersApi.Square.IShape.Name => "square";
+
+drop UsersApi.Square() => Release{fn UsersApi.Release}(_side{field UsersApi.Square._side});
+
+operator UsersApi.Square.+(a#0, b#1) {
+    return a#0;
+}
+
+get UsersApi.Square.this[](i#0) => _side{field UsersApi.Square._side} * i#0;
+
+get UsersApi.Square.this[](name#0) => _side{field UsersApi.Square._side};
+
+set UsersApi.Square.this[](name#0, value#1) {
+    _side{field UsersApi.Square._side} = value#1;
+}
+
+fn UsersApi.Release(x#0) {}
+
+fn extension#0.First(items#0, fallback#1, other#2) {
+    return other#2;
+}
+
+get extension#0.Empty(items#0) => items#0[0];
+"#
+        );
+    }
+
+    #[test]
+    fn member_types_are_checked_in_every_position() {
+        let text = "interface IShape {\n    Area(x: int): float;\n}\n\
+                    class Sq {\n    IShape.Area(x: Strng): Flt { return 1.0; }\n    \
+                    public operator +(a: Sq, b: Strng): Flt { return 1.0; }\n    \
+                    public this[i: Strng]: Flt => 1.0;\n    \
+                    public this[n: Bool]: Flt { get => 1.0; set {} }\n}\n\
+                    extension (s: Sq) {\n    public G: Strng => \"\";\n}\n";
+        assert_eq!(reported(text), ["MR0127"; 9]);
+    }
+
+    /// The codes a project of several files reports.
+    fn reported_in(files: &[(&str, &str)]) -> Vec<String> {
+        let db = TestDb::new();
+        let project = app(&db, files);
+        codes(diagnostics(&db, project))
+    }
+
+    #[test]
+    fn value_members_follow_their_visibility() {
+        let store = "public class Store {\n    private const Secret: int = 1;\n    \
+                     file const Local: int = 2;\n    const Folder: int = 3;\n    \
+                     internal const Project: int = 4;\n    \
+                     static Inside(): int => Store.Secret + Store.Local;\n}\n";
+        // Inside the type, the file and the folder, all of them but `Secret`
+        // from another type are visible.
+        let same = "public class Other {\n    \
+                    static F(): int => Store.Local + Store.Folder + Store.Project;\n}\n";
+        assert_eq!(
+            reported_in(&[
+                ("src/Program.mr", "let x = 1;\n"),
+                ("src/Store.mr", &format!("{store}{same}"))
+            ]),
+            Vec::<String>::new()
+        );
+        let hidden = "public class Other {\n    static F(): int => Store.Secret;\n}\n";
+        assert_eq!(
+            reported_in(&[
+                ("src/Program.mr", "let x = 1;\n"),
+                ("src/Store.mr", &format!("{store}{hidden}"))
+            ]),
+            ["MR0127"]
+        );
+        // Another file of the folder sees `Folder` and `Project` but not `Local`.
+        let other_file =
+            "class Use {\n    static F(): int => Store.Folder + Store.Project + Store.Local;\n}\n";
+        assert_eq!(
+            reported_in(&[
+                ("src/Program.mr", "let x = 1;\n"),
+                ("src/Store.mr", store),
+                ("src/Use.mr", other_file),
+            ]),
+            ["MR0127"]
+        );
+        // Another folder sees only `Project`.
+        let other_folder =
+            "class Use {\n    static F(): int => App.Store.Project + App.Store.Folder;\n}\n";
+        let reported = reported_in(&[
+            ("src/Program.mr", "let x = 1;\n"),
+            ("src/Store.mr", store),
+            (
+                "src/Feature/Use.mr",
+                &other_folder.replace("App.", "UsersApi."),
+            ),
+        ]);
+        assert_eq!(reported, ["MR0127"]);
+    }
+
+    #[test]
+    fn an_interface_getter_implementation_is_not_a_value_member() {
+        let text = "interface IShape {\n    Name: string;\n}\n\
+                    class Box {\n    IShape.Name: string => \"box\";\n    Name: int;\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn source_maps_point_at_names_and_expressions() {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", "let total = 1 + 2;\n")]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let text = file.text(&db);
+        let (local, _) = body.locals.iter().next().unwrap();
+        assert_eq!(&text[map.local(local)], "total");
+        let sum = body
+            .exprs
+            .iter()
+            .find(|(_, expr)| matches!(expr, Expr::Binary { .. }))
+            .unwrap()
+            .0;
+        assert_eq!(&text[map.expr(sum)], "1 + 2");
+    }
+
+    #[test]
+    fn literals_keep_their_kind() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "let x = (1, 2.5, 'c', \"s\", true, false, none);\n",
+            )],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let literals: Vec<_> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, expr)| match expr {
+                Expr::Literal(literal) => Some(literal.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            literals,
+            [
+                Literal::Int("1".to_owned()),
+                Literal::Real("2.5".to_owned()),
+                Literal::Char("'c'".to_owned()),
+                Literal::String("\"s\"".to_owned()),
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::None,
+            ]
+        );
+    }
+
+    #[test]
+    fn each_value_member_and_expression_body_has_its_own_owner() {
+        let text = "interface IShape {\n    Area(): float;\n}\n\
+                    class Two {\n    private _a: int = 1;\n    private _b: int = 2;\n    \
+                    public A: int => _a;\n    public B: int => _b;\n    \
+                    public Two(x: int) => _a = x;\n    IShape.Area(): float => 1.0;\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            dump(text),
+            "init UsersApi.Two._a => 1;\n\n\
+             init UsersApi.Two._b => 2;\n\n\
+             get UsersApi.Two.A => _a{field UsersApi.Two._a};\n\n\
+             get UsersApi.Two.B => _b{field UsersApi.Two._b};\n\n\
+             new UsersApi.Two(x#0) => _a{field UsersApi.Two._a} = x#0;\n\n\
+             fn UsersApi.Two.IShape.Area() => 1.0;\n"
+        );
+    }
+
+    #[test]
+    fn an_indexer_with_one_accessor_checks_its_types() {
+        assert_eq!(
+            reported("class A {\n    this[n: Bool]: Flt { get => 1.0; }\n}\n"),
+            ["MR0127", "MR0127"]
+        );
+    }
 }

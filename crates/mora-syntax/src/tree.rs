@@ -116,37 +116,22 @@ impl SyntaxNode {
     }
 
     /// The child node that [`SyntaxNode::child_shapes`] described as
-    /// `shape`, the `nodes_before`th child node.
+    /// `shape`, the `nodes_before`th child node. Walking the child nodes
+    /// skips the tokens between them without creating them.
     pub(crate) fn child_node(&self, shape: ChildShape, nodes_before: usize) -> Option<SyntaxNode> {
-        // A non-empty child is the only one that covers its range; an empty
-        // one may share its offset with others, so it is counted out.
-        if !shape.range.is_empty()
-            && let Some(rowan::NodeOrToken::Node(node)) =
-                self.0.child_or_token_at_range(shape.range)
-            && node.text_range() == shape.range
-        {
-            return Some(SyntaxNode(node));
-        }
-        self.children().nth(nodes_before)
+        let node = self.children().nth(nodes_before)?;
+        debug_assert_eq!(node.kind(), shape.kind);
+        Some(node)
     }
 
     /// The child token that [`SyntaxNode::child_shapes`] described as
-    /// `shape`. Tokens are never empty, so its range finds it.
+    /// `shape`. The lexer makes no empty token, so no other child covers
+    /// its range.
     pub(crate) fn child_token(&self, shape: ChildShape) -> Option<SyntaxToken> {
-        match self.0.child_or_token_at_range(shape.range)? {
-            rowan::NodeOrToken::Token(token)
-                if token.text_range() == shape.range && token.kind() == shape.kind =>
-            {
-                Some(SyntaxToken(token))
-            }
-            // Not reached for a well-formed tree; fall back to a scan.
-            _ => self
-                .0
-                .children_with_tokens()
-                .filter_map(|element| element.into_token())
-                .find(|token| token.text_range() == shape.range && token.kind() == shape.kind)
-                .map(SyntaxToken),
-        }
+        let token = self.0.child_or_token_at_range(shape.range)?.into_token()?;
+        debug_assert_eq!(token.text_range(), shape.range);
+        debug_assert_eq!(token.kind(), shape.kind);
+        Some(SyntaxToken(token))
     }
 
     pub fn first_token(&self) -> Option<SyntaxToken> {

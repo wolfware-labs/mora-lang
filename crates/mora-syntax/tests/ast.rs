@@ -290,3 +290,15 @@ fn checkpoints_wrap_what_came_before() {
     assert_eq!(bin.kind(), K::BinExpr);
     assert_eq!(bin.text(), "a+b");
 }
+
+#[test]
+fn a_token_after_a_child_node_is_found() {
+    let parse = mora_syntax::parse("let x = a + b;\n");
+    let bin = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::BinExpr::cast)
+        .unwrap();
+    assert_eq!(bin.op().unwrap().kind(), K::Plus);
+    assert_eq!(bin.rhs().unwrap().syntax().text(), "b");
+}

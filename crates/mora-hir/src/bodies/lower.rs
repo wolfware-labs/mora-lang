@@ -608,11 +608,11 @@ impl Lower {
             ast::Expr::BinExpr(it) => {
                 let lhs = self.expr(it.lhs(), range);
                 let rhs = self.expr(it.rhs(), range);
-                let op = it
-                    .op()
-                    .and_then(|op| binary_op(op.kind()))
-                    .unwrap_or(BinaryOp::Add);
-                Expr::Binary { op, lhs, rhs }
+                // The operator is what makes the node a binary expression.
+                match it.op().and_then(|op| binary_op(op.kind())) {
+                    Some(op) => Expr::Binary { op, lhs, rhs },
+                    None => Expr::Missing,
+                }
             }
             ast::Expr::IsExpr(it) => {
                 let expr = self.expr(it.expr(), range);
@@ -841,13 +841,13 @@ impl Lower {
                 };
             }
             ast::Pattern::DiscardPattern(_) => Pat::Discard,
-            ast::Pattern::RelationalPattern(it) => Pat::Relational {
-                op: it
-                    .op()
-                    .and_then(|op| binary_op(op.kind()))
-                    .unwrap_or(BinaryOp::Lt),
-                value: self.expr(it.expr(), range),
-            },
+            ast::Pattern::RelationalPattern(it) => {
+                let value = self.expr(it.expr(), range);
+                match it.op().and_then(|op| binary_op(op.kind())) {
+                    Some(op) => Pat::Relational { op, value },
+                    None => Pat::Missing,
+                }
+            }
             ast::Pattern::NotPattern(it) => Pat::Not(self.opt_pattern(it.pattern())),
             ast::Pattern::BinPattern(it) => {
                 let lhs = self.opt_pattern(it.lhs());

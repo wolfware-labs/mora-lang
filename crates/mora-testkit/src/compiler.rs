@@ -212,3 +212,36 @@ pub struct Output {
     pub stdout: String,
     pub exit: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "cannot compile")]
+    fn the_unbuilt_compiler_has_no_hir() {
+        let _ = Unbuilt.hir("a.mr", "let x = 1;\n");
+    }
+
+    #[test]
+    fn a_program_with_an_error_has_no_hir() {
+        let checked = FrontEnd.hir("a.mr", "let x = y;\n").unwrap_err();
+        assert_eq!(checked.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn the_hir_of_one_file_has_no_header() {
+        let hir = FrontEnd.hir("a.mr", "let x = 1;\n").unwrap();
+        assert_eq!(hir, "top-level {\n    let x#0 = 1;\n}\n");
+    }
+
+    #[test]
+    fn the_hir_of_several_files_names_each() {
+        let text = "//@ file src/Program.mr\nlet x = 1;\n//@ file src/Util.mr\nF() {}\n";
+        let hir = FrontEnd.hir("a.mr", text).unwrap();
+        assert_eq!(
+            hir,
+            "//@ file src/Program.mr\ntop-level {\n    let x#0 = 1;\n}\n//@ file src/Util.mr\nfn App.F() {}\n"
+        );
+    }
+}

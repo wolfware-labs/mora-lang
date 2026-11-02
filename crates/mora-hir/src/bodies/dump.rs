@@ -269,15 +269,24 @@ impl Printer<'_> {
                 body,
             } => {
                 self.out.push_str("for (");
+                // The initializers are separated by commas, as written.
                 for (index, &stmt) in init.iter().enumerate() {
                     if index > 0 {
-                        self.out.push(' ');
+                        self.out.push_str(", ");
                     }
-                    self.stmt(stmt);
+                    match &self.body.stmts[stmt] {
+                        Stmt::Expr(expr) => self.expr(*expr),
+                        Stmt::Local { local, init } => {
+                            self.local_decl(*local);
+                            if let Some(init) = init {
+                                self.out.push_str(" = ");
+                                self.expr(*init);
+                            }
+                        }
+                        _ => self.out.push_str("<missing>"),
+                    }
                 }
-                if init.is_empty() {
-                    self.out.push(';');
-                }
+                self.out.push(';');
                 self.out.push(' ');
                 if let Some(condition) = condition {
                     self.expr(*condition);
