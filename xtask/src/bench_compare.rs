@@ -80,8 +80,10 @@ pub struct Target {
 
 /// The bench targets of the workspace, which are criterion benchmarks: a
 /// bench target with the default harness would reject criterion's flags.
-pub fn targets(metadata: &Metadata, root: &Path) -> Vec<Target> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+pub fn targets(metadata: &Metadata) -> Vec<Target> {
+    // Cargo writes the workspace root and the source paths the same way, so
+    // one is a prefix of the other on every platform.
+    let root = metadata.workspace_root.as_std_path();
     let mut found = Vec::new();
     for package in metadata.workspace_packages() {
         for target in &package.targets {
@@ -89,7 +91,7 @@ pub fn targets(metadata: &Metadata, root: &Path) -> Vec<Target> {
                 continue;
             }
             let source = target.src_path.as_std_path();
-            let source = source.strip_prefix(&root).unwrap_or(source);
+            let source = source.strip_prefix(root).unwrap_or(source);
             found.push(Target {
                 package: package.name.to_string(),
                 name: target.name.clone(),
@@ -108,8 +110,9 @@ pub struct Comparison {
     pub id: String,
     /// The mean time on the base, in nanoseconds, when the base has it.
     pub base: Option<f64>,
-    /// The mean time on the working tree, in nanoseconds.
-    pub new: f64,
+    /// The mean time on the working tree, in nanoseconds, when the working
+    /// tree has it.
+    pub new: Option<f64>,
     /// The relative change of the mean, when the base has the benchmark.
     pub change: Option<Change>,
 }
@@ -127,6 +130,8 @@ pub struct Change {
 pub enum Verdict {
     /// Only the working tree has the benchmark.
     New,
+    /// Only the base has the benchmark.
+    Removed,
     /// Slower by more than the threshold, and the slowdown is significant.
     Regressed,
     /// Faster by more than the threshold, and the speedup is significant.
@@ -137,6 +142,9 @@ pub enum Verdict {
 
 impl Comparison {
     pub fn verdict(&self, threshold: f64) -> Verdict {
+        if self.new.is_none() {
+            return Verdict::Removed;
+        }
         match self.change {
             None => Verdict::New,
             Some(change) if change.mean > threshold && change.lower > 0.0 => Verdict::Regressed,
@@ -156,8 +164,33 @@ pub fn split_by_base<'a>(
         .partition(|target| checkout.join(&target.source).is_file())
 }
 
+/// Deletes the `new` results under `home`. The base's run leaves its own
+/// there, which would otherwise read as the working tree's results of a
+/// benchmark the working tree no longer has.
+pub fn clear_new(home: &Path) -> Result<(), String> {
+    let mut pending = vec![home.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = fs::read_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|err| format!("{}: {err}", dir.display()))?
+                .path();
+            if !path.is_dir() {
+                continue;
+            }
+            if path.file_name().is_some_and(|name| name == "new") {
+                fs::remove_dir_all(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+            } else {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads the results criterion wrote under `home`: each directory with a
-/// `new/estimates.json` is a benchmark, named by its path below `home`.
+/// `new/estimates.json` or a baseline's `estimates.json` is a benchmark,
+/// named by its path below `home`.
 pub fn collect(home: &Path) -> Result<Vec<Comparison>, String> {
     let mut found = Vec::new();
     let mut pending = vec![home.to_path_buf()];
@@ -172,7 +205,8 @@ pub fn collect(home: &Path) -> Result<Vec<Comparison>, String> {
             }
         }
         let new = dir.join("new/estimates.json");
-        if !new.is_file() {
+        let base = dir.join(BASELINE).join("estimates.json");
+        if !new.is_file() && !base.is_file() {
             continue;
         }
         let id = dir
@@ -182,11 +216,14 @@ pub fn collect(home: &Path) -> Result<Vec<Comparison>, String> {
             .map(|part| part.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join("/");
-        let base = dir.join(BASELINE).join("estimates.json");
         let change = dir.join("change/estimates.json");
         found.push(Comparison {
             id,
-            new: mean(&read(&new)?, &new)?,
+            new: if new.is_file() {
+                Some(mean(&read(&new)?, &new)?)
+            } else {
+                None
+            },
             base: if base.is_file() {
                 Some(mean(&read(&base)?, &base)?)
             } else {
@@ -243,7 +280,7 @@ pub fn duration(nanos: f64) -> String {
     format!("{value:.3} {unit}")
 }
 
-/// The report: one line per benchmark, then the regressions that fail it.
+/// The report, one line per benchmark, and how many regressed.
 pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) {
     let width = comparisons.iter().map(|c| c.id.len()).max().unwrap_or(0);
     let mut out = String::new();
@@ -251,6 +288,7 @@ pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) 
     for comparison in comparisons {
         let verdict = comparison.verdict(options.threshold);
         let base = comparison.base.map_or_else(|| "-".to_owned(), duration);
+        let new = comparison.new.map_or_else(|| "-".to_owned(), duration);
         let change = comparison.change.map_or_else(
             || "-".to_owned(),
             |change| {
@@ -264,6 +302,7 @@ pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) 
         );
         let label = match verdict {
             Verdict::New => "new",
+            Verdict::Removed => "removed",
             Verdict::Regressed => {
                 regressions += 1;
                 "REGRESSED"
@@ -273,10 +312,7 @@ pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) 
         };
         out.push_str(&format!(
             "{:<width$}  {:>12}  {:>12}  {:<28}  {label}\n",
-            comparison.id,
-            base,
-            duration(comparison.new),
-            change,
+            comparison.id, base, new, change,
         ));
     }
     (out, regressions)
@@ -290,7 +326,7 @@ mod tests {
         Comparison {
             id: "cold/parse".to_owned(),
             base: change.map(|_| 100.0),
-            new: 110.0,
+            new: Some(110.0),
             change: change.map(|(mean, lower, upper)| Change { mean, lower, upper }),
         }
     }
@@ -298,7 +334,7 @@ mod tests {
     #[test]
     fn bench_targets_come_from_the_workspace() {
         let metadata = crate::metadata_command().exec().unwrap();
-        let found = targets(&metadata, &crate::root());
+        let found = targets(&metadata);
         let front_end = Target {
             package: "mora-hir".to_owned(),
             name: "front_end".to_owned(),
@@ -306,14 +342,12 @@ mod tests {
         };
         assert!(found.contains(&front_end), "{found:?}");
         // Libraries, binaries and tests are not bench targets.
+        assert!(found.iter().all(|t| t.source.is_relative()), "{found:?}");
         assert!(
-            found.iter().all(|t| t.source.starts_with("crates")),
-            "{found:?}"
-        );
-        assert!(
-            found
-                .iter()
-                .all(|t| t.source.to_string_lossy().contains("/benches/")),
+            found.iter().all(|t| t
+                .source
+                .components()
+                .any(|part| part.as_os_str() == "benches")),
             "{found:?}"
         );
     }
@@ -367,6 +401,11 @@ mod tests {
     fn a_regression_needs_the_threshold_and_significance() {
         let t = 0.10;
         assert_eq!(comparison(None).verdict(t), Verdict::New);
+        let removed = Comparison {
+            new: None,
+            ..comparison(Some((0.5, 0.4, 0.6)))
+        };
+        assert_eq!(removed.verdict(t), Verdict::Removed);
         assert_eq!(
             comparison(Some((0.15, 0.01, 0.3))).verdict(t),
             Verdict::Regressed
@@ -421,6 +460,9 @@ mod tests {
         write_estimates(&parse.join("change"), 1.0, 0.9, 1.1);
         let body = home.join("edit/body");
         write_estimates(&body.join("new"), 500.0, 490.0, 510.0);
+        // Only the base ran it: the working tree removed it.
+        let old = home.join("edit/old");
+        write_estimates(&old.join("base"), 300.0, 290.0, 310.0);
         // A directory without results is not a benchmark.
         fs::create_dir_all(home.join("report")).unwrap();
         let found = collect(&home).unwrap();
@@ -431,7 +473,7 @@ mod tests {
                 Comparison {
                     id: "cold/parse".to_owned(),
                     base: Some(1000.0),
-                    new: 2000.0,
+                    new: Some(2000.0),
                     change: Some(Change {
                         mean: 1.0,
                         lower: 0.9,
@@ -441,11 +483,37 @@ mod tests {
                 Comparison {
                     id: "edit/body".to_owned(),
                     base: None,
-                    new: 500.0,
+                    new: Some(500.0),
+                    change: None,
+                },
+                Comparison {
+                    id: "edit/old".to_owned(),
+                    base: Some(300.0),
+                    new: None,
                     change: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn clearing_new_results_keeps_the_baseline() {
+        let home = std::env::temp_dir().join(format!("bench-compare-clear-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let parse = home.join("cold/parse");
+        write_estimates(&parse.join("new"), 2000.0, 1900.0, 2100.0);
+        write_estimates(&parse.join("base"), 1000.0, 950.0, 1050.0);
+        // A file named `new` is not a result directory.
+        fs::write(home.join("cold/new"), "").unwrap();
+        clear_new(&home).unwrap();
+        let found = collect(&home).unwrap();
+        let file_kept = home.join("cold/new").is_file();
+        fs::remove_dir_all(&home).unwrap();
+        assert!(file_kept);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].new, None);
+        assert_eq!(found[0].base, Some(1000.0));
+        assert!(clear_new(&home).is_err());
     }
 
     #[test]
@@ -475,16 +543,22 @@ mod tests {
             comparison(Some((0.15, 0.01, 0.3))),
             comparison(Some((0.01, -0.02, 0.03))),
             comparison(None),
+            Comparison {
+                new: None,
+                ..comparison(Some((0.5, 0.4, 0.6)))
+            },
         ];
         let (text, regressions) = report(&comparisons, &Options::default());
         assert_eq!(regressions, 1);
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         assert!(lines[0].ends_with("REGRESSED"), "{text}");
         assert!(lines[0].contains("+15.0% [+1.0%, +30.0%]"), "{text}");
         assert!(lines[0].contains("100.000 ns"), "{text}");
         assert!(lines[1].ends_with("unchanged"), "{text}");
         assert!(lines[2].ends_with("new"), "{text}");
         assert!(lines[2].contains("  -  "), "{text}");
+        assert!(lines[3].ends_with("removed"), "{text}");
+        assert!(lines[3].contains("100.000 ns             -"), "{text}");
     }
 }

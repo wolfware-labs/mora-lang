@@ -42,7 +42,7 @@ CI sets `RUSTFLAGS=-D warnings`, so a warning fails the build. Set the same flag
 
 ## Benchmarks
 
-The criterion benchmarks in `crates/*/benches/` time the compiler on generated projects: each query layer from a cold database, and the work after an edit (§14.3). Before opening a pull request that changes Rust code, compare it with `main`:
+The criterion benchmarks in `crates/*/benches/` time the compiler on generated projects: each query layer on its own, the whole front end from a fresh database, and the work after an edit (§14.3). Before opening a pull request that changes Rust code, compare it with `main`:
 
 ```sh
 git fetch origin

@@ -5,12 +5,12 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use cargo_metadata::Metadata;
 
 use crate::bench_compare::{
-    BASELINE, Comparison, Options, Target, collect, split_by_base, targets,
+    BASELINE, Comparison, Options, Target, clear_new, collect, split_by_base, targets,
 };
 
 /// Runs the comparison and returns each benchmark's result. `target_dir` is
@@ -21,7 +21,7 @@ pub fn run(
     metadata: &Metadata,
     options: &Options,
 ) -> Result<Vec<Comparison>, String> {
-    let targets = targets(metadata, root);
+    let targets = targets(metadata);
     if targets.is_empty() {
         return Err("the workspace has no bench targets".to_owned());
     }
@@ -46,6 +46,9 @@ pub fn run(
             println!("bench-compare: {} on {}", target.name, options.base);
             bench(&checkout, &base_target, &home, target, "--save-baseline")?;
         }
+        if home.exists() {
+            clear_new(&home)?;
+        }
         for target in &targets {
             println!("bench-compare: {} on the working tree", target.name);
             bench(root, target_dir, &home, target, "--baseline-lenient")?;
@@ -57,10 +60,21 @@ pub fn run(
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<(), String> {
+    run_git(root, args, Stdio::inherit())
+}
+
+/// Runs git without its error output, for cleanup that may find nothing to
+/// clean up.
+fn git_quiet(root: &Path, args: &[&str]) {
+    let _ = run_git(root, args, Stdio::null());
+}
+
+fn run_git(root: &Path, args: &[&str], stderr: Stdio) -> Result<(), String> {
     let status = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(args)
+        .stderr(stderr)
         .status()
         .map_err(|err| format!("git: {err}"))?;
     if status.success() {
@@ -83,9 +97,9 @@ fn add_worktree(root: &Path, checkout: &Path, base: &str) -> Result<(), String> 
 /// run removes before it checks out again, so it is not an error.
 fn remove_worktree(root: &Path, checkout: &Path) {
     let path = checkout.to_string_lossy();
-    let _ = git(root, &["worktree", "remove", "--force", &path]);
+    git_quiet(root, &["worktree", "remove", "--force", &path]);
     let _ = fs::remove_dir_all(checkout);
-    let _ = git(root, &["worktree", "prune"]);
+    git_quiet(root, &["worktree", "prune"]);
 }
 
 fn bench(

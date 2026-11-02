@@ -1,5 +1,10 @@
-//! Benchmarks of the front end on a generated project: each query layer from
-//! a cold database, and the incremental work after an edit (§14.3, §20.6).
+//! Benchmarks of the front end on a generated project (§14.3, §20.6).
+//!
+//! - `cold/*` time one query layer that has not run yet. Setup runs the
+//!   layers below it, so each time is that layer's own: `item_tree` excludes
+//!   parsing and `signatures` excludes the def map. `cold/diagnostics` starts
+//!   from a fresh database and is the whole front end.
+//! - `edit/*` change one file of a checked project and check it again.
 //!
 //! `cargo bench -p mora-hir --bench front_end`, or `cargo xtask bench-compare`
 //! to compare a branch with `origin/main`.
@@ -142,6 +147,24 @@ fn generate() -> Generated {
     Generated { db, project, files }
 }
 
+/// Runs `parse` on every file.
+fn parsed() -> Generated {
+    let g = generate();
+    for &file in &g.files {
+        black_box(parse(&g.db, file));
+    }
+    g
+}
+
+/// Runs `item_tree` on every file.
+fn lowered() -> Generated {
+    let g = generate();
+    for &file in &g.files {
+        black_box(item_tree(&g.db, file));
+    }
+    g
+}
+
 /// Every item of every file, for the signature benchmark.
 fn items(g: &Generated) -> Vec<ItemId> {
     g.files
@@ -177,7 +200,7 @@ fn cold(c: &mut Criterion) {
     });
     group.bench_function("item_tree", |b| {
         b.iter_batched(
-            generate,
+            parsed,
             |g| {
                 for &file in &g.files {
                     black_box(item_tree(&g.db, file).items().count());
@@ -189,7 +212,7 @@ fn cold(c: &mut Criterion) {
     });
     group.bench_function("def_map", |b| {
         b.iter_batched(
-            generate,
+            lowered,
             |g| {
                 black_box(def_map(&g.db, g.project).files().count());
                 g
@@ -200,7 +223,8 @@ fn cold(c: &mut Criterion) {
     group.bench_function("signatures", |b| {
         b.iter_batched(
             || {
-                let g = generate();
+                let g = lowered();
+                black_box(def_map(&g.db, g.project));
                 let items = items(&g);
                 (g, items)
             },
@@ -231,11 +255,12 @@ fn incremental(c: &mut Criterion) {
     group.bench_function("body", |b| {
         let mut g = generate();
         let file = g.files[1];
+        let texts = [file_text(0, 0, 1), file_text(0, 0, 2)];
         black_box(diagnostics(&g.db, g.project).len());
-        let mut edit = 1;
+        let mut edit = 0;
         b.iter(|| {
-            edit = 3 - edit;
-            file.set_text(&mut g.db).to(file_text(0, 0, edit));
+            edit = 1 - edit;
+            file.set_text(&mut g.db).to(texts[edit].clone());
             black_box(diagnostics(&g.db, g.project).len())
         });
     });
