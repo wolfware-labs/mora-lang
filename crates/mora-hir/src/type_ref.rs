@@ -89,9 +89,9 @@ pub(crate) struct SignatureSource {
 /// The signature of the declaration `node`, which the item tree keeps.
 pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
     let mut lower = LowerTypes::default();
-    let node = node.clone();
+    let node = *node;
     let mut signature = SignatureRef::default();
-    if let Some(it) = ast::FunctionDecl::cast(node.clone()) {
+    if let Some(it) = ast::FunctionDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
         let params = it
             .param_list()
@@ -108,7 +108,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             ret: it.ret().map(|ty| lower.ty(&ty)),
             is_async,
         };
-    } else if let Some(it) = ast::StructDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::StructDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
         let fields = it
             .member_list()
@@ -120,12 +120,12 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             })
             .collect();
         signature.kind = SignatureRefKind::Struct(fields);
-    } else if let Some(it) = ast::FieldDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::FieldDecl::cast(node) {
         let ty = it.variable_declarator().and_then(|v| v.ty());
         signature.kind = SignatureRefKind::Value(lower.optional(ty.as_ref()));
-    } else if let Some(it) = ast::ClassDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::ClassDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
-    } else if let Some(it) = ast::UnionDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::UnionDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
     } else if let Some(it) = ast::InterfaceDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());

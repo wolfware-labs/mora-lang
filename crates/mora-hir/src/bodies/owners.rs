@@ -54,12 +54,12 @@ fn top_level(file: &ast::SourceFile) -> Lowered {
 }
 
 /// What a function-like declaration gives its body.
-struct Callable {
+struct Callable<'a> {
     /// The receiver of an extension member, a parameter before the others.
-    receiver: Option<ast::Param>,
-    params: Vec<ast::Param>,
+    receiver: Option<ast::Param<'a>>,
+    params: Vec<ast::Param<'a>>,
     /// The type parameters it declares, and an extension's.
-    type_params: Vec<ast::TypeParamList>,
+    type_params: Vec<ast::TypeParamList<'a>>,
     /// Whether its parameter and return types are checked here, because
     /// no signature of the item tree holds them.
     check_types: bool,
@@ -69,16 +69,16 @@ struct Callable {
     /// The visibility written on the declaration, for `MR0123`.
     visibility: Visibility,
     /// The return type, or the type of a getter or an indexer.
-    ret: Option<ast::Type>,
+    ret: Option<ast::Type<'a>>,
     /// A `set` accessor's implicit `value`, and where it is declared.
     value: Option<TextRange>,
     /// The arguments of a constructor's `: this(...)`.
-    this_call: Option<ast::ArgList>,
-    block: Option<ast::Block>,
-    expr: Option<ast::ExprBody>,
+    this_call: Option<ast::ArgList<'a>>,
+    block: Option<ast::Block<'a>>,
+    expr: Option<ast::ExprBody<'a>>,
 }
 
-impl Default for Callable {
+impl Default for Callable<'_> {
     fn default() -> Self {
         Self {
             receiver: None,
@@ -183,7 +183,7 @@ fn start(node: &SyntaxNode) -> TextSize {
 
 /// The bodies an item of the item tree owns.
 fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
-    if let Some(it) = ast::FunctionDecl::cast(node.clone()) {
+    if let Some(it) = ast::FunctionDecl::cast(*node) {
         // Its parameter and return types are in its signature.
         let body = callable(
             BodyKind::Function,
@@ -198,7 +198,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         found.push((start(node), BodyOwner::Item(item), body));
         return;
     }
-    if let Some(it) = ast::FieldDecl::cast(node.clone()) {
+    if let Some(it) = ast::FieldDecl::cast(*node) {
         // A constant or static at namespace level: its type is in its
         // signature.
         let init = it.variable_declarator().and_then(|v| v.init());
@@ -214,7 +214,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         }
         return;
     }
-    if let Some(it) = ast::EnumDecl::cast(node.clone()) {
+    if let Some(it) = ast::EnumDecl::cast(*node) {
         let members = it
             .enum_body()
             .into_iter()
@@ -236,14 +236,13 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         }
         return;
     }
-    let (members, values_before, is_struct) = if let Some(it) = ast::StructDecl::cast(node.clone())
-    {
+    let (members, values_before, is_struct) = if let Some(it) = ast::StructDecl::cast(*node) {
         (members(it.member_list()), 0, true)
-    } else if let Some(it) = ast::ClassDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::ClassDecl::cast(*node) {
         (members(it.member_list()), 0, false)
-    } else if let Some(it) = ast::InterfaceDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::InterfaceDecl::cast(*node) {
         (members(it.member_list()), 0, false)
-    } else if let Some(it) = ast::UnionDecl::cast(node.clone()) {
+    } else if let Some(it) = ast::UnionDecl::cast(*node) {
         let body = it.union_body();
         let cases = body
             .iter()
@@ -526,7 +525,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
                         visibility: written(it.modifiers()),
-                        receiver: receiver.clone(),
+                        receiver,
                         params: params(it.param_list()),
                         type_params,
                         check_types: true,
@@ -542,7 +541,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                 name_of(it.name()).unwrap_or_default(),
                 Callable {
                     visibility: written(it.modifiers()),
-                    receiver: receiver.clone(),
+                    receiver,
                     type_params,
                     check_types: true,
                     ret: it.ty(),

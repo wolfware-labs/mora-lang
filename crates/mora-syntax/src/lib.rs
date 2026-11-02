@@ -10,5 +10,6 @@ pub use generated::SyntaxKind;
 pub use lexer::{Lexed, SyntaxError, SyntaxFix, Token, lex};
 pub use parser::{Parse, parse};
 pub use tree::{
-    Checkpoint, GreenNode, SyntaxElement, SyntaxNode, SyntaxNodeChildren, SyntaxToken, TreeBuilder,
+    Checkpoint, GreenNode, SyntaxElement, SyntaxElementChildren, SyntaxNode, SyntaxNodeChildren,
+    SyntaxToken, TreeBuilder,
 };

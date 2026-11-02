@@ -36,12 +36,12 @@ pub struct Parse {
 
 impl Parse {
     /// The root of the tree.
-    pub fn syntax(&self) -> SyntaxNode {
+    pub fn syntax(&self) -> SyntaxNode<'_> {
         self.green.root()
     }
 
     /// The typed view of the root.
-    pub fn tree(&self) -> ast::SourceFile {
+    pub fn tree(&self) -> ast::SourceFile<'_> {
         // The root is always a `SourceFile`: `parse` opens it first.
         ast::SourceFile::cast(self.syntax()).unwrap_or_else(|| unreachable!())
     }

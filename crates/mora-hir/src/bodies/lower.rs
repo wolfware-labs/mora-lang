@@ -442,7 +442,7 @@ impl Lower {
         };
         let mut arms = Vec::new();
         for child in list.syntax().children() {
-            if let Some(arm) = ast::MatchArm::cast(child.clone()) {
+            if let Some(arm) = ast::MatchArm::cast(child) {
                 let range = arm.syntax().text_range();
                 arms.push(self.scoped(|this| {
                     let pat = this.opt_pattern(arm.pattern());
@@ -757,7 +757,7 @@ impl Lower {
             .collect()
     }
 
-    pub(super) fn args(&mut self, args: impl Iterator<Item = ast::Arg>) -> Vec<Arg> {
+    pub(super) fn args<'a>(&mut self, args: impl Iterator<Item = ast::Arg<'a>>) -> Vec<Arg> {
         args.map(|arg| {
             let mode = arg.mode().and_then(|mode| match mode.kind() {
                 SyntaxKind::RefKw => Some(ArgMode::Ref),
@@ -891,9 +891,9 @@ impl Lower {
         self.alloc_pat(lowered)
     }
 
-    fn fields(
+    fn fields<'a>(
         &mut self,
-        fields: impl Iterator<Item = ast::PatternField>,
+        fields: impl Iterator<Item = ast::PatternField<'a>>,
     ) -> Vec<(Option<String>, PatId)> {
         fields
             .map(|field| {

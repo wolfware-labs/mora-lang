@@ -15,7 +15,8 @@ enum Tree {
 
 use Tree::{Node, Token};
 
-fn build(tree: &Tree) -> SyntaxNode {
+/// The tree is leaked, so the views of a test can borrow it freely.
+fn build(tree: &Tree) -> SyntaxNode<'static> {
     fn add(builder: &mut TreeBuilder, tree: &Tree) {
         match tree {
             Node(kind, children) => {
@@ -30,7 +31,7 @@ fn build(tree: &Tree) -> SyntaxNode {
     }
     let mut builder = TreeBuilder::new();
     add(&mut builder, tree);
-    builder.finish().root()
+    Box::leak(Box::new(builder.finish())).root()
 }
 
 fn name_ref(text: &'static str) -> Tree {
@@ -144,10 +145,10 @@ fn the_debug_tree_shows_every_token() {
 fn casting_checks_the_kind() {
     let root = build(&point());
     let struct_node = root.children().next().unwrap();
-    assert!(ast::SourceFile::cast(struct_node.clone()).is_none());
-    assert!(ast::StructDecl::cast(struct_node.clone()).is_some());
-    assert!(ast::Item::cast(struct_node.clone()).is_some());
-    assert!(ast::Member::cast(struct_node.clone()).is_some());
+    assert!(ast::SourceFile::cast(struct_node).is_none());
+    assert!(ast::StructDecl::cast(struct_node).is_some());
+    assert!(ast::Item::cast(struct_node).is_some());
+    assert!(ast::Member::cast(struct_node).is_some());
     assert!(ast::Expr::cast(struct_node).is_none());
 }
 
@@ -194,21 +195,7 @@ fn tokens_walk_the_whole_text() {
     let text: String = root.tokens().map(|t| t.text().to_owned()).collect();
     assert_eq!(text, root.text());
     let x = root.tokens().find(|t| t.text() == "X").unwrap();
-    assert_eq!(x.parent().unwrap().kind(), K::Name);
-    assert_eq!(x.next_token().unwrap().kind(), K::Colon);
-    assert_eq!(x.prev_token().unwrap().kind(), K::Whitespace);
-    let ancestors: Vec<_> = x.parent().unwrap().ancestors().map(|n| n.kind()).collect();
-    assert_eq!(
-        ancestors,
-        [
-            K::Name,
-            K::VariableDeclarator,
-            K::FieldDecl,
-            K::MemberList,
-            K::StructDecl,
-            K::SourceFile
-        ]
-    );
+    assert_eq!(u32::from(x.text_range().start()), 15);
 }
 
 #[test]
@@ -243,10 +230,10 @@ fn nodes_tokens_and_elements() {
     assert_eq!(root.kind(), K::SourceFile);
     assert_eq!(format!("{root:?}"), "SourceFile@0..24");
     assert_eq!(root.to_string(), "struct Point { X: int; }");
-    assert!(root.parent().is_none());
 
     let struct_node = root.children().next().unwrap();
-    assert_eq!(struct_node.parent().unwrap(), root);
+    assert_ne!(struct_node, root);
+    assert_eq!(root.children().next().unwrap(), struct_node);
     assert_eq!(u32::from(struct_node.text_range().len()), 24);
     assert_eq!(struct_node.first_token().unwrap().text(), "struct");
     assert_eq!(struct_node.last_token().unwrap().text(), "}");
@@ -259,12 +246,12 @@ fn nodes_tokens_and_elements() {
     assert_eq!(elements[0].kind(), K::StructKw);
     assert_eq!(elements[2].kind(), K::Name);
     assert_eq!(u32::from(elements[2].text_range().start()), 7);
-    let token = elements[0].clone().into_token().unwrap();
-    assert!(elements[0].clone().into_node().is_none());
+    let token = elements[0].into_token().unwrap();
+    assert!(elements[0].into_node().is_none());
     assert_eq!(format!("{token:?}"), "StructKw@0..6 \"struct\"");
     assert_eq!(token.to_string(), "struct");
-    let name = elements[2].clone().into_node().unwrap();
-    assert!(elements[2].clone().into_token().is_none());
+    let name = elements[2].into_node().unwrap();
+    assert!(elements[2].into_token().is_none());
     assert_eq!(name.kind(), K::Name);
 }
 
@@ -327,4 +314,32 @@ fn a_function_type_tells_its_result_from_its_parameters() {
         .unwrap();
     assert_eq!(fn_type.params().unwrap().syntax().text(), "(int)");
     assert_eq!(fn_type.ret().unwrap().syntax().text(), "string");
+}
+
+#[test]
+fn equal_text_at_two_places_is_two_nodes() {
+    // The two `a` share one green node; their offsets tell them apart.
+    let parse = mora_syntax::parse("let x = a + a;\n");
+    let paths: Vec<_> = parse
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == K::PathExpr)
+        .collect();
+    assert_eq!(paths.len(), 2);
+    assert_eq!(paths[0].text(), paths[1].text());
+    assert_ne!(paths[0], paths[1]);
+    let again = parse
+        .syntax()
+        .descendants()
+        .find(|node| node.kind() == K::PathExpr)
+        .unwrap();
+    assert_eq!(again, paths[0]);
+    let set: std::collections::HashSet<_> = paths.iter().copied().chain([again]).collect();
+    assert_eq!(set.len(), 2);
+    let tokens: std::collections::HashSet<_> = parse
+        .syntax()
+        .tokens()
+        .filter(|token| token.text() == "a")
+        .collect();
+    assert_eq!(tokens.len(), 2);
 }
