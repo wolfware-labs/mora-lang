@@ -403,3 +403,27 @@ fn equality_and_hash_follow_the_place_in_the_tree() {
     let x = parse.syntax().tokens().find(|t| t.text() == "x").unwrap();
     assert_ne!(first, x);
 }
+
+#[test]
+fn a_very_deep_tree_prints_and_walks_without_recursion() {
+    // As deep as `rowan` itself can build and drop a tree on a test
+    // thread; the walks keep their own stacks.
+    let depth = 5_000;
+    let mut builder = TreeBuilder::new();
+    builder.start_node(K::SourceFile);
+    for _ in 0..depth {
+        builder.start_node(K::ParenExpr);
+    }
+    builder.token(K::Ident, "x");
+    for _ in 0..depth {
+        builder.finish_node();
+    }
+    builder.finish_node();
+    let green = builder.finish();
+    let root = green.root();
+    assert_eq!(root.first_token().unwrap().text(), "x");
+    assert_eq!(root.last_token().unwrap().text(), "x");
+    assert_eq!(root.tokens().count(), 1);
+    assert_eq!(root.debug_tree().lines().count(), depth + 2);
+    assert_eq!(root.text(), "x");
+}

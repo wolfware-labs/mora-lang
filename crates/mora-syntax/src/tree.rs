@@ -153,38 +153,58 @@ impl<'a> SyntaxNode<'a> {
     }
 
     pub fn first_token(&self) -> Option<SyntaxToken<'a>> {
-        self.children_with_tokens().find_map(|child| match child {
-            SyntaxElement::Token(token) => Some(token),
-            SyntaxElement::Node(node) => node.first_token(),
-        })
+        self.tokens().next()
     }
 
     pub fn last_token(&self) -> Option<SyntaxToken<'a>> {
-        self.children_with_tokens()
-            .rev()
-            .find_map(|child| match child {
-                SyntaxElement::Token(token) => Some(token),
-                SyntaxElement::Node(node) => node.last_token(),
-            })
-    }
-
-    /// The tree below this node as indented lines of `Kind@start..end`,
-    /// with each token's text: the form snapshot tests compare.
-    pub fn debug_tree(&self) -> String {
-        fn write(node: SyntaxNode<'_>, depth: usize, out: &mut String) {
-            let indent = "  ".repeat(depth);
-            out.push_str(&format!("{indent}{node:?}\n"));
-            for child in node.children_with_tokens() {
-                match child {
-                    SyntaxElement::Node(child) => write(child, depth + 1, out),
-                    SyntaxElement::Token(token) => {
-                        out.push_str(&format!("{indent}  {token:?}\n"));
-                    }
+        // From the back, into the last child node until a token: a loop
+        // with its own stack, so a deep tree cannot overflow the call stack.
+        let mut stack = vec![self.children_with_tokens()];
+        while let Some(children) = stack.last_mut() {
+            match children.next_back() {
+                Some(SyntaxElement::Token(token)) => return Some(token),
+                Some(SyntaxElement::Node(node)) => stack.push(node.children_with_tokens()),
+                None => {
+                    stack.pop();
                 }
             }
         }
-        let mut out = String::new();
-        write(*self, 0, &mut out);
+        None
+    }
+
+    /// The tree below this node as indented lines of `Kind@start..end`,
+    /// with each token's text: the form snapshot tests compare. It walks
+    /// with its own stack, so a deep tree cannot overflow the call stack.
+    pub fn debug_tree(&self) -> String {
+        let mut out = format!(
+            "{self:?}
+"
+        );
+        let mut stack = vec![self.children_with_tokens()];
+        loop {
+            let indent = "  ".repeat(stack.len());
+            let Some(children) = stack.last_mut() else {
+                break;
+            };
+            match children.next() {
+                Some(SyntaxElement::Node(node)) => {
+                    out.push_str(&format!(
+                        "{indent}{node:?}
+"
+                    ));
+                    stack.push(node.children_with_tokens());
+                }
+                Some(SyntaxElement::Token(token)) => {
+                    out.push_str(&format!(
+                        "{indent}{token:?}
+"
+                    ));
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+        }
         out
     }
 }
