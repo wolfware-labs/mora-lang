@@ -1,12 +1,12 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::defs::ItemId;
-use crate::items::{ItemIdx, ItemKind, Visibility, item_tree, signature_refs};
+use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
-use crate::type_ref::{PathRef, SignatureRefKind, TypeRef};
+use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
 
 /// The signature of an item, with the names in its types looked up (§14.5).
 /// It reads no text range, so an edit inside a body does not run it again.
@@ -72,10 +72,7 @@ fn item_signature(
         file,
         item,
     };
-    let mut type_params = Vec::new();
-    for ty in enclosing_types(tree, Some(item)) {
-        type_params.extend(refs[index(ty)].type_params.iter().cloned());
-    }
+    let type_params = type_params(tree, refs, Some(item));
     let mut lower = LowerTypes {
         db,
         scope: Scope {
@@ -139,22 +136,34 @@ fn index(idx: ItemIdx) -> usize {
     u32::from(idx.into_raw()) as usize
 }
 
-struct LowerTypes<'db> {
-    db: &'db dyn Db,
+/// Looks up the names in types as written.
+pub(crate) struct LowerTypes<'db> {
+    pub(crate) db: &'db dyn Db,
     /// Where the names are looked up from.
-    scope: Scope,
+    pub(crate) scope: Scope,
     /// The type parameters of the item and of the types around it.
-    type_params: Vec<String>,
+    pub(crate) type_params: Vec<String>,
     /// The field whose type is being lowered, `None` for the item itself.
-    field: Option<usize>,
+    pub(crate) field: Option<usize>,
     /// The effective visibility of the member whose types are being lowered.
-    member: Visibility,
+    pub(crate) member: Visibility,
     /// The errors so far.
-    errors: Vec<SignatureError>,
+    pub(crate) errors: Vec<SignatureError>,
+}
+
+/// The type parameters in scope inside `within` and the types around it.
+pub(crate) fn type_params(
+    tree: &ItemTree,
+    refs: &[SignatureRef],
+    within: Option<ItemIdx>,
+) -> Vec<String> {
+    enclosing_types(tree, within)
+        .flat_map(|ty| refs[index(ty)].type_params.iter().cloned())
+        .collect()
 }
 
 impl LowerTypes<'_> {
-    fn ty(&mut self, ty: &TypeRef) -> Ty {
+    pub(crate) fn ty(&mut self, ty: &TypeRef) -> Ty {
         match ty {
             TypeRef::Primitive(primitive) => Ty::Primitive(*primitive),
             TypeRef::String => Ty::String,
@@ -531,8 +540,12 @@ mod tests {
             signature_of(&db, project, "src/Program.mr", "X"),
             Signature::Value(Ty::Error)
         );
-        // The parser reports these; the signature adds nothing.
-        assert_eq!(diagnostics(&db, project), &[]);
+        // The parser reports these; the signatures add nothing. The parser
+        // recovers `[, c` as a top-level statement, whose `c` does not
+        // resolve.
+        let reported = diagnostics(&db, project);
+        assert_eq!(codes(reported), ["MR0127"]);
+        assert_eq!(reported[0].message, "cannot find `c`");
     }
 
     #[test]

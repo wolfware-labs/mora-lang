@@ -84,6 +84,50 @@ pub fn check(compiler: &dyn Compiler, path: &str, text: &str) -> Vec<String> {
     problems
 }
 
+/// What one case of the run suite found.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    /// What is wrong, empty when the case passes.
+    pub problems: Vec<String>,
+    /// The HIR of the program, for its `.hir` snapshot; `None` when it does
+    /// not compile.
+    pub hir: Option<String>,
+}
+
+/// Checks one case of the run suite: the program must compile without
+/// errors, and its HIR is returned for the snapshot beside it. Then it runs
+/// through every backend the compiler has, as [`check`] does; while there
+/// are none, compiling is the whole test.
+pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
+    if let Err(problem) = expected(text) {
+        return Outcome {
+            problems: vec![problem],
+            hir: None,
+        };
+    }
+    let hir = match compiler.hir(path, text) {
+        Ok(hir) => hir,
+        Err(checked) => {
+            return Outcome {
+                problems: vec![format!(
+                    "the program does not compile:\n{}",
+                    rendered(&checked)
+                )],
+                hir: None,
+            };
+        }
+    };
+    let problems = if compiler.backends().is_empty() {
+        Vec::new()
+    } else {
+        check(compiler, path, text)
+    };
+    Outcome {
+        problems,
+        hir: Some(hir),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

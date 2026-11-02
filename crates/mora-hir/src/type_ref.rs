@@ -6,12 +6,12 @@ use mora_syntax::SyntaxNode;
 use mora_syntax::ast::{self, AstNode};
 use mora_syntax::lexer::ident_name;
 
-use crate::items::Visibility;
+use crate::items::{Visibility, visibility};
 use crate::ty::{ParamMode, Primitive};
 
 /// A type as written.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TypeRef {
+pub enum TypeRef {
     Primitive(Primitive),
     String,
     Path(PathRef),
@@ -27,16 +27,16 @@ pub(crate) enum TypeRef {
 
 /// A path in a type, such as `Store.User` or `List<int>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PathRef {
+pub struct PathRef {
     /// The segments, in NFC, without generic arguments.
-    pub(crate) segments: Vec<String>,
+    pub segments: Vec<String>,
     /// Whether a segment has a generic argument list.
-    pub(crate) generic: bool,
+    pub generic: bool,
     /// The generic arguments of every segment, in order.
-    pub(crate) args: Vec<TypeRef>,
-    /// Its position among the paths of its item's signature, which indexes
-    /// [`SignatureSource::paths`].
-    pub(crate) index: usize,
+    pub args: Vec<TypeRef>,
+    /// Its position among the paths of its item's signature or body, which
+    /// indexes the ranges of their source map.
+    pub index: usize,
 }
 
 /// The signature of an item as written.
@@ -141,12 +141,18 @@ fn type_params(list: Option<ast::TypeParamList>) -> Vec<String> {
         .collect()
 }
 
+/// Lowers types as written and keeps where their paths are.
 #[derive(Default)]
-struct LowerTypes {
+pub(crate) struct LowerTypes {
     source: SignatureSource,
 }
 
 impl LowerTypes {
+    /// The ranges of the segments of each path lowered so far.
+    pub(crate) fn into_paths(self) -> Vec<Vec<TextRange>> {
+        self.source.paths
+    }
+
     fn param(&mut self, param: &ast::Param) -> ParamRef {
         let mut mode = ParamMode::In;
         let mut is_params = false;
@@ -183,7 +189,7 @@ impl LowerTypes {
         })
     }
 
-    fn optional(&mut self, ty: Option<&ast::Type>) -> TypeRef {
+    pub(crate) fn optional(&mut self, ty: Option<&ast::Type>) -> TypeRef {
         ty.map_or(TypeRef::Missing, |ty| self.ty(ty))
     }
 
@@ -191,7 +197,7 @@ impl LowerTypes {
         Box::new(self.optional(ty.as_ref()))
     }
 
-    fn ty(&mut self, ty: &ast::Type) -> TypeRef {
+    pub(crate) fn ty(&mut self, ty: &ast::Type) -> TypeRef {
         match ty {
             ast::Type::PredefinedType(it) => it
                 .kind()
@@ -276,17 +282,6 @@ impl LowerTypes {
     }
 }
 
-/// The visibility a modifier keyword writes, if it writes one.
-fn visibility(kind: SyntaxKind) -> Option<Visibility> {
-    match kind {
-        SyntaxKind::PrivateKw => Some(Visibility::Private),
-        SyntaxKind::FileKw => Some(Visibility::File),
-        SyntaxKind::InternalKw => Some(Visibility::Internal),
-        SyntaxKind::PublicKw => Some(Visibility::Public),
-        _ => None,
-    }
-}
-
 fn name_text(name: Option<ast::Name>) -> String {
     name.and_then(|name| name.ident_token())
         .map(|token| ident_name(token.text()).into_owned())
@@ -295,7 +290,7 @@ fn name_text(name: Option<ast::Name>) -> String {
 
 /// The type a predefined keyword names, [`TypeRef::Missing`] for any other
 /// kind.
-fn predefined(kind: SyntaxKind) -> TypeRef {
+pub(crate) fn predefined(kind: SyntaxKind) -> TypeRef {
     let primitive = match kind {
         SyntaxKind::BoolKw => Primitive::Bool,
         SyntaxKind::ByteKw => Primitive::Byte,

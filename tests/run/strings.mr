@@ -1,0 +1,12 @@
+// expect: Hello, Ada!
+// expect: Ada has 3 letters
+// expect: abc
+let name = "Ada";
+let greeting = "Hello, " + name + "!";
+Console.WriteLine(greeting);
+Console.WriteLine($"{name} has {name.Length} letters");
+var letters = "";
+foreach (let c in ["a", "b", "c"]) {
+    letters = letters + c;
+}
+Console.WriteLine(letters);

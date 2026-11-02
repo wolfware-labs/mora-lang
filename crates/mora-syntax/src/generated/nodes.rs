@@ -3253,13 +3253,13 @@ pub struct FnType {
 
 impl FnType {
     pub fn params(&self) -> Option<TupleType> {
-        support::child(&self.syntax)
+        support::child_between(&self.syntax, &[], &[SyntaxKind::FatArrow])
     }
     pub fn fat_arrow_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, &[SyntaxKind::FatArrow])
     }
     pub fn ret(&self) -> Option<Type> {
-        support::child(&self.syntax)
+        support::child_between(&self.syntax, &[SyntaxKind::FatArrow], &[])
     }
     pub fn uses_clause(&self) -> Option<UsesClause> {
         support::child(&self.syntax)

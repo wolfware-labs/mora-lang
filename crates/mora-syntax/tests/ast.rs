@@ -290,3 +290,41 @@ fn checkpoints_wrap_what_came_before() {
     assert_eq!(bin.kind(), K::BinExpr);
     assert_eq!(bin.text(), "a+b");
 }
+
+#[test]
+fn a_token_after_a_child_node_is_found() {
+    let parse = mora_syntax::parse("let x = a + b;\n");
+    let bin = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::BinExpr::cast)
+        .unwrap();
+    assert_eq!(bin.op().unwrap().kind(), K::Plus);
+    assert_eq!(bin.rhs().unwrap().syntax().text(), "b");
+}
+
+#[test]
+fn an_empty_child_node_is_found() {
+    // The parser recovers from the missing element with an empty node.
+    let parse = mora_syntax::parse("let x = [, c];\n");
+    let list = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::CollectionExpr::cast)
+        .unwrap();
+    let first = list.collection_elem().unwrap();
+    assert!(first.syntax().text_range().is_empty());
+    assert!(first.expr().is_none());
+}
+
+#[test]
+fn a_function_type_tells_its_result_from_its_parameters() {
+    let parse = mora_syntax::parse("let f: (int) => string = g;\n");
+    let fn_type = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::FnType::cast)
+        .unwrap();
+    assert_eq!(fn_type.params().unwrap().syntax().text(), "(int)");
+    assert_eq!(fn_type.ret().unwrap().syntax().text(), "string");
+}

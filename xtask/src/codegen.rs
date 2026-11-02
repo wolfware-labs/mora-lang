@@ -6,6 +6,7 @@
 //! `crates/mora-syntax/mora.ungram`. `--check` fails when the files on disk
 //! differ from what the generator would write.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -419,6 +420,12 @@ impl AstDef {
 }
 
 fn lower(grammar: &Grammar, tokens: &Tokens) -> Result<Vec<AstDef>, String> {
+    let casts = casts(grammar);
+    let overlap = |a: &str, b: &str| {
+        a == b
+            || casts.get(a).is_some_and(|set| set.contains(b))
+            || casts.get(b).is_some_and(|set| set.contains(a))
+    };
     let mut defs = Vec::new();
     for node in grammar.iter() {
         let data = &grammar[node];
@@ -434,7 +441,8 @@ fn lower(grammar: &Grammar, tokens: &Tokens) -> Result<Vec<AstDef>, String> {
         let mut fields = Vec::new();
         lower_rule(grammar, tokens, &data.rule, None, false, &mut fields)
             .map_err(|err| format!("{}: {err}", data.name))?;
-        let fields = dedupe(place(fields)).map_err(|err| format!("{}: {err}", data.name))?;
+        let fields =
+            dedupe(place(fields, &overlap)).map_err(|err| format!("{}: {err}", data.name))?;
         defs.push(AstDef::Struct {
             name: data.name.clone(),
             rule,
@@ -456,6 +464,32 @@ fn lower(grammar: &Grammar, tokens: &Tokens) -> Result<Vec<AstDef>, String> {
         ));
     }
     Ok(defs)
+}
+
+/// Every node each enum can be viewed as, through its variants and theirs:
+/// a `TupleType` is a `Type`.
+fn casts(grammar: &Grammar) -> HashMap<String, HashSet<String>> {
+    let direct: HashMap<String, Vec<String>> = grammar
+        .iter()
+        .filter_map(|node| {
+            let data = &grammar[node];
+            Some((data.name.clone(), enum_variants(grammar, &data.rule)?))
+        })
+        .collect();
+    let mut out = HashMap::new();
+    for name in direct.keys() {
+        let mut seen = HashSet::new();
+        let mut stack = vec![name.clone()];
+        while let Some(next) = stack.pop() {
+            for variant in direct.get(&next).into_iter().flatten() {
+                if seen.insert(variant.clone()) {
+                    stack.push(variant.clone());
+                }
+            }
+        }
+        out.insert(name.clone(), seen);
+    }
+    out
 }
 
 /// The variants of a rule that is only a choice between nodes.
@@ -547,10 +581,11 @@ fn token_kind<'a>(
         .ok_or_else(|| format!("unknown token '{spelling}'"))
 }
 
-/// Tells apart single children that share a type by the tokens between
+/// Tells apart single children whose types overlap by the tokens between
 /// them: in `start:Expr? '..' end:Expr?`, `start` is before `..` and `end`
-/// after it, whichever of them is missing.
-fn place(mut fields: Vec<Field>) -> Vec<Field> {
+/// after it, whichever of them is missing. Two types overlap when one can
+/// be viewed as the other, as `params:TupleType '=>' ret:Type`.
+fn place(mut fields: Vec<Field>, overlap: &dyn Fn(&str, &str) -> bool) -> Vec<Field> {
     let single = |field: &Field| match field {
         Field::Node {
             ty, many: false, ..
@@ -565,7 +600,7 @@ fn place(mut fields: Vec<Field>) -> Vec<Field> {
     for i in 0..fields.len() {
         let Some(ty) = &types[i] else { continue };
         let same: Vec<usize> = (0..fields.len())
-            .filter(|&j| types[j].as_ref() == Some(ty))
+            .filter(|&j| types[j].as_deref().is_some_and(|other| overlap(other, ty)))
             .collect();
         if same.len() < 2 {
             continue;
@@ -1108,6 +1143,41 @@ mod tests {
             lower_text("Ident = 'if'\n")
                 .unwrap_err()
                 .contains("name of a token kind")
+        );
+    }
+
+    #[test]
+    fn children_whose_types_overlap_are_told_apart_by_tokens() {
+        let defs = lower_text(
+            "Type = TupleType | PathType\nTupleType = '(' ')'\nPathType = 'ident'\n\
+             FnType = params:TupleType '=>' ret:Type\n",
+        )
+        .unwrap();
+        let fields = defs
+            .iter()
+            .find_map(|def| match def {
+                AstDef::Struct { name, fields, .. } if name == "FnType" => Some(fields.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let placed: Vec<_> = fields
+            .iter()
+            .filter_map(|field| match field {
+                Field::Node {
+                    name,
+                    after,
+                    before,
+                    ..
+                } => Some((name.as_str(), after.clone(), before.clone())),
+                Field::Token { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                ("params", vec![], vec!["FatArrow".to_owned()]),
+                ("ret", vec!["FatArrow".to_owned()], vec![]),
+            ]
         );
     }
 

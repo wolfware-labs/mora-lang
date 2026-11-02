@@ -1,4 +1,4 @@
-use mora_diag::{Diagnostic, Files};
+use mora_diag::{Diagnostic, Files, Severity};
 use mora_span::{FileId, Project, SourceFile};
 
 use crate::case;
@@ -18,6 +18,13 @@ pub trait Compiler: Sync {
     /// Builds the program and runs it with `backend`, or returns the
     /// diagnostics that stopped the build.
     fn run(&self, path: &str, text: &str, backend: Backend) -> Result<Output, Checked>;
+
+    /// Compiles `text` as the file `path` and returns the text form of its
+    /// HIR, or the diagnostics when it reports an error. A compiler that
+    /// cannot compile panics, which fails only the case.
+    fn hir(&self, _path: &str, _text: &str) -> Result<String, Checked> {
+        unimplemented!("this compiler cannot compile");
+    }
 }
 
 /// The compiler the suites and `cargo xtask spec-examples` use. It is
@@ -67,8 +74,18 @@ impl salsa::Database for Database {}
 #[salsa::db]
 impl mora_span::Db for Database {}
 
-impl Compiler for FrontEnd {
-    fn check(&self, path: &str, text: &str) -> Checked {
+/// One case, loaded into a fresh database.
+struct Analysis {
+    db: Database,
+    project: Project,
+    inputs: Vec<SourceFile>,
+    /// The paths the files are shown under, in the order of the case.
+    shown: Vec<String>,
+    checked: Checked,
+}
+
+impl FrontEnd {
+    fn analyze(&self, path: &str, text: &str) -> Analysis {
         let case = case::split(path, text).unwrap_or_else(|problem| panic!("{problem}"));
         let db = Database::default();
         let mut files = Files::new();
@@ -110,11 +127,23 @@ impl Compiler for FrontEnd {
             })
             .collect();
         diagnostics.extend(mora_hir::diagnostics(&db, project).iter().cloned());
-        Checked {
-            files,
-            sources,
-            diagnostics,
+        Analysis {
+            shown: case.files.iter().map(|file| file.shown.clone()).collect(),
+            db,
+            project,
+            inputs,
+            checked: Checked {
+                files,
+                sources,
+                diagnostics,
+            },
         }
+    }
+}
+
+impl Compiler for FrontEnd {
+    fn check(&self, path: &str, text: &str) -> Checked {
+        self.analyze(path, text).checked
     }
 
     fn backends(&self) -> &[Backend] {
@@ -123,6 +152,29 @@ impl Compiler for FrontEnd {
 
     fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
         unimplemented!("the driver cannot run programs yet");
+    }
+
+    /// The HIR of each file of the case. A case of several files shows each
+    /// under a `//@ file` line with its path.
+    fn hir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        let analysis = self.analyze(path, text);
+        let failed = analysis
+            .checked
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error);
+        if failed {
+            return Err(analysis.checked);
+        }
+        let mut out = String::new();
+        let several = analysis.inputs.len() > 1;
+        for (file, shown) in analysis.inputs.iter().zip(&analysis.shown) {
+            if several {
+                out.push_str(&format!("//@ file {shown}\n"));
+            }
+            out.push_str(&mora_hir::hir_dump(&analysis.db, analysis.project, *file));
+        }
+        Ok(out)
     }
 }
 
@@ -158,4 +210,37 @@ impl Backend {
 pub struct Output {
     pub stdout: String,
     pub exit: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "cannot compile")]
+    fn the_unbuilt_compiler_has_no_hir() {
+        let _ = Unbuilt.hir("a.mr", "let x = 1;\n");
+    }
+
+    #[test]
+    fn a_program_with_an_error_has_no_hir() {
+        let checked = FrontEnd.hir("a.mr", "let x = y;\n").unwrap_err();
+        assert_eq!(checked.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn the_hir_of_one_file_has_no_header() {
+        let hir = FrontEnd.hir("a.mr", "let x = 1;\n").unwrap();
+        assert_eq!(hir, "top-level {\n    let x#0 = 1;\n}\n");
+    }
+
+    #[test]
+    fn the_hir_of_several_files_names_each() {
+        let text = "//@ file src/Program.mr\nlet x = 1;\n//@ file src/Util.mr\nF() {}\n";
+        let hir = FrontEnd.hir("a.mr", text).unwrap();
+        assert_eq!(
+            hir,
+            "//@ file src/Program.mr\ntop-level {\n    let x#0 = 1;\n}\n//@ file src/Util.mr\nfn App.F() {}\n"
+        );
+    }
 }

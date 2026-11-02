@@ -1,18 +1,19 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
-use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::items::{
-    ItemKind, Visibility, item_source_map, item_tree, signature_refs, signature_sources,
+use crate::bodies::{
+    BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
+use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
+use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, resolve_using,
-    visible_names,
+    value_visible, visible_names,
 };
 use crate::signature::{SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
 use crate::ty::Signature;
-use crate::type_ref::{SignatureRefKind, TYPE_KEYWORDS};
+use crate::type_ref::TYPE_KEYWORDS;
 
 /// The diagnostics of a project's folders (`MR0121`), `using` directives
 /// and signatures (`MR0127`, `MR0128`, `MR0129`, `MR0123`) and entry point
@@ -29,6 +30,7 @@ pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
         usings(db, project, file, &mut out);
         signatures(db, project, file, &mut out);
         member_names(db, file, &mut out);
+        out.extend(body_diagnostics(db, project, file).iter().cloned());
     }
     entry_point(db, project, map, &mut out);
     out
@@ -81,7 +83,14 @@ fn usings(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Diagnos
         };
         let name = &using.path[error.segment];
         let span = Span::new(file.id(db), map.using(index).segments[error.segment]);
-        out.push(resolve_error(db, scope, name, span, error.kind, false));
+        out.push(resolve_error(
+            db,
+            scope,
+            name,
+            span,
+            error.kind,
+            Lookup::Using,
+        ));
     }
 }
 
@@ -101,18 +110,9 @@ fn signatures(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Dia
             let span = Span::new(file.id(db), range);
             out.push(match &error.kind {
                 SignatureErrorKind::Resolve(scope, kind) => {
-                    resolve_error(db, *scope, name, span, kind.clone(), true)
+                    resolve_error(db, *scope, name, span, kind.clone(), Lookup::Type)
                 }
-                SignatureErrorKind::NotAType(resolved) => {
-                    // A namespace, an item or overloads, which all have a name.
-                    let full = full_name(db, resolved).unwrap_or_default();
-                    let what = format!("{} `{full}`", kind_name(db, resolved));
-                    Diagnostic::error(
-                        codes::MR0127,
-                        format!("`{name}` is not a type"),
-                        Label::new(span, format!("this is {what}")),
-                    )
-                }
+                SignatureErrorKind::NotAType(resolved) => not_a_type(db, name, span, resolved),
                 SignatureErrorKind::LessVisible { ty, field, member } => {
                     let member_name = match (field, signature(db, item)) {
                         (Some(field), Signature::Struct(fields)) => fields[*field].name.clone(),
@@ -125,14 +125,147 @@ fn signatures(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Dia
     }
 }
 
+/// `MR0127` for a path in a type position that names something else.
+fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagnostic {
+    // A namespace, an item or overloads, which all have a name.
+    let full = full_name(db, resolved).unwrap_or_default();
+    let what = format!("{} `{full}`", kind_name(db, resolved));
+    Diagnostic::error(
+        codes::MR0127,
+        format!("`{name}` is not a type"),
+        Label::new(span, format!("this is {what}")),
+    )
+}
+
+/// The errors in the bodies of a file: `MR0180`, and names and types that
+/// do not resolve. A file whose bodies did not change keeps its result.
+#[salsa::tracked(returns(ref))]
+fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diagnostic> {
+    let id = file.id(db);
+    let tree = item_tree(db, file);
+    let mut out = Vec::new();
+    for owner in body_owners(db, file) {
+        let body = body(db, file, owner);
+        let map = body_source_map(db, file, owner);
+        let scope = body_scope(project, file, owner);
+        for &(local, earlier) in &body.shadows {
+            let name = &body.locals[local].name;
+            let what = match body.locals[earlier].kind {
+                LocalKind::Param => "parameter",
+                _ => "local",
+            };
+            out.push(
+                Diagnostic::error(
+                    codes::MR0180,
+                    format!("`{name}` is already the name of a {what} in scope"),
+                    Label::new(Span::new(id, map.local(local)), "declared again here"),
+                )
+                .with_secondary(Label::new(
+                    Span::new(id, map.local(earlier)),
+                    format!("the {what} `{name}` is declared here"),
+                ))
+                .with_note(
+                    "a local may not shadow another; a name can be used again once the first is out of scope",
+                ),
+            );
+        }
+        for error in &body_resolution(db, project, file, owner).errors {
+            out.push(match error {
+                BodyError::Path {
+                    expr,
+                    scope: at,
+                    segment,
+                    name,
+                    error,
+                } => {
+                    let span = Span::new(id, map.path_segments[expr][*segment]);
+                    let mut extra: Vec<String> = Vec::new();
+                    if *segment == 0 {
+                        extra.extend(
+                            body.locals_in_scope(*at)
+                                .map(|local| body.locals[local].name.clone()),
+                        );
+                        for ty in enclosing_types(tree, scope.within) {
+                            extra.extend(tree.item(ty).values.iter().map(|v| v.name.clone()));
+                        }
+                    }
+                    resolve_error(db, scope, name, span, error.clone(), Lookup::Expr(extra))
+                }
+                BodyError::Member {
+                    expr,
+                    name,
+                    within,
+                    error,
+                } => {
+                    let span = Span::new(id, map.member_names[expr]);
+                    let mut extra = Vec::new();
+                    if let Resolved::Item(ty) = within {
+                        let values = &item_tree(db, ty.file).item(ty.item).values;
+                        extra.extend(
+                            values
+                                .iter()
+                                .filter(|value| value_visible(db, *ty, value, scope))
+                                .map(|value| value.name.clone()),
+                        );
+                    }
+                    let error = match error {
+                        // The lookup started at `within`, which the message names.
+                        ResolveErrorKind::Unresolved { .. } => ResolveErrorKind::Unresolved {
+                            within: Some(within.clone()),
+                        },
+                        other => other.clone(),
+                    };
+                    resolve_error(db, scope, name, span, error, Lookup::Expr(extra))
+                }
+                BodyError::Type(error) => {
+                    let span = Span::new(id, map.type_paths[error.path][error.segment]);
+                    match &error.kind {
+                        SignatureErrorKind::Resolve(scope, kind) => {
+                            resolve_error(db, *scope, &error.name, span, kind.clone(), Lookup::Type)
+                        }
+                        SignatureErrorKind::NotAType(resolved) => {
+                            not_a_type(db, &error.name, span, resolved)
+                        }
+                        SignatureErrorKind::LessVisible { ty, member, .. } => {
+                            less_visible(db, &error.name, span, *ty, &body.name, *member)
+                        }
+                    }
+                }
+                BodyError::Capture { expr, index, name } => {
+                    let span = Span::new(id, map.captures[&(*expr, *index)]);
+                    Diagnostic::error(
+                        codes::MR0127,
+                        format!("cannot find the local `{name}`"),
+                        Label::new(span, "no local of this name is in scope"),
+                    )
+                    .with_note("a capture list names locals or parameters of the enclosing code, or `this`")
+                }
+            });
+        }
+    }
+    // Each body reports its errors by kind; the file reads them in order.
+    out.sort_by_key(|diagnostic| diagnostic.primary.span.range.start());
+    out
+}
+
+/// Where a name that does not resolve was looked up, which decides what is
+/// suggested in its place.
+enum Lookup {
+    /// A `using` directive, without what directives open.
+    Using,
+    /// A type, which also suggests the type keywords.
+    Type,
+    /// An expression, which also suggests these names: the locals in scope
+    /// and the value members of the enclosing types.
+    Expr(Vec<String>),
+}
+
 /// `MR0146`: two members of one type with one name, unless both are
-/// methods. The members are the nested types, methods and struct fields;
-/// the others are not lowered yet.
+/// methods. The members are the nested types, the methods and the value
+/// members (§14.5); constructors, operators and indexers have no name.
 fn member_names(db: &dyn Db, file: SourceFile, out: &mut Vec<Diagnostic>) {
     let tree = item_tree(db, file);
     let map = item_source_map(db, file);
-    let refs = signature_refs(db, file);
-    let sources = signature_sources(db, file);
     let id = file.id(db);
     for (idx, item) in tree.items() {
         // Each member's name, where it is, and whether it is a method.
@@ -145,16 +278,12 @@ fn member_names(db: &dyn Db, file: SourceFile, out: &mut Vec<Diagnostic>) {
                 (data.name.as_str(), range, data.kind == ItemKind::Function)
             })
             .collect();
-        let at = u32::from(idx.into_raw()) as usize;
-        if let SignatureRefKind::Struct(fields) = &refs[at].kind {
-            let ranges = &sources[at].fields;
-            members.extend(
-                fields
-                    .iter()
-                    .zip(ranges)
-                    .map(|(field, &range)| (field.name.as_str(), range, false)),
-            );
-        }
+        members.extend(
+            item.values
+                .iter()
+                .zip(&map.item(idx).values)
+                .map(|(value, &range)| (value.name.as_str(), range, false)),
+        );
         members.sort_by_key(|&(_, range, _)| range.start());
         for (index, &(name, range, method)) in members.iter().enumerate() {
             let first = members[..index]
@@ -186,15 +315,21 @@ fn resolve_error(
     name: &str,
     span: Span,
     kind: ResolveErrorKind,
-    in_type: bool,
+    lookup: Lookup,
 ) -> Diagnostic {
     match kind {
         ResolveErrorKind::Unresolved { within } => {
-            let mut candidates = visible_names(db, scope, within.as_ref(), in_type);
-            if in_type && within.is_none() {
-                candidates.extend(TYPE_KEYWORDS.iter().map(|&keyword| keyword.to_owned()));
-                candidates.sort();
+            let with_imports = !matches!(lookup, Lookup::Using);
+            let mut candidates = visible_names(db, scope, within.as_ref(), with_imports);
+            match lookup {
+                Lookup::Type if within.is_none() => {
+                    candidates.extend(TYPE_KEYWORDS.iter().map(|&keyword| keyword.to_owned()));
+                }
+                Lookup::Expr(extra) => candidates.extend(extra),
+                _ => {}
             }
+            candidates.sort();
+            candidates.dedup();
             let suggestion = closest(name, &candidates);
             unresolved(db, name, span, within, suggestion)
         }
@@ -384,7 +519,7 @@ fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
 }
 
 /// What kind of declaration a path resolved to, for messages.
-fn kind_name(db: &dyn Db, resolved: &Resolved) -> &'static str {
+pub(crate) fn kind_name(db: &dyn Db, resolved: &Resolved) -> &'static str {
     let kind = match resolved {
         Resolved::Namespace(_) | Resolved::External => return "the namespace",
         Resolved::Functions(_) => ItemKind::Function,
@@ -403,7 +538,7 @@ fn kind_name(db: &dyn Db, resolved: &Resolved) -> &'static str {
 }
 
 /// The full name of what a path resolved to, such as `UsersApi.Store.UserStore`.
-fn full_name(db: &dyn Db, resolved: &Resolved) -> Option<String> {
+pub(crate) fn full_name(db: &dyn Db, resolved: &Resolved) -> Option<String> {
     match resolved {
         Resolved::Namespace(namespace) => {
             Some(def_map(db, namespace.project).namespace_path(namespace.id))
@@ -414,7 +549,7 @@ fn full_name(db: &dyn Db, resolved: &Resolved) -> Option<String> {
     }
 }
 
-fn item_full_name(db: &dyn Db, item: ItemId) -> String {
+pub(crate) fn item_full_name(db: &dyn Db, item: ItemId) -> String {
     let tree = item_tree(db, item.file);
     let mut segments = Vec::new();
     let mut at = Some(item.item);
@@ -535,7 +670,10 @@ mod tests {
             &db,
             &[
                 ("src/Program.mr", "let x = 1;\n"),
-                ("src/Util.mr", "class A {}\n\nSetup();\nlet y = 2;\n"),
+                (
+                    "src/Util.mr",
+                    "class A {}\nSetup() {}\n\nSetup();\nlet y = 2;\n",
+                ),
             ],
         );
         let reported = diagnostics(&db, project);

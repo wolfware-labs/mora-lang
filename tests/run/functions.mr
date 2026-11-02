@@ -1,0 +1,27 @@
+// expect: 55
+// expect: 6
+// expect: 24
+// expect: 7
+Console.WriteLine(Fib(10));
+Console.WriteLine(Twice(3));
+Console.WriteLine(Factorial(4));
+Console.WriteLine(Add(3, 4));
+
+Fib(n: int): int {
+    if (n < 2) {
+        return n;
+    }
+    return Fib(n - 1) + Fib(n - 2);
+}
+
+Twice(x: int): int => x * 2;
+
+Factorial(n: int): int {
+    Step(k: int, acc: int): int => k <= 1 ? acc : Step(k - 1, acc * k);
+    return Step(n, 1);
+}
+
+Add(a: int, b: int): int {
+    let result = a + b;
+    return result;
+}

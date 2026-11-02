@@ -1,0 +1,93 @@
+error[MR0127]: cannot find `Startt`
+ --> tests/ui/resolve/unknown_names_in_members.mr:4:30
+  |
+4 |     private _balance: long = Startt; //~ ERROR MR0127
+  |                              ^^^^^^ not found
+  |
+help: did you mean `Start`?
+  |
+4 -     private _balance: long = Startt; //~ ERROR MR0127
+4 +     private _balance: long = Start; //~ ERROR MR0127
+  |
+
+error[MR0127]: cannot find `_balanse`
+ --> tests/ui/resolve/unknown_names_in_members.mr:5:29
+  |
+5 |     public Balance: long => _balanse; //~ ERROR MR0127
+  |                             ^^^^^^^^ not found
+  |
+help: did you mean `_balance`?
+  |
+5 -     public Balance: long => _balanse; //~ ERROR MR0127
+5 +     public Balance: long => _balance; //~ ERROR MR0127
+  |
+
+error[MR0127]: cannot find `strat`
+ --> tests/ui/resolve/unknown_names_in_members.mr:8:20
+  |
+8 |         _balance = strat; //~ ERROR MR0127
+  |                    ^^^^^ not found
+  |
+help: did you mean `start`?
+  |
+8 -         _balance = strat; //~ ERROR MR0127
+8 +         _balance = start; //~ ERROR MR0127
+  |
+
+error[MR0127]: cannot find `indx`
+  --> tests/ui/resolve/unknown_names_in_members.mr:12:27
+   |
+12 |         get => _balance + indx; //~ ERROR MR0127
+   |                           ^^^^ not found
+   |
+help: did you mean `index`?
+   |
+12 |         get => _balance + index; //~ ERROR MR0127
+   |                              +
+
+error[MR0127]: cannot find `valeu`
+  --> tests/ui/resolve/unknown_names_in_members.mr:13:26
+   |
+13 |         set { _balance = valeu; } //~ ERROR MR0127
+   |                          ^^^^^ not found
+   |
+help: did you mean `value`?
+   |
+13 -         set { _balance = valeu; } //~ ERROR MR0127
+13 +         set { _balance = value; } //~ ERROR MR0127
+   |
+
+error[MR0127]: cannot find `c`
+  --> tests/ui/resolve/unknown_names_in_members.mr:20:83
+   |
+20 |     public operator +(a: Money, b: Money): Money => new Money { Cents = a.Cents + c.Cents }; //~ ERROR MR0127
+   |                                                                                   ^ not found
+   |
+help: did you mean `a`?
+   |
+20 -     public operator +(a: Money, b: Money): Money => new Money { Cents = a.Cents + c.Cents }; //~ ERROR MR0127
+20 +     public operator +(a: Money, b: Money): Money => new Money { Cents = a.Cents + a.Cents }; //~ ERROR MR0127
+   |
+
+error[MR0127]: cannot find `Lw`
+  --> tests/ui/resolve/unknown_names_in_members.mr:23:30
+   |
+23 | enum Level { Low = 1, High = Lw + 1 } //~ ERROR MR0127
+   |                              ^^ not found
+   |
+help: did you mean `Low`?
+   |
+23 | enum Level { Low = 1, High = Low + 1 } //~ ERROR MR0127
+   |                               +
+
+error[MR0127]: cannot find `n`
+  --> tests/ui/resolve/unknown_names_in_members.mr:28:36
+   |
+28 |     public Doubled(): Money => m + n; //~ ERROR MR0127
+   |                                    ^ not found
+   |
+help: did you mean `m`?
+   |
+28 -     public Doubled(): Money => m + n; //~ ERROR MR0127
+28 +     public Doubled(): Money => m + m; //~ ERROR MR0127
+   |

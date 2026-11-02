@@ -1,7 +1,7 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::defs::{ItemId, NamespaceRef, def_map};
-use crate::items::{Item, ItemIdx, ItemKind, ItemTree, Visibility, item_tree};
+use crate::items::{Item, ItemIdx, ItemKind, ItemTree, ValueMember, Visibility, item_tree};
 
 /// The name of the standard library's root namespace (§4.4).
 pub(crate) const STD: &str = "Std";
@@ -121,6 +121,132 @@ fn resolve(
     Ok(current)
 }
 
+/// What a path in an expression names: a declaration, or a value member
+/// of a type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ExprTarget {
+    Item(Resolved),
+    /// The value member at this index of [`Item::values`] of the type.
+    Value(ItemId, usize),
+}
+
+/// Looks a path in an expression up from `scope`, after the locals (§14.5).
+/// The members of the enclosing types include their value members, and a
+/// type's value members are found after the type's name. Once a segment
+/// names a value, the segments after it are member accesses on that value,
+/// which type checking looks up; the result gives how many segments name
+/// the target.
+pub(crate) fn resolve_expr_path(
+    db: &dyn Db,
+    scope: Scope,
+    path: &[String],
+) -> Result<(ExprTarget, usize), ResolveError> {
+    let Some(first) = path.first() else {
+        return Err(ResolveError {
+            segment: 0,
+            kind: ResolveErrorKind::Unresolved { within: None },
+        });
+    };
+    let tree = item_tree(db, scope.file);
+    let mut current = None;
+    for ty in enclosing_types(tree, scope.within) {
+        let id = ItemId {
+            project: scope.project,
+            file: scope.file,
+            item: ty,
+        };
+        if let Some(index) = tree.item(ty).values.iter().position(|v| v.name == *first) {
+            return Ok((ExprTarget::Value(id, index), 1));
+        }
+        let mut hidden = None;
+        let found = pick(db, scope, type_members(db, id, first), &mut hidden)
+            .map_err(|kind| ResolveError { segment: 0, kind })?;
+        if found.is_some() {
+            current = found;
+            break;
+        }
+    }
+    let mut current = match current {
+        Some(found) => found,
+        None => match first_segment_in(db, scope, first, true, true)
+            .map_err(|kind| ResolveError { segment: 0, kind })?
+        {
+            ExprTarget::Item(found) => found,
+            value => return Ok((value, 1)),
+        },
+    };
+    for (segment, name) in path.iter().enumerate().skip(1) {
+        // After a constant or a static, the segments are member accesses on
+        // its value.
+        if let Resolved::Item(item) = current
+            && item_data(db, item).kind == ItemKind::Field
+        {
+            return Ok((ExprTarget::Item(current), segment));
+        }
+        match resolve_static_member(db, scope, &current, name)
+            .map_err(|kind| ResolveError { segment, kind })?
+        {
+            ExprTarget::Item(found) => current = found,
+            value => return Ok((value, segment + 1)),
+        }
+    }
+    Ok((ExprTarget::Item(current), path.len()))
+}
+
+/// Looks `name` up in what `current` names, as `Color.Red` or
+/// `Std.Console` in an expression: a static value member of a type, then
+/// what [`resolve_path`] finds after a segment. An instance member is
+/// reached through a value, which type checking looks up (§4.3).
+pub(crate) fn resolve_static_member(
+    db: &dyn Db,
+    scope: Scope,
+    current: &Resolved,
+    name: &str,
+) -> Result<ExprTarget, ResolveErrorKind> {
+    if let Resolved::Item(ty) = *current {
+        let values = &item_data(db, ty).values;
+        let found = values.iter().position(|value| {
+            value.is_static && value.name == name && value_visible(db, ty, value, scope)
+        });
+        if let Some(index) = found {
+            return Ok(ExprTarget::Value(ty, index));
+        }
+        // Then its nested types and static functions, as `using static`
+        // opens them.
+        let mut hidden = None;
+        return match pick(db, scope, static_members(db, ty, name), &mut hidden)? {
+            Some(found) => Ok(ExprTarget::Item(found)),
+            None => Err(hidden.map_or_else(
+                || ResolveErrorKind::Unresolved {
+                    within: Some(current.clone()),
+                },
+                ResolveErrorKind::NotVisible,
+            )),
+        };
+    }
+    member(db, scope, current, name).map(ExprTarget::Item)
+}
+
+/// Whether code in `from` can see the value member `value` of `ty`.
+pub(crate) fn value_visible(db: &dyn Db, ty: ItemId, value: &ValueMember, from: Scope) -> bool {
+    let same_project = ty.project == from.project;
+    is_visible(db, ty, from)
+        && match value.visibility {
+            Visibility::Public => true,
+            Visibility::Internal => same_project,
+            Visibility::Folder => {
+                let map = def_map(db, ty.project);
+                same_project && map.file_namespace(ty.file) == map.file_namespace(from.file)
+            }
+            Visibility::File => same_project && ty.file == from.file,
+            Visibility::Private => {
+                same_project
+                    && ty.file == from.file
+                    && enclosing_types(item_tree(db, from.file), from.within).any(|t| t == ty.item)
+            }
+        }
+}
+
 /// The first segment, through the levels of the lookup in order.
 fn first_segment(
     db: &dyn Db,
@@ -128,6 +254,23 @@ fn first_segment(
     name: &str,
     with_imports: bool,
 ) -> Result<Resolved, ResolveErrorKind> {
+    match first_segment_in(db, scope, name, with_imports, false)? {
+        ExprTarget::Item(found) => Ok(found),
+        // Value members are looked for only when `with_values` is set.
+        ExprTarget::Value(ty, _) => Ok(Resolved::Item(ty)),
+    }
+}
+
+/// The first segment through the levels of the lookup. With `with_values`,
+/// for an expression, the level of the `using` directives also has the
+/// static value members of the types that `using static` opens (§4.3).
+fn first_segment_in(
+    db: &dyn Db,
+    scope: Scope,
+    name: &str,
+    with_imports: bool,
+    with_values: bool,
+) -> Result<ExprTarget, ResolveErrorKind> {
     let mut hidden = None;
     let tree = item_tree(db, scope.file);
     for ty in enclosing_types(tree, scope.within) {
@@ -141,7 +284,7 @@ fn first_segment(
             name,
         );
         if let Some(found) = pick(db, scope, found, &mut hidden)? {
-            return Ok(found);
+            return Ok(ExprTarget::Item(found));
         }
     }
     let map = def_map(db, scope.project);
@@ -157,7 +300,7 @@ fn first_segment(
             true,
         );
         if let Some(found) = pick(db, scope, found, &mut hidden)? {
-            return Ok(found);
+            return Ok(ExprTarget::Item(found));
         }
         namespace = map.namespace(id).parent;
     }
@@ -167,7 +310,7 @@ fn first_segment(
         global_names(db, scope.project, name),
         &mut hidden,
     )? {
-        return Ok(found);
+        return Ok(ExprTarget::Item(found));
     }
     if with_imports {
         let imports = imports(db, scope.project, scope.file);
@@ -180,22 +323,44 @@ fn first_segment(
         for &namespace in &imports.namespaces {
             found.extend(namespace_members(db, namespace, name, false));
         }
+        let mut values = Vec::new();
         for &ty in &imports.types {
             found.extend(static_members(db, ty, name));
+            if with_values {
+                let members = item_data(db, ty).values.iter().enumerate();
+                values.extend(
+                    members
+                        .filter(|(_, value)| {
+                            value.is_static
+                                && value.name == name
+                                && value_visible(db, ty, value, scope)
+                        })
+                        .map(|(index, _)| (ty, index)),
+                );
+            }
         }
-        if let Some(found) = pick(db, scope, found, &mut hidden)? {
-            return Ok(found);
+        match (values.as_slice(), pick(db, scope, found, &mut hidden)?) {
+            ([], Some(found)) => return Ok(ExprTarget::Item(found)),
+            ([], None) => {}
+            (&[(ty, index)], None) => return Ok(ExprTarget::Value(ty, index)),
+            // A value member and anything else with the name at this level
+            // are ambiguous; each value is named by its type.
+            (values, other) => {
+                let mut candidates: Vec<Resolved> = other.into_iter().collect();
+                candidates.extend(values.iter().map(|&(ty, _)| Resolved::Item(ty)));
+                return Err(ResolveErrorKind::Ambiguous(candidates));
+            }
         }
         if let Some(std) = dependency(db, scope.project, STD) {
             let found = namespace_members(db, std, name, false);
             if let Some(found) = pick(db, scope, found, &mut hidden)? {
-                return Ok(found);
+                return Ok(ExprTarget::Item(found));
             }
         } else if hidden.is_none()
             && !is_std(db, scope.project)
             && (PRELUDE.contains(&name) || imports.opens_external)
         {
-            return Ok(Resolved::External);
+            return Ok(ExprTarget::Item(Resolved::External));
         }
     }
     Err(hidden.map_or(

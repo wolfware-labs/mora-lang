@@ -1,0 +1,18 @@
+// expect: 14
+// expect: 20
+// expect: 3
+// expect: 1
+// expect: -7
+// expect: 2.5
+let a = 2 + 3 * 4;
+let b = (2 + 3) * 4;
+let c = 17 / 5;
+let d = 17 % 4;
+let e = -(3 + 4);
+let f = 5.0 / 2.0;
+Console.WriteLine(a);
+Console.WriteLine(b);
+Console.WriteLine(c);
+Console.WriteLine(d);
+Console.WriteLine(e);
+Console.WriteLine(f);

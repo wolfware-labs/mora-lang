@@ -1,0 +1,38 @@
+top-level {
+    let n#0 = 3;
+    if (n#0 > 10) {
+        Console{external}.WriteLine{external}("large");
+    } else if (n#0 > 1) {
+        Console{external}.WriteLine{external}("small");
+    } else {
+        Console{external}.WriteLine{external}("tiny");
+    }
+    var line#1 = "";
+    for (var i#2 = 0; i#2 < 6; i#2++) {
+        if (i#2 == 3) {
+            continue;
+        }
+        if (i#2 == 5) {
+            break;
+        }
+        line#1 = ((i#2 == 0) ? $"{i#2}" : $"{line#1} {i#2}");
+    }
+    Console{external}.WriteLine{external}(line#1);
+    var sum#3 = 0;
+    var k#4 = 1;
+    while (k#4 <= 3) {
+        sum#3 += k#4;
+        k#4++;
+    }
+    Console{external}.WriteLine{external}(sum#3);
+    var steps#5 = 0;
+    do {
+        steps#5++;
+    } while (steps#5 < 3);
+    Console{external}.WriteLine{external}(steps#5);
+    var once#6 = 0;
+    do {
+        once#6++;
+    } while (false);
+    Console{external}.WriteLine{external}(once#6);
+}

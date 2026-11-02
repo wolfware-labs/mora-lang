@@ -1,0 +1,3 @@
+top-level {
+    Console{external}.WriteLine{external}("Hello, world!");
+}

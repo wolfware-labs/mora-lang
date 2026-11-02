@@ -15,7 +15,8 @@ use mora_testkit::{Backend, Checked, Compiler, Output};
 /// Compiles a toy language, one statement per line, with `//` comments:
 /// `fail MRnnnn` reports an error on the word `fail`, `warn MRnnnn` a
 /// warning, `print text` prints a line, `jit-print text` prints it under the
-/// JIT only, `exit n` sets the exit code and `panic` crashes the compiler.
+/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR
+/// and `panic` crashes the compiler.
 struct Fake {
     backends: &'static [Backend],
 }
@@ -94,6 +95,21 @@ impl Compiler for Fake {
         }
         Ok(output)
     }
+
+    fn hir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        let checked = self.check(path, text);
+        if checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == mora_diag::Severity::Error)
+        {
+            return Err(checked);
+        }
+        Ok(statements(text)
+            .filter(|&(_, word, _)| word == "hir")
+            .map(|(_, _, rest)| format!("{rest}\n"))
+            .collect())
+    }
 }
 
 /// A fresh directory with `files` written below `tests/<suite>`.
@@ -115,7 +131,11 @@ fn ui(root: &Path, options: &Options) -> Report {
 }
 
 fn run(compiler: &Fake, root: &Path) -> Report {
-    run_suite(compiler, root, "tests/run", &Options::default()).unwrap()
+    run_with(compiler, root, &Options::default())
+}
+
+fn run_with(compiler: &Fake, root: &Path, options: &Options) -> Report {
+    run_suite(compiler, root, "tests/run", options).unwrap()
 }
 
 fn bless() -> Options {
@@ -322,26 +342,35 @@ fn run_names_the_backend_that_disagrees() {
 }
 
 #[test]
-fn run_reports_a_failed_build() {
+fn run_reports_a_program_that_does_not_compile_once() {
     let root = suite_dir("run-build", "run", &[("a.mr", "fail MR0300\n")]);
-    let report = run(
-        &Fake {
-            backends: &[Backend::Jit],
-        },
-        &root,
-    );
+    let report = run(&BOTH, &root);
     let problems = failure(&report);
-    assert!(problems.starts_with("jit: the build failed:\nerror[MR0300]: fake failure\n"));
+    assert!(
+        problems.starts_with("the program does not compile:\nerror[MR0300]: fake failure\n"),
+        "{problems}"
+    );
+    assert!(!problems.contains("jit:"), "{problems}");
 }
 
 #[test]
-fn run_without_a_backend_fails() {
-    let root = suite_dir("run-no-backend", "run", &[("a.mr", "print a\n")]);
-    let report = run(&Fake { backends: &[] }, &root);
-    assert_eq!(
-        failure(&report),
-        "the compiler has no backend to run programs with"
+fn run_without_a_backend_compiles_and_compares_the_hir() {
+    let text = "// expect: a\nprint a\nhir one\n";
+    let root = suite_dir("run-no-backend", "run", &[("a.mr", text)]);
+    let none = Fake { backends: &[] };
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(
+        problems.contains("no snapshot; run with --bless"),
+        "{problems}"
     );
+    let report = run_with(&none, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    let hir = root.join("tests/run/a.hir");
+    assert_eq!(fs::read_to_string(&hir).unwrap(), "one\n");
+    assert_eq!(run(&none, &root).failures.len(), 0);
+    fs::write(&hir, "two\n").unwrap();
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(problems.contains("- two\n+ one"), "{problems}");
 }
 
 #[test]
@@ -373,5 +402,36 @@ fn finish_fails_only_when_a_case_failed() {
     assert_eq!(
         failed.summary("run"),
         "run result: FAILED. 1 passed; 1 failed"
+    );
+}
+
+#[test]
+fn run_reports_a_bad_exit_line() {
+    let root = suite_dir(
+        "run-bad-exit",
+        "run",
+        &[("a.mr", "// exit: one\nprint a\n")],
+    );
+    let report = run(&Fake { backends: &[] }, &root);
+    assert_eq!(failure(&report), "line 1: `one` is not an exit code");
+}
+
+#[test]
+fn blessing_an_empty_hir_writes_no_snapshot() {
+    let root = suite_dir("run-bless-empty", "run", &[("a.mr", "print a\n")]);
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert!(!root.join("tests/run/a.hir").exists());
+}
+
+#[test]
+fn a_snapshot_that_cannot_be_written_fails_its_case() {
+    let root = suite_dir("run-bless-dir", "run", &[("a.mr", "hir one\n")]);
+    fs::create_dir(root.join("tests/run/a.hir")).unwrap();
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert!(
+        failure(&report).starts_with("cannot "),
+        "{:?}",
+        report.failures
     );
 }

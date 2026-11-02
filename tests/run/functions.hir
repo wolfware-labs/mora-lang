@@ -1,0 +1,25 @@
+top-level {
+    Console{external}.WriteLine{external}(Fib{fn App.Fib}(10));
+    Console{external}.WriteLine{external}(Twice{fn App.Twice}(3));
+    Console{external}.WriteLine{external}(Factorial{fn App.Factorial}(4));
+    Console{external}.WriteLine{external}(Add{fn App.Add}(3, 4));
+}
+
+fn App.Fib(n#0) {
+    if (n#0 < 2) {
+        return n#0;
+    }
+    return Fib{fn App.Fib}(n#0 - 1) + Fib{fn App.Fib}(n#0 - 2);
+}
+
+fn App.Twice(x#0) => x#0 * 2;
+
+fn App.Factorial(n#0) {
+    Step#1(k#2, acc#3): int => (k#2 <= 1) ? acc#3 : Step#1(k#2 - 1, acc#3 * k#2);
+    return Step#1(n#0, 1);
+}
+
+fn App.Add(a#0, b#1) {
+    let result#2 = a#0 + b#1;
+    return result#2;
+}
