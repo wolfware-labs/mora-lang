@@ -101,8 +101,10 @@ pub(crate) fn body_scope(project: Project, file: SourceFile, owner: BodyOwner) -
         project,
         file,
         within: match owner {
-            BodyOwner::TopLevel => None,
-            BodyOwner::Item(item) => Some(item),
+            BodyOwner::TopLevel | BodyOwner::Extension(..) => None,
+            BodyOwner::Item(item) | BodyOwner::Value(item, _) | BodyOwner::Member(item, _) => {
+                Some(item)
+            }
         },
     }
 }

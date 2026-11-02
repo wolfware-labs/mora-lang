@@ -1,0 +1,29 @@
+// Every member with code is checked: initializers, getters, constructors,
+// operators, indexer accessors and extension members.
+public class Account {
+    private _balance: long = Startt; //~ ERROR MR0127
+    public Balance: long => _balanse; //~ ERROR MR0127
+
+    public Account(start: long) {
+        _balance = strat; //~ ERROR MR0127
+    }
+
+    public this[index: int]: long {
+        get => _balance + indx; //~ ERROR MR0127
+        set { _balance = valeu; } //~ ERROR MR0127
+    }
+}
+
+public struct Money {
+    public Cents: long;
+
+    public operator +(a: Money, b: Money): Money => new Money { Cents = a.Cents + c.Cents }; //~ ERROR MR0127
+}
+
+enum Level { Low = 1, High = Lw + 1 } //~ ERROR MR0127
+
+const Start: long = 10;
+
+extension (m: Money) {
+    public Doubled(): Money => m + n; //~ ERROR MR0127
+}

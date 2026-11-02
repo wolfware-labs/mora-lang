@@ -36,6 +36,14 @@ pub struct SyntaxNode(rowan::SyntaxNode<Mora>);
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SyntaxToken(rowan::SyntaxToken<Mora>);
 
+/// What [`SyntaxNode::child_shapes`] tells about a child.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChildShape {
+    pub(crate) kind: SyntaxKind,
+    pub(crate) is_node: bool,
+    pub(crate) range: TextRange,
+}
+
 /// A child of a node: a node or a token.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SyntaxElement {
@@ -87,6 +95,56 @@ impl SyntaxNode {
         self.0
             .descendants_with_tokens()
             .filter_map(|element| element.into_token().map(SyntaxToken))
+    }
+
+    /// The kind, start and length of each direct child, read from the
+    /// green tree. Unlike [`SyntaxNode::children_with_tokens`], this creates
+    /// no node or token, so the typed views use it to find a child before
+    /// they create the one they return.
+    pub(crate) fn child_shapes(&self) -> impl Iterator<Item = ChildShape> + '_ {
+        let mut offset = self.0.text_range().start();
+        self.0.green().children().map(move |child| {
+            let start = offset;
+            let len = child.text_len();
+            offset += len;
+            ChildShape {
+                kind: <Mora as rowan::Language>::kind_from_raw(child.kind()),
+                is_node: matches!(child, rowan::NodeOrToken::Node(_)),
+                range: TextRange::at(start, len),
+            }
+        })
+    }
+
+    /// The child node that [`SyntaxNode::child_shapes`] described as
+    /// `shape`, the `nodes_before`th child node.
+    pub(crate) fn child_node(&self, shape: ChildShape, nodes_before: usize) -> Option<SyntaxNode> {
+        // A non-empty child is the only one that covers its range; an empty
+        // one may share its offset with others, so it is counted out.
+        if !shape.range.is_empty()
+            && let Some(rowan::NodeOrToken::Node(node)) =
+                self.0.child_or_token_at_range(shape.range)
+            && node.text_range() == shape.range
+        {
+            return Some(SyntaxNode(node));
+        }
+        self.children().nth(nodes_before)
+    }
+
+    /// The child token that [`SyntaxNode::child_shapes`] described as
+    /// `shape`. Tokens are never empty, so its range finds it.
+    pub(crate) fn child_token(&self, shape: ChildShape) -> Option<SyntaxToken> {
+        match self.0.child_or_token_at_range(shape.range)? {
+            rowan::NodeOrToken::Token(token) if token.text_range() == shape.range => {
+                Some(SyntaxToken(token))
+            }
+            // Not reached for a well-formed tree; fall back to a scan.
+            _ => self
+                .0
+                .children_with_tokens()
+                .filter_map(|element| element.into_token())
+                .find(|token| token.text_range() == shape.range)
+                .map(SyntaxToken),
+        }
     }
 
     pub fn first_token(&self) -> Option<SyntaxToken> {

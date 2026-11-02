@@ -8,13 +8,14 @@
 //! edit elsewhere in the file leaves it equal; the ranges are in
 //! [`body_source_map`].
 //!
-//! The owners are the functions of the item tree and the top-level
-//! statements. The bodies of getters, constructors, operators and indexers,
-//! and the initializers of fields and constants, are lowered with type
-//! checking (M1.9), which gives them owners of their own.
+//! Every declaration with code has an owner ([`BodyOwner`]): functions,
+//! getters, constructors, destructors, operators, indexer accessors,
+//! extension members, and the initializers of fields, constants and enum
+//! members. A parameter's default value belongs to its function's body.
 
 mod dump;
 mod lower;
+mod owners;
 mod resolve;
 
 use std::collections::HashMap;
@@ -35,8 +36,41 @@ pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolut
 pub enum BodyOwner {
     /// The top-level statements of the file (§4.6).
     TopLevel,
-    /// A function of the file's item tree.
+    /// A function of the file's item tree, or the initializer of a
+    /// constant or static at namespace level.
     Item(ItemIdx),
+    /// A value member of a type, by its position in [`crate::Item::values`]:
+    /// a field's type and initializer, a getter, or an enum member's value.
+    Value(ItemIdx, u32),
+    /// A member of a type that is neither an item nor a value member, by
+    /// its position among those in the order of the text: a constructor, a
+    /// destructor, an operator, an indexer accessor, or a function or
+    /// getter that implements an interface member.
+    Member(ItemIdx, u32),
+    /// An extension block of the file, by its position among them: member
+    /// 0 is the block itself, which checks the receiver's type, and the
+    /// others its members in the order of the text (§6.9).
+    Extension(u32, u32),
+}
+
+/// What kind of declaration a body comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BodyKind {
+    #[default]
+    TopLevel,
+    Function,
+    /// The initializer of a field, a constant or an enum member.
+    Initializer,
+    Getter,
+    Constructor,
+    Destructor,
+    Operator,
+    /// An indexer's `get` accessor, or an indexer with an expression body.
+    Get,
+    /// An indexer's `set` accessor.
+    Set,
+    /// An extension block itself.
+    Extension,
 }
 
 pub type ExprId = Idx<Expr>;
@@ -49,6 +83,12 @@ pub type TypeId = Idx<TypeRef>;
 /// The statements and expressions of one owner.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Body {
+    /// What kind of declaration it comes from.
+    pub kind: BodyKind,
+    /// The name of a declaration that is not in the item tree, as written:
+    /// `IShape.Area`, an operator's symbol, an extension member's name.
+    /// Empty for the others.
+    pub name: String,
     /// Every expression.
     pub exprs: Arena<Expr>,
     /// Every statement.
@@ -66,6 +106,13 @@ pub struct Body {
     pub type_params: HashMap<TypeId, Vec<String>>,
     /// The parameters of the function, in order.
     pub params: Vec<LocalId>,
+    /// The default value of each parameter that has one.
+    pub defaults: Vec<(LocalId, ExprId)>,
+    /// The parameter and return types of a declaration whose signature the
+    /// item tree does not hold, which are checked with the body.
+    pub signature_types: Vec<TypeId>,
+    /// A constructor's `: this(...)`, as a call of `this`.
+    pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
     /// function declared without a body.
     pub root: Option<ExprId>,
@@ -305,6 +352,8 @@ pub struct MatchArm {
 pub struct Lambda {
     /// The parameters.
     pub params: Vec<LocalId>,
+    /// The default value of each parameter that has one.
+    pub defaults: Vec<(LocalId, ExprId)>,
     /// The capture list.
     pub captures: Vec<Capture>,
     /// Whether it is `async`.
@@ -434,6 +483,8 @@ pub struct LocalFunction {
     pub local: LocalId,
     /// The parameters.
     pub params: Vec<LocalId>,
+    /// The default value of each parameter that has one.
+    pub defaults: Vec<(LocalId, ExprId)>,
     /// The return type as written.
     pub ret: Option<TypeId>,
     /// Whether it is `async`.
@@ -513,13 +564,13 @@ impl BodySourceMap {
     }
 }
 
-/// Every body of a file and its source map: the top-level statements, then
-/// each item indexed like [`crate::ItemTree::items`], `None` for an item
-/// that has no body.
+/// Every body of a file and its source map.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FileBodies {
-    top_level: Lowered,
-    items: Vec<Option<Lowered>>,
+    /// Every owner: the top-level statements first, then the others in the
+    /// order of the text.
+    owners: Vec<BodyOwner>,
+    bodies: HashMap<BodyOwner, Lowered>,
 }
 
 /// A body and its source map, shared so that [`body`] and
@@ -528,7 +579,7 @@ type Lowered = (Arc<Body>, Arc<BodySourceMap>);
 
 #[salsa::tracked(returns(ref))]
 fn file_bodies(db: &dyn Db, file: SourceFile) -> FileBodies {
-    lower::file(&parse(db, file).tree())
+    owners::file(&parse(db, file).tree())
 }
 
 /// The body of `owner` in `file`: empty for an item without one.
@@ -544,30 +595,19 @@ pub fn body_source_map(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Arc<B
 }
 
 fn lowered(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<&Lowered> {
-    let bodies = file_bodies(db, file);
-    match owner {
-        BodyOwner::TopLevel => Some(&bodies.top_level),
-        BodyOwner::Item(item) => bodies
-            .items
-            .get(u32::from(item.into_raw()) as usize)?
-            .as_ref(),
-    }
+    file_bodies(db, file).bodies.get(&owner)
 }
 
-/// The owners of `file` that have a body, in the order of the text: the
-/// top-level statements when there are any, then each function.
+/// The owners of `file` that have a body: the top-level statements when
+/// there are any, then the others in the order of the text.
 pub fn body_owners(db: &dyn Db, file: SourceFile) -> Vec<BodyOwner> {
-    let bodies = file_bodies(db, file);
-    let mut owners = Vec::new();
-    if crate::item_tree(db, file).has_statements() {
-        owners.push(BodyOwner::TopLevel);
-    }
-    owners.extend(bodies.items.iter().enumerate().filter_map(|(index, body)| {
-        body.as_ref()?;
-        let raw = la_arena::RawIdx::from_u32(index as u32);
-        Some(BodyOwner::Item(ItemIdx::from_raw(raw)))
-    }));
-    owners
+    let has_statements = crate::item_tree(db, file).has_statements();
+    file_bodies(db, file)
+        .owners
+        .iter()
+        .copied()
+        .filter(|&owner| has_statements || owner != BodyOwner::TopLevel)
+        .collect()
 }
 
 #[cfg(test)]
@@ -778,6 +818,61 @@ mod tests {
     }
 
     #[test]
+    fn every_declaration_with_code_has_a_body() {
+        let text = "class Counter {\n    private _count: int = 1;\n    \
+                    public Count: int => _count;\n    \
+                    public Counter(start: int = 2) : this(start, 0) { _count = start; }\n    \
+                    public Counter(start: int, extra: int) { _count = start + extra; }\n    \
+                    ~Counter() { _count = 0; }\n    \
+                    public this[i: int]: int { get => _count + i; set { _count = value; } }\n}\n\
+                    struct Money {\n    Cents: int;\n    \
+                    operator +(a: Money, b: Money): Money => new Money { Cents = a.Cents + b.Cents };\n}\n\
+                    enum Level { Low = 1, High = Low + 1 }\n\
+                    const Limit: int = 10;\n\
+                    extension (m: Money) {\n    Doubled(): Money => m + m;\n    Zero: bool => m.Cents == 0;\n}\n";
+        assert_eq!(
+            dump(text),
+            "init UsersApi.Counter._count => 1;\n\n\
+             get UsersApi.Counter.Count => _count{field UsersApi.Counter._count};\n\n\
+             new UsersApi.Counter(start#0 = 2) : this(start#0, 0) {\n    \
+             _count{field UsersApi.Counter._count} = start#0;\n}\n\n\
+             new UsersApi.Counter(start#0, extra#1) {\n    \
+             _count{field UsersApi.Counter._count} = (start#0 + extra#1);\n}\n\n\
+             drop UsersApi.Counter() {\n    _count{field UsersApi.Counter._count} = 0;\n}\n\n\
+             get UsersApi.Counter.this[](i#0) => _count{field UsersApi.Counter._count} + i#0;\n\n\
+             set UsersApi.Counter.this[](i#0, value#1) {\n    \
+             _count{field UsersApi.Counter._count} = value#1;\n}\n\n\
+             operator UsersApi.Money.+(a#0, b#1) => new Money { Cents = a#0.Cents + b#1.Cents };\n\n\
+             init UsersApi.Level.Low => 1;\n\n\
+             init UsersApi.Level.High => Low{enum member UsersApi.Level.Low} + 1;\n\n\
+             init UsersApi.Limit => 10;\n\n\
+             fn extension#0.Doubled(m#0) => m#0 + m#0;\n\n\
+             get extension#0.Zero(m#0) => m#0.Cents == 0;\n"
+        );
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn types_outside_the_item_signatures_are_checked_once() {
+        let text = "class A {\n    F: Strng;\n    A(x: Strng) {}\n    G: Strng => \"\";\n}\n\
+                    struct S {\n    X: Strng;\n}\n\
+                    extension (s: Strng) {\n    H(): Strng => s;\n}\n";
+        assert_eq!(reported(text), ["MR0127"; 6]);
+    }
+
+    #[test]
+    fn a_setter_value_and_constructor_parameters_are_locals() {
+        assert_eq!(
+            reported(
+                "class A {\n    A(x: int) { let x = 1; }\n    public this[i: int]: int { get => 1; set { let value = 2; } }\n}\n"
+            ),
+            ["MR0180", "MR0180"]
+        );
+        // A default cannot read a parameter.
+        assert_eq!(reported("F(a: int, b: int = a) {}\n"), ["MR0127"]);
+    }
+
+    #[test]
     fn a_capture_without_a_name_reports_only_the_syntax_error() {
         assert_eq!(reported("let f = [move] () => 1;\n"), Vec::<String>::new());
     }
@@ -819,9 +914,12 @@ mod tests {
             .map(|owner| match owner {
                 BodyOwner::Item(item) => tree.item(item).name.clone(),
                 BodyOwner::TopLevel => "top".to_owned(),
+                BodyOwner::Value(ty, index) => format!("{}.{index}", tree.item(ty).name),
+                BodyOwner::Member(ty, index) => format!("{}#{index}", tree.item(ty).name),
+                BodyOwner::Extension(index, member) => format!("extension{index}.{member}"),
             })
             .collect();
-        assert_eq!(owners, ["F", "G", "H"]);
+        assert_eq!(owners, ["F", "A#0", "G", "extension0.0", "H", "K"]);
     }
 
     #[test]

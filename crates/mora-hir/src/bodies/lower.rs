@@ -5,52 +5,18 @@ use std::sync::Arc;
 use mora_span::TextRange;
 use mora_syntax::ast::{self, AstNode};
 use mora_syntax::lexer::ident_name;
-use mora_syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
+use mora_syntax::{SyntaxKind, SyntaxToken};
 
 use super::{
-    Arg, ArgMode, BinaryOp, Body, BodySourceMap, Capture, CaptureTarget, Expr, ExprId, FileBodies,
+    Arg, ArgMode, BinaryOp, Body, BodyKind, BodySourceMap, Capture, CaptureTarget, Expr, ExprId,
     InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
     PatId, Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
 };
-use crate::items::item_nodes;
 use crate::type_ref::{LowerTypes, TypeRef, predefined};
 
-/// Lowers every body of `file`.
-pub(super) fn file(file: &ast::SourceFile) -> FileBodies {
-    let items = item_nodes(file).iter().map(function).collect();
-    let mut lower = Lower::new();
-    let mut stmts = Vec::new();
-    let mut range: Option<TextRange> = None;
-    for top in file.top_level_items() {
-        if let ast::TopLevelItem::Stmt(stmt) = top {
-            let at = stmt.syntax().text_range();
-            range = Some(range.map_or(at, |range| range.cover(at)));
-            stmts.push(lower.stmt(&stmt));
-        }
-    }
-    let root = lower.alloc_expr(Expr::Block(stmts), range.unwrap_or_default());
-    lower.body.root = Some(root);
-    FileBodies {
-        top_level: lower.finish(),
-        items,
-    }
-}
-
-/// The body of a function item; `None` for any other item.
-fn function(node: &SyntaxNode) -> Option<Lowered> {
-    let function = ast::FunctionDecl::cast(node.clone())?;
-    let mut lower = Lower::new();
-    for param in function.param_list().iter().flat_map(|list| list.params()) {
-        if let Some(local) = lower.declare(param.name(), LocalKind::Param, None) {
-            lower.body.params.push(local);
-        }
-    }
-    lower.body.root = lower.function_body(function.block(), function.expr_body());
-    Some(lower.finish())
-}
-
-struct Lower {
-    body: Body,
+/// Lowers one body.
+pub(super) struct Lower {
+    pub(super) body: Body,
     map: BodySourceMap,
     types: LowerTypes,
     /// The innermost scope.
@@ -61,8 +27,12 @@ struct Lower {
 }
 
 impl Lower {
-    fn new() -> Self {
-        let mut body = Body::default();
+    pub(super) fn new(kind: BodyKind, name: String) -> Self {
+        let mut body = Body {
+            kind,
+            name,
+            ..Body::default()
+        };
         let scope = body.scopes.alloc(ScopeData {
             parent: None,
             local: None,
@@ -76,12 +46,12 @@ impl Lower {
         }
     }
 
-    fn finish(mut self) -> Lowered {
+    pub(super) fn finish(mut self) -> Lowered {
         self.map.type_paths = self.types.into_paths();
         (Arc::new(self.body), Arc::new(self.map))
     }
 
-    fn alloc_expr(&mut self, expr: Expr, range: TextRange) -> ExprId {
+    pub(super) fn alloc_expr(&mut self, expr: Expr, range: TextRange) -> ExprId {
         self.map.exprs.push(range);
         self.body.exprs.alloc(expr)
     }
@@ -94,7 +64,7 @@ impl Lower {
         self.body.pats.alloc(pat)
     }
 
-    fn ty(&mut self, ty: Option<ast::Type>) -> TypeId {
+    pub(super) fn ty(&mut self, ty: Option<ast::Type>) -> TypeId {
         let ty = self.types.optional(ty.as_ref());
         let id = self.body.types.alloc(ty);
         if !self.type_params.is_empty() {
@@ -125,9 +95,21 @@ impl Lower {
     ) -> Option<LocalId> {
         let token = name?.ident_token()?;
         let name = ident_name(token.text()).into_owned();
+        Some(self.declare_named(name, token.text_range(), kind, ty))
+    }
+
+    /// Declares a local whose name the code does not write, such as a
+    /// `set` accessor's `value`, at `range`.
+    pub(super) fn declare_named(
+        &mut self,
+        name: String,
+        range: TextRange,
+        kind: LocalKind,
+        ty: Option<TypeId>,
+    ) -> LocalId {
         let earlier = self.lookup(&name);
         let local = self.body.locals.alloc(Local { name, kind, ty });
-        self.map.locals.push(token.text_range());
+        self.map.locals.push(range);
         if let Some(earlier) = earlier {
             self.body.shadows.push((local, earlier));
         }
@@ -135,7 +117,78 @@ impl Lower {
             parent: Some(self.scope),
             local: Some(local),
         });
-        Some(local)
+        local
+    }
+
+    /// Puts the type parameters of `list` in scope for the types lowered
+    /// after it.
+    pub(super) fn push_type_params(&mut self, list: &ast::TypeParamList) {
+        self.type_params.extend(
+            list.type_params()
+                .filter_map(|param| param.name()?.ident_token())
+                .map(|token| ident_name(token.text()).into_owned()),
+        );
+    }
+
+    /// Declares the parameters of the body. Their default values are lowered
+    /// first, so a default cannot read a parameter. With `check_types` the
+    /// parameter types are lowered too, for a signature the item tree does
+    /// not hold.
+    pub(super) fn params(&mut self, params: &[ast::Param], check_types: bool) {
+        let defaults: Vec<_> = params
+            .iter()
+            .map(|param| {
+                param.default().map(|default| {
+                    let range = default.syntax().text_range();
+                    self.scoped(|this| this.expr(Some(default), range))
+                })
+            })
+            .collect();
+        for (param, default) in params.iter().zip(defaults) {
+            let ty = if check_types {
+                let ty = self.ty(param.ty());
+                self.body.signature_types.push(ty);
+                Some(ty)
+            } else {
+                None
+            };
+            if let Some(local) = self.declare(param.name(), LocalKind::Param, ty) {
+                self.body.params.push(local);
+                if let Some(default) = default {
+                    self.body.defaults.push((local, default));
+                }
+            }
+        }
+    }
+
+    /// Declares the parameters of a lambda or a local function, with their
+    /// written types; defaults are lowered first, as [`Lower::params`] does.
+    fn local_params(
+        &mut self,
+        params: Vec<(Option<ast::Name>, Option<ast::Type>, Option<ast::Expr>)>,
+    ) -> (Vec<LocalId>, Vec<(LocalId, ExprId)>) {
+        let mut declared = Vec::new();
+        let mut defaults = Vec::new();
+        let lowered: Vec<_> = params
+            .into_iter()
+            .map(|(name, ty, default)| {
+                let default = default.map(|default| {
+                    let range = default.syntax().text_range();
+                    self.scoped(|this| this.expr(Some(default), range))
+                });
+                (name, ty, default)
+            })
+            .collect();
+        for (name, ty, default) in lowered {
+            let ty = self.opt_ty(ty);
+            if let Some(local) = self.declare(name, LocalKind::Param, ty) {
+                declared.push(local);
+                if let Some(default) = default {
+                    defaults.push((local, default));
+                }
+            }
+        }
+        (declared, defaults)
     }
 
     /// Runs `f` and then leaves the scopes it opened.
@@ -146,7 +199,7 @@ impl Lower {
         result
     }
 
-    fn function_body(
+    pub(super) fn function_body(
         &mut self,
         block: Option<ast::Block>,
         expr: Option<ast::ExprBody>,
@@ -176,7 +229,7 @@ impl Lower {
 
     /// A statement. The locals it declares stay in scope after it; the
     /// bindings of `is` patterns in it do not (D-132).
-    fn stmt(&mut self, stmt: &ast::Stmt) -> StmtId {
+    pub(super) fn stmt(&mut self, stmt: &ast::Stmt) -> StmtId {
         let lowered = match stmt {
             ast::Stmt::LocalDeclStmt(it) => return self.local_decl(it.local_decl()),
             ast::Stmt::DeconstructStmt(it) => {
@@ -351,19 +404,18 @@ impl Lower {
         });
         let is_async = has_modifier(function.modifiers(), SyntaxKind::AsyncKw);
         self.scoped(|this| {
-            let params = function
+            let params: Vec<_> = function
                 .param_list()
                 .iter()
                 .flat_map(|list| list.params())
-                .filter_map(|param| {
-                    let ty = this.opt_ty(param.ty());
-                    this.declare(param.name(), LocalKind::Param, ty)
-                })
+                .map(|param| (param.name(), param.ty(), param.default()))
                 .collect();
+            let (params, defaults) = this.local_params(params);
             let body = this.function_body(function.block(), function.expr_body());
             LocalFunction {
                 local,
                 params,
+                defaults,
                 ret,
                 is_async,
                 body,
@@ -408,7 +460,7 @@ impl Lower {
     }
 
     /// An expression; `range` is where a missing one would have been.
-    fn expr(&mut self, expr: Option<ast::Expr>, range: TextRange) -> ExprId {
+    pub(super) fn expr(&mut self, expr: Option<ast::Expr>, range: TextRange) -> ExprId {
         match expr {
             Some(expr) => self.lower_expr(&expr),
             None => self.alloc_expr(Expr::Missing, range),
@@ -583,8 +635,8 @@ impl Lower {
                     .unzip();
                 let is_async = has_modifier(it.modifiers(), SyntaxKind::AsyncKw);
                 let is_static = has_modifier(it.modifiers(), SyntaxKind::StaticKw);
-                let (params, body) = self.scoped(|this| {
-                    let params = it
+                let ((params, defaults), body) = self.scoped(|this| {
+                    let params: Vec<_> = it
                         .lambda_param()
                         .into_iter()
                         .chain(
@@ -592,11 +644,9 @@ impl Lower {
                                 .into_iter()
                                 .flat_map(|list| list.lambda_params()),
                         )
-                        .filter_map(|param| {
-                            let ty = this.opt_ty(param.ty());
-                            this.declare(param.name(), LocalKind::Param, ty)
-                        })
+                        .map(|param| (param.name(), param.ty(), param.default()))
                         .collect();
+                    let params = this.local_params(params);
                     let body = match it.block() {
                         Some(block) => this.block_expr(&block),
                         None => this.expr(it.expr(), range),
@@ -605,6 +655,7 @@ impl Lower {
                 });
                 let lambda = Lambda {
                     params,
+                    defaults,
                     captures,
                     is_async,
                     is_static,
@@ -693,7 +744,7 @@ impl Lower {
             .collect()
     }
 
-    fn args(&mut self, args: impl Iterator<Item = ast::Arg>) -> Vec<Arg> {
+    pub(super) fn args(&mut self, args: impl Iterator<Item = ast::Arg>) -> Vec<Arg> {
         args.map(|arg| {
             let mode = arg.mode().and_then(|mode| match mode.kind() {
                 SyntaxKind::RefKw => Some(ArgMode::Ref),

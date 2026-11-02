@@ -13,7 +13,7 @@ use std::fmt::Write;
 use mora_span::{Db, Project, SourceFile};
 
 use super::{
-    Arg, ArgMode, BinaryOp, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId,
+    Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId,
     InterpPart, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId,
     UnaryOp, body, body_owners, body_resolution,
 };
@@ -36,6 +36,11 @@ pub fn hir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
             indent: 0,
         };
         printer.owner(project, file, owner);
+        // An owner without code, such as a field without an initializer,
+        // prints nothing.
+        if printer.out.is_empty() {
+            continue;
+        }
         if !out.is_empty() {
             out.push('\n');
         }
@@ -57,25 +62,71 @@ impl Printer<'_> {
         let Some(root) = self.body.root else {
             return;
         };
-        match owner {
-            BodyOwner::TopLevel => self.out.push_str("top-level "),
-            BodyOwner::Item(item) => {
-                let id = crate::ItemId {
+        let item = |item| {
+            item_full_name(
+                self.db,
+                crate::ItemId {
                     project,
                     file,
                     item,
-                };
-                let name = item_full_name(self.db, id);
-                let _ = write!(self.out, "fn {name}(");
-                for (index, &param) in self.body.params.iter().enumerate() {
-                    if index > 0 {
-                        self.out.push_str(", ");
-                    }
-                    self.local(param);
-                }
-                self.out.push_str(") ");
+                },
+            )
+        };
+        let name = match owner {
+            BodyOwner::TopLevel => {
+                self.out.push_str("top-level ");
+                self.statement_body(root);
+                self.out.push('\n');
+                return;
             }
+            BodyOwner::Item(idx) => item(idx),
+            BodyOwner::Value(ty, index) => {
+                let values = &crate::item_tree(self.db, file).item(ty).values;
+                format!("{}.{}", item(ty), values[index as usize].name)
+            }
+            BodyOwner::Member(ty, _) => match self.body.kind {
+                BodyKind::Constructor | BodyKind::Destructor => item(ty),
+                _ => format!("{}.{}", item(ty), self.body.name),
+            },
+            BodyOwner::Extension(index, 0) => format!("extension#{index}"),
+            BodyOwner::Extension(index, _) => format!("extension#{index}.{}", self.body.name),
+        };
+        let keyword = match self.body.kind {
+            BodyKind::TopLevel | BodyKind::Function => "fn",
+            BodyKind::Initializer => "init",
+            BodyKind::Getter | BodyKind::Get => "get",
+            BodyKind::Set => "set",
+            BodyKind::Constructor => "new",
+            BodyKind::Destructor => "drop",
+            BodyKind::Operator => "operator",
+            BodyKind::Extension => "extension",
+        };
+        let _ = write!(self.out, "{keyword} {name}");
+        let callable = !matches!(self.body.kind, BodyKind::Initializer | BodyKind::Getter);
+        if callable || !self.body.params.is_empty() {
+            self.out.push('(');
+            for (index, &param) in self.body.params.iter().enumerate() {
+                if index > 0 {
+                    self.out.push_str(", ");
+                }
+                self.local(param);
+                if let Some(&(_, default)) = self
+                    .body
+                    .defaults
+                    .iter()
+                    .find(|&&(local, _)| local == param)
+                {
+                    self.out.push_str(" = ");
+                    self.expr(default);
+                }
+            }
+            self.out.push(')');
         }
+        if let Some(call) = self.body.this_call {
+            self.out.push_str(" : ");
+            self.expr(call);
+        }
+        self.out.push(' ');
         self.statement_body(root);
         self.out.push('\n');
     }

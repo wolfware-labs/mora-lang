@@ -8,7 +8,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken};
+use crate::{SyntaxKind, SyntaxNode, SyntaxNodeChildren, SyntaxToken};
 
 pub use crate::generated::nodes::*;
 
@@ -42,8 +42,21 @@ impl<N: AstNode> Iterator for AstChildren<N> {
 pub(crate) mod support {
     use super::*;
 
+    // These read the kinds of the children from the green tree and create
+    // only the child they return: creating a node or a token allocates, and
+    // most children are whitespace.
+
     pub(crate) fn child<N: AstNode>(parent: &SyntaxNode) -> Option<N> {
-        parent.children().find_map(N::cast)
+        let mut nodes = 0;
+        for shape in parent.child_shapes() {
+            if shape.is_node {
+                if N::can_cast(shape.kind) {
+                    return parent.child_node(shape, nodes).and_then(N::cast);
+                }
+                nodes += 1;
+            }
+        }
+        None
     }
 
     /// The `n`th child that can be viewed as `N`, counting from zero: the
@@ -65,16 +78,17 @@ pub(crate) mod support {
         before: &[SyntaxKind],
     ) -> Option<N> {
         let mut started = after.is_empty();
-        for element in parent.children_with_tokens() {
-            match element {
-                SyntaxElement::Token(token) if !started => started = after.contains(&token.kind()),
-                SyntaxElement::Token(token) if before.contains(&token.kind()) => return None,
-                SyntaxElement::Node(node) if started => {
-                    if let Some(found) = N::cast(node) {
-                        return Some(found);
-                    }
+        let mut nodes = 0;
+        for shape in parent.child_shapes() {
+            if shape.is_node {
+                if started && N::can_cast(shape.kind) {
+                    return parent.child_node(shape, nodes).and_then(N::cast);
                 }
-                _ => {}
+                nodes += 1;
+            } else if !started {
+                started = after.contains(&shape.kind);
+            } else if before.contains(&shape.kind) {
+                return None;
             }
         }
         None
@@ -89,9 +103,9 @@ pub(crate) mod support {
 
     /// The first direct child token whose kind is one of `kinds`.
     pub(crate) fn token(parent: &SyntaxNode, kinds: &[SyntaxKind]) -> Option<SyntaxToken> {
-        parent
-            .children_with_tokens()
-            .filter_map(|element| element.into_token())
-            .find(|token| kinds.contains(&token.kind()))
+        let shape = parent
+            .child_shapes()
+            .find(|shape| !shape.is_node && kinds.contains(&shape.kind))?;
+        parent.child_token(shape)
     }
 }
