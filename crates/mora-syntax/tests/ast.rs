@@ -366,3 +366,40 @@ fn children_read_from_the_back_have_the_same_ranges() {
     assert_eq!(decl.last_token().unwrap().text(), "}");
     assert_eq!(decl.text(), "struct P { X: int; Y: string; }");
 }
+
+#[test]
+fn equality_and_hash_follow_the_place_in_the_tree() {
+    use std::hash::{BuildHasher, RandomState};
+    let state = RandomState::new();
+    let parse = mora_syntax::parse("let x = a + a;\n");
+    let tokens: Vec<_> = parse
+        .syntax()
+        .tokens()
+        .filter(|t| t.text() == "a")
+        .collect();
+    let again: Vec<_> = parse
+        .syntax()
+        .tokens()
+        .filter(|t| t.text() == "a")
+        .collect();
+    assert_eq!(tokens[0], again[0]);
+    assert_ne!(tokens[0], tokens[1]);
+    assert_eq!(state.hash_one(tokens[0]), state.hash_one(again[0]));
+    assert_ne!(state.hash_one(tokens[0]), state.hash_one(tokens[1]));
+    let paths: Vec<_> = parse
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == K::PathExpr)
+        .collect();
+    assert_ne!(state.hash_one(paths[0]), state.hash_one(paths[1]));
+    // Two different tokens at one offset: `let` and the node that starts there.
+    let first = parse.syntax().first_token().unwrap();
+    let let_kw = parse
+        .syntax()
+        .tokens()
+        .find(|t| t.kind() == K::LetKw)
+        .unwrap();
+    assert_eq!(first, let_kw);
+    let x = parse.syntax().tokens().find(|t| t.text() == "x").unwrap();
+    assert_ne!(first, x);
+}
