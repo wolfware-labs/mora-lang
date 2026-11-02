@@ -88,9 +88,12 @@ pub type TypeId = Idx<TypeRef>;
 pub struct Body {
     /// What kind of declaration it comes from.
     pub kind: BodyKind,
-    /// The name of a declaration that is not in the item tree, as written:
-    /// `IShape.Area`, an operator's symbol, an extension member's name.
-    /// Empty for the others.
+    /// The name of the declaration the body belongs to, as written, which
+    /// `MR0123` names: a value member's, `IShape.Area`, an operator's
+    /// symbol, `this[]` for an indexer, the type's for a constructor, an
+    /// extension member's, `extension` for an extension block itself.
+    /// Empty for the top-level statements and the items, whose names the
+    /// item tree holds.
     pub name: String,
     /// Every expression.
     pub exprs: Arena<Expr>,
@@ -1503,18 +1506,34 @@ get extension#0.Empty(items#0) => items#0[0];
                     public Kept: Secret => default;\n    \
                     IShape.Area(x: Secret): int => 1;\n    \
                     Folder(s: Secret) {}\n}\n\
-                    public extension (s: Secret) {\n    public F(x: Secret): int => 1;\n}\n";
+                    public extension (s: Secret) {\n    public F(x: Secret): int => 1;\n    \
+                    public Zero: Secret => default;\n}\n\
+                    public union U { C(x: Secret) }\n\
+                    public class Grid {\n    public this[k: Secret]: int { get => 1; }\n    \
+                    public this[k: Secret, j: int]: int { }\n}\n";
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", text)]);
         let reported = diagnostics(&db, project);
-        assert_eq!(codes(reported), ["MR0123"; 7]);
+        assert_eq!(codes(reported), ["MR0123"; 11]);
         let names: Vec<_> = reported
             .iter()
             .map(|d| d.message.split('`').nth(1).unwrap_or_default().to_owned())
             .collect();
         assert_eq!(
             names,
-            ["Vault", "Current", "+", "this[]", "Kept", "extension", "F"]
+            [
+                "Vault",
+                "Current",
+                "+",
+                "this[]",
+                "Kept",
+                "extension",
+                "F",
+                "Zero",
+                "C",
+                "this[]",
+                "this[]"
+            ]
         );
     }
 

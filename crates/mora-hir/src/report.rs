@@ -2,8 +2,7 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
 use crate::bodies::{
-    Body, BodyError, BodyKind, BodyOwner, LocalKind, body, body_owners, body_resolution,
-    body_scope, body_source_map,
+    BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
@@ -228,8 +227,7 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                             not_a_type(db, &error.name, span, resolved)
                         }
                         SignatureErrorKind::LessVisible { ty, member, .. } => {
-                            let name = member_name(db, file, owner, body);
-                            less_visible(db, &error.name, span, *ty, &name, *member)
+                            less_visible(db, &error.name, span, *ty, &body.name, *member)
                         }
                     }
                 }
@@ -248,23 +246,6 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
     // Each body reports its errors by kind; the file reads them in order.
     out.sort_by_key(|diagnostic| diagnostic.primary.span.range.start());
     out
-}
-
-/// The name of the declaration a body checks the signature types of, for
-/// `MR0123`: a value member's, an operator's symbol, `this[]` for an
-/// indexer, the type's for a constructor, `extension` for an extension
-/// block itself.
-fn member_name(db: &dyn Db, file: SourceFile, owner: BodyOwner, body: &Body) -> String {
-    let tree = item_tree(db, file);
-    match owner {
-        BodyOwner::Value(ty, index) => tree.item(ty).values[index as usize].name.clone(),
-        BodyOwner::Member(ty, _) if body.kind == BodyKind::Constructor => {
-            tree.item(ty).name.clone()
-        }
-        BodyOwner::Extension(_, 0) => "extension".to_owned(),
-        // The others check no signature types but a member's.
-        _ => body.name.clone(),
-    }
 }
 
 /// Where a name that does not resolve was looked up, which decides what is

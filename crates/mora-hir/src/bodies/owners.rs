@@ -503,7 +503,7 @@ fn member_bodies(
 fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Found) {
     let receiver = extension.param();
     let own: Vec<_> = extension.type_param_list().into_iter().collect();
-    let mut header = Lower::new(BodyKind::Extension, String::new());
+    let mut header = Lower::new(BodyKind::Extension, "extension".to_owned());
     header.body.visibility = written(extension.modifiers());
     for list in &own {
         header.push_type_params(list);

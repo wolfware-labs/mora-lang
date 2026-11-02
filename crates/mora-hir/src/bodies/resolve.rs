@@ -130,8 +130,8 @@ fn exposed_visibility(
                 item: ty,
             },
         )),
-        // `private` at namespace level means the declaring file.
-        None if written == Visibility::Private => Visibility::File,
+        // At namespace level, `private` means the declaring file; no type is
+        // narrower than that there, so it checks the same as `private`.
         None => written,
     }
 }
