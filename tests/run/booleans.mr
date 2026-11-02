@@ -1,0 +1,11 @@
+// expect: true
+// expect: false
+// expect: true
+// expect: yes
+let a = 3 < 4;
+let b = a && 2 > 5;
+let c = !b || false;
+Console.WriteLine(a);
+Console.WriteLine(b);
+Console.WriteLine(c);
+Console.WriteLine(a != b ? "yes" : "no");

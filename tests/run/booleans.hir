@@ -1,0 +1,9 @@
+top-level {
+    let a#0 = 3 < 4;
+    let b#1 = a#0 && (2 > 5);
+    let c#2 = (!b#1) || false;
+    Console{external}.WriteLine{external}(a#0);
+    Console{external}.WriteLine{external}(b#1);
+    Console{external}.WriteLine{external}(c#2);
+    Console{external}.WriteLine{external}((a#0 != b#1) ? "yes" : "no");
+}

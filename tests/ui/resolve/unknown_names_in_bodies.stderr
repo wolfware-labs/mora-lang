@@ -1,0 +1,58 @@
+error[MR0127]: cannot find `Yy`
+ --> tests/ui/resolve/unknown_names_in_bodies.mr:6:30
+  |
+6 |     public Sum(): int => X + Yy; //~ ERROR MR0127
+  |                              ^^ not found
+  |
+help: did you mean `Y`?
+  |
+6 -     public Sum(): int => X + Yy; //~ ERROR MR0127
+6 +     public Sum(): int => X + Y; //~ ERROR MR0127
+  |
+
+error[MR0127]: cannot find `totl`
+  --> tests/ui/resolve/unknown_names_in_bodies.mr:12:19
+   |
+12 | Console.WriteLine(totl); //~ ERROR MR0127
+   |                   ^^^^ not found
+   |
+help: did you mean `total`?
+   |
+12 | Console.WriteLine(total); //~ ERROR MR0127
+   |                      +
+
+error[MR0127]: cannot find `Gren` in `App.Color`
+  --> tests/ui/resolve/unknown_names_in_bodies.mr:13:15
+   |
+13 | let c = Color.Gren; //~ ERROR MR0127
+   |               ^^^^ not found
+   |
+help: did you mean `Green`?
+   |
+13 | let c = Color.Green; //~ ERROR MR0127
+   |                  +
+
+error[MR0127]: cannot find `Pont`
+  --> tests/ui/resolve/unknown_names_in_bodies.mr:14:8
+   |
+14 | let v: Pont = new Point { X = 1, Y = 2 }; //~ ERROR MR0127
+   |        ^^^^ not found
+   |
+help: did you mean `Point`?
+   |
+14 | let v: Point = new Point { X = 1, Y = 2 }; //~ ERROR MR0127
+   |          +
+
+error[MR0127]: cannot find `found`
+  --> tests/ui/resolve/unknown_names_in_bodies.mr:20:19
+   |
+20 | Console.WriteLine(found); //~ ERROR MR0127
+   |                   ^^^^^ not found
+
+error[MR0127]: cannot find the local `handle`
+  --> tests/ui/resolve/unknown_names_in_bodies.mr:22:15
+   |
+22 | let f = [move handle] () => 1; //~ ERROR MR0127
+   |               ^^^^^^ no local of this name is in scope
+   |
+   = note: a capture list names locals or parameters of the enclosing code, or `this`

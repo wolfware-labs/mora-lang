@@ -112,6 +112,34 @@ pub struct Item {
     pub parent: Option<ItemIdx>,
     /// The nested types and the functions it declares, in the order of the text.
     pub members: Vec<ItemIdx>,
+    /// The members that hold or give a value: fields, getters, constants,
+    /// enum members and union cases, in the order of the text.
+    pub values: Vec<ValueMember>,
+}
+
+/// A member of a type that an expression reads as a value (§14.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueMember {
+    /// The declared name, in NFC.
+    pub name: String,
+    /// What kind of member it is.
+    pub kind: ValueKind,
+    /// The visibility as written; an enum member and a union case are
+    /// [`Visibility::Public`], so their type alone decides.
+    pub visibility: Visibility,
+    /// Whether it belongs to the type rather than to a value of it: a
+    /// `static` field or getter, a constant, an enum member or a union case.
+    pub is_static: bool,
+}
+
+/// What a [`ValueMember`] declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ValueKind {
+    Field,
+    Getter,
+    Const,
+    EnumMember,
+    UnionCase,
 }
 
 /// What an item declares. `Field` is a `const` or `static` at namespace
@@ -192,6 +220,8 @@ pub struct ItemSource {
     pub modifiers_start: TextSize,
     /// The visibility modifier, when there is one.
     pub visibility: Option<TextRange>,
+    /// The name of each of [`Item::values`], in the same order.
+    pub values: Vec<TextRange>,
 }
 
 /// Where a `using` directive is.
@@ -233,6 +263,31 @@ struct Decl {
     name: Option<ast::Name>,
     modifiers: Vec<ast::Modifier>,
     members: Vec<ast::Member>,
+    values: Vec<(ValueMember, TextRange)>,
+}
+
+/// The syntax node of every item of `file`, indexed like
+/// [`ItemTree::items`]: the walk is the one [`lower`] makes.
+pub(crate) fn item_nodes(file: &ast::SourceFile) -> Vec<SyntaxNode> {
+    fn walk(node: &SyntaxNode, member: bool, out: &mut Vec<SyntaxNode>) {
+        let Some(decl) = decl(node, member) else {
+            return;
+        };
+        if decl.name.and_then(|name| name.ident_token()).is_none() {
+            return;
+        }
+        out.push(node.clone());
+        for member in &decl.members {
+            walk(member.syntax(), true, out);
+        }
+    }
+    let mut out = Vec::new();
+    for top in file.top_level_items() {
+        if let ast::TopLevelItem::Item(item) = top {
+            walk(item.syntax(), false, &mut out);
+        }
+    }
+    out
 }
 
 impl Lowered {
@@ -276,16 +331,12 @@ impl Lowered {
         let mut visibility_range = None;
         let mut is_static = false;
         for token in decl.modifiers.iter().filter_map(|modifier| modifier.kind()) {
-            let written = match token.kind() {
-                SyntaxKind::PrivateKw => Visibility::Private,
-                SyntaxKind::FileKw => Visibility::File,
-                SyntaxKind::InternalKw => Visibility::Internal,
-                SyntaxKind::PublicKw => Visibility::Public,
-                SyntaxKind::StaticKw => {
-                    is_static = true;
-                    continue;
-                }
-                _ => continue,
+            if token.kind() == SyntaxKind::StaticKw {
+                is_static = true;
+                continue;
+            }
+            let Some(written) = self::visibility(token.kind()) else {
+                continue;
             };
             if visibility_range.is_none() {
                 visibility = written;
@@ -299,11 +350,13 @@ impl Lowered {
             is_static,
             parent,
             members: Vec::new(),
+            values: decl.values.iter().map(|(value, _)| value.clone()).collect(),
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
             visibility: visibility_range,
+            values: decl.values.iter().map(|&(_, range)| range).collect(),
         });
         let (signature, source) = type_ref::signature(node);
         self.signatures.push(signature);
@@ -326,6 +379,7 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
         kind,
         name,
         modifiers: modifiers.collect(),
+        values: member_values(&members),
         members,
     };
     let members = |list: Option<ast::MemberList>| {
@@ -341,14 +395,24 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
         return Some(decl(ItemKind::Class, it.name(), it.modifiers(), list));
     }
     if let Some(it) = ast::UnionDecl::cast(node.clone()) {
-        let list = it
-            .union_body()
-            .map(|body| body.members().collect())
-            .unwrap_or_default();
-        return Some(decl(ItemKind::Union, it.name(), it.modifiers(), list));
+        let body = it.union_body();
+        let list = body.iter().flat_map(|body| body.members()).collect();
+        let mut union = decl(ItemKind::Union, it.name(), it.modifiers(), list);
+        let cases = body.iter().flat_map(|body| body.union_cases());
+        let cases = cases.filter_map(|case| case_value(case.name(), ValueKind::UnionCase));
+        union.values.splice(0..0, cases);
+        return Some(union);
     }
     if let Some(it) = ast::EnumDecl::cast(node.clone()) {
-        return Some(decl(ItemKind::Enum, it.name(), it.modifiers(), Vec::new()));
+        let mut decl = decl(ItemKind::Enum, it.name(), it.modifiers(), Vec::new());
+        let members = it
+            .enum_body()
+            .into_iter()
+            .flat_map(|body| body.enum_members());
+        decl.values = members
+            .filter_map(|member| case_value(member.name(), ValueKind::EnumMember))
+            .collect();
+        return Some(decl);
     }
     if let Some(it) = ast::InterfaceDecl::cast(node.clone()) {
         let list = members(it.member_list());
@@ -378,6 +442,76 @@ fn decl(node: &SyntaxNode, member: bool) -> Option<Decl> {
         return Some(decl(ItemKind::Field, name, it.modifiers(), Vec::new()));
     }
     None
+}
+
+/// The fields, getters and constants among `members`.
+fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
+    members
+        .iter()
+        .filter_map(|member| {
+            let (name, modifiers, kind) = match member {
+                ast::Member::FieldDecl(field) => {
+                    let name = field.variable_declarator()?.name();
+                    (name, field.modifiers(), ValueKind::Field)
+                }
+                // `IShape.Name: string => ...` implements an interface
+                // member and declares no name of its own.
+                ast::Member::GetterDecl(getter) if getter.explicit_impl().is_none() => {
+                    (getter.name(), getter.modifiers(), ValueKind::Getter)
+                }
+                _ => return None,
+            };
+            let token = name?.ident_token()?;
+            let mut value = ValueMember {
+                name: ident_name(token.text()).into_owned(),
+                kind,
+                visibility: Visibility::Folder,
+                is_static: false,
+            };
+            let mut has_visibility = false;
+            for token in modifiers.filter_map(|modifier| modifier.kind()) {
+                match token.kind() {
+                    SyntaxKind::StaticKw => value.is_static = true,
+                    SyntaxKind::ConstKw => {
+                        value.kind = ValueKind::Const;
+                        value.is_static = true;
+                    }
+                    kind => {
+                        if let Some(written) = visibility(kind)
+                            && !has_visibility
+                        {
+                            value.visibility = written;
+                            has_visibility = true;
+                        }
+                    }
+                }
+            }
+            Some((value, token.text_range()))
+        })
+        .collect()
+}
+
+/// An enum member or a union case, which is as visible as its type.
+fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, TextRange)> {
+    let token = name?.ident_token()?;
+    let value = ValueMember {
+        name: ident_name(token.text()).into_owned(),
+        kind,
+        visibility: Visibility::Public,
+        is_static: true,
+    };
+    Some((value, token.text_range()))
+}
+
+/// The visibility a modifier keyword writes, if it writes one.
+pub(crate) fn visibility(kind: SyntaxKind) -> Option<Visibility> {
+    match kind {
+        SyntaxKind::PrivateKw => Some(Visibility::Private),
+        SyntaxKind::FileKw => Some(Visibility::File),
+        SyntaxKind::InternalKw => Some(Visibility::Internal),
+        SyntaxKind::PublicKw => Some(Visibility::Public),
+        _ => None,
+    }
 }
 
 /// The start of the first child of a declaration that is not an attribute

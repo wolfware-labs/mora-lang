@@ -65,17 +65,13 @@ fn item_signature(
     file: SourceFile,
     item: ItemIdx,
 ) -> LoweredSignature {
-    let tree = item_tree(db, file);
     let refs = signature_refs(db, file);
     let id = ItemId {
         project,
         file,
         item,
     };
-    let mut type_params = Vec::new();
-    for ty in enclosing_types(tree, Some(item)) {
-        type_params.extend(refs[index(ty)].type_params.iter().cloned());
-    }
+    let type_params = type_params(db, file, Some(item));
     let mut lower = LowerTypes {
         db,
         scope: Scope {
@@ -139,22 +135,32 @@ fn index(idx: ItemIdx) -> usize {
     u32::from(idx.into_raw()) as usize
 }
 
-struct LowerTypes<'db> {
-    db: &'db dyn Db,
+/// Looks up the names in types as written.
+pub(crate) struct LowerTypes<'db> {
+    pub(crate) db: &'db dyn Db,
     /// Where the names are looked up from.
-    scope: Scope,
+    pub(crate) scope: Scope,
     /// The type parameters of the item and of the types around it.
-    type_params: Vec<String>,
+    pub(crate) type_params: Vec<String>,
     /// The field whose type is being lowered, `None` for the item itself.
-    field: Option<usize>,
+    pub(crate) field: Option<usize>,
     /// The effective visibility of the member whose types are being lowered.
-    member: Visibility,
+    pub(crate) member: Visibility,
     /// The errors so far.
-    errors: Vec<SignatureError>,
+    pub(crate) errors: Vec<SignatureError>,
+}
+
+/// The type parameters in scope inside `within` and the types around it.
+pub(crate) fn type_params(db: &dyn Db, file: SourceFile, within: Option<ItemIdx>) -> Vec<String> {
+    let tree = item_tree(db, file);
+    let refs = signature_refs(db, file);
+    enclosing_types(tree, within)
+        .flat_map(|ty| refs[index(ty)].type_params.iter().cloned())
+        .collect()
 }
 
 impl LowerTypes<'_> {
-    fn ty(&mut self, ty: &TypeRef) -> Ty {
+    pub(crate) fn ty(&mut self, ty: &TypeRef) -> Ty {
         match ty {
             TypeRef::Primitive(primitive) => Ty::Primitive(*primitive),
             TypeRef::String => Ty::String,
@@ -531,8 +537,12 @@ mod tests {
             signature_of(&db, project, "src/Program.mr", "X"),
             Signature::Value(Ty::Error)
         );
-        // The parser reports these; the signature adds nothing.
-        assert_eq!(diagnostics(&db, project), &[]);
+        // The parser reports these; the signatures add nothing. The parser
+        // recovers `[, c` as a top-level statement, whose `c` does not
+        // resolve.
+        let reported = diagnostics(&db, project);
+        assert_eq!(codes(reported), ["MR0127"]);
+        assert_eq!(reported[0].message, "cannot find `c`");
     }
 
     #[test]

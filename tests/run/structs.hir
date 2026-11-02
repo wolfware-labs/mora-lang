@@ -1,0 +1,19 @@
+top-level {
+    let p#0 = new Point { X = 3, Y = 4 };
+    Console{external}.WriteLine{external}(p#0.LengthSquared());
+    let q#1 = p#0.Scaled(2);
+    Console{external}.WriteLine{external}(q#1.X);
+    Console{external}.WriteLine{external}(q#1.Y);
+    let zero#2 = new Point { X = 0, Y = 0 };
+    if (zero#2.IsOrigin()) {
+        Console{external}.WriteLine{external}("origin");
+    }
+}
+
+fn App.Point.LengthSquared() => (X{field App.Point.X} * X{field App.Point.X}) + (Y{field App.Point.Y} * Y{field App.Point.Y});
+
+fn App.Point.Scaled(factor#0) => new Point { X = X{field App.Point.X} * factor#0, Y = Y{field App.Point.Y} * factor#0 };
+
+fn App.Point.IsOrigin() {
+    return (X{field App.Point.X} == 0) && (Y{field App.Point.Y} == 0);
+}

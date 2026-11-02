@@ -1,0 +1,29 @@
+// A local may not take the name of a local or parameter in scope (§7.10, D-131).
+let count = 3;
+let count = 4; //~ ERROR MR0180
+
+if (count > 2) {
+    let count = count * 2; //~ ERROR MR0180
+    Console.WriteLine(count);
+}
+
+// Blocks side by side may reuse a name.
+if (count > 0) {
+    let total = 1;
+    Console.WriteLine(total);
+} else {
+    let total = 2;
+    Console.WriteLine(total);
+}
+let total = 3;
+
+let add = (total: int) => total + 1; //~ ERROR MR0180
+
+let pair = (1, 2);
+let same = pair is (let a, let a); //~ ERROR MR0180
+
+Scale(factor: int): int {
+    let factor = 2; //~ ERROR MR0180
+    Twice(factor: int): int => factor * 2; //~ ERROR MR0180
+    return Twice(factor);
+}

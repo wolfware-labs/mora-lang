@@ -1,0 +1,22 @@
+// Names in bodies are looked up after the locals (§14.5).
+public struct Point {
+    public X: int;
+    public Y: int;
+
+    public Sum(): int => X + Yy; //~ ERROR MR0127
+}
+
+enum Color { Red, Green }
+
+let total = 1;
+Console.WriteLine(totl); //~ ERROR MR0127
+let c = Color.Gren; //~ ERROR MR0127
+let v: Pont = new Point { X = 1, Y = 2 }; //~ ERROR MR0127
+
+let o = 1;
+if (o is not var found) {
+    return;
+}
+Console.WriteLine(found); //~ ERROR MR0127
+
+let f = [move handle] () => 1; //~ ERROR MR0127

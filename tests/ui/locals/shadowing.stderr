@@ -1,0 +1,61 @@
+error[MR0180]: `count` is already the name of a local in scope
+ --> tests/ui/locals/shadowing.mr:3:5
+  |
+2 | let count = 3;
+  |     ----- the local `count` is declared here
+3 | let count = 4; //~ ERROR MR0180
+  |     ^^^^^ declared again here
+  |
+  = note: a local may not shadow another; a name can be used again once the first is out of scope
+
+error[MR0180]: `count` is already the name of a local in scope
+ --> tests/ui/locals/shadowing.mr:6:9
+  |
+3 | let count = 4; //~ ERROR MR0180
+  |     ----- the local `count` is declared here
+...
+6 |     let count = count * 2; //~ ERROR MR0180
+  |         ^^^^^ declared again here
+  |
+  = note: a local may not shadow another; a name can be used again once the first is out of scope
+
+error[MR0180]: `total` is already the name of a local in scope
+  --> tests/ui/locals/shadowing.mr:20:12
+   |
+18 | let total = 3;
+   |     ----- the local `total` is declared here
+19 |
+20 | let add = (total: int) => total + 1; //~ ERROR MR0180
+   |            ^^^^^ declared again here
+   |
+   = note: a local may not shadow another; a name can be used again once the first is out of scope
+
+error[MR0180]: `a` is already the name of a local in scope
+  --> tests/ui/locals/shadowing.mr:23:32
+   |
+23 | let same = pair is (let a, let a); //~ ERROR MR0180
+   |                         -      ^ declared again here
+   |                         |
+   |                         the local `a` is declared here
+   |
+   = note: a local may not shadow another; a name can be used again once the first is out of scope
+
+error[MR0180]: `factor` is already the name of a parameter in scope
+  --> tests/ui/locals/shadowing.mr:26:9
+   |
+25 | Scale(factor: int): int {
+   |       ------ the parameter `factor` is declared here
+26 |     let factor = 2; //~ ERROR MR0180
+   |         ^^^^^^ declared again here
+   |
+   = note: a local may not shadow another; a name can be used again once the first is out of scope
+
+error[MR0180]: `factor` is already the name of a local in scope
+  --> tests/ui/locals/shadowing.mr:27:11
+   |
+26 |     let factor = 2; //~ ERROR MR0180
+   |         ------ the local `factor` is declared here
+27 |     Twice(factor: int): int => factor * 2; //~ ERROR MR0180
+   |           ^^^^^^ declared again here
+   |
+   = note: a local may not shadow another; a name can be used again once the first is out of scope

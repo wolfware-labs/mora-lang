@@ -105,43 +105,59 @@ pub fn ui_suite(
     options: &Options,
 ) -> io::Result<Report> {
     suite(root, dir, options, |path, file, text| {
-        let snapshot_file = file.with_extension("stderr");
-        let snapshot = match fs::read_to_string(&snapshot_file) {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return vec![format!("cannot read the snapshot: {error}")],
-        };
         let outcome = ui::check(compiler, path, text);
         let mut problems = outcome.problems;
-        if !options.bless {
-            problems.extend(ui::compare_snapshot(snapshot.as_deref(), &outcome.rendered));
-            return problems;
-        }
-        let written = if outcome.rendered.is_empty() {
-            if snapshot.is_some() {
-                fs::remove_file(&snapshot_file)
-            } else {
-                Ok(())
-            }
-        } else {
-            fs::write(&snapshot_file, &outcome.rendered)
-        };
-        if let Err(error) = written {
-            problems.push(format!("cannot bless the snapshot: {error}"));
-        }
+        let snapshot_file = file.with_extension("stderr");
+        problems.extend(snapshot(&snapshot_file, &outcome.rendered, options.bless));
         problems
     })
 }
 
 /// Runs the run cases in `root/dir`: every `.mr` file below it.
+/// Compares `actual` with the snapshot in `file`, or with `bless` writes it
+/// there; an empty `actual` means no snapshot file. Returns the problems.
+fn snapshot(file: &Path, actual: &str, bless: bool) -> Vec<String> {
+    let snapshot = match fs::read_to_string(file) {
+        Ok(snapshot) => Some(snapshot),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return vec![format!("cannot read the snapshot: {error}")],
+    };
+    if !bless {
+        return ui::compare_snapshot(snapshot.as_deref(), actual)
+            .into_iter()
+            .collect();
+    }
+    let written = if actual.is_empty() {
+        if snapshot.is_some() {
+            fs::remove_file(file)
+        } else {
+            Ok(())
+        }
+    } else {
+        fs::write(file, actual)
+    };
+    match written {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![format!("cannot bless the snapshot: {error}")],
+    }
+}
+
 pub fn run_suite(
     compiler: &dyn Compiler,
     root: &Path,
     dir: &str,
     options: &Options,
 ) -> io::Result<Report> {
-    suite(root, dir, options, |path, _, text| {
-        run::check(compiler, path, text)
+    suite(root, dir, options, |path, file, text| {
+        let outcome = run::check_case(compiler, path, text);
+        let mut problems = outcome.problems;
+        // A program that does not compile has no HIR to compare.
+        let Some(hir) = outcome.hir else {
+            return problems;
+        };
+        let snapshot_file = file.with_extension("hir");
+        problems.extend(snapshot(&snapshot_file, &hir, options.bless));
+        problems
     })
 }
 

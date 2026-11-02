@@ -9,10 +9,6 @@ use mora_testkit::harness::{Options, run_suite};
 fn main() -> ExitCode {
     let options = Options::parse(std::env::args().skip(1));
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    if options.bless {
-        eprintln!("run tests have no snapshots; --bless applies to the ui suite");
-        return ExitCode::FAILURE;
-    }
     match run_suite(compiler(), &root, "tests/run", &options) {
         Ok(report) => report.finish("run"),
         Err(error) => {

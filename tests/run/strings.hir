@@ -1,0 +1,11 @@
+top-level {
+    let name#0 = "Ada";
+    let greeting#1 = ("Hello, " + name#0) + "!";
+    Console{external}.WriteLine{external}(greeting#1);
+    Console{external}.WriteLine{external}($"{name#0} has {name#0.Length} letters");
+    var letters#2 = "";
+    foreach (let c#3 in ["a", "b", "c"]) {
+        letters#2 = (letters#2 + c#3);
+    }
+    Console{external}.WriteLine{external}(letters#2);
+}

@@ -1,7 +1,7 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::defs::{ItemId, NamespaceRef, def_map};
-use crate::items::{Item, ItemIdx, ItemKind, ItemTree, Visibility, item_tree};
+use crate::items::{Item, ItemIdx, ItemKind, ItemTree, ValueMember, Visibility, item_tree};
 
 /// The name of the standard library's root namespace (§4.4).
 pub(crate) const STD: &str = "Std";
@@ -119,6 +119,108 @@ fn resolve(
         })?;
     }
     Ok(current)
+}
+
+/// What a path in an expression names: a declaration, or a value member
+/// of a type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ExprTarget {
+    Item(Resolved),
+    /// The value member at this index of [`Item::values`] of the type.
+    Value(ItemId, usize),
+}
+
+/// Looks a path in an expression up from `scope`, after the locals (§14.5).
+/// The members of the enclosing types include their value members, and a
+/// type's value members are found after the type's name. Once a segment
+/// names a value, the segments after it are member accesses on that value,
+/// which type checking looks up; the result gives how many segments name
+/// the target.
+pub(crate) fn resolve_expr_path(
+    db: &dyn Db,
+    scope: Scope,
+    path: &[String],
+) -> Result<(ExprTarget, usize), ResolveError> {
+    let Some(first) = path.first() else {
+        return Err(ResolveError {
+            segment: 0,
+            kind: ResolveErrorKind::Unresolved { within: None },
+        });
+    };
+    let tree = item_tree(db, scope.file);
+    let mut current = None;
+    for ty in enclosing_types(tree, scope.within) {
+        let id = ItemId {
+            project: scope.project,
+            file: scope.file,
+            item: ty,
+        };
+        if let Some(index) = tree.item(ty).values.iter().position(|v| v.name == *first) {
+            return Ok((ExprTarget::Value(id, index), 1));
+        }
+        let mut hidden = None;
+        let found = pick(db, scope, type_members(db, id, first), &mut hidden)
+            .map_err(|kind| ResolveError { segment: 0, kind })?;
+        if found.is_some() {
+            current = found;
+            break;
+        }
+    }
+    let mut current = match current {
+        Some(found) => found,
+        None => first_segment(db, scope, first, true)
+            .map_err(|kind| ResolveError { segment: 0, kind })?,
+    };
+    for (segment, name) in path.iter().enumerate().skip(1) {
+        match resolve_static_member(db, scope, &current, name)
+            .map_err(|kind| ResolveError { segment, kind })?
+        {
+            ExprTarget::Item(found) => current = found,
+            value => return Ok((value, segment + 1)),
+        }
+    }
+    Ok((ExprTarget::Item(current), path.len()))
+}
+
+/// Looks `name` up in what `current` names, as `Color.Red` or
+/// `Std.Console` in an expression: a value member of a type, then what
+/// [`resolve_path`] finds after a segment.
+pub(crate) fn resolve_static_member(
+    db: &dyn Db,
+    scope: Scope,
+    current: &Resolved,
+    name: &str,
+) -> Result<ExprTarget, ResolveErrorKind> {
+    if let Resolved::Item(ty) = *current {
+        let values = &item_data(db, ty).values;
+        let found = values
+            .iter()
+            .position(|value| value.name == name && value_visible(db, ty, value, scope));
+        if let Some(index) = found {
+            return Ok(ExprTarget::Value(ty, index));
+        }
+    }
+    member(db, scope, current, name).map(ExprTarget::Item)
+}
+
+/// Whether code in `from` can see the value member `value` of `ty`.
+pub(crate) fn value_visible(db: &dyn Db, ty: ItemId, value: &ValueMember, from: Scope) -> bool {
+    let same_project = ty.project == from.project;
+    is_visible(db, ty, from)
+        && match value.visibility {
+            Visibility::Public => true,
+            Visibility::Internal => same_project,
+            Visibility::Folder => {
+                let map = def_map(db, ty.project);
+                same_project && map.file_namespace(ty.file) == map.file_namespace(from.file)
+            }
+            Visibility::File => same_project && ty.file == from.file,
+            Visibility::Private => {
+                same_project
+                    && ty.file == from.file
+                    && enclosing_types(item_tree(db, from.file), from.within).any(|t| t == ty.item)
+            }
+        }
 }
 
 /// The first segment, through the levels of the lookup in order.

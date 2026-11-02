@@ -1,9 +1,10 @@
 //! Benchmarks of the front end on a generated project (§14.3, §20.6).
 //!
 //! - `cold/*` time one query layer that has not run yet. Setup runs the
-//!   layers below it, so each time is that layer's own: `item_tree` excludes
-//!   parsing and `signatures` excludes the def map. `cold/diagnostics` starts
-//!   from a fresh database and is the whole front end.
+//!   layers below it, so each time is that layer's own: `item_tree` and
+//!   `bodies` exclude parsing, `signatures` excludes the def map, and
+//!   `body_resolution` excludes lowering the bodies. `cold/diagnostics`
+//!   starts from a fresh database and is the whole front end.
 //! - `edit/*` change one file of a checked project and check it again.
 //!
 //! `cargo bench -p mora-hir --bench front_end`, or `cargo xtask bench-compare`
@@ -17,7 +18,9 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use mora_hir::{ItemId, def_map, diagnostics, item_tree, parse, signature};
+use mora_hir::{
+    ItemId, body, body_owners, body_resolution, def_map, diagnostics, item_tree, parse, signature,
+};
 use mora_span::{FileId, Project, ProjectKind, SourceFile};
 use salsa::Setter;
 
@@ -167,6 +170,18 @@ fn lowered() -> Generated {
     g
 }
 
+/// Runs `def_map` and lowers every body, for the resolution benchmark.
+fn bodies_lowered() -> Generated {
+    let g = lowered();
+    black_box(def_map(&g.db, g.project));
+    for &file in &g.files {
+        for owner in body_owners(&g.db, file) {
+            black_box(body(&g.db, file, owner));
+        }
+    }
+    g
+}
+
 /// Every item of every file, for the signature benchmark.
 fn items(g: &Generated) -> Vec<ItemId> {
     g.files
@@ -235,6 +250,34 @@ fn cold(c: &mut Criterion) {
                     black_box(signature(&g.db, item));
                 }
                 (g, items)
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("bodies", |b| {
+        b.iter_batched(
+            parsed,
+            |g| {
+                for &file in &g.files {
+                    for owner in body_owners(&g.db, file) {
+                        black_box(body(&g.db, file, owner).exprs.len());
+                    }
+                }
+                g
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("body_resolution", |b| {
+        b.iter_batched(
+            bodies_lowered,
+            |g| {
+                for &file in &g.files {
+                    for owner in body_owners(&g.db, file) {
+                        black_box(body_resolution(&g.db, g.project, file, owner).paths.len());
+                    }
+                }
+                g
             },
             BatchSize::LargeInput,
         );

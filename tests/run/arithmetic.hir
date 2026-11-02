@@ -1,0 +1,14 @@
+top-level {
+    let a#0 = 2 + (3 * 4);
+    let b#1 = (2 + 3) * 4;
+    let c#2 = 17 / 5;
+    let d#3 = 17 % 4;
+    let e#4 = -(3 + 4);
+    let f#5 = 5.0 / 2.0;
+    Console{external}.WriteLine{external}(a#0);
+    Console{external}.WriteLine{external}(b#1);
+    Console{external}.WriteLine{external}(c#2);
+    Console{external}.WriteLine{external}(d#3);
+    Console{external}.WriteLine{external}(e#4);
+    Console{external}.WriteLine{external}(f#5);
+}

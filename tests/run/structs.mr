@@ -1,0 +1,26 @@
+// expect: 25
+// expect: 6
+// expect: 8
+// expect: origin
+public struct Point {
+    public X: int;
+    public Y: int;
+
+    public LengthSquared(): int => X * X + Y * Y;
+
+    public Scaled(factor: int): Point => new Point { X = X * factor, Y = Y * factor };
+
+    public IsOrigin(): bool {
+        return X == 0 && Y == 0;
+    }
+}
+
+let p = new Point { X = 3, Y = 4 };
+Console.WriteLine(p.LengthSquared());
+let q = p.Scaled(2);
+Console.WriteLine(q.X);
+Console.WriteLine(q.Y);
+let zero = new Point { X = 0, Y = 0 };
+if (zero.IsOrigin()) {
+    Console.WriteLine("origin");
+}

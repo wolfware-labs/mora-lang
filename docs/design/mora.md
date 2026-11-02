@@ -1127,7 +1127,7 @@ let status = match (store.Find(id)) {
 | Member | `{ Name: "Ada", Age: > 18 }`, `{ } x` | Members match nested patterns; `{ }` matches any value other than `none` |
 | List | `[1, 2, .. let rest]`, `[_, _]` | Arrays, lists and spans by length and elements |
 
-`e is pattern` is a `bool` expression; bindings in it are definitely assigned where the expression is known to be true.
+`e is pattern` is a `bool` expression; bindings in it are definitely assigned where the expression is known to be true. They are in scope from the pattern to the end of the statement that holds the expression: the rest of the condition and both branches of an `if`, the condition and body of a `while`, the rest of a `let` initializer. They are not in scope after that statement, so `if (o is not User u) { return; }` does not leave `u` usable below it (D-132). The bindings of a `match` arm are in scope in its guard and its body.
 
 **Exhaustiveness.** A `match` over a type with finitely many shapes (`bool`, enums without `@Flags`, unions, options, results, tuples of those) MUST cover every value. The compiler checks this with the usefulness algorithm of Maranget (§25). Error `MR0170` lists one missing value, for example `missing case: Rect(_, _)`. An arm that can never match is warning `MR2010`. Matching on integers or strings requires a `_` arm unless the patterns cover every value (for example all 256 `byte` values).
 
@@ -1150,7 +1150,19 @@ let status = match (store.Find(id)) {
 
 A local always starts with `let` or `var`. An explicit type goes after the name and a colon.
 
-Reassigning a `let` local is error `MR0182`. Lint `prefer-let` (warn by default) flags a `var` that is never reassigned. A local MUST NOT shadow another local or parameter of an enclosing scope (`MR0180`).
+Reassigning a `let` local is error `MR0182`. Lint `prefer-let` (warn by default) flags a `var` that is never reassigned.
+
+A local is in scope from its declaration to the end of the block that declares it; a local function is in scope in its own body too, so it can call itself. A parameter is in scope in its function's body. A local, a parameter of a lambda or local function, or a binding of a pattern MUST NOT take the name of a local or parameter that is in scope where it is declared (`MR0180`, D-131). This covers a second declaration in the same block, an inner block, a lambda inside the function, and two bindings of one pattern. Blocks side by side may use one name, because the first one's local is out of scope when the second declares its own:
+
+```mora
+if (ok) {
+    let total = 1;
+} else {
+    let total = 2;   // allowed: the other `total` is out of scope
+}
+let total = 3;       // allowed for the same reason
+let total = 4;       // MR0180: `total` is in scope
+```
 
 ### 7.11 Statements
 
@@ -3289,6 +3301,8 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-128 | Wiring costs nothing beyond the services: a generated scope struct in the root's frame or future, eager construction, direct calls and destructors for teardown; laziness is an explicit `() => T`; factories may be async and fail; decorators, generic bindings with declared parameters, tests by overriding blocks with `uses none`, and plugins [post-MVP] complete the model; the checks run in `mora check` and the language server | user | 16.4 |
 | D-129 | The pattern-matching construct is spelled `match`, a contextual keyword that starts a `match` only before a parenthesized scrutinee and `{`; `switch` is not a keyword | user | 3.4, 7.7, 14.4 |
 | D-130 | The project domain is `moralang.org`; installers and project links use it | user | 17.10, 19.3 |
+| D-131 | One rule for `MR0180`: a local, a lambda or local-function parameter, or a pattern binding may not take the name of a local or parameter in scope, including in the same block; side-by-side blocks may reuse a name | user | 7.10 |
+| D-132 | The bindings of an `is` pattern are in scope to the end of the statement that holds it, so a negated test with an early return does not bind for the code after it | user | 7.8 |
 
 ## 24. Open questions
 

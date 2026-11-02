@@ -1,0 +1,13 @@
+// expect: 10
+// expect: 13
+// expect: 26
+// expect: 25
+let start = 10;
+var total = start;
+Console.WriteLine(total);
+total += 3;
+Console.WriteLine(total);
+total = total * 2;
+Console.WriteLine(total);
+total--;
+Console.WriteLine(total);

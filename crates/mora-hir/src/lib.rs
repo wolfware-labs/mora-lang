@@ -16,6 +16,7 @@
 //! [`diagnostics`] reports what is wrong with a project's folders, `using`
 //! directives and entry point.
 
+mod bodies;
 mod defs;
 mod items;
 mod name;
@@ -29,12 +30,18 @@ mod type_ref;
 #[cfg(test)]
 mod test_db;
 
+pub use bodies::{
+    Arg, ArgMode, BinaryOp, Body, BodyOwner, BodyResolution, BodySourceMap, Capture, CaptureTarget,
+    Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, MatchArm,
+    Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId, Target, TypeId, UnaryOp,
+    ValueRef, body, body_owners, body_resolution, body_source_map, hir_dump,
+};
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
 pub use items::{
-    Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, Visibility,
-    item_source_map, item_tree, parse,
+    Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
+    ValueMember, Visibility, item_source_map, item_tree, parse,
 };
 pub use name::pascal_case;
 pub use report::diagnostics;
@@ -46,3 +53,4 @@ pub use ty::{
     Construct, Field, FnSignature, Param, ParamMode, Primitive, Signature, TupleElem, Ty,
     Unsupported,
 };
+pub use type_ref::{PathRef, TypeRef};

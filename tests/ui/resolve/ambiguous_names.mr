@@ -5,7 +5,7 @@ using UsersApi.Billing; //~ ERROR MR0128
 using UsersApi.Shipping;
 using static UsersApi.Store.Item; //~ ERROR MR0128
 
-Run();
+Console.WriteLine("ok");
 //@ file src/Store/Item.mr
 internal class Item {
 }
