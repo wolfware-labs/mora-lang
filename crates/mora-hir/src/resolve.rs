@@ -187,8 +187,9 @@ pub(crate) fn resolve_expr_path(
 }
 
 /// Looks `name` up in what `current` names, as `Color.Red` or
-/// `Std.Console` in an expression: a value member of a type, then what
-/// [`resolve_path`] finds after a segment.
+/// `Std.Console` in an expression: a static value member of a type, then
+/// what [`resolve_path`] finds after a segment. An instance member is
+/// reached through a value, which type checking looks up (§4.3).
 pub(crate) fn resolve_static_member(
     db: &dyn Db,
     scope: Scope,
@@ -197,9 +198,9 @@ pub(crate) fn resolve_static_member(
 ) -> Result<ExprTarget, ResolveErrorKind> {
     if let Resolved::Item(ty) = *current {
         let values = &item_data(db, ty).values;
-        let found = values
-            .iter()
-            .position(|value| value.name == name && value_visible(db, ty, value, scope));
+        let found = values.iter().position(|value| {
+            value.is_static && value.name == name && value_visible(db, ty, value, scope)
+        });
         if let Some(index) = found {
             return Ok(ExprTarget::Value(ty, index));
         }

@@ -31,10 +31,11 @@ mod type_ref;
 mod test_db;
 
 pub use bodies::{
-    Arg, ArgMode, BinaryOp, Body, BodyOwner, BodyResolution, BodySourceMap, Capture, CaptureTarget,
-    Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, MatchArm,
-    Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId, Target, TypeId, UnaryOp,
-    ValueRef, body, body_owners, body_resolution, body_source_map, hir_dump,
+    Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
+    CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
+    LocalKind, MatchArm, Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId,
+    Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution, body_source_map,
+    hir_dump,
 };
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,

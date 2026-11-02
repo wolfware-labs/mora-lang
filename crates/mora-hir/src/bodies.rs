@@ -1442,4 +1442,36 @@ get extension#0.Empty(items#0) => items#0[0];
             ["MR0127"]
         );
     }
+
+    #[test]
+    fn a_type_name_reaches_only_static_value_members() {
+        let text = "public class Counter {\n    public const Max: int = 3;\n    \
+                    public Count: int => 1;\n    public static Total: int = 0;\n}\n\
+                    let a = Counter.Max;\nlet b = Counter.Total;\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            reported(&format!("{text}let c = Counter.Count;\n")),
+            ["MR0127"]
+        );
+    }
+
+    #[test]
+    fn more_constructs_print() {
+        let text = "public struct P {\n    public X: int;\n}\n\
+                    F(p: P, n: int) {\n    \
+                    let made = new P(1);\n    let empty = new P {};\n    \
+                    let isInt = n is int;\n    \
+                    let f = [move nope] () => 1;\n    \
+                    match (p) {\n        p.Q(_) => {}\n    }\n}\n";
+        let dumped = dump(text);
+        for expected in [
+            "let made#2 = new P(1);",
+            "let empty#3 = new P {};",
+            "let isInt#4 = n#1 is int;",
+            "let f#5 = [move nope{error}] () => 1;",
+            "p#0.Q(_) => {},",
+        ] {
+            assert!(dumped.contains(expected), "{expected}\n{dumped}");
+        }
+    }
 }
