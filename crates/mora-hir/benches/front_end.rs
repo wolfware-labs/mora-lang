@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 use std::hint::black_box;
+use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mora_hir::{ItemId, def_map, diagnostics, item_tree, parse, signature};
@@ -157,6 +158,9 @@ fn items(g: &Generated) -> Vec<ItemId> {
 
 fn cold(c: &mut Criterion) {
     let mut group = c.benchmark_group("cold");
+    // Each iteration takes tens of milliseconds, so 100 samples need longer
+    // than criterion's default five seconds.
+    group.sample_size(50).measurement_time(Duration::from_secs(8));
     group.bench_function("parse", |b| {
         b.iter_batched(
             generate,
