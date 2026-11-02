@@ -325,7 +325,7 @@ impl Lowered {
     /// Adds the declaration `node` and its nested types and functions.
     /// Declarations without a name, and kinds the tree does not keep, give `None`.
     fn item(&mut self, node: &SyntaxNode, parent: Option<ItemIdx>) -> Option<ItemIdx> {
-        let decl = decl(node, parent.is_some())?;
+        let mut decl = decl(node, parent.is_some())?;
         let name = decl.name?.ident_token()?;
         let mut visibility = Visibility::Folder;
         let mut visibility_range = None;
@@ -343,6 +343,7 @@ impl Lowered {
                 visibility_range = Some(token.text_range());
             }
         }
+        let (values, value_ranges) = std::mem::take(&mut decl.values).into_iter().unzip();
         let idx = self.tree.items.alloc(Item {
             name: ident_name(name.text()).into_owned(),
             kind: decl.kind,
@@ -350,13 +351,13 @@ impl Lowered {
             is_static,
             parent,
             members: Vec::new(),
-            values: decl.values.iter().map(|(value, _)| value.clone()).collect(),
+            values,
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
             visibility: visibility_range,
-            values: decl.values.iter().map(|&(_, range)| range).collect(),
+            values: value_ranges,
         });
         let (signature, source) = type_ref::signature(node);
         self.signatures.push(signature);

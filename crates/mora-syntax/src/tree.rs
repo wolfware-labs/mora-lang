@@ -116,11 +116,19 @@ impl SyntaxNode {
     }
 
     /// The child node that [`SyntaxNode::child_shapes`] described as
-    /// `shape`, the `nodes_before`th child node. Walking the child nodes
-    /// skips the tokens between them without creating them.
+    /// `shape`, the `nodes_before`th child node. A non-empty child is the
+    /// only one that covers its range, so the range finds it without
+    /// creating the nodes before it. An empty one, which the parser leaves
+    /// where it recovered, may share its offset with others, so it is
+    /// counted out among the child nodes.
     pub(crate) fn child_node(&self, shape: ChildShape, nodes_before: usize) -> Option<SyntaxNode> {
-        let node = self.children().nth(nodes_before)?;
+        let node = if shape.range.is_empty() {
+            self.children().nth(nodes_before)?
+        } else {
+            SyntaxNode(self.0.child_or_token_at_range(shape.range)?.into_node()?)
+        };
         debug_assert_eq!(node.kind(), shape.kind);
+        debug_assert_eq!(node.text_range(), shape.range);
         Some(node)
     }
 

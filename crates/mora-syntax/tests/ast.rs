@@ -302,3 +302,17 @@ fn a_token_after_a_child_node_is_found() {
     assert_eq!(bin.op().unwrap().kind(), K::Plus);
     assert_eq!(bin.rhs().unwrap().syntax().text(), "b");
 }
+
+#[test]
+fn an_empty_child_node_is_found() {
+    // The parser recovers from the missing element with an empty node.
+    let parse = mora_syntax::parse("let x = [, c];\n");
+    let list = parse
+        .syntax()
+        .descendants()
+        .find_map(ast::CollectionExpr::cast)
+        .unwrap();
+    let first = list.collection_elem().unwrap();
+    assert!(first.syntax().text_range().is_empty());
+    assert!(first.expr().is_none());
+}
