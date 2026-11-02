@@ -74,7 +74,7 @@ The release lines follow from that:
 
 | Line | Milestones | Contents |
 |---|---|---|
-| **MVP (v0.1)** | M0 to M7 | Native compilation with Cranelift, the memory model, the expressive core, macros, the standard library core, async with a single-threaded executor, HTTP/1.1 server, JSON, LSP, VS Code extension, formatter, REPL, installers |
+| **MVP (v0.1)** | M0 to M7 | Native compilation with Cranelift, the memory model, the expressive core, macros, the standard library core, async with a single-threaded executor, HTTP/1.1 server, JSON, compile-time dependency injection, LSP, VS Code extension, formatter, REPL, installers |
 | **v0.2** | M8, M9, M16 | WebAssembly target and `.wasm` libraries, a stable plugin ABI, packages from URL and git sources, capability enforcement, semantic diff and semver checks (contracts join in v0.3), editions, `mora query`, `mora context` and `mora mcp` |
 | **v0.3** | M14, M15, M17 | Contract sections, property tests, unit algebra, compile-time evaluation, the simulated World, test caching, record and replay, hot reload, time zones, `@Config`, retry policies |
 | **v0.4** | M10, M11, M18 | Threads and `shared` classes, worker processes, class inheritance, `async?`, more macro kinds, arenas, `decimal`, general reuse, vector types, devirtualization |
@@ -1233,7 +1233,8 @@ A bare interface type is never a box (D-67):
 
 - **In a parameter**, `Print(value: IDisplay)` declares an implicit type parameter: it means `Print<T>(value: T) where T : IDisplay`. Each call is monomorphized and statically dispatched.
 - **In a return type**, `Active(): IEnumerable<User>` declares an opaque type: the function returns one concrete type, which callers see only through the interface. Returning two different concrete types is error `MR0237`; the fix is to return `any IEnumerable<User>`.
-- **Anywhere else** (a field, a type argument, a local with a written type, an array element), a bare interface type is error `MR0236`, because a value stored there must be boxed; write `any I` (§8.4).
+- **In a field of a class or unique class**, `_store: IUserStore` declares an implicit type parameter of the class, constrained to the interface, and the field has that type (D-123). Each `new` fixes it to the concrete type of the value the field receives, so every call through the field is direct and its effects are known (§6.14). A field that would receive two different concrete types in one instantiation, as `_store = cached ? new CachingStore(inner) : inner;` would, is error `MR0239`, whose fix writes `any IUserStore` on the field. Naming such a class without its implicit parameters follows the rules of this list for a bare interface: a parameter makes the function generic over them, a return type is opaque, and a field of a class gives that class implicit parameters too, so they spread to the classes that hold it. Implicit parameters are never written in source; hover, diagnostics and `mora expand` show them as type arguments, `OrderService<SqlUserStore>`. This is how injected services stay statically dispatched (§16.4).
+- **Anywhere else** (a field of a struct or union, a type argument, a local with a written type, an array element), a bare interface type is error `MR0236`, because a value stored there must be boxed; write `any I` (§8.4).
 
 ```mora
 public static Print(value: IDisplay) {
@@ -1254,6 +1255,7 @@ public static TotalArea(shapes: List<any IShape>): double {
 - Converting a move-only value to an interface value is error `MR0230` in the MVP (OQ-10).
 - `any I` is allowed only if `I` has no static abstract members and no generic methods (`MR0231`). An associated type constrained to an interface `J` is erased to `any J`: through an `any IEnumerable<T>` value, `GetEnumerator()` returns a boxed `IEnumerator<T>`. An opaque return (§8.3), `GetUsers(): IEnumerable<User>`, keeps the concrete iterator and has no box.
 - `is C c`, `as C` and `(C)i` test the concrete type through the type identifier in the vtable (§13.6). There is no other run-time type information.
+- `any I` implements `I`: it satisfies a constraint `T : I` and can bind an implicit type parameter (§8.3), and each call through it goes through the vtable.
 
 ### 8.5 Built-in interfaces
 
@@ -2408,6 +2410,8 @@ await app.RunAsync("127.0.0.1:8080")?;            // address argument overrides 
 
 **Handlers.** A handler is a function from `Request` to a future of `Result<Response, E>`, for any copyable error type `E : IError` (D-108; type parameters are copyable by default, §8.2, as `Result`'s are), written as an async lambda and taken as a `move` parameter, so it becomes an escaping closure (§10.9). `HttpError` is the error type of the built-in failures, and an application returns its own error types directly, with no conversion to `HttpError`. `MapGet`, `MapPost`, `MapPut`, `MapPatch`, `MapDelete` and `Map(method, pattern, handler)` register them. They are generic over `E`, so each registration compiles a wrapper that turns `Err(e)` into the response §16.2 describes, reading `e`'s members without boxing it. The route table stores these wrappers together, so when a request arrives the router boxes the wrapper's future with `Future.Box`: one allocation per request, counted in the §20.6 budget.
 
+A handler may take more parameters than the `Request`. Each map call runs its handler as a root of the app's services, so those parameters are services injected for each request (§16.4).
+
 **Routing.** Patterns are literal segments and `{name}` parameters, plus an optional trailing `{*rest}`. Routes are matched by segment, literal segments before parameters, and the first registration wins among equal routes. A path that matches no route returns 404; a path that matches only with another method returns 405 with an `Allow` header. Duplicate registrations panic at startup.
 
 **`Request`.** `Method`, `Path`, `Query` (a `QueryString` with `Get(name)` returning `string?`), `Headers` (case-insensitive `Get`), `Route` (the matched `{name}` values), `RouteValue<T>(name)` returning `Result<T, HttpError>` for `T : IParse`, `Body` (`ReadOnlySpan<byte>` over the buffered body), `ReadTextAsync()`, `ReadJsonAsync<T>()` returning `Result<T, HttpError>`.
@@ -2481,6 +2485,164 @@ public union HttpError : IError, IFrom<JsonError>, IFrom<ParseError> {
 `JsonError` carries the line, column and a message. Its `ToString()` is `at line 1, column 2: expected string`, which is how §2.2's expected output is produced.
 
 **Limits.** Nesting depth 128 (configurable). Input must be valid UTF-8. Duplicate property names on input: the last one wins, as in System.Text.Json.
+
+### 16.4 Dependency injection (`Std.Inject`)
+
+A program lists its services once, at startup, and the compiler wires them (D-122). The compiler reads the list when it builds the program, checks the whole graph then, and compiles the constructor calls a person would write by hand. Nothing of the list exists at run time: there is no container, no way to ask for a service by type and no property injection.
+
+```mora
+// src/Program.mr
+using Std.Inject;
+using Std.Net.Http;
+
+let builder = WebApp.CreateBuilder(args);
+builder.Services.AddSingleton<IUserStore, MemoryUserStore>();
+builder.Services.AddScoped<IAuditLog, FileAuditLog>();
+builder.Services.AddTransient<IMailer, SmtpMailer>();
+@Cfg(Debug = true)
+builder.Services.Replace<IMailer, ConsoleMailer>();
+let app = builder.Build();
+
+// The server provides `Request`; the other parameters are injected for each request
+app.MapPost("/users", async (req: Request, users: IUserStore, audit: IAuditLog, mailer: IMailer) => {
+    let input = await req.ReadJsonAsync<NewUser>()?;
+    let user = users.Add(input);
+    audit.Record($"created user {user.Id}");
+    mailer.QueueWelcome(user);
+    return Results.Created($"/users/{user.Id}", user);
+});
+
+await app.RunAsync("127.0.0.1:8080")?;
+```
+
+**Registration.**
+
+- `Services` is a registration list. `new Services()` creates an empty one, and a host creates one for its program, as `WebApp.CreateBuilder(args).Services` does. A registration call compiles to no code.
+- Each lifetime has three forms, shown for `AddScoped`; `AddSingleton` and `AddTransient` take the same ones:
+  - `AddScoped<IAuditLog, FileAuditLog>()` binds a service type to an implementation, which MUST satisfy `FileAuditLog : IAuditLog`.
+  - `AddScoped<AuditLog>()` binds a class to itself.
+  - `AddScoped<IAuditLog>(factory)` binds it to a factory: a lambda or method group whose parameters are injected and which returns the implementation, `Result<TImpl, E>`, or, when `async`, a future of either. A factory is `static` (§7.6) whether or not it says so, so a capture is `MR0332`.
+- The service type, an interface or a class, is what consumers ask for. A consumer parameter of the bare interface type receives the implementation through an implicit type parameter (§8.3); one declared `any I` receives it boxed (§8.4).
+- **Constructor injection.** Without a factory, the implementation is built by its constructor, whose parameters are its dependencies; nothing marks them. The implementation MUST declare exactly one constructor visible at the registration, or none and an initializer on every field. Otherwise it is `MR0708`, whose fix registers a factory that calls the constructor meant.
+- **Readable when the program builds.** A registration MUST be a statement that runs every time the list is built: not inside a branch, a loop or a lambda, in the function that creates the list or in a *registration function* that receives it as a parameter (usually an extension on `Services`, §6.9) and is called the same way. The list MUST NOT be stored in a field, captured, returned or changed after it is built. Each of these is `MR0700`. The only condition allowed is `@Cfg` on the statement (§6.11, §17.2), so a profile, a target, a feature or `mora test` can have its own registrations.
+- **Run-time choices** go through a factory, which returns `any I` when the implementation depends on a run-time value. Only the calls on that service are then dynamic:
+
+  ```mora
+  builder.Services.AddSingleton<IUserStore>(UserStores.Create);
+
+  public static class UserStores {
+      public static Create(): any IUserStore {
+          if (Environment.GetEnvironmentVariable("USERS_FILE") is string path) {
+              return new FileUserStore(path);
+          }
+          return new MemoryUserStore();
+      }
+  }
+  ```
+
+- **One registration per service.** Registering one service type twice is `MR0701`, which names both places. The registrations a library makes in its own registration functions, such as `services.AddHttpClient()`, are *defaults*: the app's own registration of the same service replaces a default wherever either is written, and two libraries that give a default for one service are `MR0701`.
+- **Replacing on purpose.** `Replace<IMailer, ConsoleMailer>()` and `Replace<IMailer>(factory)` replace the registration of a service, wherever they are written, and keep its lifetime. A `Replace` with nothing to replace is `MR0702`, and a second `Replace` of one service is `MR0701`. No other registration depends on order: no registration wins by coming last, and none is added only if absent.
+
+**Lifetimes** (D-124).
+
+- **Singleton.** Built once when the list is built (below), in dependency order, before any root runs. A singleton object is immortal (§13.3): it is never retained, released or freed, its destructor does not run (OQ-27), and the leak report of §10.11 does not count it.
+- **Scoped.** Built once per scope (below), and released when the scope ends.
+- **Transient.** One constructor call for each consumer, which owns the result.
+- A move-only implementation (§10.2) MUST be transient, because the consumers of a singleton or scoped service share it (`MR0711`).
+- **Captive dependencies.** A service MUST NOT depend on one that dies before it: a singleton on a scoped service, a service of an outer scope on one of an inner scope, or either through a transient, which lives as long as its consumer. The error, `MR0705`, prints the chain: ``singleton `ReportCache` depends on scoped `DbSession` through transient `ReportQuery` ``.
+- A cycle among constructor and factory dependencies is `MR0704`, which prints the cycle.
+
+**Collections.**
+
+- `AddEach<IHealthCheck, DbCheck>()` and `AddEach<IHealthCheck>(factory)` add an element to the collection for `IHealthCheck`. Elements are singletons unless the registration ends with `.Scoped()` or `.Transient()`.
+- A consumer takes the collection as `ReadOnlySpan<any IHealthCheck>`, a view for use during the call (§10.6), or as `ReadOnlyMemory<any IHealthCheck>`, which a service can keep in a field and an async root can hold across `await` (§5.9). The elements have different types, so each one is an `any` value (§8.4), and they come in the order their registrations run. When every element is a singleton, the array behind the collection is built with the singletons and is immortal; otherwise each scope that uses the collection builds one.
+- A service type with both `AddEach` and a single registration or a `Replace` is `MR0707`.
+
+**Scopes and roots** (D-125).
+
+- `host.RunScoped(f)` opens a scope, builds the services `f` needs, calls `f`, and releases the scope's services in reverse construction order, which runs their destructors (§10.8). There is no disposal list. `f` is a lambda or method group whose parameters are injected, and `RunScoped` returns what `f` returns. When `f` is `async`, `RunScoped` returns its future, and the scope ends when the future completes or is dropped (§12.5).
+- `RunScoped(f, v1, ..., vn)`, with up to 8 values, provides values to the scope: each `vi` goes to the parameter of its type and is a scoped service of that scope, so a scoped `CurrentUser` can take the `Request`. A provided value whose type is registered, or two of one type, is `MR0701`.
+- **Roots.** Every function that reaches `RunScoped`, directly or through a wrapper, is a root of the graph, and the compiler generates one wiring function for each. A wrapper takes the function as a type parameter `F : IRoot<R>`, which every lambda and method group whose call returns `R` satisfies, and passes it on. `MapGet`, `MapPost` and the other map functions are such wrappers: each request runs `RunScoped(handler, request)` (§16.1). Queue consumers, job runners and command-line runners are libraries built the same way.
+- A root's parameter MUST be a registered service, a provided value, a collection, a lazy factory (below) or a `Scope<K>`. Anything else is `MR0703`.
+- `MR0703` names what is missing and who needs it, back to the root: ``no registration for `ITemplates`, needed by `SmtpMailer` (transient), needed by the handler of `POST /users` ``.
+- **Failing and async construction.** A scoped or transient factory that returns `Err(e)` ends the unit of work: `f` does not run, and `RunScoped` returns `e` converted to `f`'s error type as `?` converts it (§11.3). When `f`'s result cannot hold it, the error is `MR0201`. The HTTP server turns it into a response through `IError`, like any handler error (§16.2). A synchronous root that needs a service with an `async` factory is `MR0710`.
+
+**Nested scopes.**
+
+- A scope may have a kind, a marker type that a library declares. `host.RunScoped<Connection>(f, socket)` opens a scope of kind `Connection`. A root inside it may take a `Scope<Connection>` parameter, and `scope.RunScoped(g)` opens a child scope in it, with the same forms as `host.RunScoped`.
+- `AddScoped<ChatSession>().Per<Connection>()` makes a scoped service belong to the nearest enclosing scope of kind `Connection`. Plain `AddScoped` means the innermost scope, the one `RunScoped` has just opened. A root that needs a service per `K` and does not run inside a scope of kind `K` is `MR0706`, which names the kind. A service per `K` that depends on a service of the innermost scope is a captive dependency, `MR0705`.
+- `Scope<K>` follows the view rules of §10.6, with their codes, so the root that receives it cannot store it in a field, capture it in an escaping closure, return it or move it, and scopes nest strictly. Unlike other views, it may be a parameter of an async root and live across `await`, because it holds the scope's services instead of pointing into memory that can move.
+
+  ```mora
+  builder.Services.AddScoped<ChatSession>().Per<Connection>();   // one per connection
+  builder.Services.AddScoped<MessageLog>();                      // one per message
+
+  // A WebSocket library's `MapSocket` runs its handler in a scope of kind `Connection`
+  app.MapSocket("/chat", async (socket: WebSocket, scope: Scope<Connection>) => {
+      while (socket.IsOpen) {
+          let text = await socket.ReceiveTextAsync()?;
+          scope.RunScoped((session: ChatSession, log: MessageLog) => {
+              log.Append(text);
+              session.Broadcast(text);
+          });
+      }
+      return Ok(());
+  });
+  ```
+
+**Cost** (D-126). Wiring costs nothing beyond the services it builds:
+
+- The scope is a struct the compiler generates for each root, in the frame of the root's wiring, or in the root's future's state when the root is async. That state is allocated once already (§12.3), so the scope adds no allocation of its own.
+- The wiring builds exactly the services the root needs, directly or through other services, eagerly and in dependency order, with no flags, maps, lookups or locks. A synchronous root receives them as `in` borrows, and an async root, which owns its parameters (§10.3), has them moved into its state, which drops them in reverse construction order. Neither retains or releases them, except that a service held in two places takes one retain for the second holder, as any shared object does.
+- A singleton is one load from the host, and retains and releases of it never write its count (§13.3). A service per `K` reached from a child scope is one load through the `Scope<K>` for a synchronous child root, and one retain and one release for an async one, which owns its parameters (OQ-28).
+- Teardown is the destructor calls.
+- Calls are direct. Every bare interface a service stores is an implicit type parameter (§8.3), so the wiring and the calls between services compile to direct, inlinable calls with precise effects (§6.14). There is one instantiation per distinct implementation, and identical bodies are folded (§14.14). A library's public class with an implicit type parameter is instantiated by the app that uses it, like every generic library type (§14.10). Dynamic dispatch appears only where the source writes `any`: a factory that returns `any I`, a collection, and plugins.
+- **Laziness is explicit.** A parameter of type `() => T` receives a function that builds `T` when called: a new one per call for a transient, the singleton for a singleton, and, for a scoped `T`, the scope's instance, built on the first call. That one slot is the only flag the wiring generates. Only a root may take `() => T` for a scoped `T`, since a service that kept the function could outlive the scope (`MR0705`).
+- **Unused registrations** are not compiled. Lint `unused-service` (warn by default) reports a registration that no root reaches, except a library default.
+
+**Hosts.**
+
+- `await services.BuildAsync()` builds every singleton that some root needs, awaiting `async` factories, into one immortal block, and returns `Result<H, StartupError>`, where `H` is a type the compiler generates for the list. A singleton factory that returns `Err` stops the build, and `StartupError`, an internal `IError` (§11.2), names the service and carries the factory error's code and text.
+- `H` implements `IServiceHost`, which declares `RunScoped`. A function that receives a host declares the parameter `IServiceHost`, an implicit type parameter (§8.3). `IServiceHost` has generic methods, so `any IServiceHost` is `MR0231`, and no code can hold a host whose list the compiler does not know. A host is never injected.
+- `WebApp.CreateBuilder(args)` returns a builder whose `Services` field is the app's list, and `builder.Build()` creates the app. `RunAsync` builds the singletons before it accepts a connection and returns `Err(StartupError)` when that fails, so `await app.RunAsync(...)?` ends the process with exit code 1 (§4.6). `WebApp.Create(args)` is `WebApp.CreateBuilder(args).Build()` with an empty list.
+
+**Decorators, generic services and configuration** (D-127).
+
+- `Decorate<IUserStore, CachingUserStore>()` wraps the registered implementation. The decorator's constructor MUST take a parameter of the service type, which receives the implementation it wraps (`MR0709` otherwise), and its other parameters are injected. A decorator is checked like any registration and has the lifetime of what it wraps. Several decorators of one service apply in the order they are written, the first one innermost: this is the one place where the order of registrations matters. On a collection, a decorator wraps each element. A `Decorate` with nothing to wrap is `MR0702`.
+- `AddScoped<IRepository<T>, SqlRepository<T>>()` registers a generic service. A name in a registration's type arguments that is not a type in scope and appears in both the service and the implementation is an open type parameter, and every instantiation that a root needs is built from the registration, with its constraints checked per instantiation.
+- A factory reads configuration, for example `AddSingleton<Settings>(Settings.Load)` with `Load` returning `Result<Settings, E>`, so invalid configuration fails startup. [post-MVP] `@Config` (M17) binds one typed value per configuration section, validated when the list is built, and registers it as a singleton.
+
+**Tests.** A test builds the app's list with the app's registration function, replaces what it fakes, and runs roots with `RunScoped`. A `uses none` bound on the test (§6.14) fails the build with `MR0250`, and the call path, if any service it reaches still uses a capability such as the network, the file system or the clock.
+
+```mora
+// src/Services.mr
+public extension(services: Services) {
+    public AddUsersApi() {
+        services.AddSingleton<IUserStore, MemoryUserStore>();
+        services.AddScoped<IAuditLog, FileAuditLog>();
+    }
+}
+
+test {
+    @Test
+    async AddRecordsAnAuditEntry(): Result<(), StartupError> uses none {
+        let services = new Services();
+        services.AddUsersApi();
+        services.Replace<IAuditLog, MemoryAuditLog>();   // FileAuditLog would use fs.write
+        let host = await services.BuildAsync()?;
+        host.RunScoped((users: IUserStore, audit: IAuditLog) => {
+            let user = users.Add(new NewUser("Ada", none));
+            audit.Record($"created user {user.Id}");
+            Assert.Equal(1, user.Id);
+        });
+        return Ok(());
+    }
+}
+```
+
+**Plugins** [post-MVP]. `AddPlugins<IExporter>(path)` registers the implementations that the plugin library at `path` provides through the plugin ABI (M8), loaded when the list is built. They join the collection for `IExporter` after its `AddEach` elements, as `any IExporter` values. The `uses` bounds of `IExporter`'s methods stand for the effects of calls into a plugin, and a call through a method without one is `dyn` (§6.14). Plugins, factories that return `any I` and collections are the only places where injection adds dynamic dispatch.
+
+**Compilation.** `mora-check` reads each list after type checking and reports `MR0700`. `mora-mir` checks the graph and generates the wiring during monomorphization (§14.10), when the parameter types of a root inside a generic wrapper are known; each diagnostic points at the registration or the root, with the wrapper calls as notes. `mora expand` shows each root's wiring as Mora code (§9.8), and hover on an injected parameter shows its implementation and lifetime.
 
 ## 17. Toolchain, CLI and editor support
 
@@ -2581,6 +2743,7 @@ Every diagnostic has a code (`MR` plus four digits), a severity, a primary span,
 | `MR0400`-`MR0499` | Async, threads, FFI, constant evaluation |
 | `MR0500`-`MR0599` | Manifest and build |
 | `MR0600`-`MR0699` | Macros |
+| `MR0700`-`MR0799` | Dependency injection |
 | `MR2000`-`MR2999` | Warnings and lints |
 | `MR9000`-`MR9999` | Internal compiler errors |
 
@@ -2896,7 +3059,7 @@ Mora is built in thin vertical slices: each milestone runs real programs end to 
 | **M3: Expressive core** | Unions, enums, patterns and exhaustiveness, options and `none` with flow narrowing, `Result` and `?`, operators and conversions, generics and monomorphization, interfaces with static and dynamic dispatch, associated types, indexers, extension blocks, tuples, collection expressions, interpolation handlers, newtypes and refinements | Run and UI tests for every construct of §§5 to 8; every §2.4 example runs |
 | **M4: Macros** | `macro` declarations, `code` quoting and splices, hygiene, the `Std.Meta` model, the sandboxed JIT runner and its cache, `mora expand`, `MacroTest`, and the standard-library macros of §9.9 except `@Json` | Every §9 example runs; `@Equatable`, `@Hashable`, `@Comparable`, `@Display`, `@Default`, `@Clone` and `#Assert` pass their `MacroTest` suites; structs get their automatic implementations from these macros |
 | **M5: Standard library core** | Text, collections with borrow counts, LINQ, console, environment, time, random, files, JSON values and the `@Json` macro, `Html` and `Url`, logging and tracing, `Secret<T>`, `Report`, `Std.Testing`, `mora test` and `test` sections, insertion-ordered hash tables, collection sizing, SIMD text kernels, bounds-check removal, `mora explain-cost` | The std API reference builds from doc comments; JSONTestSuite parsing cases pass; chains of streaming LINQ operators meet §15.5 with no allocation |
-| **M6: Async and HTTP** | Async lowering, inline futures and pooled task blocks, executor, tasks and cancellation, reactor, TCP, timers, HTTP/1.1 server with pooled buffers, routing, results, `HttpError` and error responses from `IError` | The acceptance test of §20.2 passes on every Tier 1 target. The MVP is functionally complete |
+| **M6: Async and HTTP** | Async lowering, inline futures and pooled task blocks, executor, tasks and cancellation, reactor, TCP, timers, HTTP/1.1 server with pooled buffers, routing, results, `HttpError` and error responses from `IError`, compile-time dependency injection | The acceptance test of §20.2 passes on every Tier 1 target. The MVP is functionally complete |
 | **M7: Developer experience and v0.1** | Language server with the cost lens, VS Code extension, formatter, REPL, `mora bench`, `mora new` templates, `mora explain` and error pages, documentation site with the language tour, installers, release workflow, budgets | v0.1.0 published on every channel of §19.3; §1.5 holds; budgets of §20.6 measured and either met or revised in this document |
 | M8: WebAssembly and libraries | §18.1 to §18.4, OQ-15, a stable plugin ABI at an opt-in boundary | post-MVP |
 | M9: Packages and capabilities | §18.5 URL and git sources, §18.6, grants narrowed per dependency, sandboxed runs | post-MVP |
@@ -3037,6 +3200,12 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-119 | Rejected: model-backed or other non-deterministic steps inside the compiler or `mora fix`; a build is a pure function of its inputs, and `mora fix` applies only fixes the compiler generates | user | 17.1 |
 | D-120 | Rejected: database migrations and feature flags as language features; `@Config`, `@Cfg(Feature = ...)` and macros cover what the language owes them | user | 17.2 |
 | D-121 | Rejected: stackful green threads to remove async colouring; async stays stackless (D-27, D-28), and `async?`, `blocking-in-async` and structured concurrency reduce the cost | user | 12.1 |
+| D-122 | Dependency injection is resolved at compile time: services are registered once, in one list the compiler reads, under build-time conditions only; constructor injection needs no attribute and one constructor; factories carry run-time choices; one registration per service, a library's defaults give way to the app's, `Replace` replaces on purpose, and order never decides; there is no container, service lookup or property injection at run time | user | 16.1, 16.4 |
+| D-123 | A bare interface type in a field of a class is an implicit type parameter of the class, fixed by each `new` and spreading to the classes that hold it; one field receiving two concrete types is `MR0239`; `any I` implements `I`. Extends D-67 | user | 8.3, 8.4, 16.4 |
+| D-124 | Services are singleton, scoped or transient; singletons are built at startup and immortal; a captive dependency is a compile error that prints the chain; collections are registered with `AddEach` and consumed as `ReadOnlySpan<any I>` or `ReadOnlyMemory<any I>` | user | 16.4 |
+| D-125 | `RunScoped(f)` opens a scope, and every function that reaches it is a root with its own generated wiring; HTTP handlers and other runners are wrappers over it; nested scopes use typed `Scope<K>` values and `.Per<K>()` registrations | user | 16.1, 16.4 |
+| D-126 | Wiring costs nothing beyond the services: a generated scope struct in the root's frame or future, eager construction of exactly what the root needs, direct calls and destructors for teardown; laziness is an explicit `() => T` parameter; unused registrations are not compiled, and lint `unused-service` reports them | user | 16.4 |
+| D-127 | Factories may be async and return `Result`, failing startup or the unit of work; decorators apply in the order written; tests replace registrations and bound the result with `uses none`; generic registrations cover every instantiation; configuration goes through factories until `@Config`; plugins loaded at run time are registered with `AddPlugins` [post-MVP] | user | 16.4 |
 
 ## 24. Open questions
 
@@ -3067,6 +3236,8 @@ Source: **user** means decided by the project owner in the design discussion; **
 | OQ-24 | Default hash function for `Dictionary` and `HashSet`: speed against resistance to hash flooding for string keys | Keyed fast hash, `Hasher.Strong` available | M5 |
 | OQ-25 | Is `scoped` a keyword that checks the fact, or only a hover annotation? | Hover only in the MVP | M7 |
 | OQ-26 | Is the boxed future spelled `Future<T>` or `any IFuture<T>`? | `Future<T>` | M6 |
+| OQ-27 | How does a singleton that holds a resource, such as a connection pool or a log file, shut down in order when the program exits, since singletons are immortal (§16.4)? | Singleton destructors never run; the operating system reclaims the resources at exit | M10 |
+| OQ-28 | Can an async child scope reach the services of an enclosing scope through a pointer, with no retain or release, when futures may move (D-28)? | One retain and one release per such service and child scope (§16.4) | M11 |
 
 ## 25. References
 

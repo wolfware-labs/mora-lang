@@ -759,18 +759,20 @@ Done when:
 
 Spec: [§6.8](docs/design/mora.md#68-interfaces), [§8.3](docs/design/mora.md#83-static-dispatch), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§8.7](docs/design/mora.md#87-associated-types). Crates: `mora-hir`, `std`. Blocked by: M3.9.
 
-Interface declarations with default members, static abstract members, interface inheritance, implementation by name and explicit implementation, associated types, `MR0232` and `MR0233`, and the built-in interfaces of §8.5 declared in `std/`.
+Interface declarations with default members, static abstract members, interface inheritance, implementation by name and explicit implementation, associated types, `MR0232` and `MR0233`, the built-in interfaces of §8.5 declared in `std/`, and implicit type parameters for bare interface fields of classes, which spread to the classes that hold them, with `MR0239` (D-123).
 
 Done when:
 
 - Run tests for default methods and static abstract members in generic code.
 - A generic `Max<T>` over `IComparable<T>` compiles to a direct call (MIR snapshot).
+- A class with an `IUserStore` field, built with two different stores, compiles to two instantiations whose calls through the field are direct (MIR snapshot), and a diagnostic about one of them names it `OrderService<SqlUserStore>`.
+- UI test for `MR0239` with its `any I` fix.
 
 ### M3.11 Dynamic interface values
 
 Spec: [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.10.
 
-Interface values as data and vtable pointers, boxing of value types with the LSP-visible boxing marker, vtables and BLAKE3 type ids of §13.6, `is C c`, `as C`, checked casts, `MR0230`, `MR0231`, and erasure of associated types for `IEnumerable<T>` values.
+Interface values as data and vtable pointers, boxing of value types with the LSP-visible boxing marker, vtables and BLAKE3 type ids of §13.6, `is C c`, `as C`, checked casts, `MR0230`, `MR0231`, erasure of associated types for `IEnumerable<T>` values, and `any I` satisfying a constraint `T : I`.
 
 Done when:
 
@@ -1208,9 +1210,9 @@ Done when:
 
 ## M6: Async and HTTP
 
-**Goal.** Async functions, the single-threaded executor, TCP, and an HTTP/1.1 server with routing and JSON: the REST API of §2.2 runs.
+**Goal.** Async functions, the single-threaded executor, TCP, an HTTP/1.1 server with routing and JSON, and compile-time dependency injection: the REST API of §2.2 runs.
 
-**Exit criteria.** The acceptance test of §20.2 passes on every Tier 1 target. The MVP is functionally complete.
+**Exit criteria.** The acceptance test of §20.2 passes on every Tier 1 target, and so do the dependency injection run tests of M6.9. The MVP is functionally complete.
 
 | ID | Deliverable | Area | Blocked by |
 |---|---|---|---|
@@ -1222,6 +1224,7 @@ Done when:
 | [M6.6](#m66-http11-connections) | HTTP/1.1 connections | `http` | M6.5 |
 | [M6.7](#m67-webapp-routing-and-results) | WebApp, routing and results | `http` | M6.6, M5.11, M5.15 |
 | [M6.8](#m68-the-users-api-example-and-acceptance-test) | The users API example and acceptance test | `testkit` | M6.7 |
+| [M6.9](#m69-dependency-injection) | Dependency injection | `check` | M6.7, M3.15 |
 
 ### M6.1 Async functions and futures: language rules
 
@@ -1316,6 +1319,20 @@ Done when:
 
 - The transcript of §2.2 matches byte for byte on every Tier 1 target.
 - The job is added to the org required checks.
+
+### M6.9 Dependency injection
+
+Spec: [§16.4](docs/design/mora.md#164-dependency-injection-stdinject), [§8.3](docs/design/mora.md#83-static-dispatch), [§16.1](docs/design/mora.md#161-http-server-stdnethttp). Crates: `mora-hir`, `mora-check`, `mora-mir`, `std`. Blocked by: M6.7, M3.15.
+
+`Std.Inject`: `Services` with `AddSingleton`, `AddScoped`, `AddTransient`, `AddEach`, `Replace`, `Decorate` and `.Per<K>()`, factories that may be `async` and return `Result`, library defaults, `@Cfg` on registrations, `BuildAsync` with `StartupError` and immortal singletons, `IServiceHost`, `RunScoped` with provided values and kinds, `IRoot<R>`, `Scope<K>`, lazy `() => T` parameters, generic registrations, one generated wiring function per root, `WebApp.CreateBuilder` and injected handler parameters, `MR0700` to `MR0711`, and lint `unused-service` (D-122 to D-127).
+
+Done when:
+
+- UI tests for every code from `MR0700` to `MR0711`, with `MR0703` and `MR0705` printing the whole chain from the root.
+- The MIR of a handler that takes a singleton and a scoped service shows direct constructor and method calls, and `Assert.AllocatesAtMost` shows that running it with `RunScoped` allocates only the scoped service.
+- A singleton that depends on a scoped service through a transient is `MR0705`, and a root outside every `Connection` scope that needs a service per `Connection` is `MR0706`.
+- In a run test, two child scopes inside one `Connection` scope share its service per `Connection`, each gets its own innermost scoped service, and destructors run in reverse construction order when each scope ends.
+- A test that calls the app's registration function, replaces a file-backed service and carries `uses none` passes; without the `Replace` the build fails with `MR0250` and the call path.
 
 ## M7: Developer experience and v0.1
 
