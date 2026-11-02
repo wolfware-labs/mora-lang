@@ -874,6 +874,10 @@ mod tests {
         let licenses = licenses(&dir);
         let out = dir.join("out");
         fake_lld(&out, "echo LLD");
+        // Wait until the script runs: when `install` finds it busy, it treats
+        // the install as broken and removes `ld/`, so retrying `install`
+        // itself would find nothing to run.
+        retry_busy(|| lld_version(&out)).unwrap();
         assert_eq!(
             retry_busy(|| install(&[], &licenses, &out)),
             Ok(Installed::UpToDate)

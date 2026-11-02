@@ -14,9 +14,9 @@ cargo_metadata.workspace = true
 mora-diag.workspace = true
 mora-target.workspace = true
 mora-testkit.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 ungrammar.workspace = true
 
 [dev-dependencies]
 mora-span.workspace = true
-serde_json.workspace = true

@@ -25,6 +25,9 @@ ignore:
   # jobs that run `cargo xtask` rather than by unit tests.
   - "xtask/src/main.rs"
   - "xtask/src/runtime.rs"
+  # The git and cargo calls of `cargo xtask bench-compare`, which is run by
+  # hand before a pull request; the logic it calls is in bench_compare.rs.
+  - "xtask/src/bench_run.rs"
 
 comment:
   layout: "condensed_header, diff, flags, files"
