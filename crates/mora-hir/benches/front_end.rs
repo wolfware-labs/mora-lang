@@ -160,7 +160,9 @@ fn cold(c: &mut Criterion) {
     let mut group = c.benchmark_group("cold");
     // Each iteration takes tens of milliseconds, so 100 samples need longer
     // than criterion's default five seconds.
-    group.sample_size(50).measurement_time(Duration::from_secs(8));
+    group
+        .sample_size(50)
+        .measurement_time(Duration::from_secs(8));
     group.bench_function("parse", |b| {
         b.iter_batched(
             generate,

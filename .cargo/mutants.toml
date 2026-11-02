@@ -8,6 +8,7 @@ exclude_globs = [
     # Glue around other programs, left out of coverage for the same reason:
     # the CI jobs that run `cargo xtask` exercise it end to end.
     "xtask/src/main.rs",
+    "xtask/src/bench_run.rs",
     "xtask/src/runtime.rs",
 ]
 

@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod bench_compare;
+mod bench_run;
 mod codegen;
 mod error_codes;
 mod layers;
@@ -261,7 +262,7 @@ fn run_bench_compare(args: &[&str]) -> ExitCode {
         }
     };
     let target_dir = metadata.target_directory.clone().into_std_path_buf();
-    let comparisons = match bench_compare::run(&root(), &target_dir, &metadata, &options) {
+    let comparisons = match bench_run::run(&root(), &target_dir, &metadata, &options) {
         Ok(comparisons) => comparisons,
         Err(err) => {
             eprintln!("bench-compare: {err}");

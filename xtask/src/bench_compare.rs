@@ -8,16 +8,18 @@
 //! reuse its build, and benchmarked with criterion's `--save-baseline`. The
 //! working tree then runs with `--baseline-lenient`, which compares against
 //! those results and accepts benchmarks the base does not have.
+//!
+//! This module reads arguments, finds the bench targets and reads and judges
+//! criterion's results; [`crate::bench_run`] runs git and cargo.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use cargo_metadata::Metadata;
 use serde_json::Value;
 
 /// The name of the criterion baseline the base revision saves.
-const BASELINE: &str = "base";
+pub const BASELINE: &str = "base";
 
 /// What the command was asked to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -144,114 +146,14 @@ impl Comparison {
     }
 }
 
-/// Runs the comparison and returns each benchmark's result. `target_dir` is
-/// the working tree's cargo target directory.
-pub fn run(
-    root: &Path,
-    target_dir: &Path,
-    metadata: &Metadata,
-    options: &Options,
-) -> Result<Vec<Comparison>, String> {
-    let targets = targets(metadata, root);
-    if targets.is_empty() {
-        return Err("the workspace has no bench targets".to_owned());
-    }
-    let work = target_dir.join("bench-compare");
-    let checkout = work.join("base");
-    let base_target = work.join("base-target");
-    let home = work.join("criterion");
-    if home.exists() {
-        fs::remove_dir_all(&home).map_err(|err| format!("{}: {err}", home.display()))?;
-    }
-    fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
-    add_worktree(root, &checkout, &options.base)?;
-    let result = (|| {
-        for target in &targets {
-            if !checkout.join(&target.source).exists() {
-                println!(
-                    "bench-compare: {} has no {}/{}; its results are new",
-                    options.base, target.package, target.name
-                );
-                continue;
-            }
-            println!("bench-compare: {} on {}", target.name, options.base);
-            bench(&checkout, &base_target, &home, target, "--save-baseline")?;
-        }
-        for target in &targets {
-            println!("bench-compare: {} on the working tree", target.name);
-            bench(root, target_dir, &home, target, "--baseline-lenient")?;
-        }
-        collect(&home)
-    })();
-    remove_worktree(root, &checkout);
-    result
-}
-
-fn git(root: &Path, args: &[&str]) -> Result<(), String> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .status()
-        .map_err(|err| format!("git: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("git {} failed", args.join(" ")))
-    }
-}
-
-fn add_worktree(root: &Path, checkout: &Path, base: &str) -> Result<(), String> {
-    remove_worktree(root, checkout);
-    let path = checkout.to_string_lossy();
-    git(
-        root,
-        &["worktree", "add", "--detach", "--force", &path, base],
-    )
-}
-
-/// Removes the base checkout. A failure leaves a directory that the next
-/// run removes before it checks out again, so it is not an error.
-fn remove_worktree(root: &Path, checkout: &Path) {
-    let path = checkout.to_string_lossy();
-    let _ = git(root, &["worktree", "remove", "--force", &path]);
-    let _ = fs::remove_dir_all(checkout);
-    let _ = git(root, &["worktree", "prune"]);
-}
-
-fn bench(
-    dir: &Path,
-    target_dir: &Path,
-    home: &Path,
-    target: &Target,
-    baseline_flag: &str,
-) -> Result<(), String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .current_dir(dir)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .env("CRITERION_HOME", home)
-        .args([
-            "bench",
-            "--locked",
-            "-p",
-            &target.package,
-            "--bench",
-            &target.name,
-        ])
-        .args(["--", baseline_flag, BASELINE, "--noplot"])
-        .status()
-        .map_err(|err| format!("cargo bench: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "cargo bench -p {} --bench {} failed in {}",
-            target.package,
-            target.name,
-            dir.display()
-        ))
-    }
+/// The targets whose source the base checkout has, and those it lacks.
+pub fn split_by_base<'a>(
+    checkout: &Path,
+    targets: &'a [Target],
+) -> (Vec<&'a Target>, Vec<&'a Target>) {
+    targets
+        .iter()
+        .partition(|target| checkout.join(&target.source).is_file())
 }
 
 /// Reads the results criterion wrote under `home`: each directory with a
@@ -391,6 +293,56 @@ mod tests {
             new: 110.0,
             change: change.map(|(mean, lower, upper)| Change { mean, lower, upper }),
         }
+    }
+
+    #[test]
+    fn bench_targets_come_from_the_workspace() {
+        let metadata = crate::metadata_command().exec().unwrap();
+        let found = targets(&metadata, &crate::root());
+        let front_end = Target {
+            package: "mora-hir".to_owned(),
+            name: "front_end".to_owned(),
+            source: PathBuf::from("crates/mora-hir/benches/front_end.rs"),
+        };
+        assert!(found.contains(&front_end), "{found:?}");
+        // Libraries, binaries and tests are not bench targets.
+        assert!(
+            found.iter().all(|t| t.source.starts_with("crates")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|t| t.source.to_string_lossy().contains("/benches/")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn targets_the_base_lacks_are_new() {
+        let dir = scratch("split");
+        fs::create_dir_all(dir.join("a/benches")).unwrap();
+        fs::write(dir.join("a/benches/old.rs"), "").unwrap();
+        // A directory where the file was is not the file.
+        fs::create_dir_all(dir.join("a/benches/dir.rs")).unwrap();
+        let target = |name: &str| Target {
+            package: "a".to_owned(),
+            name: name.to_owned(),
+            source: PathBuf::from(format!("a/benches/{name}.rs")),
+        };
+        let all = vec![target("old"), target("new"), target("dir")];
+        let (present, missing) = split_by_base(&dir, &all);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(present, vec![&all[0]]);
+        assert_eq!(missing, vec![&all[1], &all[2]]);
+    }
+
+    /// A fresh directory under the system's temporary directory.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bench-compare-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
