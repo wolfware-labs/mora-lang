@@ -308,6 +308,11 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         "while (a) if (b) c(); else d();",
         "@A if (a) { b(); }",
         "@A.B(1) { b(); }",
+        "@A { b(); }",
+        "@A F(): () { b(); }",
+        "@A G<T>(): () { b(); }",
+        "@A<List<int>> if (a) { b(); }",
+        "F(): int => new P { X = 1 }.X;",
         "match (a) { _ => 1 }",
         ")",
     ] {

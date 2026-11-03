@@ -58,11 +58,7 @@ fn skip_statement(p: &mut Parser<'_>) {
     let mut holding = Vec::new();
     'statement: loop {
         while p.at(K::At) {
-            p.bump_any();
-            while p.at(K::Ident) || p.at(K::Dot) {
-                p.bump_any();
-            }
-            skip_group(p);
+            skip_attribute(p);
         }
         match p.current() {
             K::IfKw | K::WhileKw | K::ForKw | K::ForeachKw => {
@@ -110,6 +106,34 @@ fn skip_statement(p: &mut Parser<'_>) {
     }
 }
 
+/// Skips `@Name`, `@A.B<int>` or `@Cfg(Os = "linux")`, as
+/// [`items::attribute`] reads it.
+fn skip_attribute(p: &mut Parser<'_>) {
+    p.bump_any();
+    while p.eat(K::Ident) {
+        if p.at(K::Lt) {
+            let mut open = 0usize;
+            while !p.at_end() {
+                if p.at(K::Lt) {
+                    open += 1;
+                } else if p.at(K::Gt) {
+                    open -= 1;
+                }
+                p.bump_any();
+                if open == 0 {
+                    break;
+                }
+            }
+        }
+        if !p.eat(K::Dot) {
+            break;
+        }
+    }
+    if p.at(K::LParen) {
+        skip_group(p);
+    }
+}
+
 const OPENERS: &[SyntaxKind] = &[K::LParen, K::LBracket, K::LBrace, K::HoleOpen];
 const CLOSERS: &[SyntaxKind] = &[K::RParen, K::RBracket, K::RBrace, K::HoleClose];
 
@@ -133,11 +157,14 @@ fn skip_group(p: &mut Parser<'_>) {
 }
 
 /// Skips up to and with the `;` that ends the statement, or, with
-/// `ends_at_block`, its first block; a closing bracket that is not its
-/// own ends it too.
-fn skip_to_end(p: &mut Parser<'_>, ends_at_block: bool) {
+/// `ends_at_block`, its first block unless a `=>` body comes first; a
+/// closing bracket that is not its own ends it too.
+fn skip_to_end(p: &mut Parser<'_>, mut ends_at_block: bool) {
     let mut open = 0usize;
     while !p.at_end() {
+        if open == 0 && p.at(K::FatArrow) {
+            ends_at_block = false;
+        }
         if p.at_any(OPENERS) {
             open += 1;
         } else if p.at_any(CLOSERS) {
