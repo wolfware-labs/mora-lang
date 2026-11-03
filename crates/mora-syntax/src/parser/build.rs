@@ -69,7 +69,7 @@ pub(super) fn build(
             Event::Token { kind, n_raw } => sink.token(kind, n_raw),
             // After `MR0018`, the rest of its statement reports nothing more:
             // what the parser skipped there leaves holes it would report.
-            Event::Error { .. } if sink.muted.is_some() => {}
+            Event::Error { .. } if sink.mutes_errors() => {}
             Event::Error { message, fix } => {
                 let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
                 sink.error(SYNTAX_ERROR, message, fix, wraps_token);
@@ -149,6 +149,17 @@ impl Sink<'_> {
         } else {
             self.open_node(kind, nests);
         }
+    }
+
+    /// Whether a syntax error here goes unreported: it is in the statement
+    /// of an `MR0018`, or in the brackets of a block or member list that
+    /// statement holds, which are not in any statement of their own.
+    fn mutes_errors(&self) -> bool {
+        self.muted.is_some()
+            || self
+                .suspended
+                .last()
+                .is_some_and(|&(at, _)| at + 1 == self.open.len())
     }
 
     /// Reports `MR0018` for the next node, unless an error already covers

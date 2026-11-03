@@ -33,7 +33,7 @@ pub(crate) fn block(p: &mut Parser<'_>) {
 /// One statement. Always takes at least one token.
 pub(crate) fn statement(p: &mut Parser<'_>) {
     let before = p.pos();
-    if !p.nested_statement(ends_at_block(p), statement_inner) {
+    if !p.nested_statement(statement_inner, skip_statement) {
         p.eat(K::Semicolon);
     }
     if p.pos() == before {
@@ -44,13 +44,116 @@ pub(crate) fn statement(p: &mut Parser<'_>) {
     }
 }
 
-/// Whether the statement ahead ends at the `}` of its block, or of its
-/// `else`, rather than at a `;`.
-fn ends_at_block(p: &Parser<'_>) -> bool {
-    match p.current() {
-        K::LBrace | K::IfKw | K::WhileKw | K::ForKw | K::ForeachKw | K::UnsafeKw => true,
-        K::Ident if exprs::at_match(p) => true,
-        _ => at_local_function(p),
+/// Skips the statement ahead the way it is written: a block, an `if`
+/// with its `else` branches, a loop with its body, `do ... while (a);`,
+/// or the tokens up to its `;` or, for a local function or a `match`,
+/// its block. The statements that hold the one being skipped wait in
+/// `holding`, so a long `else if` chain does not recurse.
+fn skip_statement(p: &mut Parser<'_>) {
+    enum Holds {
+        If,
+        Do,
+    }
+    let start = p.pos();
+    let mut holding = Vec::new();
+    'statement: loop {
+        while p.at(K::At) {
+            p.bump_any();
+            while p.at(K::Ident) || p.at(K::Dot) {
+                p.bump_any();
+            }
+            skip_group(p);
+        }
+        match p.current() {
+            K::IfKw | K::WhileKw | K::ForKw | K::ForeachKw => {
+                if p.at(K::IfKw) {
+                    holding.push(Holds::If);
+                }
+                p.bump_any();
+                skip_group(p);
+                continue;
+            }
+            K::DoKw => {
+                holding.push(Holds::Do);
+                p.bump_any();
+                continue;
+            }
+            K::UnsafeKw if p.nth(1) == K::LBrace => {
+                p.bump_any();
+                skip_group(p);
+            }
+            K::LBrace => skip_group(p),
+            K::Ident if exprs::at_match(p) => skip_to_end(p, true),
+            _ => {
+                let local_function = at_local_function(p);
+                skip_to_end(p, local_function);
+            }
+        }
+        // The statement ended, and so may the ones that hold it.
+        while let Some(holds) = holding.pop() {
+            match holds {
+                Holds::If if p.eat(K::ElseKw) => continue 'statement,
+                Holds::If => {}
+                Holds::Do => {
+                    if p.eat(K::WhileKw) {
+                        skip_group(p);
+                    }
+                    p.eat(K::Semicolon);
+                }
+            }
+        }
+        break;
+    }
+    // A stray closing bracket is the statement, as one error.
+    if p.pos() == start && !p.at_end() {
+        p.bump_any();
+    }
+}
+
+const OPENERS: &[SyntaxKind] = &[K::LParen, K::LBracket, K::LBrace, K::HoleOpen];
+const CLOSERS: &[SyntaxKind] = &[K::RParen, K::RBracket, K::RBrace, K::HoleClose];
+
+/// Skips the bracketed group ahead, if there is one.
+fn skip_group(p: &mut Parser<'_>) {
+    if !p.at_any(OPENERS) {
+        return;
+    }
+    let mut open = 0usize;
+    while !p.at_end() {
+        if p.at_any(OPENERS) {
+            open += 1;
+        } else if p.at_any(CLOSERS) {
+            open -= 1;
+        }
+        p.bump_any();
+        if open == 0 {
+            return;
+        }
+    }
+}
+
+/// Skips up to and with the `;` that ends the statement, or, with
+/// `ends_at_block`, its first block; a closing bracket that is not its
+/// own ends it too.
+fn skip_to_end(p: &mut Parser<'_>, ends_at_block: bool) {
+    let mut open = 0usize;
+    while !p.at_end() {
+        if p.at_any(OPENERS) {
+            open += 1;
+        } else if p.at_any(CLOSERS) {
+            if open == 0 {
+                return;
+            }
+            open -= 1;
+        } else if open == 0 && p.at(K::Semicolon) {
+            p.bump_any();
+            return;
+        }
+        let closes_block = open == 0 && p.at(K::RBrace);
+        p.bump_any();
+        if closes_block && ends_at_block {
+            return;
+        }
     }
 }
 

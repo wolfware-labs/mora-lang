@@ -296,8 +296,21 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         let text = format!("{}{stmt} x(); {}", "{ ".repeat(256), "}".repeat(256));
         assert_eq!(too_deep(&text), 2, "{stmt}");
     }
-    // A statement that does not end in a block goes on to its `;`.
-    for stmt in ["do { b(); } while (a);", "let f = () => { b(); };"] {
+    // A statement that does not end in a block goes on to its `;`, and
+    // what an `if`, a `do` or an attribute holds is part of it.
+    for stmt in [
+        "do { b(); } while (a);",
+        "do b(); while (a);",
+        "let f = () => { b(); };",
+        "if (a) b(); else c();",
+        "if (a) b(); else { c(); }",
+        "if (a) {} else if (b) c(); else d();",
+        "while (a) if (b) c(); else d();",
+        "@A if (a) { b(); }",
+        "@A.B(1) { b(); }",
+        "match (a) { _ => 1 }",
+        ")",
+    ] {
         let text = format!("{}{stmt} x(); {}", "{ ".repeat(256), "}".repeat(256));
         assert_eq!(too_deep(&text), 2, "{stmt}");
     }
@@ -315,6 +328,20 @@ fn a_declaration_too_deep_before_its_body_still_checks_the_body() {
     let text = format!("F(x: {generic}): () {{ let a = {deep}; b() }}");
     let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
     assert_eq!(codes, [codes::MR0018, codes::MR0018, codes::MR0110]);
+    let text = format!("union U : {generic} {{ A; F(): int => {deep}; G(): int => 1 }}");
+    let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
+    assert_eq!(codes, [codes::MR0018, codes::MR0018, codes::MR0110]);
+    let text = format!("enum E : {generic} {{ A = {deep}, B = {deep} }}");
+    assert_eq!(too_deep(&text), 3);
+    // The braces around them are the declaration's own: a missing one is
+    // no error of its own.
+    for text in [
+        format!("class C : {generic}"),
+        format!("class C : {generic} {{ G(): int => 1;"),
+        format!("F(x: {generic}): () {{ let a = 1;"),
+    ] {
+        assert_eq!(too_deep(&text), 1, "{}", &text[..8]);
+    }
 }
 
 #[test]
