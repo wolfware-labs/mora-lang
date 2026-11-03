@@ -319,6 +319,23 @@ mod tests {
     }
 
     #[test]
+    fn decimal_suffix_is_reserved() {
+        for text in ["1m", "1.5M", "2_0m"] {
+            let (kind, errors) = check(text);
+            assert_eq!(kind, SyntaxKind::RealNumber, "{text}");
+            assert_eq!(
+                errors,
+                vec![(
+                    codes::MR0014,
+                    "the `m` suffix (`decimal`) is reserved; Mora has no `decimal` type yet"
+                        .to_string()
+                )],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn malformed_numbers_keep_their_kind() {
         for (text, kind) in [
             ("0xge", SyntaxKind::IntNumber),
