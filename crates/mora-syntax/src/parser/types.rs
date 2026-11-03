@@ -1,6 +1,6 @@
 //! Types (§5), and a lookahead that recognizes a type without parsing it.
 
-use super::{Input, MAX_DEPTH, Parser, describe, exprs};
+use super::{Input, MAX_DEPTH, Parser, exprs};
 use crate::SyntaxKind;
 
 use SyntaxKind as K;
@@ -266,9 +266,7 @@ pub(crate) fn generic_arg_list(p: &mut Parser<'_>) {
             break;
         }
     }
-    if !p.eat(K::Gt) {
-        p.error(format!("expected {}", describe(K::Gt)));
-    }
+    p.expect(K::Gt);
     m.complete(p, K::GenericArgList);
 }
 
@@ -468,23 +466,7 @@ pub(crate) fn scan_splice(input: &Input<'_>, at: usize) -> Option<usize> {
     }
     match input.kind(i) {
         K::Ident => Some(i + 1),
-        K::LParen => {
-            let mut depth = 0usize;
-            loop {
-                match input.kind(i) {
-                    K::LParen => depth += 1,
-                    K::RParen => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some(i + 1);
-                        }
-                    }
-                    _ if i >= input.len() => return None,
-                    _ => {}
-                }
-                i += 1;
-            }
-        }
+        K::LParen => input.after_parens(i),
         _ => None,
     }
 }

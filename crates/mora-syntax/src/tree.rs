@@ -13,7 +13,7 @@
 //! view has no link to its parent: the compiler walks the tree only from
 //! the root down.
 
-use std::fmt;
+use std::fmt::{self, Write};
 use std::hash::{Hash, Hasher};
 use std::ptr;
 
@@ -111,7 +111,7 @@ impl<'a> SyntaxNode<'a> {
 
     /// The text of the node, exactly as in the source.
     pub fn text(&self) -> String {
-        let mut text = String::with_capacity(u32::from(self.green.text_len()) as usize);
+        let mut text = String::with_capacity(usize::from(self.green.text_len()));
         for token in self.tokens() {
             text.push_str(token.text());
         }
@@ -176,29 +176,21 @@ impl<'a> SyntaxNode<'a> {
     /// with each token's text: the form snapshot tests compare. It walks
     /// with its own stack, so a deep tree cannot overflow the call stack.
     pub fn debug_tree(&self) -> String {
-        let mut out = format!(
-            "{self:?}
-"
-        );
+        let mut out = format!("{self:?}\n");
         let mut stack = vec![self.children_with_tokens()];
         loop {
             let indent = "  ".repeat(stack.len());
             let Some(children) = stack.last_mut() else {
                 break;
             };
+            // Writing to a `String` cannot fail.
             match children.next() {
                 Some(SyntaxElement::Node(node)) => {
-                    out.push_str(&format!(
-                        "{indent}{node:?}
-"
-                    ));
+                    let _ = writeln!(out, "{indent}{node:?}");
                     stack.push(node.children_with_tokens());
                 }
                 Some(SyntaxElement::Token(token)) => {
-                    out.push_str(&format!(
-                        "{indent}{token:?}
-"
-                    ));
+                    let _ = writeln!(out, "{indent}{token:?}");
                 }
                 None => {
                     stack.pop();

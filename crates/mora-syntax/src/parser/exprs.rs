@@ -92,7 +92,13 @@ const PREFIX: &[SyntaxKind] = &[
 ];
 
 pub(crate) fn expr(p: &mut Parser<'_>) {
-    if expr_bp(p, 0).is_none() {
+    required_expr(p, 0);
+}
+
+/// An expression whose operators bind at least as tightly as `min`, or an
+/// error that it is missing.
+fn required_expr(p: &mut Parser<'_>, min: u8) {
+    if expr_bp(p, min).is_none() {
         p.error("expected an expression");
     }
 }
@@ -210,9 +216,7 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             } else {
                 power + 1
             };
-            if expr_bp(p, next).is_none() {
-                p.error("expected an expression");
-            }
+            required_expr(p, next);
             lhs = m.complete(p, K::BinExpr);
             continue;
         }
@@ -221,13 +225,9 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             // `ok ? x = 1 : y = 2` assigns in either arm.
             let m = lhs.precede(p);
             p.bump(K::Question);
-            if expr_bp(p, ASSIGN).is_none() {
-                p.error("expected an expression");
-            }
+            required_expr(p, ASSIGN);
             p.expect(K::Colon);
-            if expr_bp(p, ASSIGN).is_none() {
-                p.error("expected an expression");
-            }
+            required_expr(p, ASSIGN);
             lhs = m.complete(p, K::ConditionalExpr);
             continue;
         }
@@ -236,9 +236,7 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
         {
             let m = lhs.precede(p);
             p.bump(op);
-            if expr_bp(p, ASSIGN).is_none() {
-                p.error("expected an expression");
-            }
+            required_expr(p, ASSIGN);
             lhs = m.complete(p, K::AssignExpr);
             continue;
         }
@@ -288,9 +286,7 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
     if PREFIX.iter().any(|&kind| p.at(kind)) {
         let m = p.start();
         p.bump_any();
-        if operand(p, propagate).is_none() {
-            p.error("expected an expression");
-        }
+        required_operand(p, propagate);
         return Some(m.complete(p, K::PrefixExpr));
     }
     if p.at(K::AwaitKw) {
@@ -298,9 +294,7 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
         // propagation applies to the awaited value.
         let m = p.start();
         p.bump(K::AwaitKw);
-        if operand(p, false).is_none() {
-            p.error("expected an expression");
-        }
+        required_operand(p, false);
         let awaited = m.complete(p, K::AwaitExpr);
         return Some(if propagate {
             propagation(p, awaited)
@@ -313,18 +307,20 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
         p.bump(K::LParen);
         types::ty(p);
         p.bump(K::RParen);
-        if operand(p, propagate).is_none() {
-            p.error("expected an expression");
-        }
+        required_operand(p, propagate);
         return Some(m.complete(p, K::CastExpr));
     }
     let lhs = primary(p)?;
     Some(postfix(p, lhs, propagate))
 }
 
-/// The operand of a prefix operator, `await` or a cast, one level deeper.
-fn operand(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
-    p.nested(|p| unary_with(p, propagate)).unwrap_or_else(Some)
+/// The operand of a prefix operator, `await` or a cast, one level deeper,
+/// or an error that it is missing.
+fn required_operand(p: &mut Parser<'_>, propagate: bool) {
+    let operand = p.nested(|p| unary_with(p, propagate)).unwrap_or_else(Some);
+    if operand.is_none() {
+        p.error("expected an expression");
+    }
 }
 
 /// Whether `(T)x` is a cast (§14.4): the parentheses hold a type, and what
@@ -375,22 +371,9 @@ fn at_lambda(p: &Parser<'_>) -> bool {
         K::LBracket => matches!(p.nth(1), K::WeakKw | K::MoveKw),
         K::LParen => {
             let input = p.input();
-            let mut depth = 0usize;
-            let mut i = p.pos();
-            loop {
-                match input.kind(i) {
-                    K::LParen => depth += 1,
-                    K::RParen => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return matches!(input.kind(i + 1), K::FatArrow | K::ThinArrow);
-                        }
-                    }
-                    _ if i >= input.len() => return false,
-                    _ => {}
-                }
-                i += 1;
-            }
+            input
+                .after_parens(p.pos())
+                .is_some_and(|end| matches!(input.kind(end), K::FatArrow | K::ThinArrow))
         }
         _ => false,
     }
@@ -685,25 +668,13 @@ fn propagation(p: &mut Parser<'_>, mut lhs: CompletedMarker) -> CompletedMarker 
 /// call `match(x)` is never followed by `{`, so anything else leaves
 /// `match` an identifier.
 pub(crate) fn at_match(p: &Parser<'_>) -> bool {
-    if !p.at_contextual("match") || p.nth(1) != K::LParen {
+    if !p.at_contextual("match") {
         return false;
     }
-    // The tokens after `match (`, with that `(` open.
-    let mut depth = 1usize;
-    let mut rest = p.input().kinds[p.pos() + 2..].iter();
-    while let Some(&kind) = rest.next() {
-        match kind {
-            K::LParen => depth += 1,
-            K::RParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return rest.next() == Some(&K::LBrace);
-                }
-            }
-            _ => {}
-        }
-    }
-    false
+    let input = p.input();
+    input
+        .after_parens(p.pos() + 1)
+        .is_some_and(|end| input.kind(end) == K::LBrace)
 }
 
 /// `match (x) { arms }`, the same in a statement and in an expression

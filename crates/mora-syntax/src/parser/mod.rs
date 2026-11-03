@@ -128,6 +128,28 @@ impl<'t> Input<'t> {
     fn len(&self) -> usize {
         self.kinds.len()
     }
+
+    /// The index after the `)` that closes the `(` at `open`, counting only
+    /// parentheses, or `None` when no `(` is there or the text ends first.
+    fn after_parens(&self, open: usize) -> Option<usize> {
+        if self.kind(open) != K::LParen {
+            return None;
+        }
+        let mut depth = 0usize;
+        for (i, &kind) in self.kinds.iter().enumerate().skip(open) {
+            match kind {
+                K::LParen => depth += 1,
+                K::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
 }
 
 /// What the parser did, in order.
@@ -144,15 +166,24 @@ pub(crate) enum Event {
     /// Take `n_raw` adjacent tokens as one token of `kind`: `>>` from two `>`.
     Token { kind: SyntaxKind, n_raw: usize },
     /// Report `MR0110` at the next token. With `fix`, the error offers to
-    /// replace the token it wraps: a fix message and the replacement text.
+    /// replace the token it wraps.
     Error {
         message: String,
-        fix: Option<(String, String)>,
+        fix: Option<TokenFix>,
     },
     /// Report `MR0018` at the next token: nesting goes past [`MAX_DEPTH`].
     TooDeep,
     /// A `Start` that was abandoned or moved.
     Tombstone,
+}
+
+/// A replacement for the token a syntax error wraps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenFix {
+    /// What the fix does, shown with the error.
+    message: String,
+    /// The text that takes the token's place.
+    replacement: String,
 }
 
 /// How many expressions, statements, types, patterns and member lists can
@@ -452,7 +483,10 @@ impl<'t> Parser<'t> {
     ) {
         self.events.push(Event::Error {
             message: message.into(),
-            fix: Some((fix.into(), replacement.into())),
+            fix: Some(TokenFix {
+                message: fix.into(),
+                replacement: replacement.into(),
+            }),
         });
     }
 }
