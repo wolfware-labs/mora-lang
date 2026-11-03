@@ -237,6 +237,30 @@ fn a_member_with_mr0018_has_no_other_error() {
 }
 
 #[test]
+fn each_member_case_and_enum_member_gets_its_own_error() {
+    let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
+    let generic = format!("{}int{}", "List<".repeat(300), ">".repeat(300));
+    for text in [
+        format!("union U {{ A; F(): int => {deep}; G(): int => {deep}; }}"),
+        format!("union U {{ A(x: {generic}), B(y: {generic}) }}"),
+        format!("enum E {{ A = {deep}, B = {deep} }}"),
+    ] {
+        assert_eq!(too_deep(&text), 2, "{}", &text[..20]);
+    }
+    let text = format!("union U {{ A; F(): int => {deep}; G(): int => 1 }}");
+    let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
+    assert_eq!(codes, [codes::MR0018, codes::MR0110]);
+}
+
+#[test]
+fn each_statement_of_a_lambda_in_a_long_chain_gets_its_own_error() {
+    // The parser takes a chain in a loop, so only the tree builder sees
+    // that the lambda's statements, and only they, are past the limit.
+    let text = format!("let x = (y => {{ a(); b(); }}){};", " + 1".repeat(252));
+    assert_eq!(too_deep(&text), 2);
+}
+
+#[test]
 fn a_statement_gets_one_error_however_many_parts_are_too_deep() {
     // Between the condition and the body only the `if` itself is open.
     let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
