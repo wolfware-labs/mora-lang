@@ -153,22 +153,21 @@ impl Sink<'_> {
             return;
         }
         self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
-        // The statement is the outermost level inside the innermost block
-        // or member list: a statement of a block, a member's expression
-        // body, or a statement at the top of the file. When blocks or
-        // member lists are themselves what nests too deeply, it is the
-        // innermost level.
+        // The statement is the node directly inside the innermost block or
+        // member list, or inside the file: a statement of a block, or a
+        // member with its `;`. When blocks or member lists are themselves
+        // what nests too deeply, it is the innermost level.
         let inside = self
             .open
             .iter()
             .rposition(|&(kind, _)| matches!(kind, K::Block | K::MemberList))
-            .map_or(0, |i| i + 1);
-        let level = self.open[inside..]
-            .iter()
-            .position(|&(_, nests)| nests)
-            .map(|i| inside + i)
-            .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
-        self.muted = Some(level.map_or(0, |i| i + 1));
+            .map_or(1, |i| i + 1);
+        let statement = if inside < self.open.len() {
+            Some(inside)
+        } else {
+            self.open.iter().rposition(|&(_, nests)| nests)
+        };
+        self.muted = Some(statement.map_or(0, |i| i + 1));
     }
 
     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {

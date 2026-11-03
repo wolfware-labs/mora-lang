@@ -220,6 +220,23 @@ fn each_statement_of_a_block_body_gets_its_own_error() {
 }
 
 #[test]
+fn a_member_with_mr0018_has_no_other_error() {
+    // The `;` after an expression body is part of the member: missing, it
+    // is no error of its own. The next member's errors are still reported.
+    let parens = format!("{}1{}", "(".repeat(300), ")".repeat(300));
+    let chain = format!("1{}", " + 1".repeat(300));
+    for deep in [parens, chain] {
+        assert_eq!(
+            too_deep(&format!("class C {{\n  F(): int => {deep}\n}}\n")),
+            1
+        );
+        let text = format!("class C {{\n  F(): int => {deep}\n  G(): int => 1\n}}\n");
+        let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
+        assert_eq!(codes, [codes::MR0018, codes::MR0110]);
+    }
+}
+
+#[test]
 fn a_statement_gets_one_error_however_many_parts_are_too_deep() {
     // Between the condition and the body only the `if` itself is open.
     let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
@@ -310,14 +327,15 @@ fn count(text: &str, kind: K) -> usize {
 fn the_parser_skips_only_what_is_too_deep() {
     let parens = |inner: &str| format!("{}{inner}{}", "(".repeat(300), ")".repeat(300));
     // A bracketed group ends the skip: beside a member list that is too
-    // deep, the next member, which is not a level, parses. So does the
-    // next statement after `<` and `>` used as operators.
+    // deep, the next member, which is not a level, parses. Its return type
+    // is past the limit too, an error of its own. So does the next
+    // statement after `<` and `>` used as operators.
     let text = format!(
         "{}class B {{ }} G(): () {{ }} {}",
         "class A { ".repeat(256),
         "}".repeat(256)
     );
-    assert_eq!((too_deep(&text), count(&text, K::FunctionDecl)), (1, 1));
+    assert_eq!((too_deep(&text), count(&text, K::FunctionDecl)), (2, 1));
     for inner in ["a < b", "(a > b) + 1"] {
         let text = format!("let x = f({}, 2);\nlet y = 3;", parens(inner));
         assert_eq!(count(&text, K::LocalDeclStmt), 2, "{inner}");
