@@ -441,8 +441,14 @@ fn skip_type(input: &Input<'_>, at: usize) -> Option<usize> {
             K::Lt | K::LParen | K::LBracket => open += 1,
             K::Gt | K::RParen | K::RBracket | K::Comma if open == 0 => break,
             K::Gt | K::RParen | K::RBracket => open -= 1,
+            // A splice can hold an expression: take it whole.
+            K::Dollar => {
+                i = scan_splice(input, i)?;
+                continue;
+            }
             K::Ident | K::Dot | K::Question | K::Comma | K::Colon | K::WeakKw => {}
-            K::FatArrow | K::ThinArrow => {}
+            // `(int) => bool uses none`.
+            K::FatArrow | K::ThinArrow | K::NoneKw => {}
             kind if PREDEFINED.contains(&kind) => {}
             _ => return None,
         }

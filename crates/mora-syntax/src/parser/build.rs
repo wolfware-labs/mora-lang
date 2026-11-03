@@ -66,7 +66,7 @@ pub(super) fn build(
             }
             Event::Finish => sink.finish(),
             Event::Token { kind, n_raw } => sink.token(kind, n_raw),
-            // A statement with a part nested too deeply gets `MR0018` alone:
+            // After `MR0018`, the rest of its statement reports nothing more:
             // what the parser skipped there leaves holes it would report.
             Event::Error { .. } if sink.muted.is_some() => {}
             Event::Error { message, fix } => {

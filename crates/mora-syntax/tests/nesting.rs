@@ -338,7 +338,7 @@ fn a_type_past_the_limit_is_still_a_type() {
     // The lookahead skips the rest of the type, whatever it is made of, so
     // `f<...>(1)` is a call and the pattern a type pattern.
     let generic = |inner: &str| format!("{}{inner}{}", "List<".repeat(300), ">".repeat(300));
-    let inner = "Std.Map<(x: int, string), weak T?[]>, (int) => bool";
+    let inner = "Std.Map<(x: int, string), weak T?[]>, (int) => bool uses none, $t, $(f(1, 2))";
     let text = format!("let x = f<{}>(1);", generic(inner));
     assert_eq!((too_deep(&text), count(&text, K::CallExpr)), (1, 1));
     let text = format!("let x = y is {};", generic(inner));
