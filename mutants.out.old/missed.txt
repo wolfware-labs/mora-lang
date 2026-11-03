@@ -1,0 +1,7 @@
+crates/mora-syntax/src/parser/mod.rs:284:26: replace match guard angles with true in Parser<'t>::too_deep
+crates/mora-syntax/src/parser/mod.rs:286:26: replace match guard angles with true in Parser<'t>::too_deep
+crates/mora-syntax/src/tree.rs:480:5: replace token_hash -> u64 with 0
+crates/mora-syntax/src/tree.rs:480:5: replace token_hash -> u64 with 1
+crates/mora-syntax/src/parser/build.rs:225:60: replace < with == in Sink<'_>::finish
+crates/mora-syntax/src/parser/build.rs:225:60: replace < with <= in Sink<'_>::finish
+crates/mora-syntax/src/parser/build.rs:297:37: replace && with || in nests

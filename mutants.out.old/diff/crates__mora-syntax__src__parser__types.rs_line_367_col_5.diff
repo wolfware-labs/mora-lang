@@ -1,0 +1,84 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace scan -> Option<usize> with None
+@@ -359,80 +359,17 @@
+         i += 1;
+     }
+     i
+ }
+ 
+ /// The type at `at`, inside `depth` levels of types. A type nested past
+ /// [`MAX_DEPTH`] is not one, which also keeps this recursion bounded.
+ fn scan(input: &Input<'_>, at: usize, functions: bool, depth: usize) -> Option<usize> {
+-    if depth == MAX_DEPTH {
+-        return None;
+-    }
+-    let depth = depth + 1;
+-    let mut i = match input.kind(at) {
+-        kind if PREDEFINED.contains(&kind) => at + 1,
+-        K::WeakKw => return scan(input, at + 1, functions, depth),
+-        K::Ident if at_any(input, at) => return scan(input, at + 1, functions, depth),
+-        // `$t`, `$..ts`, `$(expr)` (§9.3).
+-        K::Dollar => scan_splice(input, at)?,
+-        K::LParen => {
+-            // `()`, the unit type, or a tuple.
+-            let end = if input.kind(at + 1) == K::RParen {
+-                at + 2
+-            } else {
+-                let mut i = at + 1;
+-                loop {
+-                    // `x: int` or `int`.
+-                    if input.kind(i) == K::Ident && input.kind(i + 1) == K::Colon {
+-                        i += 2;
+-                    }
+-                    i = scan(input, i, true, depth)?;
+-                    match input.kind(i) {
+-                        // A trailing comma, as `tuple_type` takes: `(int, string,)`.
+-                        K::Comma if input.kind(i + 1) == K::RParen => break i + 2,
+-                        K::Comma => i += 1,
+-                        K::RParen => break i + 1,
+-                        _ => return None,
+-                    }
+-                }
+-            };
+-            // `(int) => bool`: the result type, and a `uses` bound after it,
+-            // end the function type.
+-            if functions && matches!(input.kind(end), K::FatArrow | K::ThinArrow) {
+-                return scan(input, end + 1, true, depth).map(|i| scan_uses(input, i));
+-            }
+-            end
+-        }
+-        K::Ident => {
+-            let mut i = at;
+-            loop {
+-                if input.kind(i) != K::Ident {
+-                    return None;
+-                }
+-                i += 1;
+-                if input.kind(i) == K::Lt {
+-                    i = generic_args_at(input, i, depth)?;
+-                }
+-                if input.kind(i) == K::Dot && input.kind(i + 1) == K::Ident {
+-                    i += 1;
+-                } else {
+-                    break i;
+-                }
+-            }
+-        }
+-        _ => return None,
+-    };
+-    loop {
+-        match input.kind(i) {
+-            K::Question => i += 1,
+-            K::LBracket if input.kind(i + 1) == K::RBracket => i += 2,
+-            _ => return Some(i),
+-        }
+-    }
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The index after a splice `$t`, `$..ts` or `$(expr)` at `at` (§9.3).
+ pub(crate) fn scan_splice(input: &Input<'_>, at: usize) -> Option<usize> {
+     if input.kind(at) != K::Dollar {
+         return None;
+     }
+     let mut i = at + 1;

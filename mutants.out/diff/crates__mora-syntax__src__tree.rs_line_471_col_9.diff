@@ -1,0 +1,25 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace TreeBuilder::finish -> GreenNode with Default::default()
+@@ -463,21 +463,17 @@
+ 
+     /// The finished tree.
+     ///
+     /// # Panics
+     ///
+     /// Panics if a node is still open, or if not exactly one root node was
+     /// built.
+     pub fn finish(mut self) -> GreenNode {
+-        assert!(self.parents.is_empty(), "a node is still open");
+-        match (self.children.pop(), self.children.is_empty()) {
+-            (Some(rowan::NodeOrToken::Node(root)), true) => GreenNode(root),
+-            _ => panic!("the tree does not have exactly one root node"),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn token_hash(kind: rowan::SyntaxKind, text: &str) -> u64 {
+     let mut hasher = rustc_hash::FxHasher::default();
+     kind.hash(&mut hasher);
+     text.hash(&mut hasher);
+     hasher.finish()

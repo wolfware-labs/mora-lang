@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace + with * in Sink<'_>::too_deep
+@@ -154,17 +154,17 @@
+         }
+         self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
+         // The outermost level inside the innermost member list; when the
+         // member lists are themselves what nests too deeply, the innermost.
+         let members = self
+             .open
+             .iter()
+             .rposition(|&(kind, _)| kind == K::MemberList)
+-            .map_or(0, |i| i + 1);
++            .map_or(0, |i| i * /* ~ changed by cargo-mutants ~ */ 1);
+         let level = self.open[members..]
+             .iter()
+             .position(|&(_, nests)| nests)
+             .map(|i| members + i)
+             .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
+         self.muted = Some(level.map_or(0, |i| i + 1));
+     }
+ 

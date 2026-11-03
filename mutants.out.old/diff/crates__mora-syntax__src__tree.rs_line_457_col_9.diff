@@ -1,0 +1,25 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace TreeBuilder::finish_node with ()
+@@ -449,21 +449,17 @@
+             .clone();
+         self.children.push(rowan::NodeOrToken::Token(token));
+     }
+ 
+     /// # Panics
+     ///
+     /// Panics if no node is open.
+     pub fn finish_node(&mut self) {
+-        let Some((kind, first)) = self.parents.pop() else {
+-            panic!("no node is open");
+-        };
+-        let node = rowan::GreenNode::new(kind, self.children.drain(first..));
+-        self.children.push(rowan::NodeOrToken::Node(node));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The finished tree.
+     ///
+     /// # Panics
+     ///
+     /// Panics if a node is still open, or if not exactly one root node was
+     /// built.

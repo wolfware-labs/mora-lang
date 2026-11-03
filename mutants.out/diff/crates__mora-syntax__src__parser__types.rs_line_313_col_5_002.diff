@@ -1,0 +1,35 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace generic_args_at -> Option<usize> with Some(1)
+@@ -305,31 +305,17 @@
+ /// The index after `<...>` at `at`, if it holds a list of types. Like
+ /// `generic_arg_list`, it takes an empty list and a trailing comma.
+ pub(crate) fn scan_generic_args(input: &Input<'_>, at: usize) -> Option<usize> {
+     generic_args_at(input, at, 0)
+ }
+ 
+ /// [`scan_generic_args`] inside `depth` levels of types.
+ fn generic_args_at(input: &Input<'_>, at: usize, depth: usize) -> Option<usize> {
+-    if input.kind(at) != K::Lt {
+-        return None;
+-    }
+-    let mut i = at + 1;
+-    loop {
+-        if input.kind(i) == K::Gt {
+-            return Some(i + 1);
+-        }
+-        i = scan(input, i, true, depth)?;
+-        match input.kind(i) {
+-            K::Comma => i += 1,
+-            K::Gt => return Some(i + 1),
+-            _ => return None,
+-        }
+-    }
++    Some(1) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The index after a type that starts at `at`, if one does. Used to decide
+ /// between a declaration and an expression before parsing either.
+ pub(crate) fn scan_type(input: &Input<'_>, at: usize) -> Option<usize> {
+     scan(input, at, true, 0)
+ }
+ 

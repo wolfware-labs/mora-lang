@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace < with == in Sink<'_>::finish
+@@ -217,17 +217,17 @@
+                 *open -= 1;
+                 return;
+             }
+             None => {}
+         }
+         if self.open.pop().is_some_and(|(_, nests)| nests) {
+             self.levels -= 1;
+         }
+-        if self.muted.is_some_and(|around| self.open.len() < around) {
++        if self.muted.is_some_and(|around| self.open.len() == /* ~ changed by cargo-mutants ~ */ around) {
+             self.muted = None;
+         }
+         if self.depth == 1 {
+             // The trivia at the end of the file belongs to the root.
+             self.add_raw(self.lexed.tokens.len());
+         }
+         self.builder.finish_node();
+         self.depth -= 1;

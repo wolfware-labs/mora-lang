@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace TreeBuilder::start_node with ()
+@@ -408,17 +408,17 @@
+ pub struct Checkpoint(usize);
+ 
+ impl TreeBuilder {
+     pub fn new() -> Self {
+         Self::default()
+     }
+ 
+     pub fn start_node(&mut self, kind: SyntaxKind) {
+-        self.parents.push((raw(kind), self.children.len()));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn checkpoint(&self) -> Checkpoint {
+         Checkpoint(self.children.len())
+     }
+ 
+     /// Opens a node that starts at `checkpoint`.
+     ///

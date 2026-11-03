@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace scan_type -> Option<usize> with Some(1)
+@@ -325,17 +325,17 @@
+             _ => return None,
+         }
+     }
+ }
+ 
+ /// The index after a type that starts at `at`, if one does. Used to decide
+ /// between a declaration and an expression before parsing either.
+ pub(crate) fn scan_type(input: &Input<'_>, at: usize) -> Option<usize> {
+-    scan(input, at, true, 0)
++    Some(1) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Like [`scan_type`], but parentheses followed by `=>` end the type
+ /// instead of starting a function type: where a lambda can stand, as in
+ /// `((x) => x)(5)`, `(x) => x` is read as a lambda.
+ pub(crate) fn scan_type_no_fn(input: &Input<'_>, at: usize) -> Option<usize> {
+     scan(input, at, false, 0)
+ }

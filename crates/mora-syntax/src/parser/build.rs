@@ -31,7 +31,6 @@ pub(super) fn build(
         text,
         lexed,
         raw: 0,
-        depth: 0,
         open: Vec::new(),
         levels: 0,
         flattened: None,
@@ -67,6 +66,9 @@ pub(super) fn build(
             }
             Event::Finish => sink.finish(),
             Event::Token { kind, n_raw } => sink.token(kind, n_raw),
+            // A statement with a part nested too deeply gets `MR0018` alone:
+            // what the parser skipped there leaves holes it would report.
+            Event::Error { .. } if sink.muted.is_some() => {}
             Event::Error { message, fix } => {
                 let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
                 sink.error(SYNTAX_ERROR, message, fix, wraps_token);
@@ -89,8 +91,6 @@ struct Sink<'a> {
     lexed: &'a Lexed,
     /// The next token of `lexed` to add.
     raw: usize,
-    /// How many nodes are open.
-    depth: usize,
     /// Each open node and whether it counts toward the nesting limit.
     open: Vec<(SyntaxKind, bool)>,
     /// How many open nodes count toward the nesting limit.
@@ -99,8 +99,8 @@ struct Sink<'a> {
     /// it, which are left out of the tree, are open.
     flattened: Option<usize>,
     /// After a node went past the limit, how many nodes are open up to the
-    /// outermost level of the statement or member around it: one error
-    /// covers every node of it that goes past the limit.
+    /// outermost level of the statement around it: one error covers that
+    /// statement.
     muted: Option<usize>,
     /// The tree so far.
     builder: TreeBuilder,
@@ -147,23 +147,26 @@ impl Sink<'_> {
     }
 
     /// Reports `MR0018` for the next node, unless an error already covers
-    /// the statement or member it is in.
+    /// the statement it is in.
     fn too_deep(&mut self, wraps_token: bool) {
         if self.muted.is_some() {
             return;
         }
         self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
-        // The outermost level inside the innermost member list; when the
-        // member lists are themselves what nests too deeply, the innermost.
-        let members = self
+        // The statement is the outermost level inside the innermost block
+        // or member list: a statement of a block, a member's expression
+        // body, or a statement at the top of the file. When blocks or
+        // member lists are themselves what nests too deeply, it is the
+        // innermost level.
+        let inside = self
             .open
             .iter()
-            .rposition(|&(kind, _)| kind == K::MemberList)
+            .rposition(|&(kind, _)| matches!(kind, K::Block | K::MemberList))
             .map_or(0, |i| i + 1);
-        let level = self.open[members..]
+        let level = self.open[inside..]
             .iter()
             .position(|&(_, nests)| nests)
-            .map(|i| members + i)
+            .map(|i| inside + i)
             .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
         self.muted = Some(level.map_or(0, |i| i + 1));
     }
@@ -171,9 +174,8 @@ impl Sink<'_> {
     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
         self.open.push((kind, nests));
         self.levels += usize::from(nests);
-        if self.depth == 0 {
+        if self.open.len() == 1 {
             self.builder.start_node(kind);
-            self.depth += 1;
             return;
         }
         let end = self.next_significant();
@@ -184,7 +186,6 @@ impl Sink<'_> {
         };
         self.add_raw(attach_from);
         self.builder.start_node(kind);
-        self.depth += 1;
         self.add_raw(end);
     }
 
@@ -225,12 +226,11 @@ impl Sink<'_> {
         if self.muted.is_some_and(|around| self.open.len() < around) {
             self.muted = None;
         }
-        if self.depth == 1 {
+        if self.open.is_empty() {
             // The trivia at the end of the file belongs to the root.
             self.add_raw(self.lexed.tokens.len());
         }
         self.builder.finish_node();
-        self.depth -= 1;
     }
 
     fn token(&mut self, kind: SyntaxKind, n_raw: usize) {

@@ -1,0 +1,40 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace Sink<'_>::finish with ()
+@@ -206,36 +206,17 @@
+                 Some(K::Newline) => newline_seen = true,
+                 _ => break,
+             }
+         }
+         from
+     }
+ 
+     fn finish(&mut self) {
+-        match &mut self.flattened {
+-            Some(0) => self.flattened = None,
+-            Some(open) => {
+-                *open -= 1;
+-                return;
+-            }
+-            None => {}
+-        }
+-        if self.open.pop().is_some_and(|(_, nests)| nests) {
+-            self.levels -= 1;
+-        }
+-        if self.muted.is_some_and(|around| self.open.len() < around) {
+-            self.muted = None;
+-        }
+-        if self.depth == 1 {
+-            // The trivia at the end of the file belongs to the root.
+-            self.add_raw(self.lexed.tokens.len());
+-        }
+-        self.builder.finish_node();
+-        self.depth -= 1;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn token(&mut self, kind: SyntaxKind, n_raw: usize) {
+         let first = self.next_significant();
+         self.add_raw(first);
+         let last = (first + n_raw).min(self.lexed.tokens.len());
+         if first >= last {
+             return;

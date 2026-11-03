@@ -110,6 +110,11 @@ const SHAPES: &[Shape] = &[
         limit: 253,
     },
     Shape {
+        name: "positional patterns",
+        text: |n| format!("let x = y is {}_{};", "(_, ".repeat(n), ")".repeat(n)),
+        limit: 253,
+    },
+    Shape {
         name: "`or` patterns",
         text: |n| format!("let x = y is 1{};", " or 1".repeat(n)),
         limit: 252,
@@ -207,6 +212,21 @@ fn each_statement_and_member_gets_its_own_error() {
 }
 
 #[test]
+fn each_statement_of_a_block_body_gets_its_own_error() {
+    let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
+    let text =
+        format!("class C {{\n  F(): () {{\n    let a = {deep};\n    let b = {deep};\n  }}\n}}\n");
+    assert_eq!(too_deep(&text), 2);
+}
+
+#[test]
+fn a_statement_gets_one_error_however_many_parts_are_too_deep() {
+    // Between the condition and the body only the `if` itself is open.
+    let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
+    assert_eq!(too_deep(&format!("if ({deep}) x = {deep};")), 1);
+}
+
+#[test]
 fn what_follows_a_construct_that_is_too_deep_parses() {
     // The error node ends at the bracket that closes it, so the enclosing
     // levels and the next statement keep their trees.
@@ -216,10 +236,62 @@ fn what_follows_a_construct_that_is_too_deep_parses() {
         ")".repeat(300)
     );
     assert_eq!(too_deep(&text), 1);
+    // In an expression `<` and `>` are operators, not brackets.
+    for inner in ["a < b", "(a > b) + 1"] {
+        let text = format!(
+            "let x = f({}{inner}{}, 2);\nlet y = 3;",
+            "(".repeat(300),
+            ")".repeat(300)
+        );
+        assert_eq!(too_deep(&text), 1, "{inner}");
+    }
+    // What the parser skipped leaves out separators and bodies the
+    // levels around it expect, which would be errors of their own.
+    let deep = [
+        format!("let x = {}1;", "a ? b : ".repeat(300)),
+        format!(
+            "let x = {}1{};",
+            "match (x) { _ => ".repeat(300),
+            " }".repeat(300)
+        ),
+        format!("{}{}", "F(): () { ".repeat(300), "}".repeat(300)),
+        format!("F(): () {{ {}{} x(); }}", "{ ".repeat(300), "}".repeat(300)),
+        format!(
+            "class C {{ {}{} G(): () {{}} }}",
+            "class A { ".repeat(300),
+            "}".repeat(300)
+        ),
+        format!(
+            "let x = f<{}int{}>(1);",
+            "List<".repeat(300),
+            ">".repeat(300)
+        ),
+        format!(
+            "let x = y is {}int{};",
+            "List<".repeat(20_000),
+            ">".repeat(20_000)
+        ),
+    ];
+    for text in deep {
+        assert_eq!(too_deep(&text), 1, "{}", &text[..40]);
+    }
     let types = format!(
         "let x: Map<{}int{}, int> = m;",
         "List<".repeat(300),
         ">".repeat(300)
     );
     assert_eq!(too_deep(&types), 1);
+}
+
+#[test]
+fn a_chain_inside_other_levels_adds_its_own() {
+    // 200 positional patterns and an `or` chain of 100 inside them: the
+    // parser is never more than about 200 levels in, but the tree is 300.
+    let text = format!(
+        "let x = y is {}1{}{};",
+        "(_, ".repeat(200),
+        " or 1".repeat(100),
+        ")".repeat(200)
+    );
+    assert_eq!(too_deep(&text), 1);
 }

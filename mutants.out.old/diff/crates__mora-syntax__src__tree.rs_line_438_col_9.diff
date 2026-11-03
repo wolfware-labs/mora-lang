@@ -1,0 +1,33 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace TreeBuilder::token with ()
+@@ -430,29 +430,17 @@
+         assert!(
+             (first..=self.children.len()).contains(&checkpoint.0),
+             "the checkpoint is outside the innermost open node"
+         );
+         self.parents.push((raw(kind), checkpoint.0));
+     }
+ 
+     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
+-        let kind = raw(kind);
+-        let hash = token_hash(kind, text);
+-        let token = self
+-            .tokens
+-            .entry(
+-                hash,
+-                |token| token.kind() == kind && token.text() == text,
+-                |token| token_hash(token.kind(), token.text()),
+-            )
+-            .or_insert_with(|| rowan::GreenToken::new(kind, text))
+-            .get()
+-            .clone();
+-        self.children.push(rowan::NodeOrToken::Token(token));
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// # Panics
+     ///
+     /// Panics if no node is open.
+     pub fn finish_node(&mut self) {
+         let Some((kind, first)) = self.parents.pop() else {
+             panic!("no node is open");

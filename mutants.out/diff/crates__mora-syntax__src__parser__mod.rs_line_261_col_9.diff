@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/mod.rs
++++ replace Parser<'t>::nested_type -> Result<T, CompletedMarker> with Ok(Default::default())
+@@ -253,17 +253,17 @@
+         self.nested_in(false, parse)
+     }
+ 
+     /// [`Parser::nested`] in a type, where `<` and `>` are brackets too.
+     pub(crate) fn nested_type<T>(
+         &mut self,
+         parse: impl FnOnce(&mut Self) -> T,
+     ) -> Result<T, CompletedMarker> {
+-        self.nested_in(true, parse)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn nested_in<T>(
+         &mut self,
+         angles: bool,
+         parse: impl FnOnce(&mut Self) -> T,
+     ) -> Result<T, CompletedMarker> {
+         if self.depth == MAX_DEPTH {

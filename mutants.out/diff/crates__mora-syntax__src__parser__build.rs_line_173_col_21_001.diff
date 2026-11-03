@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace += with *= in Sink<'_>::open_node
+@@ -165,17 +165,17 @@
+             .position(|&(_, nests)| nests)
+             .map(|i| members + i)
+             .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
+         self.muted = Some(level.map_or(0, |i| i + 1));
+     }
+ 
+     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+         self.open.push((kind, nests));
+-        self.levels += usize::from(nests);
++        self.levels *= /* ~ changed by cargo-mutants ~ */ usize::from(nests);
+         if self.depth == 0 {
+             self.builder.start_node(kind);
+             self.depth += 1;
+             return;
+         }
+         let end = self.next_significant();
+         let attach_from = if attaches_comments(kind) {
+             self.attached_comments(end)

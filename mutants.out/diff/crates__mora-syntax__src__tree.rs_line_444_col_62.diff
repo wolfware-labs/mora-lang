@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace == with != in TreeBuilder::token
+@@ -436,17 +436,17 @@
+ 
+     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
+         let kind = raw(kind);
+         let hash = token_hash(kind, text);
+         let token = self
+             .tokens
+             .entry(
+                 hash,
+-                |token| token.kind() == kind && token.text() == text,
++                |token| token.kind() == kind && token.text() != /* ~ changed by cargo-mutants ~ */ text,
+                 |token| token_hash(token.kind(), token.text()),
+             )
+             .or_insert_with(|| rowan::GreenToken::new(kind, text))
+             .get()
+             .clone();
+         self.children.push(rowan::NodeOrToken::Token(token));
+     }
+ 

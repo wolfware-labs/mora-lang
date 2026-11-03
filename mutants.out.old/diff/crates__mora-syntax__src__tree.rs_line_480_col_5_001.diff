@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/tree.rs
++++ replace token_hash -> u64 with 1
+@@ -472,17 +472,14 @@
+         match (self.children.pop(), self.children.is_empty()) {
+             (Some(rowan::NodeOrToken::Node(root)), true) => GreenNode(root),
+             _ => panic!("the tree does not have exactly one root node"),
+         }
+     }
+ }
+ 
+ fn token_hash(kind: rowan::SyntaxKind, text: &str) -> u64 {
+-    let mut hasher = rustc_hash::FxHasher::default();
+-    kind.hash(&mut hasher);
+-    text.hash(&mut hasher);
+-    hasher.finish()
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn raw(kind: SyntaxKind) -> rowan::SyntaxKind {
+     <Mora as rowan::Language>::kind_to_raw(kind)
+ }

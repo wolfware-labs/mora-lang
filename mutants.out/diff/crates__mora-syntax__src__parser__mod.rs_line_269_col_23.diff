@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/mod.rs
++++ replace == with != in Parser<'t>::nested_in
+@@ -261,17 +261,17 @@
+         self.nested_in(true, parse)
+     }
+ 
+     fn nested_in<T>(
+         &mut self,
+         angles: bool,
+         parse: impl FnOnce(&mut Self) -> T,
+     ) -> Result<T, CompletedMarker> {
+-        if self.depth == MAX_DEPTH {
++        if self.depth != /* ~ changed by cargo-mutants ~ */ MAX_DEPTH {
+             return Err(self.too_deep(angles));
+         }
+         self.depth += 1;
+         let result = parse(self);
+         self.depth -= 1;
+         Ok(result)
+     }
+ 

@@ -1,0 +1,358 @@
+
+*** crates/mora-syntax/src/parser/types.rs:46:5: replace ty_with with ()
+
+*** mutation diff:
+--- crates/mora-syntax/src/parser/types.rs
++++ replace ty_with with ()
+@@ -38,17 +38,17 @@
+ /// A member's type or a function's return type, which a `=>` body may
+ /// follow: there `(int, int) => ...` is a tuple type and a body, so a
+ /// function type must be written in parentheses (§5.8).
+ pub(crate) fn member_ty(p: &mut Parser<'_>) {
+     ty_with(p, true, false);
+ }
+ 
+ fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+-    let _ = p.nested_type(|p| ty_inner(p, arrays, functions));
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+     if !at_type_start(p) {
+         p.error("expected a type");
+         return;
+     }
+     let mut lhs = match p.current() {
+
+
+*** /home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=mora-syntax@0.0.0
+    Blocking waiting for file lock on package cache
+       Fresh unicode-ident v1.0.27
+       Fresh proc-macro2 v1.0.107
+       Fresh memchr v2.8.3
+       Fresh foldhash v0.2.0
+       Fresh equivalent v1.0.3
+       Fresh allocator-api2 v0.2.21
+       Fresh smallvec v1.16.4
+       Fresh once_cell v1.21.4
+       Fresh quote v1.0.47
+       Fresh hashbrown v0.17.1
+       Fresh cfg-if v1.0.5
+       Fresh scopeguard v1.2.0
+       Fresh aho-corasick v1.1.5
+       Fresh tracing-core v0.1.36
+       Fresh crossbeam-utils v0.8.23
+       Fresh syn v3.0.9
+       Fresh libc v0.2.191
+       Fresh lock_api v0.4.14
+       Fresh regex-syntax v0.8.11
+       Fresh pin-project-lite v0.2.17
+       Fresh either v1.19.0
+       Fresh autocfg v1.5.1
+       Fresh typeid v1.0.3
+       Fresh syn v2.0.119
+       Fresh hashlink v0.12.2
+       Fresh indexmap v2.14.2
+       Fresh crossbeam-epoch v0.9.21
+       Fresh parking_lot_core v0.9.12
+       Fresh tracing v0.1.44
+       Fresh portable-atomic v1.15.0
+       Fresh serde_core v1.0.229
+       Fresh crossbeam-queue v0.3.14
+       Fresh regex-automata v0.4.18
+       Fresh salsa-macros v0.28.5
+       Fresh inventory v0.3.25
+       Fresh boxcar v0.2.14
+       Fresh intrusive-collections v0.10.3
+       Fresh fnv v1.0.7
+       Fresh crossbeam-deque v0.8.8
+       Fresh parking_lot v0.12.5
+       Fresh rustc-hash v2.1.3
+       Fresh thin-vec v0.2.21
+       Fresh salsa-macro-rules v0.28.5
+       Fresh text-size v1.1.1
+       Fresh logos-codegen v0.16.1
+       Fresh zmij v1.0.23
+       Fresh serde_derive v1.0.229
+       Fresh anstyle v1.0.14
+       Fresh unicode-width v0.2.2
+       Fresh itoa v1.0.18
+       Fresh rayon-core v1.13.0
+       Fresh memoffset v0.9.1
+       Fresh logos-derive v0.16.1
+       Fresh serde_json v1.0.154
+       Fresh annotate-snippets v0.12.17
+       Fresh rustc-hash v1.1.0
+       Fresh hashbrown v0.14.5
+       Fresh tinyvec v1.13.3
+       Fresh countme v3.0.1
+       Fresh rayon v1.12.0
+       Fresh serde v1.0.229
+       Fresh logos v0.16.1
+       Fresh rowan v0.18.0-alpha.2
+       Fresh unicode-normalization v0.1.26
+       Fresh salsa v0.28.5
+       Fresh mora-span v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-span)
+       Fresh mora-diag v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-diag)
+       Dirty mora-syntax v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-syntax): the file `crates/mora-syntax/src/parser/items.rs` has changed (1793664377.190419042s, 3s after last build at 1793664374.330383130s)
+   Compiling mora-syntax v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-syntax)
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name mora_syntax --edition=2024 crates/mora-syntax/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4eabad008759b395 -C extra-filename=-965a74d36689805d --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name mora_syntax --edition=2024 crates/mora-syntax/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5410fe9385f70ffd -C extra-filename=-29020aeef429d18a --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rmeta --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rmeta --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rmeta --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rmeta --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rmeta --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rmeta --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rmeta --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rmeta`
+warning: unused variable: `p`
+  --> crates/mora-syntax/src/parser/types.rs:45:12
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |            ^ help: if this is intentional, prefix it with an underscore: `_p`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `arrays`
+  --> crates/mora-syntax/src/parser/types.rs:45:32
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |                                ^^^^^^ help: if this is intentional, prefix it with an underscore: `_arrays`
+
+warning: unused variable: `functions`
+  --> crates/mora-syntax/src/parser/types.rs:45:46
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |                                              ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_functions`
+
+warning: method `nested_type` is never used
+   --> crates/mora-syntax/src/parser/mod.rs:257:19
+    |
+222 | impl<'t> Parser<'t> {
+    | ------------------- method in this implementation
+...
+257 |     pub(crate) fn nested_type<T>(
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ty_inner` is never used
+  --> crates/mora-syntax/src/parser/types.rs:49:4
+   |
+49 | fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |    ^^^^^^^^
+
+warning: function `tuple_type` is never used
+   --> crates/mora-syntax/src/parser/types.rs:131:4
+    |
+131 | fn tuple_type(p: &mut Parser<'_>) -> super::CompletedMarker {
+    |    ^^^^^^^^^^
+
+warning: `mora-syntax` (lib) generated 6 warnings (6 duplicates)
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name parser_mutants_items --edition=2024 crates/mora-syntax/tests/parser_mutants_items.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=74b11270d978bc83 -C extra-filename=-a32959fa08b42fe6 --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern mora_syntax=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_syntax-29020aeef429d18a.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name parser_mutants --edition=2024 crates/mora-syntax/tests/parser_mutants.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3ef425c70bc306aa -C extra-filename=-55f42352da7cb019 --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern mora_syntax=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_syntax-29020aeef429d18a.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name nesting --edition=2024 crates/mora-syntax/tests/nesting.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e32933fd16094e8e -C extra-filename=-47ff17dee638fcff --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern mora_syntax=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_syntax-29020aeef429d18a.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name ast --edition=2024 crates/mora-syntax/tests/ast.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e48f953939d312eb -C extra-filename=-23cf95a0c2cc80aa --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern mora_syntax=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_syntax-29020aeef429d18a.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+warning: `mora-syntax` (lib test) generated 6 warnings (run `cargo fix --lib -p mora-syntax --tests` to apply 3 suggestions)
+     Running `/home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name parser --edition=2024 crates/mora-syntax/tests/parser.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_used' --deny=unsafe_code '--deny=clippy::undocumented_unsafe_blocks' '--deny=clippy::expect_used' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4854b24c3591eabd -C extra-filename=-71bce46cab66f472 --out-dir /tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps --extern hashbrown=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libhashbrown-810bc8f265a10bfc.rlib --extern logos=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/liblogos-6de704889cf17075.rlib --extern mora_diag=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_diag-919aec0a41e15a7a.rlib --extern mora_span=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_span-300020395d7f8ca2.rlib --extern mora_syntax=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libmora_syntax-29020aeef429d18a.rlib --extern rowan=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librowan-42a90f6a27aa8cb1.rlib --extern rustc_hash=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/librustc_hash-8e05c43c65198e13.rlib --extern unicode_ident=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_ident-7153540570f7e5ec.rlib --extern unicode_normalization=/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/libunicode_normalization-4c00fbecaa9fe415.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.60s
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/mora_syntax-965a74d36689805d`
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/ast-23cf95a0c2cc80aa`
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/nesting-47ff17dee638fcff`
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/parser-71bce46cab66f472`
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/parser_mutants-55f42352da7cb019`
+  Executable `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/parser_mutants_items-a32959fa08b42fe6`
+
+*** result: Success
+
+*** /home/mariano/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=mora-syntax@0.0.0
+       Fresh unicode-ident v1.0.27
+       Fresh memchr v2.8.3
+       Fresh foldhash v0.2.0
+       Fresh equivalent v1.0.3
+       Fresh allocator-api2 v0.2.21
+       Fresh proc-macro2 v1.0.107
+       Fresh hashbrown v0.17.1
+       Fresh smallvec v1.16.4
+       Fresh once_cell v1.21.4
+       Fresh quote v1.0.47
+       Fresh crossbeam-utils v0.8.23
+       Fresh libc v0.2.191
+       Fresh cfg-if v1.0.5
+       Fresh scopeguard v1.2.0
+       Fresh tracing-core v0.1.36
+       Fresh aho-corasick v1.1.5
+       Fresh autocfg v1.5.1
+       Fresh regex-syntax v0.8.11
+       Fresh pin-project-lite v0.2.17
+       Fresh crossbeam-epoch v0.9.21
+       Fresh syn v3.0.9
+       Fresh lock_api v0.4.14
+       Fresh parking_lot_core v0.9.12
+       Fresh either v1.19.0
+       Fresh typeid v1.0.3
+       Fresh tracing v0.1.44
+       Fresh portable-atomic v1.15.0
+       Fresh crossbeam-queue v0.3.14
+       Fresh regex-automata v0.4.18
+       Fresh crossbeam-deque v0.8.8
+       Fresh serde_core v1.0.229
+       Fresh salsa-macros v0.28.5
+       Fresh parking_lot v0.12.5
+       Fresh syn v2.0.119
+       Fresh hashlink v0.12.2
+       Fresh indexmap v2.14.2
+       Fresh salsa-macro-rules v0.28.5
+       Fresh text-size v1.1.1
+       Fresh inventory v0.3.25
+       Fresh boxcar v0.2.14
+       Fresh rayon-core v1.13.0
+       Fresh intrusive-collections v0.10.3
+       Fresh fnv v1.0.7
+       Fresh rustc-hash v2.1.3
+       Fresh thin-vec v0.2.21
+       Fresh zmij v1.0.23
+       Fresh serde_derive v1.0.229
+       Fresh anstyle v1.0.14
+       Fresh unicode-width v0.2.2
+       Fresh itoa v1.0.18
+       Fresh rayon v1.12.0
+       Fresh logos-codegen v0.16.1
+       Fresh serde v1.0.229
+       Fresh annotate-snippets v0.12.17
+       Fresh memoffset v0.9.1
+       Fresh countme v3.0.1
+       Fresh rustc-hash v1.1.0
+       Fresh hashbrown v0.14.5
+       Fresh tinyvec v1.13.3
+       Fresh salsa v0.28.5
+       Fresh serde_json v1.0.154
+       Fresh logos-derive v0.16.1
+       Fresh unicode-normalization v0.1.26
+       Fresh rowan v0.18.0-alpha.2
+       Fresh mora-span v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-span)
+       Fresh logos v0.16.1
+       Fresh mora-diag v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-diag)
+warning: unused variable: `p`
+  --> crates/mora-syntax/src/parser/types.rs:45:12
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |            ^ help: if this is intentional, prefix it with an underscore: `_p`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `arrays`
+  --> crates/mora-syntax/src/parser/types.rs:45:32
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |                                ^^^^^^ help: if this is intentional, prefix it with an underscore: `_arrays`
+
+warning: unused variable: `functions`
+  --> crates/mora-syntax/src/parser/types.rs:45:46
+   |
+45 | fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |                                              ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_functions`
+
+warning: method `nested_type` is never used
+   --> crates/mora-syntax/src/parser/mod.rs:257:19
+    |
+222 | impl<'t> Parser<'t> {
+    | ------------------- method in this implementation
+...
+257 |     pub(crate) fn nested_type<T>(
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ty_inner` is never used
+  --> crates/mora-syntax/src/parser/types.rs:49:4
+   |
+49 | fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+   |    ^^^^^^^^
+
+warning: function `tuple_type` is never used
+   --> crates/mora-syntax/src/parser/types.rs:131:4
+    |
+131 | fn tuple_type(p: &mut Parser<'_>) -> super::CompletedMarker {
+    |    ^^^^^^^^^^
+
+warning: `mora-syntax` (lib) generated 6 warnings (run `cargo fix --lib -p mora-syntax` to apply 3 suggestions)
+warning: `mora-syntax` (lib test) generated 6 warnings (6 duplicates)
+       Fresh mora-syntax v0.0.0 (/tmp/cargo-mutants-nest-Mewxzd.tmp/crates/mora-syntax)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/mora_syntax-965a74d36689805d`
+
+running 40 tests
+test lexer::escape::tests::bad_escapes ... ok
+test lexer::escape::tests::braced_escape_digit_count_message ... ok
+test lexer::escape::tests::unicode_escapes ... ok
+test lexer::escape::tests::simple_escapes ... ok
+test lexer::literal::tests::chars ... ok
+test ast::tests::an_empty_child_after_other_nodes_is_found_by_its_position ... ok
+test ast::tests::the_nth_child_of_a_type_counts_only_that_type ... ok
+test lexer::literal::tests::strings ... ok
+test lexer::number::tests::malformed_is_mr0014 ... ok
+test lexer::number::tests::integers ... ok
+test lexer::number::tests::malformed_numbers_keep_their_kind ... ok
+test lexer::number::tests::reals ... ok
+test lexer::number::tests::too_large_is_mr0010 ... ok
+test lexer::tests::a_newline_ends_a_plain_interpolated_string ... ok
+test lexer::tests::a_string_ends_before_a_crlf_but_not_at_a_lone_cr ... ok
+test lexer::tests::backslashes_are_text_in_raw_interpolated_strings ... ok
+test lexer::tests::characters ... ok
+test lexer::tests::comments_and_trivia ... ok
+test lexer::tests::hash_is_a_token_at_the_start_of_a_line ... ok
+test lexer::tests::contextual_keywords_are_identifiers ... ok
+test lexer::tests::hole_format_stops_at_a_quote_except_in_raw_strings ... ok
+test lexer::tests::hole_format_stops_at_newline_only_in_plain_strings ... ok
+test lexer::tests::holes_nest ... ok
+test lexer::tests::identifiers ... ok
+test lexer::tests::interpolated_strings ... ok
+test lexer::tests::interpolation_errors ... ok
+test lexer::tests::raw_interpolated_string_error_ranges ... ok
+test lexer::tests::raw_string_checks_a_short_last_line ... ok
+test lexer::tests::raw_interpolated_strings ... ok
+test lexer::tests::raw_string_lines_after_a_hole_are_checked ... ok
+test lexer::tests::numbers ... ok
+test lexer::tests::removed_keywords_are_identifiers ... ok
+test lexer::tests::raw_strings ... ok
+test lexer::tests::every_keyword_and_punctuation_lexes_as_itself ... ok
+test lexer::tests::unknown_characters ... ok
+test lexer::tests::strings ... ok
+test lexer::tests::raw_string_opening_line_may_end_in_whitespace ... ok
+test lexer::tests::shift_operators_are_single_greater_thans ... ok
+test lexer::tests::repository_sources_lex_losslessly ... ok
+test lexer::tests::random_inputs_are_lossless ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running `/tmp/cargo-mutants-nest-Mewxzd.tmp/target/debug/deps/ast-23cf95a0c2cc80aa`
+
+running 16 tests
+test a_struct_declaration_navigates ... ok
+test a_token_after_a_child_node_is_found ... ok
+test casting_checks_the_kind ... ok
+test a_function_type_tells_its_result_from_its_parameters ... FAILED
+test checkpoints_wrap_what_came_before ... ok
+test same_type_children_are_found_by_their_tokens ... ok
+test nodes_tokens_and_elements ... ok
+test an_empty_child_node_is_found ... ok
+test children_read_from_the_back_have_the_same_ranges ... ok
+test the_lexer_never_produces_joined_or_contextual_kinds ... ok
+test the_debug_tree_shows_every_token ... ok
+test syntax_kinds ... ok
+test tokens_walk_the_whole_text ... ok
+test equal_text_at_two_places_is_two_nodes ... ok
+test equality_and_hash_follow_the_place_in_the_tree ... ok
+test a_very_deep_tree_prints_and_walks_without_recursion ... ok
+
+failures:
+
+---- a_function_type_tells_its_result_from_its_parameters stdout ----
+
+thread 'a_function_type_tells_its_result_from_its_parameters' (470774) panicked at crates/mora-syntax/tests/ast.rs:314:10:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_function_type_tells_its_result_from_its_parameters
+
+test result: FAILED. 15 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p mora-syntax --test ast`
+
+*** result: Failure(101)

@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace + with * in Sink<'_>::too_deep
+@@ -160,17 +160,17 @@
+             .iter()
+             .rposition(|&(kind, _)| kind == K::MemberList)
+             .map_or(0, |i| i + 1);
+         let level = self.open[members..]
+             .iter()
+             .position(|&(_, nests)| nests)
+             .map(|i| members + i)
+             .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
+-        self.muted = Some(level.map_or(0, |i| i + 1));
++        self.muted = Some(level.map_or(0, |i| i * /* ~ changed by cargo-mutants ~ */ 1));
+     }
+ 
+     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+         self.open.push((kind, nests));
+         self.levels += usize::from(nests);
+         if self.depth == 0 {
+             self.builder.start_node(kind);
+             self.depth += 1;

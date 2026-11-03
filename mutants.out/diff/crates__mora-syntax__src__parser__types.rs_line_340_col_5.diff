@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace scan_type_no_fn -> Option<usize> with None
+@@ -332,17 +332,17 @@
+ pub(crate) fn scan_type(input: &Input<'_>, at: usize) -> Option<usize> {
+     scan(input, at, true, 0)
+ }
+ 
+ /// Like [`scan_type`], but parentheses followed by `=>` end the type
+ /// instead of starting a function type: where a lambda can stand, as in
+ /// `((x) => x)(5)`, `(x) => x` is read as a lambda.
+ pub(crate) fn scan_type_no_fn(input: &Input<'_>, at: usize) -> Option<usize> {
+-    scan(input, at, false, 0)
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// After a `uses` bound at `at`, if there is one, the index after it:
+ /// `uses none`, `uses fs.read`, `uses (clock, env)`.
+ fn scan_uses(input: &Input<'_>, at: usize) -> usize {
+     if input.text(at) != "uses" {
+         return at;
+     }

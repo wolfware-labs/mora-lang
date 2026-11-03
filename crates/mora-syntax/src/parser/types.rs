@@ -361,11 +361,12 @@ fn scan_uses(input: &Input<'_>, at: usize) -> usize {
     i
 }
 
-/// The type at `at`, inside `depth` levels of types. A type nested past
-/// [`MAX_DEPTH`] is not one, which also keeps this recursion bounded.
+/// The type at `at`, inside `depth` levels of types. Past [`MAX_DEPTH`]
+/// the rest of the type is skipped without recursion, so that the parser
+/// takes it as a type and reports `MR0018` there.
 fn scan(input: &Input<'_>, at: usize, functions: bool, depth: usize) -> Option<usize> {
     if depth == MAX_DEPTH {
-        return None;
+        return skip_type(input, at);
     }
     let depth = depth + 1;
     let mut i = match input.kind(at) {
@@ -428,6 +429,26 @@ fn scan(input: &Input<'_>, at: usize, functions: bool, depth: usize) -> Option<u
             _ => return Some(i),
         }
     }
+}
+
+/// The index after the tokens at `at` that a type can be made of, up to a
+/// `,` or a closing bracket that is not theirs.
+fn skip_type(input: &Input<'_>, at: usize) -> Option<usize> {
+    let mut open = 0usize;
+    let mut i = at;
+    loop {
+        match input.kind(i) {
+            K::Lt | K::LParen | K::LBracket => open += 1,
+            K::Gt | K::RParen | K::RBracket | K::Comma if open == 0 => break,
+            K::Gt | K::RParen | K::RBracket => open -= 1,
+            K::Ident | K::Dot | K::Question | K::Comma | K::Colon | K::WeakKw => {}
+            K::FatArrow | K::ThinArrow => {}
+            kind if PREDEFINED.contains(&kind) => {}
+            _ => return None,
+        }
+        i += 1;
+    }
+    (i > at).then_some(i)
 }
 
 /// The index after a splice `$t`, `$..ts` or `$(expr)` at `at` (§9.3).

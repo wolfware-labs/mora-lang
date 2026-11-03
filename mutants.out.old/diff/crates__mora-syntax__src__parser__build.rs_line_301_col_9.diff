@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace || with && in nests
+@@ -293,17 +293,17 @@
+ /// Whether a node of this kind, inside a node of kind `parent`, is a level
+ /// of nesting (§14.4). The fields of a case pattern, `(let r)` in
+ /// `Circle(let r)`, are part of that pattern.
+ fn nests(kind: SyntaxKind, parent: Option<SyntaxKind>) -> bool {
+     if kind == K::PositionalPattern && parent == Some(K::CasePattern) {
+         return false;
+     }
+     ast::Expr::can_cast(kind)
+-        || ast::Stmt::can_cast(kind)
++        && /* ~ changed by cargo-mutants ~ */ ast::Stmt::can_cast(kind)
+         || ast::Type::can_cast(kind)
+         || ast::Pattern::can_cast(kind)
+         || kind == K::MemberList
+ }
+ 
+ /// Whether comments directly above a node of this kind belong to it.
+ fn attaches_comments(kind: SyntaxKind) -> bool {
+     matches!(

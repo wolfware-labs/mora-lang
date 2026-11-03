@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/patterns.rs
++++ replace unary_pattern -> Option<CompletedMarker> with None
+@@ -44,17 +44,17 @@
+             p.error("expected a pattern");
+         }
+         lhs = m.complete(p, K::BinPattern);
+     }
+     Some(lhs)
+ }
+ 
+ fn unary_pattern(p: &mut Parser<'_>) -> Option<CompletedMarker> {
+-    p.nested(unary_pattern_inner).unwrap_or_else(Some)
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn unary_pattern_inner(p: &mut Parser<'_>) -> Option<CompletedMarker> {
+     if p.at_contextual("not") {
+         let m = p.start();
+         p.bump_remap(K::NotKw);
+         if unary_pattern(p).is_none() {
+             p.error("expected a pattern");

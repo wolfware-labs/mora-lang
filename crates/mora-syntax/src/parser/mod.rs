@@ -160,9 +160,13 @@ pub(crate) enum Event {
 pub(crate) const MAX_DEPTH: usize = 256;
 
 pub(crate) struct Parser<'t> {
+    /// The tokens to parse.
     input: &'t Input<'t>,
+    /// The index of the next token in `input`.
     pos: usize,
+    /// What the parser did so far.
     events: Vec<Event>,
+    /// Whether `x => ...` is read as something else than a lambda here.
     no_lambda: bool,
     /// How many levels of [`Parser::nested`] are open.
     depth: usize,
@@ -244,8 +248,9 @@ impl<'t> Parser<'t> {
 
     /// Runs `parse` one level deeper. At [`MAX_DEPTH`] it reports
     /// `MR0018` instead and wraps the rest of the construct in an `Error`
-    /// node: the tokens up to a `;`, a `,` or a closing bracket that is
-    /// not its own.
+    /// node: a bracketed group, when the construct starts with an opening
+    /// bracket, and otherwise the tokens up to a `;`, a `,` or a closing
+    /// bracket that is not its own.
     pub(crate) fn nested<T>(
         &mut self,
         parse: impl FnOnce(&mut Self) -> T,
@@ -278,6 +283,8 @@ impl<'t> Parser<'t> {
     fn too_deep(&mut self, angles: bool) -> CompletedMarker {
         let m = self.start();
         self.events.push(Event::TooDeep);
+        let group = matches!(self.current(), K::LParen | K::LBracket | K::LBrace)
+            || (angles && self.at(K::Lt));
         let mut open = 0usize;
         while !self.at_end() {
             match self.current() {
@@ -291,6 +298,9 @@ impl<'t> Parser<'t> {
                 _ => {}
             }
             self.bump_any();
+            if group && open == 0 {
+                break;
+            }
         }
         m.complete(self, K::Error)
     }

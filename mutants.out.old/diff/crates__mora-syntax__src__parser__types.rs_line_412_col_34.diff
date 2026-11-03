@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace == with != in scan
+@@ -404,17 +404,17 @@
+         }
+         K::Ident => {
+             let mut i = at;
+             loop {
+                 if input.kind(i) != K::Ident {
+                     return None;
+                 }
+                 i += 1;
+-                if input.kind(i) == K::Lt {
++                if input.kind(i) != /* ~ changed by cargo-mutants ~ */ K::Lt {
+                     i = generic_args_at(input, i, depth)?;
+                 }
+                 if input.kind(i) == K::Dot && input.kind(i + 1) == K::Ident {
+                     i += 1;
+                 } else {
+                     break i;
+                 }
+             }

@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace scan_generic_args -> Option<usize> with None
+@@ -300,17 +300,17 @@
+             | K::LBracket
+             | K::QuestionDot
+     ) || end >= input.len()
+ }
+ 
+ /// The index after `<...>` at `at`, if it holds a list of types. Like
+ /// `generic_arg_list`, it takes an empty list and a trailing comma.
+ pub(crate) fn scan_generic_args(input: &Input<'_>, at: usize) -> Option<usize> {
+-    generic_args_at(input, at, 0)
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// [`scan_generic_args`] inside `depth` levels of types.
+ fn generic_args_at(input: &Input<'_>, at: usize, depth: usize) -> Option<usize> {
+     if input.kind(at) != K::Lt {
+         return None;
+     }
+     let mut i = at + 1;

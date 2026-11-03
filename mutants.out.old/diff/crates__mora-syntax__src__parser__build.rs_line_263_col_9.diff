@@ -1,0 +1,44 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace Sink<'_>::error with ()
+@@ -255,40 +255,17 @@
+     /// dropped.
+     fn error(
+         &mut self,
+         code: Code,
+         message: String,
+         fix: Option<(String, String)>,
+         wraps_token: bool,
+     ) {
+-        let next = self.next_significant();
+-        let wrapped = if wraps_token {
+-            self.lexed.tokens.get(next).map(|token| token.range)
+-        } else {
+-            None
+-        };
+-        let range = if let Some(range) = wrapped {
+-            range
+-        } else {
+-            let end = self.lexed.tokens[..self.raw]
+-                .iter()
+-                .rev()
+-                .find(|token| !token.kind.is_trivia())
+-                .map_or(TextSize::new(0), |token| token.range.end());
+-            TextRange::empty(end)
+-        };
+-        let mut error = SyntaxError::new(code, range, message);
+-        if let (Some(range), Some((message, replacement))) = (wrapped, fix) {
+-            error = error.with_fix(SyntaxFix {
+-                message,
+-                edits: vec![(range, replacement)],
+-            });
+-        }
+-        self.errors.push(error);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// The message of `MR0018`.
+ const TOO_DEEP: &str = "nesting is too deep";
+ 
+ /// Whether a node of this kind, inside a node of kind `parent`, is a level
+ /// of nesting (§14.4). The fields of a case pattern, `(let r)` in

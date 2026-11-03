@@ -39,6 +39,9 @@ exclude_re = [
     # At the top level an item without attributes only gets this far when
     # it starts a declaration, which the attributed-statement arms never take.
     '^crates/mora-syntax/src/parser/items\.rs:231:30: replace > with >= in declaration$',
+    # Any hash finds equal tokens; only the speed of the table depends on it.
+    '^crates/mora-syntax/src/tree\.rs:480:5: replace token_hash -> u64 with 0$',
+    '^crates/mora-syntax/src/tree\.rs:480:5: replace token_hash -> u64 with 1$',
     # The placeholder compiler has no backends either way.
     '^crates/mora-testkit/src/compiler\.rs:40:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     '^crates/mora-testkit/src/compiler\.rs:119:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',

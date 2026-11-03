@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace -= with += in Sink<'_>::finish
+@@ -209,17 +209,17 @@
+         }
+         from
+     }
+ 
+     fn finish(&mut self) {
+         match &mut self.flattened {
+             Some(0) => self.flattened = None,
+             Some(open) => {
+-                *open -= 1;
++                *open += /* ~ changed by cargo-mutants ~ */ 1;
+                 return;
+             }
+             None => {}
+         }
+         if self.open.pop().is_some_and(|(_, nests)| nests) {
+             self.levels -= 1;
+         }
+         if self.muted.is_some_and(|around| self.open.len() < around) {

@@ -1,0 +1,37 @@
+--- crates/mora-syntax/src/parser/build.rs
++++ replace Sink<'_>::open_node with ()
+@@ -164,33 +164,17 @@
+             .iter()
+             .position(|&(_, nests)| nests)
+             .map(|i| members + i)
+             .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
+         self.muted = Some(level.map_or(0, |i| i + 1));
+     }
+ 
+     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+-        self.open.push((kind, nests));
+-        self.levels += usize::from(nests);
+-        if self.depth == 0 {
+-            self.builder.start_node(kind);
+-            self.depth += 1;
+-            return;
+-        }
+-        let end = self.next_significant();
+-        let attach_from = if attaches_comments(kind) {
+-            self.attached_comments(end)
+-        } else {
+-            end
+-        };
+-        self.add_raw(attach_from);
+-        self.builder.start_node(kind);
+-        self.depth += 1;
+-        self.add_raw(end);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Where the comments directly above the token at `end` start: comments
+     /// and the whitespace between them, up to a blank line or a directive.
+     fn attached_comments(&self, end: usize) -> usize {
+         let mut from = end;
+         let mut i = end;
+         let mut newline_seen = false;

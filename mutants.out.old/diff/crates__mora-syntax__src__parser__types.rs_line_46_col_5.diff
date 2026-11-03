@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/types.rs
++++ replace ty_with with ()
+@@ -38,17 +38,17 @@
+ /// A member's type or a function's return type, which a `=>` body may
+ /// follow: there `(int, int) => ...` is a tuple type and a body, so a
+ /// function type must be written in parentheses (§5.8).
+ pub(crate) fn member_ty(p: &mut Parser<'_>) {
+     ty_with(p, true, false);
+ }
+ 
+ fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+-    let _ = p.nested_type(|p| ty_inner(p, arrays, functions));
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
+     if !at_type_start(p) {
+         p.error("expected a type");
+         return;
+     }
+     let mut lhs = match p.current() {

@@ -1,0 +1,21 @@
+--- crates/mora-syntax/src/parser/items.rs
++++ replace members_in_braces with ()
+@@ -484,17 +484,17 @@
+ }
+ 
+ /// `{ members }` of the type named `owner`, or of a `code { }` quote.
+ pub(crate) fn member_list(p: &mut Parser<'_>, owner: Option<&str>) {
+     members_in_braces(p, Context::Member { owner });
+ }
+ 
+ fn members_in_braces(p: &mut Parser<'_>, cx: Context<'_>) {
+-    let _ = p.nested(|p| member_list_inner(p, cx));
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn member_list_inner(p: &mut Parser<'_>, cx: Context<'_>) {
+     let m = p.start();
+     if p.expect(K::LBrace) {
+         members(p, cx);
+         p.expect(K::RBrace);
+     }
