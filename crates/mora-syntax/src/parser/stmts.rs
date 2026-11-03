@@ -33,7 +33,26 @@ pub(crate) fn block(p: &mut Parser<'_>) {
 /// One statement. Always takes at least one token.
 pub(crate) fn statement(p: &mut Parser<'_>) {
     let before = p.pos();
-    if p.nested(statement_inner).is_err() {
+    let block = p.at(K::LBrace);
+    if let Err(skipped) = p.nested(statement_inner) {
+        // The skip stops after a bracketed group, but a statement that
+        // starts with one, `(x) = 1;`, goes on to its `;`. A block ends
+        // at its `}`.
+        if !block {
+            let m = skipped.precede(p);
+            let mut open = 0usize;
+            while !p.at_end() {
+                match p.current() {
+                    K::LParen | K::LBracket | K::LBrace | K::HoleOpen => open += 1,
+                    K::RParen | K::RBracket | K::RBrace | K::HoleClose if open == 0 => break,
+                    K::RParen | K::RBracket | K::RBrace | K::HoleClose => open -= 1,
+                    K::Semicolon if open == 0 => break,
+                    _ => {}
+                }
+                p.bump_any();
+            }
+            m.complete(p, K::Error);
+        }
         p.eat(K::Semicolon);
     }
     if p.pos() == before {

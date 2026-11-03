@@ -261,6 +261,18 @@ fn each_statement_of_a_lambda_in_a_long_chain_gets_its_own_error() {
 }
 
 #[test]
+fn a_statement_past_the_limit_is_skipped_to_its_semicolon() {
+    // The statement is the 257th level: what follows its first bracketed
+    // group is still part of it, and the blocks around it end where
+    // they should: the call after them parses.
+    for stmt in ["(x) = 1;", "[1, 2].Each(f);", "(a)(b);", "{ a(); } "] {
+        let text = format!("{}{stmt} {} b();", "{ ".repeat(256), "}".repeat(256));
+        assert_eq!(too_deep(&text), 1, "{stmt}");
+        assert_eq!(count(&text, K::CallExpr), 1, "{stmt}");
+    }
+}
+
+#[test]
 fn a_statement_gets_one_error_however_many_parts_are_too_deep() {
     // Between the condition and the body only the `if` itself is open.
     let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
