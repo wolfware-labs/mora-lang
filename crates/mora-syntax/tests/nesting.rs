@@ -270,6 +270,15 @@ fn a_statement_past_the_limit_is_skipped_to_its_semicolon() {
         assert_eq!(too_deep(&text), 1, "{stmt}");
         assert_eq!(count(&text, K::CallExpr), 1, "{stmt}");
     }
+    // A `;` inside the statement's brackets does not end it; its own `;`
+    // does, and the next statement, as deep, gets its own error.
+    let text = format!(
+        "{}(x) = f(y => {{ a(); }}); b(); {} c();",
+        "{ ".repeat(256),
+        "}".repeat(256)
+    );
+    assert_eq!(too_deep(&text), 2);
+    assert_eq!(count(&text, K::CallExpr), 1);
 }
 
 #[test]
