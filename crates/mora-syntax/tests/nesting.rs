@@ -313,7 +313,7 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         "@A G<T>(): () { b(); }",
         "@A<List<int>> if (a) { b(); }",
         "@A<int if (a) { b(); }",
-        "@A<int> if (a) b(); else { c(); }",
+        "@A<int> if (a) { b(); } else c();",
         "unsafe { b(); }",
         "unsafe b();",
         "F(): (int) => int { b(); };",
