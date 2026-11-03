@@ -313,6 +313,9 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         "@A G<T>(): () { b(); }",
         "@A<List<int>> if (a) { b(); }",
         "@A<int if (a) { b(); }",
+        "@A<int> if (a) b(); else { c(); }",
+        "unsafe { b(); }",
+        "unsafe b();",
         "F(): (int) => int { b(); };",
         "F(): int => new P { X = 1 }.X;",
         "match (a) { _ => 1 }",
@@ -321,6 +324,12 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         let text = format!("{}{stmt} x(); {}", "{ ".repeat(256), "}".repeat(256));
         assert_eq!(too_deep(&text), 2, "{stmt}");
     }
+}
+
+#[test]
+fn an_unclosed_attribute_type_list_leaves_the_block_its_brace() {
+    let text = format!("{}x(); @A<(int) {} y();", "{ ".repeat(256), "}".repeat(256));
+    assert_eq!(too_deep(&text), 2);
 }
 
 #[test]

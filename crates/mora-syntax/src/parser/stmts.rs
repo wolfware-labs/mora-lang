@@ -47,7 +47,7 @@ pub(crate) fn statement(p: &mut Parser<'_>) {
 /// Skips the statement ahead the way it is written: a block, an `if`
 /// with its `else` branches, a loop with its body, `do ... while (a);`,
 /// or the tokens up to its `;` or, for a local function or a `match`,
-/// its block. The statements that hold the one being skipped wait in
+/// which reads like one, its block. The statements that hold the one being skipped wait in
 /// `holding`, so a long `else if` chain does not recurse.
 fn skip_statement(p: &mut Parser<'_>) {
     enum Holds {
@@ -79,7 +79,6 @@ fn skip_statement(p: &mut Parser<'_>) {
                 skip_group(p);
             }
             K::LBrace => skip_group(p),
-            K::Ident if exprs::at_match(p) => skip_to_end(p, true),
             _ => {
                 let local_function = at_local_function(p);
                 skip_to_end(p, local_function);
