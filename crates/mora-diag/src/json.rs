@@ -108,7 +108,7 @@ fn position(sources: &dyn Sources, file: FileId, offset: usize) -> (u32, u32) {
     let chars = text
         .get(line_start..offset)
         .map_or(0, |prefix| prefix.chars().count());
-    let column = u32::from(to_text_size(chars));
+    let column = u32::try_from(chars).unwrap_or(u32::MAX);
     (pos.line.saturating_add(1), column.saturating_add(1))
 }
 

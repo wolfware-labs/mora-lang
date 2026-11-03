@@ -338,9 +338,14 @@ mod tests {
     #[test]
     fn to_text_size_keeps_offsets_and_saturates_past_the_limit() {
         assert_eq!(to_text_size(0), TextSize::new(0));
-        assert_eq!(to_text_size(LineIndex::MAX_LEN), TextSize::new(u32::MAX));
-        assert_eq!(to_text_size(usize::MAX), TextSize::new(u32::MAX));
         assert_eq!(to_text_size(1234), TextSize::new(1234));
+        assert_eq!(to_text_size(LineIndex::MAX_LEN), TextSize::new(u32::MAX));
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            to_text_size(LineIndex::MAX_LEN + 1),
+            TextSize::new(u32::MAX)
+        );
+        assert_eq!(to_text_size(usize::MAX), TextSize::new(u32::MAX));
     }
 
     #[test]
