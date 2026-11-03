@@ -282,6 +282,42 @@ fn a_statement_past_the_limit_is_skipped_to_its_semicolon() {
 }
 
 #[test]
+fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
+    // The 257th level: the statement ends at its block's `}`, or after
+    // its `else`, and the next one is parsed, and reported, on its own.
+    for stmt in [
+        "if (a) { b(); }",
+        "if (a) { b(); } else { c(); }",
+        "if (a) { b(); } else c();",
+        "while (a) { b(); }",
+        "{ b(); }",
+        "F(): () { b(); }",
+    ] {
+        let text = format!("{}{stmt} x(); {}", "{ ".repeat(256), "}".repeat(256));
+        assert_eq!(too_deep(&text), 2, "{stmt}");
+    }
+    // A statement that does not end in a block goes on to its `;`.
+    for stmt in ["do { b(); } while (a);", "let f = () => { b(); };"] {
+        let text = format!("{}{stmt} x(); {}", "{ ".repeat(256), "}".repeat(256));
+        assert_eq!(too_deep(&text), 2, "{stmt}");
+    }
+}
+
+#[test]
+fn a_declaration_too_deep_before_its_body_still_checks_the_body() {
+    // The base type is past the limit; the members and the statements of
+    // a body are statements of their own.
+    let generic = format!("{}int{}", "List<".repeat(300), ">".repeat(300));
+    let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));
+    let text = format!("class C : {generic} {{ F(): int => {deep}; G(): int => 1 }}");
+    let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
+    assert_eq!(codes, [codes::MR0018, codes::MR0018, codes::MR0110]);
+    let text = format!("F(x: {generic}): () {{ let a = {deep}; b() }}");
+    let codes: Vec<_> = parse(&text).errors().iter().map(|e| e.code).collect();
+    assert_eq!(codes, [codes::MR0018, codes::MR0018, codes::MR0110]);
+}
+
+#[test]
 fn a_statement_gets_one_error_however_many_parts_are_too_deep() {
     // Between the condition and the body only the `if` itself is open.
     let deep = format!("{}1{}", "(".repeat(300), ")".repeat(300));

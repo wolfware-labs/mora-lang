@@ -266,6 +266,42 @@ impl<'t> Parser<'t> {
         self.nested_in(true, parse)
     }
 
+    /// [`Parser::nested`] for a statement. At [`MAX_DEPTH`] the `Error`
+    /// node takes the whole statement: up to its `;`, or, with
+    /// `ends_at_block`, up to the `}` that closes its block, with what an
+    /// `else` adds. Returns whether the statement was parsed.
+    pub(crate) fn nested_statement(
+        &mut self,
+        ends_at_block: bool,
+        parse: impl FnOnce(&mut Self),
+    ) -> bool {
+        if self.depth < MAX_DEPTH {
+            self.depth += 1;
+            parse(self);
+            self.depth -= 1;
+            return true;
+        }
+        let m = self.start();
+        self.events.push(Event::TooDeep);
+        let mut open = 0usize;
+        while !self.at_end() {
+            match self.current() {
+                K::LParen | K::LBracket | K::LBrace | K::HoleOpen => open += 1,
+                K::RParen | K::RBracket | K::RBrace | K::HoleClose if open == 0 => break,
+                K::RParen | K::RBracket | K::RBrace | K::HoleClose => open -= 1,
+                K::Semicolon if open == 0 => break,
+                _ => {}
+            }
+            let closes_block = open == 0 && self.at(K::RBrace);
+            self.bump_any();
+            if closes_block && ends_at_block && !self.at(K::ElseKw) {
+                break;
+            }
+        }
+        m.complete(self, K::Error);
+        false
+    }
+
     fn nested_in<T>(
         &mut self,
         angles: bool,

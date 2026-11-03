@@ -35,6 +35,7 @@ pub(super) fn build(
         levels: 0,
         flattened: None,
         muted: None,
+        suspended: Vec::new(),
         builder: TreeBuilder::new(),
         errors: Vec::new(),
     };
@@ -102,6 +103,10 @@ struct Sink<'a> {
     /// outermost level of the statement around it: one error covers that
     /// statement.
     muted: Option<usize>,
+    /// For each block or member list opened while muted, its place in
+    /// `open` and the mute to restore when it closes: its statements and
+    /// members get errors of their own.
+    suspended: Vec<(usize, usize)>,
     /// The tree so far.
     builder: TreeBuilder,
     /// The syntax errors so far.
@@ -161,14 +166,17 @@ impl Sink<'_> {
         let inside = self
             .open
             .iter()
-            .rposition(|&(kind, _)| {
-                matches!(kind, K::Block | K::MemberList | K::UnionBody | K::EnumBody)
-            })
+            .rposition(|&(kind, _)| is_container(kind))
             .map_or(1, |i| i + 1);
         self.muted = Some(inside + 1);
     }
 
     fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+        if is_container(kind)
+            && let Some(around) = self.muted.take()
+        {
+            self.suspended.push((self.open.len(), around));
+        }
         self.open.push((kind, nests));
         self.levels += usize::from(nests);
         if self.open.len() == 1 {
@@ -222,6 +230,12 @@ impl Sink<'_> {
         }
         if self.muted.is_some_and(|around| self.open.len() < around) {
             self.muted = None;
+        }
+        if let Some(&(at, around)) = self.suspended.last()
+            && at == self.open.len()
+        {
+            self.suspended.pop();
+            self.muted = Some(around);
         }
         if self.open.is_empty() {
             // The trivia at the end of the file belongs to the root.
@@ -299,6 +313,12 @@ fn nests(kind: SyntaxKind, parent: Option<SyntaxKind>) -> bool {
         || ast::Type::can_cast(kind)
         || ast::Pattern::can_cast(kind)
         || kind == K::MemberList
+}
+
+/// Whether a node of this kind holds statements, members, union cases or
+/// enum members, each of which gets its own `MR0018`.
+fn is_container(kind: SyntaxKind) -> bool {
+    matches!(kind, K::Block | K::MemberList | K::UnionBody | K::EnumBody)
 }
 
 /// Whether comments directly above a node of this kind belong to it.

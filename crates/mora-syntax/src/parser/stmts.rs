@@ -33,26 +33,7 @@ pub(crate) fn block(p: &mut Parser<'_>) {
 /// One statement. Always takes at least one token.
 pub(crate) fn statement(p: &mut Parser<'_>) {
     let before = p.pos();
-    let block = p.at(K::LBrace);
-    if let Err(skipped) = p.nested(statement_inner) {
-        // The skip stops after a bracketed group, but a statement that
-        // starts with one, `(x) = 1;`, goes on to its `;`. A block ends
-        // at its `}`.
-        if !block {
-            let m = skipped.precede(p);
-            let mut open = 0usize;
-            while !p.at_end() {
-                match p.current() {
-                    K::LParen | K::LBracket | K::LBrace | K::HoleOpen => open += 1,
-                    K::RParen | K::RBracket | K::RBrace | K::HoleClose if open == 0 => break,
-                    K::RParen | K::RBracket | K::RBrace | K::HoleClose => open -= 1,
-                    K::Semicolon if open == 0 => break,
-                    _ => {}
-                }
-                p.bump_any();
-            }
-            m.complete(p, K::Error);
-        }
+    if !p.nested_statement(ends_at_block(p), statement_inner) {
         p.eat(K::Semicolon);
     }
     if p.pos() == before {
@@ -60,6 +41,16 @@ pub(crate) fn statement(p: &mut Parser<'_>) {
         p.error("expected a statement");
         p.bump_any();
         e.complete(p, K::Error);
+    }
+}
+
+/// Whether the statement ahead ends at the `}` of its block, or of its
+/// `else`, rather than at a `;`.
+fn ends_at_block(p: &Parser<'_>) -> bool {
+    match p.current() {
+        K::LBrace | K::IfKw | K::WhileKw | K::ForKw | K::ForeachKw | K::UnsafeKw => true,
+        K::Ident if exprs::at_match(p) => true,
+        _ => at_local_function(p),
     }
 }
 
