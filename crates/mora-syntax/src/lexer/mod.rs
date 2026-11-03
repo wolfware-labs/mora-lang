@@ -25,7 +25,7 @@ use std::borrow::Cow;
 
 use logos::Logos;
 use mora_diag::{Code, Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{FileId, Span, TextRange, TextSize};
+use mora_span::{FileId, Span, TextRange, to_text_size};
 use unicode_normalization::{UnicodeNormalization, is_nfc};
 
 use crate::SyntaxKind;
@@ -412,11 +412,6 @@ impl Raw {
     }
 }
 
-/// A text offset. Texts are smaller than 4 GiB (see [`lex`]).
-fn size(offset: usize) -> TextSize {
-    TextSize::new(u32::try_from(offset).unwrap_or(u32::MAX))
-}
-
 fn is_ident_start(c: char) -> bool {
     c == '_' || unicode_ident::is_xid_start(c)
 }
@@ -461,7 +456,7 @@ impl<'a> Lexer<'a> {
         let end = self.pos + len;
         self.out.tokens.push(Token {
             kind,
-            range: TextRange::new(size(self.pos), size(end)),
+            range: TextRange::new(to_text_size(self.pos), to_text_size(end)),
         });
         self.pos = end;
     }
@@ -469,7 +464,7 @@ impl<'a> Lexer<'a> {
     fn error(&mut self, code: Code, range: std::ops::Range<usize>, message: impl Into<String>) {
         self.out.errors.push(SyntaxError::new(
             code,
-            TextRange::new(size(range.start), size(range.end)),
+            TextRange::new(to_text_size(range.start), to_text_size(range.end)),
             message,
         ));
     }

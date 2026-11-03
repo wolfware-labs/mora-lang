@@ -1,4 +1,4 @@
-use mora_span::{FileId, Span};
+use mora_span::{FileId, Span, to_text_size};
 use serde::{Deserialize, Serialize};
 
 use crate::sources::clamp;
@@ -87,8 +87,8 @@ impl JsonSpan {
         let (line_end, column_end) = position(sources, span.file, range.end);
         Self {
             file: sources.path(span.file).to_owned(),
-            byte_start: to_u32(range.start),
-            byte_end: to_u32(range.end),
+            byte_start: to_text_size(range.start).into(),
+            byte_end: to_text_size(range.end).into(),
             line_start,
             column_start,
             line_end,
@@ -101,19 +101,15 @@ impl JsonSpan {
 fn position(sources: &dyn Sources, file: FileId, offset: usize) -> (u32, u32) {
     let text = sources.text(file);
     let lines = sources.line_index(file);
-    let Some(pos) = lines.line_col(to_u32(offset).into()) else {
+    let Some(pos) = lines.line_col(to_text_size(offset)) else {
         return (1, 1);
     };
     let line_start = offset - pos.col as usize;
     let chars = text
         .get(line_start..offset)
         .map_or(0, |prefix| prefix.chars().count());
-    (pos.line.saturating_add(1), to_u32(chars).saturating_add(1))
-}
-
-/// Offsets come from texts a `LineIndex` accepted, so they fit in 32 bits.
-fn to_u32(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
+    let column = u32::try_from(chars).unwrap_or(u32::MAX);
+    (pos.line.saturating_add(1), column.saturating_add(1))
 }
 
 /// One JSON object for `--message-format json`, without a trailing newline.

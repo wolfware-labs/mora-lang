@@ -20,7 +20,9 @@ pub struct Utf16LineCol {
 struct WideChar {
     /// Byte offset from the start of the line.
     start: u32,
+    /// Length in UTF-8 bytes, 2 to 4.
     utf8_len: u32,
+    /// Length in UTF-16 code units, 1 or 2.
     utf16_len: u32,
 }
 
@@ -65,7 +67,7 @@ impl LineIndex {
         for (offset, ch) in text.char_indices() {
             if ch == '\n' {
                 line_start = offset + 1;
-                line_starts.push(to_size(line_start));
+                line_starts.push(to_text_size(line_start));
                 wide_chars.push(Vec::new());
             } else if !ch.is_ascii() {
                 let start = to_u32(offset - line_start);
@@ -82,7 +84,7 @@ impl LineIndex {
         Self {
             line_starts,
             wide_chars,
-            len: to_size(text.len()),
+            len: to_text_size(text.len()),
         }
     }
 
@@ -195,14 +197,18 @@ impl LineIndex {
     }
 }
 
-/// Converts an offset or length within an indexed text. `LineIndex::new`
-/// has checked that the text fits in 32 bits, so this never saturates.
-fn to_u32(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
+/// Converts an offset or length within a source text to a [`TextSize`].
+///
+/// Source texts are at most [`LineIndex::MAX_LEN`] bytes (the driver rejects
+/// larger files with `MR0003`, §3.1), so for them this never saturates; a
+/// larger value gives `u32::MAX`.
+pub fn to_text_size(n: usize) -> TextSize {
+    TextSize::new(to_u32(n))
 }
 
-fn to_size(n: usize) -> TextSize {
-    TextSize::new(to_u32(n))
+/// [`to_text_size`] as a plain `u32`, for the columns and lengths of this module.
+fn to_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
@@ -222,7 +228,7 @@ mod tests {
     fn assert_round_trips(text: &str) {
         let index = LineIndex::new(text);
         for offset in 0..=text.len() {
-            let size = to_size(offset);
+            let size = to_text_size(offset);
             let Some(pos) = index.line_col(size) else {
                 assert!(
                     !text.is_char_boundary(offset),
@@ -327,6 +333,19 @@ mod tests {
         assert_eq!(index.to_utf8(u16(0, u32::MAX)), None);
         assert_eq!(index.to_utf8(u16(1, u32::MAX)), None);
         assert_eq!(index.offset(lc(0, u32::MAX)), None);
+    }
+
+    #[test]
+    fn to_text_size_keeps_offsets_and_saturates_past_the_limit() {
+        assert_eq!(to_text_size(0), TextSize::new(0));
+        assert_eq!(to_text_size(1234), TextSize::new(1234));
+        assert_eq!(to_text_size(LineIndex::MAX_LEN), TextSize::new(u32::MAX));
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            to_text_size(LineIndex::MAX_LEN + 1),
+            TextSize::new(u32::MAX)
+        );
+        assert_eq!(to_text_size(usize::MAX), TextSize::new(u32::MAX));
     }
 
     #[test]

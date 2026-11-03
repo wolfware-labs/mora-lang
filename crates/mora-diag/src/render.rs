@@ -1,5 +1,5 @@
 use annotate_snippets::{AnnotationKind, Group, Level, Patch, Renderer, Snippet};
-use mora_span::FileId;
+use mora_span::{FileId, Span};
 
 use crate::sources::clamp;
 use crate::{Diagnostic, Severity, Sources};
@@ -23,7 +23,10 @@ pub fn render(diagnostic: &Diagnostic, sources: &dyn Sources, color: bool) -> St
             .primary_title(diagnostic.message.as_str())
             .id(code.as_str()),
     );
-    for file in files_in_order(diagnostic) {
+    let spans = std::iter::once(&diagnostic.primary)
+        .chain(&diagnostic.secondary)
+        .map(|label| label.span);
+    for file in distinct_files(spans) {
         let labels = std::iter::once((&diagnostic.primary, AnnotationKind::Primary))
             .chain(
                 diagnostic
@@ -50,13 +53,7 @@ pub fn render(diagnostic: &Diagnostic, sources: &dyn Sources, color: bool) -> St
     let mut report: Vec<Group<'_>> = vec![main];
     for fix in &diagnostic.fixes {
         let mut group = Group::with_title(Level::HELP.secondary_title(fix.message.as_str()));
-        let mut files: Vec<FileId> = Vec::new();
-        for edit in &fix.edits {
-            if !files.contains(&edit.span.file) {
-                files.push(edit.span.file);
-            }
-        }
-        for file in files {
+        for file in distinct_files(fix.edits.iter().map(|edit| edit.span)) {
             let text = sources.text(file);
             let patches = fix
                 .edits
@@ -74,13 +71,13 @@ pub fn render(diagnostic: &Diagnostic, sources: &dyn Sources, color: bool) -> St
     renderer.render(&report)
 }
 
-/// The primary label's file first, then the other files in the order their
-/// labels appear.
-fn files_in_order(diagnostic: &Diagnostic) -> Vec<FileId> {
-    let mut files = vec![diagnostic.primary.span.file];
-    for label in &diagnostic.secondary {
-        if !files.contains(&label.span.file) {
-            files.push(label.span.file);
+/// The files of `spans`, each once, in the order they first appear. A
+/// diagnostic touches a handful of files, so a linear search is enough.
+fn distinct_files(spans: impl IntoIterator<Item = Span>) -> Vec<FileId> {
+    let mut files = Vec::new();
+    for span in spans {
+        if !files.contains(&span.file) {
+            files.push(span.file);
         }
     }
     files

@@ -13,8 +13,8 @@ pub struct Symbol(u32);
 
 /// Stores each distinct string once and hands out [`Symbol`]s for them.
 ///
-/// Symbols from one interner mean nothing to another; the database owns one
-/// interner per session.
+/// Symbols from one interner mean nothing to another, so one interner must
+/// serve every string whose symbols are compared.
 #[derive(Default, Debug)]
 pub struct Interner {
     /// The symbol of each interned string.

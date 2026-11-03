@@ -18,7 +18,15 @@ pub trait Sources {
 /// Files kept in memory, with ids assigned in the order they are added.
 #[derive(Default, Debug)]
 pub struct Files {
-    files: Vec<(String, String, LineIndex)>,
+    files: Vec<File>,
+}
+
+/// One file of [`Files`] and its line index, built once when it is added.
+#[derive(Debug)]
+struct File {
+    path: String,
+    text: String,
+    lines: LineIndex,
 }
 
 impl Files {
@@ -35,29 +43,33 @@ impl Files {
         };
         let text = text.into();
         let lines = LineIndex::new(&text);
-        self.files.push((path.into(), text, lines));
+        self.files.push(File {
+            path: path.into(),
+            text,
+            lines,
+        });
         FileId::new(raw)
     }
 
-    fn get(&self, file: FileId) -> Option<&(String, String, LineIndex)> {
+    fn get(&self, file: FileId) -> Option<&File> {
         self.files.get(file.raw() as usize)
     }
 }
 
 impl Sources for Files {
     fn path(&self, file: FileId) -> &str {
-        self.get(file).map_or("<unknown>", |(path, _, _)| path)
+        self.get(file).map_or("<unknown>", |file| &file.path)
     }
 
     fn text(&self, file: FileId) -> &str {
-        self.get(file).map_or("", |(_, text, _)| text)
+        self.get(file).map_or("", |file| &file.text)
     }
 
     fn line_index(&self, file: FileId) -> &LineIndex {
         static EMPTY: OnceLock<LineIndex> = OnceLock::new();
         self.get(file).map_or_else(
             || EMPTY.get_or_init(|| LineIndex::new("")),
-            |(_, _, lines)| lines,
+            |file| &file.lines,
         )
     }
 }
@@ -68,14 +80,7 @@ impl Sources for Files {
 /// character; the renderer would panic on it. Clamping keeps the report
 /// readable and points as close as possible to where the span meant.
 pub(crate) fn clamp(text: &str, span: Span) -> Range<usize> {
-    let floor = |mut offset: usize| {
-        offset = offset.min(text.len());
-        while !text.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        offset
-    };
-    let end = floor(u32::from(span.range.end()) as usize);
-    let start = floor(u32::from(span.range.start()) as usize).min(end);
+    let end = text.floor_char_boundary(span.range.end().into());
+    let start = text.floor_char_boundary(span.range.start().into()).min(end);
     start..end
 }
