@@ -1,3 +1,5 @@
+use mora_span::TextSize;
+
 use super::*;
 
 /// The kinds and texts of the tokens of `text`, without whitespace.
@@ -34,7 +36,11 @@ fn assert_lossless(text: &str, lexed: &Lexed) {
         assert!(!token.range.is_empty(), "empty {token:?} in {text:?}");
         end = token.range.end();
     }
-    assert_eq!(end, size(text.len()), "tokens stop early in {text:?}");
+    assert_eq!(
+        end,
+        to_text_size(text.len()),
+        "tokens stop early in {text:?}"
+    );
 }
 
 use SyntaxKind as K;
@@ -543,7 +549,10 @@ fn random_inputs_are_lossless() {
         let lexed = lex(&text);
         assert_lossless(&text, &lexed);
         for error in &lexed.errors {
-            assert!(error.range.end() <= size(text.len()), "{text:?}: {error:?}");
+            assert!(
+                error.range.end() <= to_text_size(text.len()),
+                "{text:?}: {error:?}"
+            );
         }
     }
 }

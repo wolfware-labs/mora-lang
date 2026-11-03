@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Code;
 
+/// Whether a diagnostic stops the build (§17.6). It serializes as
+/// `"error"` or `"warning"`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {

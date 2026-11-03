@@ -15,5 +15,5 @@ mod lines;
 pub use db::{Db, Dependency, Project, ProjectKind, SourceFile, line_index};
 pub use file::{FileId, Span};
 pub use intern::{Interner, Symbol};
-pub use lines::{LineCol, LineIndex, Utf16LineCol};
+pub use lines::{LineCol, LineIndex, Utf16LineCol, to_text_size};
 pub use text_size::{TextRange, TextSize};
