@@ -112,15 +112,25 @@ fn skip_attribute(p: &mut Parser<'_>) {
     p.bump_any();
     while p.eat(K::Ident) {
         if p.at(K::Lt) {
-            let mut open = 0usize;
-            while !p.at_end() {
+            // Generic arguments hold no `;`, block or closing bracket of
+            // their own: one that is not closed ends at the first of them.
+            let mut angles = 0usize;
+            let mut brackets = 0usize;
+            while !p.at_end() && !p.at(K::Semicolon) && !p.at(K::LBrace) {
                 if p.at(K::Lt) {
-                    open += 1;
+                    angles += 1;
                 } else if p.at(K::Gt) {
-                    open -= 1;
+                    angles -= 1;
+                } else if p.at_any(OPENERS) {
+                    brackets += 1;
+                } else if p.at_any(CLOSERS) {
+                    if brackets == 0 {
+                        break;
+                    }
+                    brackets -= 1;
                 }
                 p.bump_any();
-                if open == 0 {
+                if angles == 0 {
                     break;
                 }
             }

@@ -312,6 +312,8 @@ fn a_statement_past_the_limit_that_ends_in_a_block_ends_there() {
         "@A F(): () { b(); }",
         "@A G<T>(): () { b(); }",
         "@A<List<int>> if (a) { b(); }",
+        "@A<int if (a) { b(); }",
+        "F(): (int) => int { b(); };",
         "F(): int => new P { X = 1 }.X;",
         "match (a) { _ => 1 }",
         ")",
