@@ -309,13 +309,19 @@ fn count(text: &str, kind: K) -> usize {
 #[test]
 fn the_parser_skips_only_what_is_too_deep() {
     let parens = |inner: &str| format!("{}{inner}{}", "(".repeat(300), ")".repeat(300));
-    // A bracketed group ends the skip: the next statement of the block,
-    // and the next statement after `<` and `>` used as operators, parse.
-    let text = format!("F(): () {{ {}{} x(); }}", "{ ".repeat(300), "}".repeat(300));
-    assert_eq!((too_deep(&text), count(&text, K::ExprStmt)), (1, 1));
+    // A bracketed group ends the skip: beside a member list that is too
+    // deep, the next member, which is not a level, parses. So does the
+    // next statement after `<` and `>` used as operators.
+    let text = format!(
+        "{}class B {{ }} G(): () {{ }} {}",
+        "class A { ".repeat(256),
+        "}".repeat(256)
+    );
+    assert_eq!((too_deep(&text), count(&text, K::FunctionDecl)), (1, 1));
     for inner in ["a < b", "(a > b) + 1"] {
         let text = format!("let x = f({}, 2);\nlet y = 3;", parens(inner));
         assert_eq!(count(&text, K::LocalDeclStmt), 2, "{inner}");
+        assert_eq!(count(&text, K::Arg), 2, "{inner}");
     }
     // Without brackets, a `,` ends it: `f` keeps its second argument.
     let text = format!("let x = f({}1, 2);", "- ".repeat(300));
@@ -341,6 +347,13 @@ fn a_type_past_the_limit_is_still_a_type() {
     // elements of the 256th list are the first that the lookahead skips.
     let text = format!(
         "let x = f<{}int, , int{}>(1);",
+        "List<".repeat(256),
+        ">".repeat(256)
+    );
+    assert_eq!(count(&text, K::CallExpr), 0);
+    // Nor is an operator: these `<` and `>` compare.
+    let text = format!(
+        "let x = f<{}int + 1{}>(1);",
         "List<".repeat(256),
         ">".repeat(256)
     );
