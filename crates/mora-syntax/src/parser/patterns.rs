@@ -49,6 +49,10 @@ fn and_pattern(p: &mut Parser<'_>) -> Option<CompletedMarker> {
 }
 
 fn unary_pattern(p: &mut Parser<'_>) -> Option<CompletedMarker> {
+    p.nested(unary_pattern_inner).unwrap_or_else(Some)
+}
+
+fn unary_pattern_inner(p: &mut Parser<'_>) -> Option<CompletedMarker> {
     if p.at_contextual("not") {
         let m = p.start();
         p.bump_remap(K::NotKw);

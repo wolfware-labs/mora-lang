@@ -651,10 +651,12 @@ dependencies = [
 name = "mora-syntax"
 version = "0.0.0"
 dependencies = [
+ "hashbrown 0.17.1",
  "logos",
  "mora-diag",
  "mora-span",
  "rowan",
+ "rustc-hash 2.1.3",
  "unicode-ident",
  "unicode-normalization",
 ]

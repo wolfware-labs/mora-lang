@@ -387,14 +387,25 @@ impl GreenNode {
 }
 
 /// Builds a tree from events: open a node, add tokens, close it.
+///
+/// Tokens with the same kind and text are created once and shared. Nodes
+/// are not: interning a node costs a hash of its children at every close,
+/// and two equal nodes are rare outside the smallest ones.
 #[derive(Debug, Default)]
-pub struct TreeBuilder(rowan::GreenNodeBuilder<'static>);
+pub struct TreeBuilder {
+    /// The open nodes: each one's kind and the index of its first child.
+    parents: Vec<(rowan::SyntaxKind, usize)>,
+    /// The children of the open nodes, innermost last.
+    children: Vec<rowan::NodeOrToken<rowan::GreenNode, rowan::GreenToken>>,
+    /// Every distinct token so far.
+    tokens: hashbrown::HashTable<rowan::GreenToken>,
+}
 
 /// A position in a [`TreeBuilder`] where a node can later be opened, so
 /// that it wraps what was added since: the left operand of a binary
 /// expression, for example.
 #[derive(Debug, Clone, Copy)]
-pub struct Checkpoint(rowan::Checkpoint);
+pub struct Checkpoint(usize);
 
 impl TreeBuilder {
     pub fn new() -> Self {
@@ -402,24 +413,52 @@ impl TreeBuilder {
     }
 
     pub fn start_node(&mut self, kind: SyntaxKind) {
-        self.0.start_node(raw(kind));
+        self.parents.push((raw(kind), self.children.len()));
     }
 
     pub fn checkpoint(&self) -> Checkpoint {
-        Checkpoint(self.0.checkpoint())
+        Checkpoint(self.children.len())
     }
 
     /// Opens a node that starts at `checkpoint`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the checkpoint is outside the innermost open node.
     pub fn start_node_at(&mut self, checkpoint: Checkpoint, kind: SyntaxKind) {
-        self.0.start_node_at(checkpoint.0, raw(kind));
+        let first = self.parents.last().map_or(0, |&(_, first)| first);
+        assert!(
+            (first..=self.children.len()).contains(&checkpoint.0),
+            "the checkpoint is outside the innermost open node"
+        );
+        self.parents.push((raw(kind), checkpoint.0));
     }
 
     pub fn token(&mut self, kind: SyntaxKind, text: &str) {
-        self.0.token(raw(kind), text);
+        let kind = raw(kind);
+        let hash = token_hash(kind, text);
+        let token = self
+            .tokens
+            .entry(
+                hash,
+                |token| token.kind() == kind && token.text() == text,
+                |token| token_hash(token.kind(), token.text()),
+            )
+            .or_insert_with(|| rowan::GreenToken::new(kind, text))
+            .get()
+            .clone();
+        self.children.push(rowan::NodeOrToken::Token(token));
     }
 
+    /// # Panics
+    ///
+    /// Panics if no node is open.
     pub fn finish_node(&mut self) {
-        self.0.finish_node();
+        let Some((kind, first)) = self.parents.pop() else {
+            panic!("no node is open");
+        };
+        let node = rowan::GreenNode::new(kind, self.children.drain(first..));
+        self.children.push(rowan::NodeOrToken::Node(node));
     }
 
     /// The finished tree.
@@ -428,9 +467,20 @@ impl TreeBuilder {
     ///
     /// Panics if a node is still open, or if not exactly one root node was
     /// built.
-    pub fn finish(self) -> GreenNode {
-        GreenNode(self.0.finish())
+    pub fn finish(mut self) -> GreenNode {
+        assert!(self.parents.is_empty(), "a node is still open");
+        match (self.children.pop(), self.children.is_empty()) {
+            (Some(rowan::NodeOrToken::Node(root)), true) => GreenNode(root),
+            _ => panic!("the tree does not have exactly one root node"),
+        }
     }
+}
+
+fn token_hash(kind: rowan::SyntaxKind, text: &str) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    kind.hash(&mut hasher);
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn raw(kind: SyntaxKind) -> rowan::SyntaxKind {

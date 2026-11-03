@@ -489,6 +489,10 @@ pub(crate) fn member_list(p: &mut Parser<'_>, owner: Option<&str>) {
 }
 
 fn members_in_braces(p: &mut Parser<'_>, cx: Context<'_>) {
+    let _ = p.nested(|p| member_list_inner(p, cx));
+}
+
+fn member_list_inner(p: &mut Parser<'_>, cx: Context<'_>) {
     let m = p.start();
     if p.expect(K::LBrace) {
         members(p, cx);

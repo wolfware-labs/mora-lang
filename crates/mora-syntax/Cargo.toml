@@ -13,7 +13,9 @@ workspace = true
 
 [dependencies]
 logos.workspace = true
+hashbrown.workspace = true
 rowan.workspace = true
+rustc-hash.workspace = true
 mora-diag.workspace = true
 mora-span.workspace = true
 unicode-ident.workspace = true

@@ -10,6 +10,13 @@
 //! The parser never stops at an error. It reports `MR0110`, wraps what it
 //! cannot use in an `Error` node, and goes on at the next declaration or
 //! member, so every later declaration still gets its tree.
+//!
+//! Nesting is limited to [`MAX_DEPTH`] levels (§14.4), so that neither the
+//! parser nor a later pass that walks the tree recursively runs out of
+//! stack. The parser counts the levels it is inside and stops descending
+//! at the limit; [`build`] counts the levels of the finished tree, which
+//! the parser cannot see while it wraps a left operand, as in a long chain
+//! `a + b + c`.
 
 mod build;
 mod exprs;
@@ -142,15 +149,27 @@ pub(crate) enum Event {
         message: String,
         fix: Option<(String, String)>,
     },
+    /// Report `MR0018` at the next token: nesting goes past [`MAX_DEPTH`].
+    TooDeep,
     /// A `Start` that was abandoned or moved.
     Tombstone,
 }
 
+/// How many expressions, statements, types, patterns and member lists can
+/// nest inside each other (§14.4).
+pub(crate) const MAX_DEPTH: usize = 256;
+
 pub(crate) struct Parser<'t> {
+    /// The tokens to parse.
     input: &'t Input<'t>,
+    /// The index of the next token in `input`.
     pos: usize,
+    /// What the parser did so far.
     events: Vec<Event>,
+    /// Whether `x => ...` is read as something else than a lambda here.
     no_lambda: bool,
+    /// How many levels of [`Parser::nested`] are open.
+    depth: usize,
 }
 
 /// A node that is open: it must be completed or abandoned.
@@ -211,6 +230,7 @@ impl<'t> Parser<'t> {
             pos: 0,
             events: Vec::new(),
             no_lambda: false,
+            depth: 0,
         }
     }
 
@@ -224,6 +244,86 @@ impl<'t> Parser<'t> {
         let result = parse(self);
         self.no_lambda = saved;
         result
+    }
+
+    /// Runs `parse` one level deeper. At [`MAX_DEPTH`] it reports
+    /// `MR0018` instead and wraps the rest of the construct in an `Error`
+    /// node: a bracketed group, when the construct starts with an opening
+    /// bracket, and otherwise the tokens up to a `;`, a `,` or a closing
+    /// bracket that is not its own.
+    pub(crate) fn nested<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, CompletedMarker> {
+        self.nested_in(false, parse)
+    }
+
+    /// [`Parser::nested`] in a type, where `<` and `>` are brackets too.
+    pub(crate) fn nested_type<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, CompletedMarker> {
+        self.nested_in(true, parse)
+    }
+
+    /// [`Parser::nested`] for a statement. At [`MAX_DEPTH`] it reports
+    /// `MR0018` instead and `skip` takes the statement into an `Error`
+    /// node. Returns whether the statement was parsed.
+    pub(crate) fn nested_statement(
+        &mut self,
+        parse: impl FnOnce(&mut Self),
+        skip: impl FnOnce(&mut Self),
+    ) -> bool {
+        if self.depth < MAX_DEPTH {
+            self.depth += 1;
+            parse(self);
+            self.depth -= 1;
+            return true;
+        }
+        let m = self.start();
+        self.events.push(Event::TooDeep);
+        skip(self);
+        m.complete(self, K::Error);
+        false
+    }
+
+    fn nested_in<T>(
+        &mut self,
+        angles: bool,
+        parse: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, CompletedMarker> {
+        if self.depth == MAX_DEPTH {
+            return Err(self.too_deep(angles));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        Ok(result)
+    }
+
+    fn too_deep(&mut self, angles: bool) -> CompletedMarker {
+        let m = self.start();
+        self.events.push(Event::TooDeep);
+        let group = matches!(self.current(), K::LParen | K::LBracket | K::LBrace)
+            || (angles && self.at(K::Lt));
+        let mut open = 0usize;
+        while !self.at_end() {
+            match self.current() {
+                K::Lt if angles => open += 1,
+                K::Gt if angles && open == 0 => break,
+                K::Gt if angles => open -= 1,
+                K::LParen | K::LBracket | K::LBrace | K::HoleOpen => open += 1,
+                K::RParen | K::RBracket | K::RBrace | K::HoleClose if open == 0 => break,
+                K::RParen | K::RBracket | K::RBrace | K::HoleClose => open -= 1,
+                K::Semicolon | K::Comma if open == 0 => break,
+                _ => {}
+            }
+            self.bump_any();
+            if group && open == 0 {
+                break;
+            }
+        }
+        m.complete(self, K::Error)
     }
 
     pub(crate) fn lambdas_allowed(&self) -> bool {

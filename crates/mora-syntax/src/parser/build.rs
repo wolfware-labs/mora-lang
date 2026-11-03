@@ -3,12 +3,20 @@
 //! Trivia goes into the innermost open node, with one exception: comments
 //! directly above a declaration, with no blank line between them, belong to
 //! that declaration, so a doc comment is part of the item it documents.
+//!
+//! The builder also enforces the nesting limit on the finished tree
+//! (§14.4): a node that would sit deeper than [`MAX_DEPTH`] levels gets
+//! `MR0018`, and it and everything inside it become one `Error` node that
+//! holds their tokens, so the tree stays shallow for the passes after it.
 
 use std::mem;
 
 use mora_span::{TextRange, TextSize};
 
-use super::{Event, SYNTAX_ERROR};
+use mora_diag::{Code, codes};
+
+use super::{Event, MAX_DEPTH, SYNTAX_ERROR};
+use crate::ast::{self, AstNode};
 use crate::lexer::Lexed;
 use crate::{GreenNode, SyntaxError, SyntaxFix, SyntaxKind, TreeBuilder};
 
@@ -23,7 +31,11 @@ pub(super) fn build(
         text,
         lexed,
         raw: 0,
-        depth: 0,
+        open: Vec::new(),
+        levels: 0,
+        flattened: None,
+        muted: None,
+        suspended: Vec::new(),
         builder: TreeBuilder::new(),
         errors: Vec::new(),
     };
@@ -55,9 +67,17 @@ pub(super) fn build(
             }
             Event::Finish => sink.finish(),
             Event::Token { kind, n_raw } => sink.token(kind, n_raw),
+            // After `MR0018`, the rest of its statement reports nothing more:
+            // what the parser skipped there leaves holes it would report.
+            Event::Error { .. } if sink.mutes_errors() => {}
             Event::Error { message, fix } => {
                 let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
-                sink.error(message, fix, wraps_token);
+                sink.error(SYNTAX_ERROR, message, fix, wraps_token);
+            }
+            // Inside a flattened node, the error that covers it is reported.
+            Event::TooDeep => {
+                let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
+                sink.too_deep(wraps_token);
             }
             Event::Tombstone => {}
         }
@@ -72,8 +92,21 @@ struct Sink<'a> {
     lexed: &'a Lexed,
     /// The next token of `lexed` to add.
     raw: usize,
-    /// How many nodes are open.
-    depth: usize,
+    /// Each open node and whether it counts toward the nesting limit.
+    open: Vec<(SyntaxKind, bool)>,
+    /// How many open nodes count toward the nesting limit.
+    levels: usize,
+    /// Inside a node that went past the limit: how many of the nodes inside
+    /// it, which are left out of the tree, are open.
+    flattened: Option<usize>,
+    /// After a node went past the limit, how many nodes are open up to the
+    /// outermost level of the statement around it: one error covers that
+    /// statement.
+    muted: Option<usize>,
+    /// For each block or member list opened while muted, its place in
+    /// `open` and the mute to restore when it closes: its statements and
+    /// members get errors of their own.
+    suspended: Vec<(usize, usize)>,
     /// The tree so far.
     builder: TreeBuilder,
     /// The syntax errors so far.
@@ -103,9 +136,62 @@ impl Sink<'_> {
     }
 
     fn start(&mut self, kind: SyntaxKind) {
-        if self.depth == 0 {
+        if let Some(open) = &mut self.flattened {
+            *open += 1;
+            return;
+        }
+        let parent = self.open.last().map(|&(parent, _)| parent);
+        let nests = nests(kind, parent);
+        if nests && self.levels == MAX_DEPTH {
+            self.too_deep(true);
+            self.flattened = Some(0);
+            self.open_node(K::Error, false);
+        } else {
+            self.open_node(kind, nests);
+        }
+    }
+
+    /// Whether a syntax error here goes unreported: it is in the statement
+    /// of an `MR0018`, or in the brackets of a block or member list that
+    /// statement holds, which are not in any statement of their own.
+    fn mutes_errors(&self) -> bool {
+        self.muted.is_some()
+            || self
+                .suspended
+                .last()
+                .is_some_and(|&(at, _)| at + 1 == self.open.len())
+    }
+
+    /// Reports `MR0018` for the next node, unless an error already covers
+    /// the statement it is in.
+    fn too_deep(&mut self, wraps_token: bool) {
+        if self.muted.is_some() {
+            return;
+        }
+        self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
+        // The statement is the node directly inside the innermost block,
+        // list of members, cases or enum members, or inside the file: a
+        // statement of a block, or a member with its `;`. When nothing is
+        // open inside that yet, the node going past the limit is the
+        // statement.
+        let inside = self
+            .open
+            .iter()
+            .rposition(|&(kind, _)| is_container(kind))
+            .map_or(1, |i| i + 1);
+        self.muted = Some(inside + 1);
+    }
+
+    fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+        if is_container(kind)
+            && let Some(around) = self.muted.take()
+        {
+            self.suspended.push((self.open.len(), around));
+        }
+        self.open.push((kind, nests));
+        self.levels += usize::from(nests);
+        if self.open.len() == 1 {
             self.builder.start_node(kind);
-            self.depth += 1;
             return;
         }
         let end = self.next_significant();
@@ -116,7 +202,6 @@ impl Sink<'_> {
         };
         self.add_raw(attach_from);
         self.builder.start_node(kind);
-        self.depth += 1;
         self.add_raw(end);
     }
 
@@ -143,12 +228,31 @@ impl Sink<'_> {
     }
 
     fn finish(&mut self) {
-        if self.depth == 1 {
+        match &mut self.flattened {
+            Some(0) => self.flattened = None,
+            Some(open) => {
+                *open -= 1;
+                return;
+            }
+            None => {}
+        }
+        if self.open.pop().is_some_and(|(_, nests)| nests) {
+            self.levels -= 1;
+        }
+        if self.muted.is_some_and(|around| self.open.len() < around) {
+            self.muted = None;
+        }
+        if let Some(&(at, around)) = self.suspended.last()
+            && at == self.open.len()
+        {
+            self.suspended.pop();
+            self.muted = Some(around);
+        }
+        if self.open.is_empty() {
             // The trivia at the end of the file belongs to the root.
             self.add_raw(self.lexed.tokens.len());
         }
         self.builder.finish_node();
-        self.depth -= 1;
     }
 
     fn token(&mut self, kind: SyntaxKind, n_raw: usize) {
@@ -166,12 +270,18 @@ impl Sink<'_> {
         self.raw = last;
     }
 
-    /// Reports `MR0110`: on the token that follows, when the parser wraps it
+    /// Reports `code`: on the token that follows, when the error wraps it
     /// in an `Error` node; otherwise just after the last token taken, where
     /// something is missing.
     /// A `fix` replaces the token the error wraps; without one, it is
     /// dropped.
-    fn error(&mut self, message: String, fix: Option<(String, String)>, wraps_token: bool) {
+    fn error(
+        &mut self,
+        code: Code,
+        message: String,
+        fix: Option<(String, String)>,
+        wraps_token: bool,
+    ) {
         let next = self.next_significant();
         let wrapped = if wraps_token {
             self.lexed.tokens.get(next).map(|token| token.range)
@@ -188,7 +298,7 @@ impl Sink<'_> {
                 .map_or(TextSize::new(0), |token| token.range.end());
             TextRange::empty(end)
         };
-        let mut error = SyntaxError::new(SYNTAX_ERROR, range, message);
+        let mut error = SyntaxError::new(code, range, message);
         if let (Some(range), Some((message, replacement))) = (wrapped, fix) {
             error = error.with_fix(SyntaxFix {
                 message,
@@ -197,6 +307,29 @@ impl Sink<'_> {
         }
         self.errors.push(error);
     }
+}
+
+/// The message of `MR0018`.
+const TOO_DEEP: &str = "nesting is too deep";
+
+/// Whether a node of this kind, inside a node of kind `parent`, is a level
+/// of nesting (§14.4). The fields of a case pattern, `(let r)` in
+/// `Circle(let r)`, are part of that pattern.
+fn nests(kind: SyntaxKind, parent: Option<SyntaxKind>) -> bool {
+    if kind == K::PositionalPattern && parent == Some(K::CasePattern) {
+        return false;
+    }
+    ast::Expr::can_cast(kind)
+        || ast::Stmt::can_cast(kind)
+        || ast::Type::can_cast(kind)
+        || ast::Pattern::can_cast(kind)
+        || kind == K::MemberList
+}
+
+/// Whether a node of this kind holds statements, members, union cases or
+/// enum members, each of which gets its own `MR0018`.
+fn is_container(kind: SyntaxKind) -> bool {
+    matches!(kind, K::Block | K::MemberList | K::UnionBody | K::EnumBody)
 }
 
 /// Whether comments directly above a node of this kind belong to it.

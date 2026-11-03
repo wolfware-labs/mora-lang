@@ -150,7 +150,13 @@ fn binary_op(p: &Parser<'_>) -> Option<(SyntaxKind, u8)> {
     BINARY.iter().copied().find(|(k, _)| *k == kind)
 }
 
+/// An expression whose operators bind at least as tightly as `min`, one
+/// level deeper (§14.4).
 fn expr_bp(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
+    p.nested(|p| expr_bp_inner(p, min)).unwrap_or_else(Some)
+}
+
+fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
     // A range does not associate: `a..b..c` takes one `..`, then stops.
     let mut is_range = p.at(K::DotDot) && min <= RANGE;
     let mut lhs = if is_range {
@@ -282,7 +288,7 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
     if PREFIX.iter().any(|&kind| p.at(kind)) {
         let m = p.start();
         p.bump_any();
-        if unary_with(p, propagate).is_none() {
+        if operand(p, propagate).is_none() {
             p.error("expected an expression");
         }
         return Some(m.complete(p, K::PrefixExpr));
@@ -292,7 +298,7 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
         // propagation applies to the awaited value.
         let m = p.start();
         p.bump(K::AwaitKw);
-        if unary_with(p, false).is_none() {
+        if operand(p, false).is_none() {
             p.error("expected an expression");
         }
         let awaited = m.complete(p, K::AwaitExpr);
@@ -307,13 +313,18 @@ fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
         p.bump(K::LParen);
         types::ty(p);
         p.bump(K::RParen);
-        if unary_with(p, propagate).is_none() {
+        if operand(p, propagate).is_none() {
             p.error("expected an expression");
         }
         return Some(m.complete(p, K::CastExpr));
     }
     let lhs = primary(p)?;
     Some(postfix(p, lhs, propagate))
+}
+
+/// The operand of a prefix operator, `await` or a cast, one level deeper.
+fn operand(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
+    p.nested(|p| unary_with(p, propagate)).unwrap_or_else(Some)
 }
 
 /// Whether `(T)x` is a cast (§14.4): the parentheses hold a type, and what
