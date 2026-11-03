@@ -1,6 +1,6 @@
 --- crates/mora-syntax/src/parser/build.rs
 +++ replace build -> (GreenNode, Vec<SyntaxError>) with (Default::default(), vec![])
-@@ -22,69 +22,17 @@
+@@ -22,71 +22,17 @@
  
  use SyntaxKind as K;
  
@@ -13,7 +13,6 @@
 -        text,
 -        lexed,
 -        raw: 0,
--        depth: 0,
 -        open: Vec::new(),
 -        levels: 0,
 -        flattened: None,
@@ -49,6 +48,9 @@
 -            }
 -            Event::Finish => sink.finish(),
 -            Event::Token { kind, n_raw } => sink.token(kind, n_raw),
+-            // A statement with a part nested too deeply gets `MR0018` alone:
+-            // what the parser skipped there leaves holes it would report.
+-            Event::Error { .. } if sink.muted.is_some() => {}
 -            Event::Error { message, fix } => {
 -                let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
 -                sink.error(SYNTAX_ERROR, message, fix, wraps_token);

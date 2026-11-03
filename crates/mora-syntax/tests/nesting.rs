@@ -6,7 +6,7 @@
 //! out of stack far past it.
 
 use mora_diag::codes;
-use mora_syntax::parse;
+use mora_syntax::{SyntaxKind as K, parse};
 
 /// A construct nested `n` times, and the largest `n` the limit accepts. The
 /// largest `n` is below 256 where the statement around the construct, or a
@@ -294,4 +294,58 @@ fn a_chain_inside_other_levels_adds_its_own() {
         ")".repeat(200)
     );
     assert_eq!(too_deep(&text), 1);
+}
+
+/// How many nodes of `kind` the tree of `text` has. What an `Error` node
+/// skipped holds only tokens, so this counts what was parsed around it.
+fn count(text: &str, kind: K) -> usize {
+    parse(text)
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == kind)
+        .count()
+}
+
+#[test]
+fn the_parser_skips_only_what_is_too_deep() {
+    let parens = |inner: &str| format!("{}{inner}{}", "(".repeat(300), ")".repeat(300));
+    // A bracketed group ends the skip: the next statement of the block,
+    // and the next statement after `<` and `>` used as operators, parse.
+    let text = format!("F(): () {{ {}{} x(); }}", "{ ".repeat(300), "}".repeat(300));
+    assert_eq!((too_deep(&text), count(&text, K::ExprStmt)), (1, 1));
+    for inner in ["a < b", "(a > b) + 1"] {
+        let text = format!("let x = f({}, 2);\nlet y = 3;", parens(inner));
+        assert_eq!(count(&text, K::LocalDeclStmt), 2, "{inner}");
+    }
+    // Without brackets, a `,` ends it: `f` keeps its second argument.
+    let text = format!("let x = f({}1, 2);", "- ".repeat(300));
+    assert_eq!((too_deep(&text), count(&text, K::Arg)), (1, 2));
+    // In a type, `<` and `>` are brackets: the initializer after the type
+    // parses.
+    let generic = |inner: &str| format!("{}{inner}{}", "List<".repeat(300), ">".repeat(300));
+    let text = format!("let x: Map<{}, int> = m;", generic("Map<int, int>"));
+    assert_eq!((too_deep(&text), count(&text, K::PathExpr)), (1, 1));
+}
+
+#[test]
+fn a_type_past_the_limit_is_still_a_type() {
+    // The lookahead skips the rest of the type, whatever it is made of, so
+    // `f<...>(1)` is a call and the pattern a type pattern.
+    let generic = |inner: &str| format!("{}{inner}{}", "List<".repeat(300), ">".repeat(300));
+    let inner = "Std.Map<(x: int, string), weak T?[]>, (int) => bool";
+    let text = format!("let x = f<{}>(1);", generic(inner));
+    assert_eq!((too_deep(&text), count(&text, K::CallExpr)), (1, 1));
+    let text = format!("let x = y is {};", generic(inner));
+    assert_eq!((too_deep(&text), count(&text, K::TypePattern)), (1, 1));
+    // An element that is missing is not a type, even past the limit: the
+    // elements of the 256th list are the first that the lookahead skips.
+    let text = format!(
+        "let x = f<{}int, , int{}>(1);",
+        "List<".repeat(256),
+        ">".repeat(256)
+    );
+    assert_eq!(count(&text, K::CallExpr), 0);
+    // A short type ends where it ends: `u` is a binding.
+    let text = "let ok = s is any IShape u;";
+    assert_eq!((too_deep(text), count(text, K::DeclarationPattern)), (0, 1));
 }

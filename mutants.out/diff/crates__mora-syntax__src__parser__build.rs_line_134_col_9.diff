@@ -26,7 +26,7 @@
      }
  
      /// Reports `MR0018` for the next node, unless an error already covers
-     /// the statement or member it is in.
+     /// the statement it is in.
      fn too_deep(&mut self, wraps_token: bool) {
          if self.muted.is_some() {
              return;

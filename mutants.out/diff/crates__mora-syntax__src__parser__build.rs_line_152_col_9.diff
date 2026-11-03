@@ -1,29 +1,32 @@
 --- crates/mora-syntax/src/parser/build.rs
 +++ replace Sink<'_>::too_deep with ()
-@@ -144,33 +144,17 @@
+@@ -144,36 +144,17 @@
          } else {
              self.open_node(kind, nests);
          }
      }
  
      /// Reports `MR0018` for the next node, unless an error already covers
-     /// the statement or member it is in.
+     /// the statement it is in.
      fn too_deep(&mut self, wraps_token: bool) {
 -        if self.muted.is_some() {
 -            return;
 -        }
 -        self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
--        // The outermost level inside the innermost member list; when the
--        // member lists are themselves what nests too deeply, the innermost.
--        let members = self
+-        // The statement is the outermost level inside the innermost block
+-        // or member list: a statement of a block, a member's expression
+-        // body, or a statement at the top of the file. When blocks or
+-        // member lists are themselves what nests too deeply, it is the
+-        // innermost level.
+-        let inside = self
 -            .open
 -            .iter()
--            .rposition(|&(kind, _)| kind == K::MemberList)
+-            .rposition(|&(kind, _)| matches!(kind, K::Block | K::MemberList))
 -            .map_or(0, |i| i + 1);
--        let level = self.open[members..]
+-        let level = self.open[inside..]
 -            .iter()
 -            .position(|&(_, nests)| nests)
--            .map(|i| members + i)
+-            .map(|i| inside + i)
 -            .or_else(|| self.open.iter().rposition(|&(_, nests)| nests));
 -        self.muted = Some(level.map_or(0, |i| i + 1));
 +        () /* ~ changed by cargo-mutants ~ */
@@ -32,6 +35,6 @@
      fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
          self.open.push((kind, nests));
          self.levels += usize::from(nests);
-         if self.depth == 0 {
+         if self.open.len() == 1 {
              self.builder.start_node(kind);
-             self.depth += 1;
+             return;
