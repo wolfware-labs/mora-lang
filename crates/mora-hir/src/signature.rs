@@ -1,9 +1,12 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::defs::ItemId;
-use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
+use crate::items::{
+    ItemIdx, ItemKind, ItemTree, Visibility, item_index, item_tree, signature_refs,
+};
 use crate::resolve::{
-    ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, resolve_path,
+    ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, item_data,
+    resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
 use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
@@ -39,6 +42,7 @@ pub(crate) struct SignatureError {
     pub(crate) kind: SignatureErrorKind,
 }
 
+/// What is wrong with a path in a signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SignatureErrorKind {
     /// The path does not resolve from the scope (`MR0127`, `MR0128`,
@@ -87,7 +91,7 @@ fn item_signature(
         member: effective_visibility(db, id),
         errors: Vec::new(),
     };
-    let signature = match &refs[index(item)].kind {
+    let signature = match &refs[item_index(item)].kind {
         SignatureRefKind::Function {
             params,
             ret,
@@ -132,10 +136,6 @@ fn item_signature(
     }
 }
 
-fn index(idx: ItemIdx) -> usize {
-    u32::from(idx.into_raw()) as usize
-}
-
 /// Looks up the names in types as written.
 pub(crate) struct LowerTypes<'db> {
     pub(crate) db: &'db dyn Db,
@@ -158,7 +158,7 @@ pub(crate) fn type_params(
     within: Option<ItemIdx>,
 ) -> Vec<String> {
     enclosing_types(tree, within)
-        .flat_map(|ty| refs[index(ty)].type_params.iter().cloned())
+        .flat_map(|ty| refs[item_index(ty)].type_params.iter().cloned())
         .collect()
 }
 
@@ -237,7 +237,7 @@ impl LowerTypes<'_> {
                 return self.fail(error(last, SignatureErrorKind::NotAType(other)), &path.args);
             }
         };
-        let construct = match crate::resolve::item_data(self.db, item).kind {
+        let construct = match item_data(self.db, item).kind {
             ItemKind::Struct => Construct::Generic,
             ItemKind::Class => Construct::Class,
             ItemKind::Union => Construct::Union,
@@ -259,7 +259,7 @@ impl LowerTypes<'_> {
             ));
         }
         let generic = path.generic
-            || !signature_refs(self.db, item.file)[index(item.item)]
+            || !signature_refs(self.db, item.file)[item_index(item.item)]
                 .type_params
                 .is_empty();
         if construct == Construct::Generic && !generic {

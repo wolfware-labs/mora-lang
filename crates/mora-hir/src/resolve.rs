@@ -29,6 +29,15 @@ impl Scope {
             within: None,
         }
     }
+
+    /// The item `item` of the scope's file.
+    pub(crate) fn item(self, item: ItemIdx) -> ItemId {
+        ItemId {
+            project: self.project,
+            file: self.file,
+            item,
+        }
+    }
 }
 
 /// What a path names.
@@ -54,6 +63,7 @@ pub struct ResolveError {
     pub kind: ResolveErrorKind,
 }
 
+/// What went wrong at the segment of a [`ResolveError`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolveErrorKind {
     /// No declaration has the name (`MR0127`). `within` is what the segments
@@ -125,6 +135,7 @@ fn resolve(
 /// of a type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ExprTarget {
+    /// A declaration, as [`resolve_path`] finds it.
     Item(Resolved),
     /// The value member at this index of [`Item::values`] of the type.
     Value(ItemId, usize),
@@ -150,11 +161,7 @@ pub(crate) fn resolve_expr_path(
     let tree = item_tree(db, scope.file);
     let mut current = None;
     for ty in enclosing_types(tree, scope.within) {
-        let id = ItemId {
-            project: scope.project,
-            file: scope.file,
-            item: ty,
-        };
+        let id = scope.item(ty);
         if let Some(index) = tree.item(ty).values.iter().position(|v| v.name == *first) {
             return Ok((ExprTarget::Value(id, index), 1));
         }
@@ -216,12 +223,7 @@ pub(crate) fn resolve_static_member(
         let mut hidden = None;
         return match pick(db, scope, static_members(db, ty, name), &mut hidden)? {
             Some(found) => Ok(ExprTarget::Item(found)),
-            None => Err(hidden.map_or_else(
-                || ResolveErrorKind::Unresolved {
-                    within: Some(current.clone()),
-                },
-                ResolveErrorKind::NotVisible,
-            )),
+            None => Err(not_found(hidden, current)),
         };
     }
     member(db, scope, current, name).map(ExprTarget::Item)
@@ -229,22 +231,8 @@ pub(crate) fn resolve_static_member(
 
 /// Whether code in `from` can see the value member `value` of `ty`.
 pub(crate) fn value_visible(db: &dyn Db, ty: ItemId, value: &ValueMember, from: Scope) -> bool {
-    let same_project = ty.project == from.project;
-    is_visible(db, ty, from)
-        && match value.visibility {
-            Visibility::Public => true,
-            Visibility::Internal => same_project,
-            Visibility::Folder => {
-                let map = def_map(db, ty.project);
-                same_project && map.file_namespace(ty.file) == map.file_namespace(from.file)
-            }
-            Visibility::File => same_project && ty.file == from.file,
-            Visibility::Private => {
-                same_project
-                    && ty.file == from.file
-                    && enclosing_types(item_tree(db, from.file), from.within).any(|t| t == ty.item)
-            }
-        }
+    // A `private` value member is visible inside its type.
+    is_visible(db, ty, from) && reaches(db, value.visibility, ty, from, || Some(ty.item))
 }
 
 /// The first segment, through the levels of the lookup in order.
@@ -274,35 +262,21 @@ fn first_segment_in(
     let mut hidden = None;
     let tree = item_tree(db, scope.file);
     for ty in enclosing_types(tree, scope.within) {
-        let found = type_members(
-            db,
-            ItemId {
-                project: scope.project,
-                file: scope.file,
-                item: ty,
-            },
-            name,
-        );
+        let found = type_members(db, scope.item(ty), name);
         if let Some(found) = pick(db, scope, found, &mut hidden)? {
             return Ok(ExprTarget::Item(found));
         }
     }
     let map = def_map(db, scope.project);
-    let mut namespace = map.file_namespace(scope.file);
-    while let Some(id) = namespace {
-        let found = namespace_members(
-            db,
-            NamespaceRef {
-                project: scope.project,
-                id,
-            },
-            name,
-            true,
-        );
+    for id in map.enclosing_namespaces(map.file_namespace(scope.file)) {
+        let namespace = NamespaceRef {
+            project: scope.project,
+            id,
+        };
+        let found = namespace_members(db, namespace, name, true);
         if let Some(found) = pick(db, scope, found, &mut hidden)? {
             return Ok(ExprTarget::Item(found));
         }
-        namespace = map.namespace(id).parent;
     }
     if let Some(found) = pick(
         db,
@@ -386,13 +360,19 @@ fn member(
     let mut hidden = None;
     match pick(db, scope, found, &mut hidden)? {
         Some(found) => Ok(found),
-        None => Err(hidden.map_or_else(
-            || ResolveErrorKind::Unresolved {
-                within: Some(current.clone()),
-            },
-            ResolveErrorKind::NotVisible,
-        )),
+        None => Err(not_found(hidden, current)),
     }
+}
+
+/// The error for a name that no visible declaration in what `current`
+/// names has: [`ResolveErrorKind::NotVisible`] when a hidden one has it.
+fn not_found(hidden: Option<ItemId>, current: &Resolved) -> ResolveErrorKind {
+    hidden.map_or_else(
+        || ResolveErrorKind::Unresolved {
+            within: Some(current.clone()),
+        },
+        ResolveErrorKind::NotVisible,
+    )
 }
 
 /// The declarations of one level that are visible from `scope`: `None`
@@ -572,6 +552,7 @@ pub(crate) fn imports(db: &dyn Db, project: Project, file: SourceFile) -> Import
     imports
 }
 
+/// What the item tree of its file says about `item`.
 pub(crate) fn item_data(db: &dyn Db, item: ItemId) -> &Item {
     item_tree(db, item.file).item(item.item)
 }
@@ -599,24 +580,40 @@ pub fn effective_visibility(db: &dyn Db, item: ItemId) -> Visibility {
 /// visible only inside its type; when several types around it are
 /// `private`, inside the type of the innermost one.
 pub fn is_visible(db: &dyn Db, item: ItemId, from: Scope) -> bool {
-    let same_project = item.project == from.project;
-    match effective_visibility(db, item) {
+    let owner = || {
+        let tree = item_tree(db, item.file);
+        enclosing_types(tree, Some(item.item))
+            .find(|&idx| tree.item(idx).visibility == Visibility::Private)
+            .and_then(|idx| tree.item(idx).parent)
+    };
+    reaches(db, effective_visibility(db, item), item, from, owner)
+}
+
+/// Whether code in `from` is inside what `visibility` gives a declaration
+/// of `decl`'s project and file. For `private`, that is inside the type
+/// `owner` gives, which is looked up only then.
+fn reaches(
+    db: &dyn Db,
+    visibility: Visibility,
+    decl: ItemId,
+    from: Scope,
+    owner: impl FnOnce() -> Option<ItemIdx>,
+) -> bool {
+    let same_project = decl.project == from.project;
+    match visibility {
         Visibility::Public => true,
         Visibility::Internal => same_project,
         Visibility::Folder => {
-            let map = def_map(db, item.project);
-            same_project && map.file_namespace(item.file) == map.file_namespace(from.file)
+            let map = def_map(db, decl.project);
+            same_project && map.file_namespace(decl.file) == map.file_namespace(from.file)
         }
-        Visibility::File => same_project && item.file == from.file,
+        Visibility::File => same_project && decl.file == from.file,
         Visibility::Private => {
-            let tree = item_tree(db, item.file);
-            let owner = enclosing_types(tree, Some(item.item))
-                .find(|&idx| tree.item(idx).visibility == Visibility::Private)
-                .and_then(|idx| tree.item(idx).parent);
             same_project
-                && item.file == from.file
-                && owner
-                    .is_some_and(|owner| enclosing_types(tree, from.within).any(|ty| ty == owner))
+                && decl.file == from.file
+                && owner().is_some_and(|owner| {
+                    enclosing_types(item_tree(db, from.file), from.within).any(|ty| ty == owner)
+                })
         }
     }
 }
@@ -744,30 +741,24 @@ pub(crate) fn visible_names(
         None => {
             let tree = item_tree(db, scope.file);
             for ty in enclosing_types(tree, scope.within) {
-                let ty = ItemId {
-                    project: scope.project,
-                    file: scope.file,
-                    item: ty,
-                };
+                let ty = scope.item(ty);
                 for name in type_names(ty) {
                     add(type_members(db, ty, &name), &name, &mut names);
                 }
             }
             let map = def_map(db, scope.project);
-            let mut namespace = map.file_namespace(scope.file);
-            while let Some(id) = namespace {
-                let namespace_ref = NamespaceRef {
+            for id in map.enclosing_namespaces(map.file_namespace(scope.file)) {
+                let namespace = NamespaceRef {
                     project: scope.project,
                     id,
                 };
-                for name in namespace_names(namespace_ref, true) {
+                for name in namespace_names(namespace, true) {
                     add(
-                        namespace_members(db, namespace_ref, &name, true),
+                        namespace_members(db, namespace, &name, true),
                         &name,
                         &mut names,
                     );
                 }
-                namespace = map.namespace(id).parent;
             }
             names.push(map.namespace(map.outermost()).name.clone());
             names.push(STD.to_owned());
