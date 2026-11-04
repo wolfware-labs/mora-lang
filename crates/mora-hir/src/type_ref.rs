@@ -266,32 +266,48 @@ impl LowerTypes {
     }
 }
 
+/// A type a keyword names. It is `Copy`, unlike [`TypeRef`], so a lookup
+/// builds its `TypeRef` instead of cloning one: lowering does this for
+/// every keyword type it meets.
+#[derive(Clone, Copy)]
+enum Predefined {
+    Primitive(Primitive),
+    String,
+}
+
 /// The keywords that name types (§5.2, §5.3) and the type each names.
-const PREDEFINED: &[(SyntaxKind, TypeRef)] = &[
-    (SyntaxKind::BoolKw, TypeRef::Primitive(Primitive::Bool)),
-    (SyntaxKind::ByteKw, TypeRef::Primitive(Primitive::Byte)),
-    (SyntaxKind::SbyteKw, TypeRef::Primitive(Primitive::SByte)),
-    (SyntaxKind::ShortKw, TypeRef::Primitive(Primitive::Short)),
-    (SyntaxKind::UshortKw, TypeRef::Primitive(Primitive::UShort)),
-    (SyntaxKind::IntKw, TypeRef::Primitive(Primitive::Int)),
-    (SyntaxKind::UintKw, TypeRef::Primitive(Primitive::UInt)),
-    (SyntaxKind::LongKw, TypeRef::Primitive(Primitive::Long)),
-    (SyntaxKind::UlongKw, TypeRef::Primitive(Primitive::ULong)),
-    (SyntaxKind::NintKw, TypeRef::Primitive(Primitive::NInt)),
-    (SyntaxKind::NuintKw, TypeRef::Primitive(Primitive::NUInt)),
-    (SyntaxKind::FloatKw, TypeRef::Primitive(Primitive::Float)),
-    (SyntaxKind::DoubleKw, TypeRef::Primitive(Primitive::Double)),
-    (SyntaxKind::CharKw, TypeRef::Primitive(Primitive::Char)),
-    (SyntaxKind::StringKw, TypeRef::String),
+const PREDEFINED: &[(SyntaxKind, Predefined)] = &[
+    (SyntaxKind::BoolKw, Predefined::Primitive(Primitive::Bool)),
+    (SyntaxKind::ByteKw, Predefined::Primitive(Primitive::Byte)),
+    (SyntaxKind::SbyteKw, Predefined::Primitive(Primitive::SByte)),
+    (SyntaxKind::ShortKw, Predefined::Primitive(Primitive::Short)),
+    (
+        SyntaxKind::UshortKw,
+        Predefined::Primitive(Primitive::UShort),
+    ),
+    (SyntaxKind::IntKw, Predefined::Primitive(Primitive::Int)),
+    (SyntaxKind::UintKw, Predefined::Primitive(Primitive::UInt)),
+    (SyntaxKind::LongKw, Predefined::Primitive(Primitive::Long)),
+    (SyntaxKind::UlongKw, Predefined::Primitive(Primitive::ULong)),
+    (SyntaxKind::NintKw, Predefined::Primitive(Primitive::NInt)),
+    (SyntaxKind::NuintKw, Predefined::Primitive(Primitive::NUInt)),
+    (SyntaxKind::FloatKw, Predefined::Primitive(Primitive::Float)),
+    (
+        SyntaxKind::DoubleKw,
+        Predefined::Primitive(Primitive::Double),
+    ),
+    (SyntaxKind::CharKw, Predefined::Primitive(Primitive::Char)),
+    (SyntaxKind::StringKw, Predefined::String),
 ];
 
 /// The type a predefined keyword names, [`TypeRef::Missing`] for any other
 /// kind.
 pub(crate) fn predefined(kind: SyntaxKind) -> TypeRef {
-    PREDEFINED
-        .iter()
-        .find(|&&(keyword, _)| keyword == kind)
-        .map_or(TypeRef::Missing, |(_, ty)| ty.clone())
+    match PREDEFINED.iter().find(|&&(keyword, _)| keyword == kind) {
+        Some(&(_, Predefined::Primitive(primitive))) => TypeRef::Primitive(primitive),
+        Some((_, Predefined::String)) => TypeRef::String,
+        None => TypeRef::Missing,
+    }
 }
 
 /// The keywords that name types, for suggestions.
