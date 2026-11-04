@@ -11,11 +11,10 @@
 
 use std::mem;
 
+use mora_diag::{Code, codes};
 use mora_span::{TextRange, TextSize};
 
-use mora_diag::{Code, codes};
-
-use super::{Event, MAX_DEPTH, SYNTAX_ERROR};
+use super::{Event, MAX_DEPTH, SYNTAX_ERROR, TokenFix};
 use crate::ast::{self, AstNode};
 use crate::lexer::Lexed;
 use crate::{GreenNode, SyntaxError, SyntaxFix, SyntaxKind, TreeBuilder};
@@ -275,13 +274,7 @@ impl Sink<'_> {
     /// something is missing.
     /// A `fix` replaces the token the error wraps; without one, it is
     /// dropped.
-    fn error(
-        &mut self,
-        code: Code,
-        message: String,
-        fix: Option<(String, String)>,
-        wraps_token: bool,
-    ) {
+    fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps_token: bool) {
         let next = self.next_significant();
         let wrapped = if wraps_token {
             self.lexed.tokens.get(next).map(|token| token.range)
@@ -299,10 +292,10 @@ impl Sink<'_> {
             TextRange::empty(end)
         };
         let mut error = SyntaxError::new(code, range, message);
-        if let (Some(range), Some((message, replacement))) = (wrapped, fix) {
+        if let (Some(range), Some(fix)) = (wrapped, fix) {
             error = error.with_fix(SyntaxFix {
-                message,
-                edits: vec![(range, replacement)],
+                message: fix.message,
+                edits: vec![(range, fix.replacement)],
             });
         }
         self.errors.push(error);

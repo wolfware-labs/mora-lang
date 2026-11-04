@@ -233,24 +233,7 @@ fn after_signature(input: &Input<'_>, at: usize) -> Option<usize> {
     if let Some(end) = types::scan_generic_args(input, i) {
         i = end;
     }
-    if input.kind(i) != K::LParen {
-        return None;
-    }
-    let mut depth = 0usize;
-    loop {
-        match input.kind(i) {
-            K::LParen => depth += 1,
-            K::RParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ if i >= input.len() => return None,
-            _ => {}
-        }
-        i += 1;
-    }
+    input.after_parens(i)
 }
 
 /// The contextual modifier `file` or `stored` here, when another word of
@@ -343,8 +326,7 @@ pub(crate) fn attribute(p: &mut Parser<'_>) {
     m.complete(p, K::Attribute);
 }
 
-/// The type declaration's name, type parameters, base list and `where`
-/// clauses.
+/// The type declaration's name and type parameters.
 fn type_head(p: &mut Parser<'_>) {
     name(p);
     if p.at(K::Lt) {
@@ -352,6 +334,7 @@ fn type_head(p: &mut Parser<'_>) {
     }
 }
 
+/// The type declaration's base list and `where` clauses.
 fn type_tail(p: &mut Parser<'_>) {
     if p.at(K::Colon) {
         base_list(p);
@@ -615,23 +598,25 @@ fn shape(p: &Parser<'_>, cx: Context<'_>, modifiers: bool) -> Option<Shape> {
 }
 
 fn member_with_shape(p: &mut Parser<'_>, m: Marker, shape: Shape) {
-    if shape.kind == Kind::Field {
-        variable_declarator(p, Declarators::Field);
-        if p.at(K::LBrace) {
-            accessor_body(p, "expected `;`");
-            p.eat(K::Semicolon);
-        } else {
-            p.expect(K::Semicolon);
-        }
-        m.complete(p, K::FieldDecl);
-        return;
-    }
     match shape.kind {
         Kind::Function => function(p, m, shape.segments),
         Kind::Constructor => constructor(p, m),
         Kind::Getter => getter(p, m, shape.segments),
-        _ => indexer(p, m, shape.segments),
+        Kind::Field => field(p, m),
+        Kind::Indexer => indexer(p, m, shape.segments),
     }
+}
+
+/// `Count: int = 0;` (§6.9).
+fn field(p: &mut Parser<'_>, m: Marker) {
+    variable_declarator(p, Declarators::Field);
+    if p.at(K::LBrace) {
+        accessor_body(p, "expected `;`");
+        p.eat(K::Semicolon);
+    } else {
+        p.expect(K::Semicolon);
+    }
+    m.complete(p, K::FieldDecl);
 }
 
 /// `{ ... }` after a field's or a getter's type: neither has accessors
@@ -699,7 +684,7 @@ fn function(p: &mut Parser<'_>, m: Marker, segments: usize) {
 /// `IsEmpty: bool => Count == 0;`, `stored Label: string => ...;` (§6.9).
 fn getter(p: &mut Parser<'_>, m: Marker, segments: usize) {
     member_name(p, segments);
-    required_annotation(p, true);
+    required_annotation(p, types::member_annotation);
     if p.at(K::LBrace) {
         accessor_body(p, "expected `=>`");
         p.eat(K::Semicolon);
@@ -710,13 +695,12 @@ fn getter(p: &mut Parser<'_>, m: Marker, segments: usize) {
     m.complete(p, K::GetterDecl);
 }
 
-/// `: Type` where a declaration must have one. A `member`'s type takes a
-/// function type only in parentheses (§5.8).
-fn required_annotation(p: &mut Parser<'_>, member: bool) {
-    if p.at(K::Colon) && member {
-        types::member_annotation(p);
-    } else if p.at(K::Colon) {
-        types::annotation(p);
+/// `: Type` where a declaration must have one, parsed by `annotation`:
+/// [`types::member_annotation`] for a member, whose type takes a function
+/// type only in parentheses (§5.8), or [`types::annotation`].
+fn required_annotation(p: &mut Parser<'_>, annotation: fn(&mut Parser<'_>)) {
+    if p.at(K::Colon) {
+        annotation(p);
     } else {
         p.error("expected `:` and a type");
     }
@@ -784,7 +768,7 @@ pub(crate) fn variable_declarator(p: &mut Parser<'_>, at: Declarators) {
         name(p);
     }
     if at == Declarators::Field {
-        required_annotation(p, true);
+        required_annotation(p, types::member_annotation);
     } else if p.at(K::Colon) {
         types::annotation(p);
     }
@@ -836,7 +820,7 @@ fn indexer(p: &mut Parser<'_>, m: Marker, segments: usize) {
         }
     }
     p.expect(K::RBracket);
-    required_annotation(p, true);
+    required_annotation(p, types::member_annotation);
     if p.at(K::LBrace) {
         accessor_list(p);
     } else {
@@ -952,7 +936,7 @@ fn param(p: &mut Parser<'_>) {
     }
     modifiers(p);
     name(p);
-    required_annotation(p, false);
+    required_annotation(p, types::annotation);
     if p.eat(K::Eq) {
         exprs::expr(p);
     }

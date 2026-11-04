@@ -37,16 +37,8 @@ pub fn int_value(text: &str) -> Option<(u64, IntSuffix)> {
     if parts.real {
         return None;
     }
-    let digits: String = parts.digits.chars().filter(|&c| c != '_').collect();
-    let value = u64::from_str_radix(&digits, parts.radix).ok()?;
-    let suffix = match parts.suffix.to_ascii_lowercase().as_str() {
-        "" => IntSuffix::None,
-        "u" => IntSuffix::U,
-        "l" => IntSuffix::L,
-        "ul" | "lu" => IntSuffix::Ul,
-        _ => return None,
-    };
-    Some((value, suffix))
+    let value = u64::from_str_radix(&parts.digits.replace('_', ""), parts.radix).ok()?;
+    Some((value, int_suffix(parts.suffix)?))
 }
 
 /// The value of a real literal that the lexer accepted.
@@ -55,25 +47,54 @@ pub fn real_value(text: &str) -> Option<(f64, RealSuffix)> {
     if !parts.real {
         return None;
     }
-    let digits: String = parts.digits.chars().filter(|&c| c != '_').collect();
-    let suffix = match parts.suffix {
-        "" => RealSuffix::None,
-        "f" | "F" => RealSuffix::F,
-        "d" | "D" => RealSuffix::D,
-        _ => return None,
-    };
-    let value = digits.parse::<f64>().ok()?;
+    let suffix = real_suffix(parts.suffix)?;
+    let value = parts.digits.replace('_', "").parse::<f64>().ok()?;
     Some((value, suffix))
 }
 
-/// The kind of a number token and the problems with it, as byte ranges
-/// relative to the token.
-pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, std::ops::Range<usize>, String)>) {
-    let whole = 0..text.len();
+/// The integer suffix written `text`, in either case.
+fn int_suffix(text: &str) -> Option<IntSuffix> {
+    [
+        ("", IntSuffix::None),
+        ("u", IntSuffix::U),
+        ("l", IntSuffix::L),
+        ("ul", IntSuffix::Ul),
+        ("lu", IntSuffix::Ul),
+    ]
+    .into_iter()
+    .find(|(suffix, _)| text.eq_ignore_ascii_case(suffix))
+    .map(|(_, suffix)| suffix)
+}
+
+/// The real suffix written `text`.
+fn real_suffix(text: &str) -> Option<RealSuffix> {
+    match text {
+        "" => Some(RealSuffix::None),
+        "f" | "F" => Some(RealSuffix::F),
+        "d" | "D" => Some(RealSuffix::D),
+        _ => None,
+    }
+}
+
+/// Whether `text` is the `decimal` suffix, which is reserved.
+fn is_decimal_suffix(text: &str) -> bool {
+    matches!(text, "m" | "M")
+}
+
+/// The radix that a `0x` or `0b` prefix of `text` sets, in either case.
+fn radix_prefix(text: &str) -> Option<u32> {
+    match text.as_bytes() {
+        [b'0', b'x' | b'X', ..] => Some(16),
+        [b'0', b'b' | b'B', ..] => Some(2),
+        _ => None,
+    }
+}
+
+/// The kind of a number token and the problems with it, each about the
+/// whole token.
+pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, String)>) {
     let Some(parts) = split(text) else {
-        let hex = text
-            .get(..2)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("0x"));
+        let hex = radix_prefix(text) == Some(16);
         let kind = if text.contains(['.', 'e', 'E']) && !hex {
             SyntaxKind::RealNumber
         } else {
@@ -81,11 +102,7 @@ pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, std::ops::Range<usize
         };
         return (
             kind,
-            vec![(
-                codes::MR0014,
-                whole,
-                format!("`{text}` is not a valid number"),
-            )],
+            vec![(codes::MR0014, format!("`{text}` is not a valid number"))],
         );
     };
     let kind = if parts.real {
@@ -95,20 +112,16 @@ pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, std::ops::Range<usize
     };
     let mut errors = Vec::new();
     if let Some(problem) = separators(parts.digits, parts.radix) {
-        errors.push((codes::MR0014, whole.clone(), problem));
+        errors.push((codes::MR0014, problem));
     }
     let suffix_ok = if parts.real {
-        matches!(parts.suffix, "" | "f" | "F" | "d" | "D")
+        real_suffix(parts.suffix).is_some()
     } else {
-        matches!(
-            parts.suffix.to_ascii_lowercase().as_str(),
-            "" | "u" | "l" | "ul" | "lu"
-        )
+        int_suffix(parts.suffix).is_some()
     };
-    if parts.real && matches!(parts.suffix, "m" | "M") {
+    if parts.real && is_decimal_suffix(parts.suffix) {
         errors.push((
             codes::MR0014,
-            whole,
             "the `m` suffix (`decimal`) is reserved; Mora has no `decimal` type yet".into(),
         ));
         return (kind, errors);
@@ -116,7 +129,6 @@ pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, std::ops::Range<usize
     if !suffix_ok {
         errors.push((
             codes::MR0014,
-            whole,
             format!("`{}` is not a suffix for this literal", parts.suffix),
         ));
         return (kind, errors);
@@ -128,25 +140,18 @@ pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, std::ops::Range<usize
         match real_value(text) {
             Some((value, RealSuffix::F)) if (value as f32).is_infinite() => errors.push((
                 codes::MR0010,
-                whole,
                 "the literal is too large for a `float`".into(),
             )),
             Some((value, _)) if value.is_infinite() => errors.push((
                 codes::MR0010,
-                whole,
                 "the literal is too large for a `double`".into(),
             )),
             Some(_) => {}
-            None => errors.push((
-                codes::MR0014,
-                whole,
-                format!("`{text}` is not a valid number"),
-            )),
+            None => errors.push((codes::MR0014, format!("`{text}` is not a valid number"))),
         }
     } else if int_value(text).is_none() {
         errors.push((
             codes::MR0010,
-            whole,
             "the literal is larger than `ulong.MaxValue`".into(),
         ));
     }
@@ -165,11 +170,9 @@ struct Parts<'a> {
 /// Splits `text` into radix, digits and suffix, or `None` when the digits
 /// themselves are malformed (no digits, a letter in the middle).
 fn split(text: &str) -> Option<Parts<'_>> {
-    let lower = text.get(..2).map(str::to_ascii_lowercase);
-    let (radix, body) = match lower.as_deref() {
-        Some("0x") => (16, &text[2..]),
-        Some("0b") => (2, &text[2..]),
-        _ => (10, text),
+    let (radix, body) = match radix_prefix(text) {
+        Some(radix) => (radix, &text[2..]),
+        None => (10, text),
     };
     if radix != 10 {
         let end = body
@@ -213,7 +216,9 @@ fn split(text: &str) -> Option<Parts<'_>> {
         end = exp_end;
     }
     let (digits, suffix) = body.split_at(end);
-    if matches!(suffix, "f" | "F" | "d" | "D" | "m" | "M") {
+    if matches!(real_suffix(suffix), Some(RealSuffix::F | RealSuffix::D))
+        || is_decimal_suffix(suffix)
+    {
         real = true;
     }
     Some(Parts {
@@ -243,7 +248,7 @@ mod tests {
 
     fn codes_of(text: &str) -> (SyntaxKind, Vec<Code>) {
         let (kind, errors) = check(text);
-        (kind, errors.into_iter().map(|(code, _, _)| code).collect())
+        (kind, errors.into_iter().map(|(code, _)| code).collect())
     }
 
     #[test]
@@ -310,6 +315,23 @@ mod tests {
         ] {
             let (_, codes) = codes_of(text);
             assert_eq!(codes, vec![codes::MR0014], "{text}");
+        }
+    }
+
+    #[test]
+    fn decimal_suffix_is_reserved() {
+        for text in ["1m", "1.5M", "2_0m"] {
+            let (kind, errors) = check(text);
+            assert_eq!(kind, SyntaxKind::RealNumber, "{text}");
+            assert_eq!(
+                errors,
+                vec![(
+                    codes::MR0014,
+                    "the `m` suffix (`decimal`) is reserved; Mora has no `decimal` type yet"
+                        .to_string()
+                )],
+                "{text}"
+            );
         }
     }
 

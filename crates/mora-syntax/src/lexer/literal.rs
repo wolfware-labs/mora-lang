@@ -5,6 +5,7 @@
 //! token.
 
 use super::escape::escape;
+use super::run;
 
 /// The value of a [`Char`](crate::SyntaxKind::Char) token, such as `'a'` or `'\n'`.
 pub fn char_value(text: &str) -> Option<char> {
@@ -54,8 +55,7 @@ fn regular_value(body: &str) -> Option<String> {
 /// the lines between the delimiters' lines with the closing delimiter's
 /// indentation removed. Line breaks are kept as written.
 fn raw_value(text: &str) -> Option<String> {
-    let delim = text.bytes().next()?;
-    let quotes = text.bytes().take_while(|&b| b == delim).count();
+    let quotes = run(text, b'`');
     let content = text.get(quotes..text.len().checked_sub(quotes)?)?;
     if !content.contains('\n') {
         return Some(content.to_owned());

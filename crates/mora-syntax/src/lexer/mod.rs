@@ -40,8 +40,11 @@ pub struct Token {
 /// A lexical or syntax error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxError {
+    /// The diagnostic code (§17.6).
     pub code: Code,
+    /// The text the error is about; empty where something is missing.
     pub range: TextRange,
+    /// What is wrong.
     pub message: String,
     /// Extra explanation, such as what to write instead.
     pub note: Option<String>,
@@ -512,8 +515,8 @@ impl<'a> Lexer<'a> {
                 let len = raw.span().len();
                 let kind = if token == Raw::Number {
                     let (kind, errors) = number::check(&rest[..len]);
-                    for (code, range, message) in errors {
-                        self.error(code, self.pos + range.start..self.pos + range.end, message);
+                    for (code, message) in errors {
+                        self.error(code, self.pos..self.pos + len, message);
                     }
                     kind
                 } else {
@@ -782,16 +785,7 @@ impl<'a> Lexer<'a> {
                     i += n;
                 }
                 '"' if !raw => break Stop::End(1),
-                '\\' if !raw => {
-                    let at = start + i;
-                    match escape::escape(&self.text[at..]) {
-                        Ok((_, len)) => i += len,
-                        Err(err) => {
-                            self.error(err.code, at..at + err.len, err.message);
-                            i += err.len;
-                        }
-                    }
-                }
+                '\\' if !raw => i += self.check_escape(i),
                 '\n' | '\r' if !raw && newline_len(rest).is_some() => {
                     break Stop::Unterminated;
                 }
