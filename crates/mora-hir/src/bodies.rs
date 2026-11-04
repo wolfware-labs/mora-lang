@@ -984,6 +984,22 @@ mod tests {
     }
 
     #[test]
+    fn union_values_count_every_named_case() {
+        let db = TestDb::new();
+        let text = "union U { C(x: int), D, E(y: int);\n    const K: int = 1;\n}\n";
+        let file = db.file("src/A.mr", text);
+        let owners: Vec<_> = body_owners(&db, file)
+            .into_iter()
+            .filter_map(|owner| match owner {
+                BodyOwner::Value(_, index) => Some(index),
+                _ => None,
+            })
+            .collect();
+        // `D` has no fields to check, so no body, but it is value 1.
+        assert_eq!(owners, [0, 2, 3]);
+    }
+
+    #[test]
     fn an_edit_inside_one_body_resolves_only_that_body_again() {
         let mut db = TestDb::new();
         let text = |n: u32| {
