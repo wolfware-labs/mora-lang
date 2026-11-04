@@ -96,7 +96,7 @@ Done when:
 
 Spec: [§14.3](docs/design/mora.md#143-the-analysis-database). Crates: `mora-span`. Blocked by: M0.2.
 
-`FileId`, `Span`, `TextRange`, a `LineIndex` that converts offsets to line and column in UTF-8 bytes and in UTF-16 code units (for the LSP), string interning, and the base `salsa` database with file-text and project inputs.
+`FileId`, `Span`, `TextRange`, a `LineIndex` that converts offsets to line and column in UTF-8 bytes and in UTF-16 code units (for the LSP), and the base `salsa` database with file-text and project inputs.
 
 Done when:
 

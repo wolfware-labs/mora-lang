@@ -4,9 +4,9 @@ use mora_span::TextRange;
 use mora_syntax::SyntaxKind;
 use mora_syntax::SyntaxNode;
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::lexer::ident_name;
 
-use crate::items::{Visibility, visibility};
+use crate::items::{Visibility, Written};
+use crate::name::{name_of, token_name};
 use crate::ty::{ParamMode, Primitive};
 
 /// A type as written.
@@ -99,14 +99,10 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             .flat_map(|list| list.params())
             .map(|param| lower.param(&param))
             .collect();
-        let is_async = it
-            .modifiers()
-            .filter_map(|modifier| modifier.kind())
-            .any(|token| token.kind() == SyntaxKind::AsyncKw);
         signature.kind = SignatureRefKind::Function {
             params,
             ret: it.ret().map(|ty| lower.ty(&ty)),
-            is_async,
+            is_async: Written::of(it.modifiers()).is_async,
         };
     } else if let Some(it) = ast::StructDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
@@ -136,8 +132,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
 fn type_params(list: Option<ast::TypeParamList>) -> Vec<String> {
     list.into_iter()
         .flat_map(|list| list.type_params())
-        .filter_map(|param| param.name()?.ident_token())
-        .map(|token| ident_name(token.text()).into_owned())
+        .filter_map(|param| name_of(param.name()))
         .collect()
 }
 
@@ -165,7 +160,7 @@ impl LowerTypes {
             }
         }
         ParamRef {
-            name: name_text(param.name()),
+            name: name_of(param.name()).unwrap_or_default(),
             mode,
             is_params,
             has_default: param.default().is_some(),
@@ -176,15 +171,10 @@ impl LowerTypes {
     fn field(&mut self, field: &ast::FieldDecl) -> Option<FieldRef> {
         let declarator = field.variable_declarator()?;
         let name = declarator.name()?.ident_token()?;
-        let visibility = field
-            .modifiers()
-            .filter_map(|modifier| modifier.kind())
-            .find_map(|token| visibility(token.kind()))
-            .unwrap_or(Visibility::Folder);
         self.source.fields.push(name.text_range());
         Some(FieldRef {
-            name: ident_name(name.text()).into_owned(),
-            visibility,
+            name: token_name(name),
+            visibility: Written::of(field.modifiers()).visibility_or_folder(),
             ty: self.optional(declarator.ty().as_ref()),
         })
     }
@@ -237,13 +227,7 @@ impl LowerTypes {
         }
         let elems = elems
             .iter()
-            .map(|elem| {
-                let name = elem
-                    .name()
-                    .and_then(|name| name.ident_token())
-                    .map(|token| ident_name(token.text()).into_owned());
-                (name, self.optional(elem.ty().as_ref()))
-            })
+            .map(|elem| (name_of(elem.name()), self.optional(elem.ty().as_ref())))
             .collect();
         TypeRef::Tuple(elems)
     }
@@ -257,7 +241,7 @@ impl LowerTypes {
         // The parser gives every path at least one segment.
         for segment in path.path()?.path_segments() {
             let token = segment.name_ref()?.ident_token()?;
-            segments.push(ident_name(token.text()).into_owned());
+            segments.push(token_name(token));
             ranges.push(token.text_range());
             if let Some(list) = segment.generic_arg_list() {
                 generic = true;
@@ -282,42 +266,54 @@ impl LowerTypes {
     }
 }
 
-fn name_text(name: Option<ast::Name>) -> String {
-    name.and_then(|name| name.ident_token())
-        .map(|token| ident_name(token.text()).into_owned())
-        .unwrap_or_default()
+/// The type a keyword names. It is `Copy`, unlike [`TypeRef`], so a lookup
+/// builds its `TypeRef` instead of cloning one: lowering does this for
+/// every keyword type it meets.
+#[derive(Clone, Copy)]
+enum Predefined {
+    Primitive(Primitive),
+    String,
 }
+
+/// The keywords that name types (§5.2, §5.3) and the type each names.
+const PREDEFINED: &[(SyntaxKind, Predefined)] = &[
+    (SyntaxKind::BoolKw, Predefined::Primitive(Primitive::Bool)),
+    (SyntaxKind::ByteKw, Predefined::Primitive(Primitive::Byte)),
+    (SyntaxKind::SbyteKw, Predefined::Primitive(Primitive::SByte)),
+    (SyntaxKind::ShortKw, Predefined::Primitive(Primitive::Short)),
+    (
+        SyntaxKind::UshortKw,
+        Predefined::Primitive(Primitive::UShort),
+    ),
+    (SyntaxKind::IntKw, Predefined::Primitive(Primitive::Int)),
+    (SyntaxKind::UintKw, Predefined::Primitive(Primitive::UInt)),
+    (SyntaxKind::LongKw, Predefined::Primitive(Primitive::Long)),
+    (SyntaxKind::UlongKw, Predefined::Primitive(Primitive::ULong)),
+    (SyntaxKind::NintKw, Predefined::Primitive(Primitive::NInt)),
+    (SyntaxKind::NuintKw, Predefined::Primitive(Primitive::NUInt)),
+    (SyntaxKind::FloatKw, Predefined::Primitive(Primitive::Float)),
+    (
+        SyntaxKind::DoubleKw,
+        Predefined::Primitive(Primitive::Double),
+    ),
+    (SyntaxKind::CharKw, Predefined::Primitive(Primitive::Char)),
+    (SyntaxKind::StringKw, Predefined::String),
+];
 
 /// The type a predefined keyword names, [`TypeRef::Missing`] for any other
 /// kind.
 pub(crate) fn predefined(kind: SyntaxKind) -> TypeRef {
-    let primitive = match kind {
-        SyntaxKind::BoolKw => Primitive::Bool,
-        SyntaxKind::ByteKw => Primitive::Byte,
-        SyntaxKind::SbyteKw => Primitive::SByte,
-        SyntaxKind::ShortKw => Primitive::Short,
-        SyntaxKind::UshortKw => Primitive::UShort,
-        SyntaxKind::IntKw => Primitive::Int,
-        SyntaxKind::UintKw => Primitive::UInt,
-        SyntaxKind::LongKw => Primitive::Long,
-        SyntaxKind::UlongKw => Primitive::ULong,
-        SyntaxKind::NintKw => Primitive::NInt,
-        SyntaxKind::NuintKw => Primitive::NUInt,
-        SyntaxKind::FloatKw => Primitive::Float,
-        SyntaxKind::DoubleKw => Primitive::Double,
-        SyntaxKind::CharKw => Primitive::Char,
-        SyntaxKind::StringKw => return TypeRef::String,
-        // A keyword this function does not know yet names no type.
-        _ => return TypeRef::Missing,
-    };
-    TypeRef::Primitive(primitive)
+    match PREDEFINED.iter().find(|&&(keyword, _)| keyword == kind) {
+        Some(&(_, Predefined::Primitive(primitive))) => TypeRef::Primitive(primitive),
+        Some((_, Predefined::String)) => TypeRef::String,
+        None => TypeRef::Missing,
+    }
 }
 
 /// The keywords that name types, for suggestions.
-pub(crate) const TYPE_KEYWORDS: &[&str] = &[
-    "bool", "byte", "char", "double", "float", "int", "long", "nint", "nuint", "sbyte", "short",
-    "string", "uint", "ulong", "ushort",
-];
+pub(crate) fn type_keywords() -> impl Iterator<Item = &'static str> {
+    PREDEFINED.iter().filter_map(|&(keyword, _)| keyword.text())
+}
 
 #[cfg(test)]
 mod tests {
@@ -332,5 +328,17 @@ mod tests {
         );
         assert_eq!(predefined(SyntaxKind::Ident), TypeRef::Missing);
         assert_eq!(predefined(SyntaxKind::ClassKw), TypeRef::Missing);
+    }
+
+    #[test]
+    fn every_type_keyword_is_suggested() {
+        let keywords: Vec<_> = type_keywords().collect();
+        assert_eq!(
+            keywords,
+            [
+                "bool", "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong", "nint",
+                "nuint", "float", "double", "char", "string",
+            ]
+        );
     }
 }

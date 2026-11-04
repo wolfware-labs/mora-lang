@@ -5,20 +5,23 @@ use crate::bodies::{
     BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
-use crate::resolve::{
-    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, resolve_using,
-    value_visible, visible_names,
+use crate::items::{
+    ItemKind, Visibility, item_index, item_source_map, item_tree, signature_sources,
 };
-use crate::signature::{SignatureErrorKind, signature, signature_errors};
+use crate::resolve::{
+    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
+    resolve_using, value_visible, visible_names,
+};
+use crate::signature::{SignatureError, SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
 use crate::ty::Signature;
-use crate::type_ref::TYPE_KEYWORDS;
+use crate::type_ref::type_keywords;
 
-/// The diagnostics of a project's folders (`MR0121`), `using` directives
-/// and signatures (`MR0127`, `MR0128`, `MR0129`, `MR0123`) and entry point
-/// (`MR0124`, `MR0125`).
-/// Lexical and syntax errors come from [`crate::parse`].
+/// The diagnostics of a project's folders (`MR0121`), the paths in its
+/// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
+/// `MR0123`), the member names of its types (`MR0146`), the locals of its
+/// bodies (`MR0180`) and its entry point (`MR0124`, `MR0125`). Lexical and
+/// syntax errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     let map = def_map(db, project);
@@ -98,30 +101,39 @@ fn usings(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Diagnos
 fn signatures(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Diagnostic>) {
     let sources = signature_sources(db, file);
     for (idx, _) in item_tree(db, file).items() {
-        let item = ItemId {
-            project,
-            file,
-            item: idx,
-        };
-        let source = &sources[u32::from(idx.into_raw()) as usize];
+        let item = Scope::file(project, file).item(idx);
+        let source = &sources[item_index(idx)];
         for error in signature_errors(db, item) {
             let range = source.paths[error.path][error.segment];
-            let name = &error.name;
             let span = Span::new(file.id(db), range);
-            out.push(match &error.kind {
-                SignatureErrorKind::Resolve(scope, kind) => {
-                    resolve_error(db, *scope, name, span, kind.clone(), Lookup::Type)
-                }
-                SignatureErrorKind::NotAType(resolved) => not_a_type(db, name, span, resolved),
-                SignatureErrorKind::LessVisible { ty, field, member } => {
-                    let member_name = match (field, signature(db, item)) {
-                        (Some(field), Signature::Struct(fields)) => fields[*field].name.clone(),
-                        _ => item_tree(db, file).item(idx).name.clone(),
-                    };
-                    less_visible(db, name, span, *ty, &member_name, *member)
-                }
-            });
+            let member = |field: Option<usize>| match (field, signature(db, item)) {
+                (Some(field), Signature::Struct(fields)) => fields[field].name.clone(),
+                _ => item_data(db, item).name.clone(),
+            };
+            out.push(signature_error(db, error, span, member));
         }
+    }
+}
+
+/// The diagnostic for a path in a type that is wrong. `member` names what
+/// has the type, from the field it is on, for `MR0123`.
+fn signature_error(
+    db: &dyn Db,
+    error: &SignatureError,
+    span: Span,
+    member: impl FnOnce(Option<usize>) -> String,
+) -> Diagnostic {
+    let name = &error.name;
+    match &error.kind {
+        SignatureErrorKind::Resolve(scope, kind) => {
+            resolve_error(db, *scope, name, span, kind.clone(), Lookup::Type)
+        }
+        SignatureErrorKind::NotAType(resolved) => not_a_type(db, name, span, resolved),
+        SignatureErrorKind::LessVisible {
+            ty,
+            field,
+            member: visibility,
+        } => less_visible(db, name, span, *ty, &member(*field), *visibility),
     }
 }
 
@@ -200,7 +212,7 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                     let span = Span::new(id, map.member_names[expr]);
                     let mut extra = Vec::new();
                     if let Resolved::Item(ty) = within {
-                        let values = &item_tree(db, ty.file).item(ty.item).values;
+                        let values = &item_data(db, *ty).values;
                         extra.extend(
                             values
                                 .iter()
@@ -219,17 +231,7 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                 }
                 BodyError::Type(error) => {
                     let span = Span::new(id, map.type_paths[error.path][error.segment]);
-                    match &error.kind {
-                        SignatureErrorKind::Resolve(scope, kind) => {
-                            resolve_error(db, *scope, &error.name, span, kind.clone(), Lookup::Type)
-                        }
-                        SignatureErrorKind::NotAType(resolved) => {
-                            not_a_type(db, &error.name, span, resolved)
-                        }
-                        SignatureErrorKind::LessVisible { ty, member, .. } => {
-                            less_visible(db, &error.name, span, *ty, &body.name, *member)
-                        }
-                    }
+                    signature_error(db, error, span, |_| body.name.clone())
                 }
                 BodyError::Capture { expr, index, name } => {
                     let span = Span::new(id, map.captures[&(*expr, *index)]);
@@ -323,7 +325,7 @@ fn resolve_error(
             let mut candidates = visible_names(db, scope, within.as_ref(), with_imports);
             match lookup {
                 Lookup::Type if within.is_none() => {
-                    candidates.extend(TYPE_KEYWORDS.iter().map(|&keyword| keyword.to_owned()));
+                    candidates.extend(type_keywords().map(str::to_owned));
                 }
                 Lookup::Expr(extra) => candidates.extend(extra),
                 _ => {}
@@ -456,16 +458,8 @@ fn ambiguous(db: &dyn Db, name: &str, span: Span, candidates: &[Resolved]) -> Di
 }
 
 fn not_visible(db: &dyn Db, scope: Scope, name: &str, span: Span, item: ItemId) -> Diagnostic {
-    let map = def_map(db, item.project);
-    let declared_in = map
-        .file_namespace(item.file)
-        .map(|id| map.namespace_path(id))
-        .unwrap_or_default();
-    let here = def_map(db, scope.project);
-    let used_in = here
-        .file_namespace(scope.file)
-        .map(|id| here.namespace_path(id))
-        .unwrap_or_default();
+    let declared_in = file_namespace(db, item.project, item.file).unwrap_or_default();
+    let used_in = file_namespace(db, scope.project, scope.file).unwrap_or_default();
     let same_project = item.project == scope.project;
     let (message, note) = match effective_visibility(db, item) {
         _ if !same_project => (
@@ -523,7 +517,7 @@ pub(crate) fn kind_name(db: &dyn Db, resolved: &Resolved) -> &'static str {
     let kind = match resolved {
         Resolved::Namespace(_) | Resolved::External => return "the namespace",
         Resolved::Functions(_) => ItemKind::Function,
-        Resolved::Item(item) => item_tree(db, item.file).item(item.item).kind,
+        Resolved::Item(item) => item_data(db, *item).kind,
     };
     match kind {
         ItemKind::Struct => "the struct",
@@ -551,18 +545,19 @@ pub(crate) fn full_name(db: &dyn Db, resolved: &Resolved) -> Option<String> {
 
 pub(crate) fn item_full_name(db: &dyn Db, item: ItemId) -> String {
     let tree = item_tree(db, item.file);
-    let mut segments = Vec::new();
-    let mut at = Some(item.item);
-    while let Some(idx) = at {
-        segments.push(tree.item(idx).name.clone());
-        at = tree.item(idx).parent;
-    }
-    let map = def_map(db, item.project);
-    if let Some(namespace) = map.file_namespace(item.file) {
-        segments.push(map.namespace_path(namespace));
-    }
+    let mut segments: Vec<String> = enclosing_types(tree, Some(item.item))
+        .map(|idx| tree.item(idx).name.clone())
+        .collect();
+    segments.extend(file_namespace(db, item.project, item.file));
     segments.reverse();
     segments.join(".")
+}
+
+/// The full name of the namespace of `file`, `None` when it is not a file
+/// of `project`.
+fn file_namespace(db: &dyn Db, project: Project, file: SourceFile) -> Option<String> {
+    let map = def_map(db, project);
+    map.file_namespace(file).map(|id| map.namespace_path(id))
 }
 
 /// `MR0124` and `MR0125` (§4.6).

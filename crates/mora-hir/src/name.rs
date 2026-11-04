@@ -1,4 +1,6 @@
-use mora_syntax::{SyntaxKind, lex};
+use mora_syntax::ast;
+use mora_syntax::lexer::ident_name;
+use mora_syntax::{SyntaxKind, SyntaxToken, lex};
 
 /// A folder or project name in PascalCase, or `None` when the result is not
 /// a valid identifier (§4.2).
@@ -25,6 +27,18 @@ pub(crate) fn is_identifier(text: &str) -> bool {
     let lexed = lex(text);
     lexed.errors.is_empty()
         && matches!(lexed.tokens.as_slice(), [token] if token.kind == SyntaxKind::Ident)
+}
+
+/// The name an identifier token declares or refers to, in NFC, as names
+/// are compared (§3.1).
+pub(crate) fn token_name(token: SyntaxToken) -> String {
+    ident_name(token.text()).into_owned()
+}
+
+/// The name a declaration writes, `None` when the parser recovered from a
+/// missing one.
+pub(crate) fn name_of(name: Option<ast::Name>) -> Option<String> {
+    name?.ident_token().map(token_name)
 }
 
 #[cfg(test)]

@@ -137,6 +137,14 @@ impl DefMap {
         path_of(&self.namespaces, id)
     }
 
+    /// `start` and the namespaces around it, from the innermost out.
+    pub fn enclosing_namespaces(
+        &self,
+        start: Option<NamespaceId>,
+    ) -> impl Iterator<Item = NamespaceId> + '_ {
+        enclosing(&self.namespaces, start)
+    }
+
     pub fn folder_problems(&self) -> &[FolderProblem] {
         &self.folder_problems
     }
@@ -180,19 +188,12 @@ impl DefMap {
 pub fn def_map(db: &dyn Db, project: Project) -> DefMap {
     let mut namespaces = Arena::new();
     let mut segments = project.root_namespace(db).split('.');
-    let namespace = |name: &str, parent| Namespace {
-        name: name.to_owned(),
-        parent,
-        children: BTreeMap::new(),
-        items: BTreeMap::new(),
-    };
     // `split` yields at least one segment.
-    let outermost = namespaces.alloc(namespace(segments.next().unwrap_or_default(), None));
+    let first = segments.next().unwrap_or_default();
+    let outermost = namespaces.alloc(Namespace::new(first.to_owned(), None));
     let mut root = outermost;
     for segment in segments {
-        let id = namespaces.alloc(namespace(segment, Some(root)));
-        namespaces[root].children.insert(segment.to_owned(), id);
-        root = id;
+        root = add_child(&mut namespaces, root, segment.to_owned());
     }
     let mut builder = Builder {
         namespaces,
@@ -313,16 +314,7 @@ impl Builder {
                     }
                     id
                 }
-                None => {
-                    let id = self.namespaces.alloc(Namespace {
-                        name: segment.clone(),
-                        parent: Some(namespace),
-                        children: BTreeMap::new(),
-                        items: BTreeMap::new(),
-                    });
-                    self.namespaces[namespace].children.insert(segment, id);
-                    id
-                }
+                None => add_child(&mut self.namespaces, namespace, segment),
             };
             self.folders.insert(folder.clone(), (id, file));
             namespace = id;
@@ -331,14 +323,38 @@ impl Builder {
     }
 }
 
+impl Namespace {
+    /// A namespace with nothing in it yet.
+    fn new(name: String, parent: Option<NamespaceId>) -> Self {
+        Self {
+            name,
+            parent,
+            children: BTreeMap::new(),
+            items: BTreeMap::new(),
+        }
+    }
+}
+
+/// Adds the namespace `name` inside `parent`.
+fn add_child(namespaces: &mut Arena<Namespace>, parent: NamespaceId, name: String) -> NamespaceId {
+    let id = namespaces.alloc(Namespace::new(name.clone(), Some(parent)));
+    namespaces[parent].children.insert(name, id);
+    id
+}
+
+/// `start` and the namespaces around it, from the innermost out.
+fn enclosing(
+    namespaces: &Arena<Namespace>,
+    start: Option<NamespaceId>,
+) -> impl Iterator<Item = NamespaceId> + '_ {
+    std::iter::successors(start, |&id| namespaces[id].parent)
+}
+
 /// The full name of a namespace, its segments joined with `.`.
 fn path_of(namespaces: &Arena<Namespace>, id: NamespaceId) -> String {
-    let mut segments = Vec::new();
-    let mut at = Some(id);
-    while let Some(id) = at {
-        segments.push(namespaces[id].name.as_str());
-        at = namespaces[id].parent;
-    }
+    let mut segments: Vec<&str> = enclosing(namespaces, Some(id))
+        .map(|id| namespaces[id].name.as_str())
+        .collect();
     segments.reverse();
     segments.join(".")
 }

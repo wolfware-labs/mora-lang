@@ -1,9 +1,9 @@
 use la_arena::{Arena, Idx};
 use mora_span::{Db, SourceFile, TextRange, TextSize};
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::lexer::ident_name;
-use mora_syntax::{Parse, SyntaxKind, SyntaxNode};
+use mora_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxToken};
 
+use crate::name::{name_of, token_name};
 use crate::type_ref::{self, SignatureRef, SignatureSource};
 
 /// The syntax tree of a file.
@@ -57,6 +57,13 @@ struct Lowered {
 
 /// An index into [`ItemTree::items`].
 pub type ItemIdx = Idx<Item>;
+
+/// The position of `idx` in a table indexed like [`ItemTree::items`], such
+/// as [`signature_refs`].
+pub(crate) fn item_index(idx: ItemIdx) -> usize {
+    // A `u32` always fits in the `usize` of the hosts the compiler runs on.
+    u32::from(idx.into_raw()) as usize
+}
 
 /// The declarations of one file (§4.2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -199,7 +206,7 @@ pub struct ItemSourceMap {
 
 impl ItemSourceMap {
     pub fn item(&self, idx: ItemIdx) -> &ItemSource {
-        &self.items[u32::from(idx.into_raw()) as usize]
+        &self.items[item_index(idx)]
     }
 
     pub fn using(&self, index: usize) -> &UsingSource {
@@ -304,16 +311,9 @@ impl Lowered {
         if tokens.is_empty() {
             return;
         }
-        let segments = tokens
-            .iter()
-            .map(|token| ident_name(token.text()).into_owned())
-            .collect();
+        let segments = tokens.iter().copied().map(token_name).collect();
         let ranges = tokens.iter().map(|token| token.text_range()).collect();
-        let alias = using
-            .using_alias()
-            .and_then(|alias| alias.name())
-            .and_then(|name| name.ident_token())
-            .map(|token| ident_name(token.text()).into_owned());
+        let alias = name_of(using.using_alias().and_then(|alias| alias.name()));
         self.tree.usings.push(Using {
             global: using.global_token().is_some(),
             is_static: using.static_token().is_some(),
@@ -328,28 +328,13 @@ impl Lowered {
     fn item(&mut self, node: &SyntaxNode, parent: Option<ItemIdx>) -> Option<ItemIdx> {
         let mut decl = decl(node, parent.is_some())?;
         let name = decl.name?.ident_token()?;
-        let mut visibility = Visibility::Folder;
-        let mut visibility_range = None;
-        let mut is_static = false;
-        for token in decl.modifiers.iter().filter_map(|modifier| modifier.kind()) {
-            if token.kind() == SyntaxKind::StaticKw {
-                is_static = true;
-                continue;
-            }
-            let Some(written) = self::visibility(token.kind()) else {
-                continue;
-            };
-            if visibility_range.is_none() {
-                visibility = written;
-                visibility_range = Some(token.text_range());
-            }
-        }
+        let written = Written::of(decl.modifiers.iter().copied());
         let (values, value_ranges) = std::mem::take(&mut decl.values).into_iter().unzip();
         let idx = self.tree.items.alloc(Item {
-            name: ident_name(name.text()).into_owned(),
+            name: token_name(name),
             kind: decl.kind,
-            visibility,
-            is_static,
+            visibility: written.visibility_or_folder(),
+            is_static: written.is_static,
             parent,
             members: Vec::new(),
             values,
@@ -357,7 +342,7 @@ impl Lowered {
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
-            visibility: visibility_range,
+            visibility: written.visibility.map(|(_, token)| token.text_range()),
             values: value_ranges,
         });
         let (signature, source) = type_ref::signature(node);
@@ -465,30 +450,18 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
                 _ => return None,
             };
             let token = name?.ident_token()?;
-            let mut value = ValueMember {
-                name: ident_name(token.text()).into_owned(),
-                kind,
-                visibility: Visibility::Folder,
-                is_static: false,
+            let written = Written::of(modifiers);
+            let value = ValueMember {
+                name: token_name(token),
+                kind: if written.is_const {
+                    ValueKind::Const
+                } else {
+                    kind
+                },
+                visibility: written.visibility_or_folder(),
+                // A constant belongs to its type.
+                is_static: written.is_const || written.is_static,
             };
-            let mut has_visibility = false;
-            for token in modifiers.filter_map(|modifier| modifier.kind()) {
-                match token.kind() {
-                    SyntaxKind::StaticKw => value.is_static = true,
-                    SyntaxKind::ConstKw => {
-                        value.kind = ValueKind::Const;
-                        value.is_static = true;
-                    }
-                    kind => {
-                        if let Some(written) = visibility(kind)
-                            && !has_visibility
-                        {
-                            value.visibility = written;
-                            has_visibility = true;
-                        }
-                    }
-                }
-            }
             Some((value, token.text_range()))
         })
         .collect()
@@ -498,7 +471,7 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
 fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, TextRange)> {
     let token = name?.ident_token()?;
     let value = ValueMember {
-        name: ident_name(token.text()).into_owned(),
+        name: token_name(token),
         kind,
         visibility: Visibility::Public,
         is_static: true,
@@ -517,6 +490,46 @@ pub(crate) fn visibility(kind: SyntaxKind) -> Option<Visibility> {
     }
 }
 
+/// What a declaration's modifiers write, read in one pass over them.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Written<'a> {
+    /// The first visibility modifier and the visibility it writes; a later
+    /// one does not change it. `None` when none is written, which means the
+    /// folder's visibility (see [`Written::visibility_or_folder`]).
+    pub(crate) visibility: Option<(Visibility, SyntaxToken<'a>)>,
+    /// Whether `static` is among them.
+    pub(crate) is_static: bool,
+    /// Whether `const` is among them.
+    pub(crate) is_const: bool,
+    /// Whether `async` is among them.
+    pub(crate) is_async: bool,
+}
+
+impl<'a> Written<'a> {
+    pub(crate) fn of(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> Self {
+        let mut written = Self::default();
+        for token in modifiers.into_iter().filter_map(|modifier| modifier.kind()) {
+            match token.kind() {
+                SyntaxKind::StaticKw => written.is_static = true,
+                SyntaxKind::ConstKw => written.is_const = true,
+                SyntaxKind::AsyncKw => written.is_async = true,
+                kind => {
+                    if written.visibility.is_none() {
+                        written.visibility = visibility(kind).map(|v| (v, token));
+                    }
+                }
+            }
+        }
+        written
+    }
+
+    /// The visibility written; none written is the folder's (D-97).
+    pub(crate) fn visibility_or_folder(&self) -> Visibility {
+        self.visibility
+            .map_or(Visibility::Folder, |(visibility, _)| visibility)
+    }
+}
+
 /// The start of the first child of a declaration that is not an attribute
 /// or trivia: where its modifiers start, or its keyword when it has none.
 fn modifiers_start(node: &SyntaxNode) -> TextSize {
@@ -529,7 +542,6 @@ fn modifiers_start(node: &SyntaxNode) -> TextSize {
 
 #[cfg(test)]
 mod tests {
-
     use crate::test_db::{TestDb, path};
     use crate::*;
 

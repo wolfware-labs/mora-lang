@@ -12,9 +12,14 @@
 //!   its folders give (§4.2), the items in each, the dependencies and the
 //!   entry point (§4.6).
 //!
-//! [`resolve_path`] looks a path up from a file, in the order of §14.5, and
-//! [`diagnostics`] reports what is wrong with a project's folders, `using`
-//! directives and entry point.
+//! [`resolve_path`] looks a path up from a file, in the order of §14.5.
+//! [`signature()`] gives an item's types with their names looked up, and
+//! [`body`] the HIR of one piece of code (a function, an initializer, the
+//! top-level statements, a member's code), with [`body_resolution`] saying
+//! what each of its names refers to.
+//! [`diagnostics`] reports what is wrong with a project's folders, the paths
+//! of its `using` directives, signatures and bodies, the member names of its
+//! types and its entry point.
 
 mod bodies;
 mod defs;
