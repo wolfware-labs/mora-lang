@@ -5,7 +5,7 @@ use mora_syntax::SyntaxKind;
 use mora_syntax::SyntaxNode;
 use mora_syntax::ast::{self, AstNode};
 
-use crate::items::{Visibility, has_modifier, written_visibility};
+use crate::items::{Visibility, Written};
 use crate::name::{name_of, token_name};
 use crate::ty::{ParamMode, Primitive};
 
@@ -102,7 +102,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
         signature.kind = SignatureRefKind::Function {
             params,
             ret: it.ret().map(|ty| lower.ty(&ty)),
-            is_async: has_modifier(it.modifiers(), SyntaxKind::AsyncKw),
+            is_async: Written::of(it.modifiers()).is_async,
         };
     } else if let Some(it) = ast::StructDecl::cast(node) {
         signature.type_params = type_params(it.type_param_list());
@@ -174,7 +174,7 @@ impl LowerTypes {
         self.source.fields.push(name.text_range());
         Some(FieldRef {
             name: token_name(name),
-            visibility: written_visibility(field.modifiers()),
+            visibility: Written::of(field.modifiers()).visibility_or_folder(),
             ty: self.optional(declarator.ty().as_ref()),
         })
     }

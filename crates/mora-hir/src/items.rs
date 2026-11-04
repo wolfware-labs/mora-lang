@@ -328,13 +328,13 @@ impl Lowered {
     fn item(&mut self, node: &SyntaxNode, parent: Option<ItemIdx>) -> Option<ItemIdx> {
         let mut decl = decl(node, parent.is_some())?;
         let name = decl.name?.ident_token()?;
-        let written = visibility_modifier(decl.modifiers.iter().copied());
+        let written = Written::of(decl.modifiers.iter().copied());
         let (values, value_ranges) = std::mem::take(&mut decl.values).into_iter().unzip();
         let idx = self.tree.items.alloc(Item {
             name: token_name(name),
             kind: decl.kind,
-            visibility: written.map_or(Visibility::Folder, |(visibility, _)| visibility),
-            is_static: has_modifier(decl.modifiers.iter().copied(), SyntaxKind::StaticKw),
+            visibility: written.visibility_or_folder(),
+            is_static: written.is_static,
             parent,
             members: Vec::new(),
             values,
@@ -342,7 +342,7 @@ impl Lowered {
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
-            visibility: written.map(|(_, token)| token.text_range()),
+            visibility: written.visibility.map(|(_, token)| token.text_range()),
             values: value_ranges,
         });
         let (signature, source) = type_ref::signature(node);
@@ -450,13 +450,17 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
                 _ => return None,
             };
             let token = name?.ident_token()?;
-            let is_const = has_modifier(modifiers.clone(), SyntaxKind::ConstKw);
+            let written = Written::of(modifiers);
             let value = ValueMember {
                 name: token_name(token),
-                kind: if is_const { ValueKind::Const } else { kind },
-                visibility: written_visibility(modifiers.clone()),
+                kind: if written.is_const {
+                    ValueKind::Const
+                } else {
+                    kind
+                },
+                visibility: written.visibility_or_folder(),
                 // A constant belongs to its type.
-                is_static: is_const || has_modifier(modifiers, SyntaxKind::StaticKw),
+                is_static: written.is_const || written.is_static,
             };
             Some((value, token.text_range()))
         })
@@ -486,33 +490,43 @@ pub(crate) fn visibility(kind: SyntaxKind) -> Option<Visibility> {
     }
 }
 
-/// The first visibility modifier among `modifiers`, and the visibility it
-/// writes; a later one does not change it.
-pub(crate) fn visibility_modifier<'a>(
-    modifiers: impl IntoIterator<Item = ast::Modifier<'a>>,
-) -> Option<(Visibility, SyntaxToken<'a>)> {
-    modifiers
-        .into_iter()
-        .filter_map(|modifier| modifier.kind())
-        .find_map(|token| Some((visibility(token.kind())?, token)))
+/// What a declaration's modifiers write, read in one pass over them.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Written<'a> {
+    /// The first visibility modifier and the visibility it writes; a later
+    /// one does not change it.
+    pub(crate) visibility: Option<(Visibility, SyntaxToken<'a>)>,
+    /// Whether `static` is among them.
+    pub(crate) is_static: bool,
+    /// Whether `const` is among them.
+    pub(crate) is_const: bool,
+    /// Whether `async` is among them.
+    pub(crate) is_async: bool,
 }
 
-/// The visibility `modifiers` write; none written is the folder's (D-97).
-pub(crate) fn written_visibility<'a>(
-    modifiers: impl IntoIterator<Item = ast::Modifier<'a>>,
-) -> Visibility {
-    visibility_modifier(modifiers).map_or(Visibility::Folder, |(visibility, _)| visibility)
-}
+impl<'a> Written<'a> {
+    pub(crate) fn of(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> Self {
+        let mut written = Self::default();
+        for token in modifiers.into_iter().filter_map(|modifier| modifier.kind()) {
+            match token.kind() {
+                SyntaxKind::StaticKw => written.is_static = true,
+                SyntaxKind::ConstKw => written.is_const = true,
+                SyntaxKind::AsyncKw => written.is_async = true,
+                kind => {
+                    if written.visibility.is_none() {
+                        written.visibility = visibility(kind).map(|v| (v, token));
+                    }
+                }
+            }
+        }
+        written
+    }
 
-/// Whether `modifiers` include the keyword `kind`.
-pub(crate) fn has_modifier<'a>(
-    modifiers: impl IntoIterator<Item = ast::Modifier<'a>>,
-    kind: SyntaxKind,
-) -> bool {
-    modifiers
-        .into_iter()
-        .filter_map(|modifier| modifier.kind())
-        .any(|token| token.kind() == kind)
+    /// The visibility written; none written is the folder's (D-97).
+    pub(crate) fn visibility_or_folder(&self) -> Visibility {
+        self.visibility
+            .map_or(Visibility::Folder, |(visibility, _)| visibility)
+    }
 }
 
 /// The start of the first child of a declaration that is not an attribute
