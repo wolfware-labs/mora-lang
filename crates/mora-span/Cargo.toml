@@ -1,6 +1,6 @@
 [package]
 name = "mora-span"
-description = "File ids, spans, line indexes, interning and the base analysis database"
+description = "File ids, spans, line indexes and the base analysis database"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,5 @@ publish = false
 workspace = true
 
 [dependencies]
-rustc-hash.workspace = true
 salsa.workspace = true
 text-size.workspace = true
