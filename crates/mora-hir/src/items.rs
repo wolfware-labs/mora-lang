@@ -494,7 +494,8 @@ pub(crate) fn visibility(kind: SyntaxKind) -> Option<Visibility> {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Written<'a> {
     /// The first visibility modifier and the visibility it writes; a later
-    /// one does not change it.
+    /// one does not change it. `None` when none is written, which means the
+    /// folder's visibility (see [`Written::visibility_or_folder`]).
     pub(crate) visibility: Option<(Visibility, SyntaxToken<'a>)>,
     /// Whether `static` is among them.
     pub(crate) is_static: bool,

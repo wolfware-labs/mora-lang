@@ -603,9 +603,12 @@ fn reaches(
     match visibility {
         Visibility::Public => true,
         Visibility::Internal => same_project,
+        // Another project's code never sees it, so its def map is not read.
         Visibility::Folder => {
-            let map = def_map(db, decl.project);
-            same_project && map.file_namespace(decl.file) == map.file_namespace(from.file)
+            same_project && {
+                let map = def_map(db, decl.project);
+                map.file_namespace(decl.file) == map.file_namespace(from.file)
+            }
         }
         Visibility::File => same_project && decl.file == from.file,
         Visibility::Private => {

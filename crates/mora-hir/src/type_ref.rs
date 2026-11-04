@@ -266,7 +266,7 @@ impl LowerTypes {
     }
 }
 
-/// A type a keyword names. It is `Copy`, unlike [`TypeRef`], so a lookup
+/// The type a keyword names. It is `Copy`, unlike [`TypeRef`], so a lookup
 /// builds its `TypeRef` instead of cloning one: lowering does this for
 /// every keyword type it meets.
 #[derive(Clone, Copy)]
@@ -333,7 +333,12 @@ mod tests {
     #[test]
     fn every_type_keyword_is_suggested() {
         let keywords: Vec<_> = type_keywords().collect();
-        assert_eq!(keywords.len(), PREDEFINED.len());
-        assert!(keywords.contains(&"string") && keywords.contains(&"nuint"));
+        assert_eq!(
+            keywords,
+            [
+                "bool", "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong", "nint",
+                "nuint", "float", "double", "char", "string",
+            ]
+        );
     }
 }
