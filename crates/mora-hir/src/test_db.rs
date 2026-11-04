@@ -130,11 +130,7 @@ pub(crate) fn item_named(db: &TestDb, project: Project, file: SourceFile, name: 
         .items()
         .find(|(_, item)| item.name == name)
         .unwrap();
-    ItemId {
-        project,
-        file,
-        item: idx,
-    }
+    Scope::file(project, file).item(idx)
 }
 
 /// The signature of the item `name` in the file at `path`.

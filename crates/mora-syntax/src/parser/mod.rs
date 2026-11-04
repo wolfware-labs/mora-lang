@@ -25,6 +25,8 @@ mod patterns;
 mod stmts;
 mod types;
 
+pub use types::PREDEFINED_TYPES;
+
 use mora_diag::codes;
 use mora_span::TextRange;
 

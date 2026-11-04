@@ -6,7 +6,7 @@ use crate::SyntaxKind;
 use SyntaxKind as K;
 
 /// The keywords that name predefined types (§5.2, §5.3).
-pub(crate) const PREDEFINED: &[SyntaxKind] = &[
+pub const PREDEFINED_TYPES: &[SyntaxKind] = &[
     K::BoolKw,
     K::ByteKw,
     K::SbyteKw,
@@ -61,7 +61,7 @@ fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
             t.complete(p, K::PathType);
             m.complete(p, K::AnyType)
         }
-        kind if PREDEFINED.contains(&kind) => {
+        kind if PREDEFINED_TYPES.contains(&kind) => {
             let m = p.start();
             p.bump_any();
             m.complete(p, K::PredefinedType)
@@ -117,7 +117,7 @@ fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
 
 pub(crate) fn at_type_start(p: &Parser<'_>) -> bool {
     let kind = p.current();
-    PREDEFINED.contains(&kind) || matches!(kind, K::Ident | K::LParen | K::WeakKw | K::Dollar)
+    PREDEFINED_TYPES.contains(&kind) || matches!(kind, K::Ident | K::LParen | K::WeakKw | K::Dollar)
 }
 
 /// Whether `any` at `at` starts an `any I` type: the word `any` followed by
@@ -368,7 +368,7 @@ fn scan(input: &Input<'_>, at: usize, functions: bool, depth: usize) -> Option<u
     }
     let depth = depth + 1;
     let mut i = match input.kind(at) {
-        kind if PREDEFINED.contains(&kind) => at + 1,
+        kind if PREDEFINED_TYPES.contains(&kind) => at + 1,
         K::WeakKw => return scan(input, at + 1, functions, depth),
         K::Ident if at_any(input, at) => return scan(input, at + 1, functions, depth),
         // `$t`, `$..ts`, `$(expr)` (§9.3).
@@ -447,7 +447,7 @@ fn skip_type(input: &Input<'_>, at: usize) -> Option<usize> {
             K::Ident | K::Dot | K::Question | K::Comma | K::Colon | K::WeakKw => {}
             // `(int) => bool uses none`.
             K::FatArrow | K::ThinArrow | K::NoneKw => {}
-            kind if PREDEFINED.contains(&kind) => {}
+            kind if PREDEFINED_TYPES.contains(&kind) => {}
             _ => return None,
         }
         i += 1;

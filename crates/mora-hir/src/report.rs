@@ -1,13 +1,12 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
+use crate::arena::arena_index;
 use crate::bodies::{
     BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::items::{
-    ItemKind, Visibility, item_index, item_source_map, item_tree, signature_sources,
-};
+use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
     resolve_using, value_visible, visible_names,
@@ -102,7 +101,7 @@ fn signatures(db: &dyn Db, project: Project, file: SourceFile, out: &mut Vec<Dia
     let sources = signature_sources(db, file);
     for (idx, _) in item_tree(db, file).items() {
         let item = Scope::file(project, file).item(idx);
-        let source = &sources[item_index(idx)];
+        let source = &sources[arena_index(idx)];
         for error in signature_errors(db, item) {
             let range = source.paths[error.path][error.segment];
             let span = Span::new(file.id(db), range);

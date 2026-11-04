@@ -2,7 +2,7 @@
 //! relational patterns, then the rest.
 
 use super::exprs::{self, pattern_operand};
-use super::types::{self, PREDEFINED, scan_type};
+use super::types::{self, PREDEFINED_TYPES, scan_type};
 use super::{CompletedMarker, Parser};
 use crate::SyntaxKind;
 
@@ -157,7 +157,7 @@ fn is_plain_path(input: &super::Input<'_>, at: usize, end: usize) -> bool {
 /// `[]`. Parentheses never get here: `(int, string)` is a
 /// positional pattern of two type patterns.
 fn type_only(input: &super::Input<'_>, at: usize, end: usize) -> bool {
-    if PREDEFINED.contains(&input.kind(at)) {
+    if PREDEFINED_TYPES.contains(&input.kind(at)) {
         return input.kind(end) != K::Dot;
     }
     (at..end).any(|i| matches!(input.kind(i), K::Lt | K::Question | K::LBracket))

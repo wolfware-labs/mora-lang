@@ -21,6 +21,7 @@
 //! of its `using` directives, signatures and bodies, the member names of its
 //! types and its entry point.
 
+mod arena;
 mod bodies;
 mod defs;
 mod items;

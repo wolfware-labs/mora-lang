@@ -41,6 +41,12 @@ pub(crate) fn name_of(name: Option<ast::Name>) -> Option<String> {
     name?.ident_token().map(token_name)
 }
 
+/// The name a use writes, such as a member or a named argument, `None` when
+/// the parser recovered from a missing one.
+pub(crate) fn name_ref_of(name: Option<ast::NameRef>) -> Option<String> {
+    name?.ident_token().map(token_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

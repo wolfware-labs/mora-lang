@@ -6,12 +6,12 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, body};
 use crate::defs::ItemId;
-use crate::items::{ItemKind, Visibility};
+use crate::items::{ItemKind, Visibility, item_tree, signature_refs};
 use crate::resolve::{
-    ExprTarget, ResolveErrorKind, Resolved, Scope, effective_visibility, resolve_expr_path,
-    resolve_static_member,
+    ExprTarget, ResolveErrorKind, Resolved, Scope, effective_visibility, item_data,
+    resolve_expr_path, resolve_static_member,
 };
-use crate::signature::{LowerTypes, SignatureError, type_params};
+use crate::signature::{ResolveTypes, SignatureError, type_params};
 use crate::ty::Ty;
 
 /// What the paths and types of a body name.
@@ -113,23 +113,11 @@ pub(crate) fn body_scope(project: Project, file: SourceFile, owner: BodyOwner) -
 }
 
 /// How far a declaration whose types a body checks is visible (§4.5): its
-/// written visibility, narrowed by the types around it.
-fn exposed_visibility(
-    db: &dyn Db,
-    project: Project,
-    file: SourceFile,
-    owner: BodyOwner,
-    written: Visibility,
-) -> Visibility {
-    match body_scope(project, file, owner).within {
-        Some(ty) => written.min(effective_visibility(
-            db,
-            ItemId {
-                project,
-                file,
-                item: ty,
-            },
-        )),
+/// written visibility, narrowed by the types around it, which `scope` is
+/// inside.
+fn exposed_visibility(db: &dyn Db, scope: Scope, written: Visibility) -> Visibility {
+    match scope.within {
+        Some(ty) => written.min(effective_visibility(db, scope.item(ty))),
         // At namespace level, `private` means the declaring file; no type is
         // narrower than that there, so it checks the same as `private`.
         None => written,
@@ -190,7 +178,7 @@ pub fn body_resolution(
                 let is_static = match within {
                     Resolved::Namespace(_) | Resolved::External => true,
                     Resolved::Item(item) => !matches!(
-                        crate::resolve::item_data(db, *item).kind,
+                        item_data(db, *item).kind,
                         ItemKind::Function | ItemKind::Field | ItemKind::Macro
                     ),
                     Resolved::Functions(_) => false,
@@ -232,14 +220,10 @@ pub fn body_resolution(
             _ => {}
         }
     }
-    let mut lower = LowerTypes {
+    let mut lower = ResolveTypes {
         db,
         scope,
-        type_params: type_params(
-            crate::item_tree(db, file),
-            crate::items::signature_refs(db, file),
-            scope.within,
-        ),
+        type_params: type_params(item_tree(db, file), signature_refs(db, file), scope.within),
         field: None,
         // Set per type below.
         member: Visibility::Private,
@@ -248,7 +232,7 @@ pub fn body_resolution(
     // A declaration's signature types are checked against how far it is
     // visible; any other type of a body is visible to no other code, so
     // no type is less visible than it.
-    let exposed = exposed_visibility(db, project, file, owner, body.visibility);
+    let exposed = exposed_visibility(db, scope, body.visibility);
     let outer = lower.type_params.len();
     resolution.types = body
         .types

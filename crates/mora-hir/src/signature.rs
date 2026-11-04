@@ -1,9 +1,8 @@
 use mora_span::{Db, Project, SourceFile};
 
+use crate::arena::arena_index;
 use crate::defs::ItemId;
-use crate::items::{
-    ItemIdx, ItemKind, ItemTree, Visibility, item_index, item_tree, signature_refs,
-};
+use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, item_data,
     resolve_path,
@@ -71,27 +70,23 @@ fn item_signature(
 ) -> LoweredSignature {
     let tree = item_tree(db, file);
     let refs = signature_refs(db, file);
-    let id = ItemId {
+    let scope = Scope {
         project,
         file,
-        item,
+        // A function or a value has no members, so looking up from inside it
+        // is looking up from the type around it.
+        within: Some(item),
     };
     let type_params = type_params(tree, refs, Some(item));
-    let mut lower = LowerTypes {
+    let mut lower = ResolveTypes {
         db,
-        scope: Scope {
-            project,
-            file,
-            // A function or a value has no members, so looking up from
-            // inside it is looking up from the type around it.
-            within: Some(item),
-        },
+        scope,
         type_params,
         field: None,
-        member: effective_visibility(db, id),
+        member: effective_visibility(db, scope.item(item)),
         errors: Vec::new(),
     };
-    let signature = match &refs[item_index(item)].kind {
+    let signature = match &refs[arena_index(item)].kind {
         SignatureRefKind::Function {
             params,
             ret,
@@ -137,7 +132,8 @@ fn item_signature(
 }
 
 /// Looks up the names in types as written.
-pub(crate) struct LowerTypes<'db> {
+pub(crate) struct ResolveTypes<'db> {
+    /// The database the names are looked up in.
     pub(crate) db: &'db dyn Db,
     /// Where the names are looked up from.
     pub(crate) scope: Scope,
@@ -158,11 +154,11 @@ pub(crate) fn type_params(
     within: Option<ItemIdx>,
 ) -> Vec<String> {
     enclosing_types(tree, within)
-        .flat_map(|ty| refs[item_index(ty)].type_params.iter().cloned())
+        .flat_map(|ty| refs[arena_index(ty)].type_params.iter().cloned())
         .collect()
 }
 
-impl LowerTypes<'_> {
+impl ResolveTypes<'_> {
     pub(crate) fn ty(&mut self, ty: &TypeRef) -> Ty {
         match ty {
             TypeRef::Primitive(primitive) => Ty::Primitive(*primitive),
@@ -259,7 +255,7 @@ impl LowerTypes<'_> {
             ));
         }
         let generic = path.generic
-            || !signature_refs(self.db, item.file)[item_index(item.item)]
+            || !signature_refs(self.db, item.file)[arena_index(item.item)]
                 .type_params
                 .is_empty();
         if construct == Construct::Generic && !generic {

@@ -5,8 +5,9 @@
 //! is followed by what it names in braces, as `Console.WriteLine{external}`
 //! or `X{field App.Point.X}`, and so is a member of a namespace or a type,
 //! as `Color.Red{enum member App.Color.Red}`. A member without braces is a
-//! member of a value, which type checking looks up. An operand that is itself an operation is in parentheses, so
-//! the dump shows how the expression was grouped.
+//! member of a value, which type checking looks up. An operand that is
+//! itself an operation is in parentheses, so the dump shows how the
+//! expression was grouped.
 
 use std::fmt::Write;
 
@@ -17,9 +18,10 @@ use super::{
     InterpPart, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId,
     UnaryOp, body, body_owners, body_resolution,
 };
-use crate::items::ValueKind;
+use crate::arena::arena_index;
+use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::report::{full_name, item_full_name};
-use crate::resolve::Resolved;
+use crate::resolve::{Resolved, Scope, item_data};
 use crate::type_ref::TypeRef;
 
 /// The HIR of every body of `file`: its top-level statements, then each
@@ -62,16 +64,8 @@ impl Printer<'_> {
         let Some(root) = self.body.root else {
             return;
         };
-        let item = |item| {
-            item_full_name(
-                self.db,
-                crate::ItemId {
-                    project,
-                    file,
-                    item,
-                },
-            )
-        };
+        let scope = Scope::file(project, file);
+        let item = |item| item_full_name(self.db, scope.item(item));
         let name = match owner {
             BodyOwner::TopLevel => {
                 self.out.push_str("top-level ");
@@ -81,7 +75,7 @@ impl Printer<'_> {
             }
             BodyOwner::Item(idx) => item(idx),
             BodyOwner::Value(ty, index) => {
-                let values = &crate::item_tree(self.db, file).item(ty).values;
+                let values = &item_tree(self.db, file).item(ty).values;
                 format!("{}.{}", item(ty), values[index as usize].name)
             }
             BodyOwner::Member(ty, _) => match self.body.kind {
@@ -176,7 +170,16 @@ impl Printer<'_> {
 
     fn local(&mut self, local: LocalId) {
         let name = &self.body.locals[local].name;
-        let _ = write!(self.out, "{name}#{}", u32::from(local.into_raw()));
+        let _ = write!(self.out, "{name}#{}", arena_index(local));
+    }
+
+    /// A local's declaration and its initializer, without the `;`.
+    fn local_with_init(&mut self, local: LocalId, init: Option<ExprId>) {
+        self.local_decl(local);
+        if let Some(init) = init {
+            self.out.push_str(" = ");
+            self.expr(init);
+        }
     }
 
     fn local_decl(&mut self, local: LocalId) {
@@ -201,11 +204,7 @@ impl Printer<'_> {
                 self.out.push(';');
             }
             Stmt::Local { local, init } => {
-                self.local_decl(*local);
-                if let Some(init) = init {
-                    self.out.push_str(" = ");
-                    self.expr(*init);
-                }
+                self.local_with_init(*local, *init);
                 self.out.push(';');
             }
             Stmt::Deconstruct { pat, init } => {
@@ -272,18 +271,11 @@ impl Printer<'_> {
                     }
                     match &self.body.stmts[stmt] {
                         Stmt::Expr(expr) => self.expr(*expr),
-                        Stmt::Local { local, init } => {
-                            self.local_decl(*local);
-                            if let Some(init) = init {
-                                self.out.push_str(" = ");
-                                self.expr(*init);
-                            }
-                        }
+                        Stmt::Local { local, init } => self.local_with_init(*local, *init),
                         _ => self.out.push_str("<missing>"),
                     }
                 }
-                self.out.push(';');
-                self.out.push(' ');
+                self.out.push_str("; ");
                 if let Some(condition) = condition {
                     self.expr(*condition);
                 }
@@ -791,15 +783,15 @@ impl Printer<'_> {
                     Resolved::Namespace(_) => "namespace",
                     Resolved::Functions(items) if items.len() > 1 => "overloads",
                     Resolved::Functions(_) => "fn",
-                    Resolved::Item(item) => match crate::resolve::item_data(self.db, *item).kind {
-                        crate::ItemKind::Struct => "struct",
-                        crate::ItemKind::Class => "class",
-                        crate::ItemKind::Union => "union",
-                        crate::ItemKind::Enum => "enum",
-                        crate::ItemKind::Interface => "interface",
-                        crate::ItemKind::Function => "fn",
-                        crate::ItemKind::Macro => "macro",
-                        crate::ItemKind::Field => "value",
+                    Resolved::Item(item) => match item_data(self.db, *item).kind {
+                        ItemKind::Struct => "struct",
+                        ItemKind::Class => "class",
+                        ItemKind::Union => "union",
+                        ItemKind::Enum => "enum",
+                        ItemKind::Interface => "interface",
+                        ItemKind::Function => "fn",
+                        ItemKind::Macro => "macro",
+                        ItemKind::Field => "value",
                     },
                     Resolved::External => "external",
                 };
@@ -807,7 +799,7 @@ impl Printer<'_> {
                 format!("{kind} {name}")
             }
             Target::Value(value) => {
-                let member = &crate::resolve::item_data(self.db, value.ty).values[value.index];
+                let member = &item_data(self.db, value.ty).values[value.index];
                 let kind = match member.kind {
                     ValueKind::Field => "field",
                     ValueKind::Getter => "getter",

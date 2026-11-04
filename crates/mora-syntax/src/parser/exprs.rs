@@ -6,7 +6,7 @@
 //! `await` through [`unary`]; member access, calls, indexing, `++`/`--` and
 //! propagation through [`postfix`].
 
-use super::types::{self, PREDEFINED, scan_type_no_fn};
+use super::types::{self, PREDEFINED_TYPES, scan_type_no_fn};
 use super::{CompletedMarker, Input, Parser, items, patterns, stmts};
 use crate::SyntaxKind;
 
@@ -120,7 +120,7 @@ pub(crate) fn at_expr_start(p: &Parser<'_>) -> bool {
     let kind = p.current();
     LITERALS.contains(&kind)
         || PREFIX.contains(&kind)
-        || PREDEFINED.contains(&kind)
+        || PREDEFINED_TYPES.contains(&kind)
         || matches!(
             kind,
             K::Ident
@@ -336,7 +336,7 @@ fn at_cast(p: &Parser<'_>) -> bool {
         return false;
     }
     let next = input.kind(end + 1);
-    let predefined = PREDEFINED.contains(&input.kind(at + 1)) && end == at + 2;
+    let predefined = PREDEFINED_TYPES.contains(&input.kind(at + 1)) && end == at + 2;
     if predefined {
         return end + 1 < input.len()
             && !matches!(next, K::RParen | K::Semicolon | K::Comma | K::Dot);
@@ -356,7 +356,7 @@ fn at_cast(p: &Parser<'_>) -> bool {
                 | K::StackallocKw
                 | K::InterpStart
         )
-        || (PREDEFINED.contains(&next))
+        || (PREDEFINED_TYPES.contains(&next))
 }
 
 /// Whether a lambda starts here: `x =>`, `(…) =>`, `async`, `static`, or a
@@ -462,7 +462,7 @@ fn primary(p: &mut Parser<'_>) -> Option<CompletedMarker> {
         p.bump_any();
         return Some(m.complete(p, K::LiteralExpr));
     }
-    if PREDEFINED.contains(&kind) {
+    if PREDEFINED_TYPES.contains(&kind) {
         // `int.Parse(...)`.
         let m = p.start();
         let t = p.start();
@@ -563,7 +563,7 @@ fn quote(p: &mut Parser<'_>) {
     let at = p.pos();
     let is_type = scan_type_no_fn(input, at).is_some_and(|end| {
         input.kind(end) == K::RParen
-            && (PREDEFINED.contains(&input.kind(at))
+            && (PREDEFINED_TYPES.contains(&input.kind(at))
                 || input.kind(at) == K::LParen
                 || types::at_any(input, at)
                 || (at..end).any(|i| matches!(input.kind(i), K::Lt | K::Question | K::LBracket)))
