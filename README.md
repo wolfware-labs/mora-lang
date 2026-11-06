@@ -1,6 +1,7 @@
 # Mora
 
 [![Coverage](https://img.shields.io/codecov/c/github/wolfware-labs/mora-lang?logo=codecov&label=coverage)](https://codecov.io/gh/wolfware-labs/mora-lang)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/wolfware-labs/mora-lang?utm_source=badge)
 
 Mora is a programming language with familiar curly-brace syntax, memory managed by reference counting and single ownership instead of a garbage collector, and compilation to one native executable. Anyone who knows a mainstream curly-brace language can read it, but it keeps only what fits its own model: no exceptions, no inheritance, no `null` references. The compiler, runtime, language server and package tool are written in Rust.
 

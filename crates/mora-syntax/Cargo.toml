@@ -20,3 +20,10 @@ mora-diag.workspace = true
 mora-span.workspace = true
 unicode-ident.workspace = true
 unicode-normalization.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "syntax"
+harness = false
