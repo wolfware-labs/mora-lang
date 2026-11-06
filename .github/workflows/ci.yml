@@ -332,9 +332,9 @@ jobs:
   # own check. The suites are built and run once without measuring first, so
   # a benchmark that no longer builds or panics fails the job; only the
   # measured run, which uploads to CodSpeed, may fail without failing it.
+  # It runs for every change, Markdown-only ones included: the CodSpeed
+  # check is required, so it must report on every pull request.
   benchmarks:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
