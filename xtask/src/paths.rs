@@ -50,3 +50,19 @@ pub fn files_with_extension(dir: &Path, extension: &str) -> io::Result<Vec<PathB
     files.sort();
     Ok(files)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_paths_drop_the_root_and_use_slashes() {
+        let root = root();
+        let file = root.join("crates").join("mora-syntax").join("lib.rs");
+        assert_eq!(relative(&root, &file), "crates/mora-syntax/lib.rs");
+        assert_eq!(
+            relative(&root, Path::new("elsewhere/x.rs")),
+            "elsewhere/x.rs"
+        );
+    }
+}

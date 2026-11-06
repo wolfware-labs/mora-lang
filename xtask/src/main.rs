@@ -155,11 +155,12 @@ fn run_codegen() -> CommandResult {
     let outputs = codegen::outputs(&root)?;
     let stale = codegen::stale(&outputs);
     for (path, text) in outputs.iter().filter(|(path, _)| stale.contains(path)) {
+        let shown = paths::relative(&root, path);
         let parent = path.parent().unwrap_or(path);
         std::fs::create_dir_all(parent)
             .and_then(|()| std::fs::write(path, text))
-            .map_err(|err| format!("{}: {err}", path.display()))?;
-        println!("codegen: wrote {}", paths::relative(&root, path));
+            .map_err(|err| format!("{shown}: {err}"))?;
+        println!("codegen: wrote {shown}");
     }
     Ok(ExitCode::SUCCESS)
 }

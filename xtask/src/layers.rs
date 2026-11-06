@@ -433,9 +433,11 @@ mod tests {
     fn edge_on_xtask_fails() {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-cli", XTASK, Some("dev"));
+        let v = single(meta);
+        assert_eq!(v, edge("mora-cli", XTASK, "dev", Problem::OnXtask));
         assert_eq!(
-            single(meta),
-            edge("mora-cli", XTASK, "dev", Problem::OnXtask)
+            v.to_string(),
+            "mora-cli -> xtask (dev): nothing may depend on xtask"
         );
     }
 
