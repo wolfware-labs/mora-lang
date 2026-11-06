@@ -189,10 +189,7 @@ impl Target {
         let Some(text) = builtin::text(name) else {
             return Err(Error::Unknown(name.to_owned()));
         };
-        Target::parse(text).map_err(|message| Error::Invalid {
-            origin: format!("built-in target `{name}`"),
-            message,
-        })
+        Target::parse_from(text, || format!("built-in target `{name}`"))
     }
 
     /// Reads a description from a file.
@@ -201,8 +198,13 @@ impl Target {
             path: path.to_owned(),
             source,
         })?;
-        Target::parse(&text).map_err(|message| Error::Invalid {
-            origin: path.display().to_string(),
+        Target::parse_from(&text, || path.display().to_string())
+    }
+
+    /// Parses `text`, naming `origin` in the error.
+    fn parse_from(text: &str, origin: impl FnOnce() -> String) -> Result<Target, Error> {
+        Target::parse(text).map_err(|message| Error::Invalid {
+            origin: origin(),
             message,
         })
     }

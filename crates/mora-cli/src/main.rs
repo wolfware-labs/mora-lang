@@ -240,6 +240,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn version_json_escapes_quotes_backslashes_and_controls() {
+        let json = VersionJson {
+            version: "1\"2",
+            commit: "a\\b",
+            runtime_targets: &["t\tx".to_owned(), "\u{1}".to_owned()],
+        };
+        assert_eq!(
+            serde_json::to_string(&json).unwrap(),
+            r#"{"version":"1\"2","commit":"a\\b","runtime_targets":["t\tx","\u0001"]}"#
+        );
+    }
+
+    #[test]
     fn the_command_line_is_well_formed() {
         use clap::CommandFactory;
         Cli::command().debug_assert();
