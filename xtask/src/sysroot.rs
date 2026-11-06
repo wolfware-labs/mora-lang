@@ -36,64 +36,90 @@ pub struct Archive {
     pub sha256: String,
 }
 
+/// The pinned llvm-mingw release.
 const LLVM_MINGW: &str = "20261006";
 
-/// The llvm-mingw archive for each host, by architecture and OS as Rust's
-/// `std::env::consts` name them.
-const LLVM_MINGW_HOSTS: &[(&str, &str, &str, &str)] = &[
-    (
-        "x86_64",
-        "linux",
-        "ubuntu-22.04-x86_64.tar.xz",
-        "5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4",
-    ),
-    (
-        "aarch64",
-        "linux",
-        "ubuntu-22.04-aarch64.tar.xz",
-        "e77c4acfa44184f6b0c52b814d724ad63b2ecebb3c3f6f842c0846e717cbd23c",
-    ),
-    (
-        "x86_64",
-        "macos",
-        "macos-universal.tar.xz",
-        "a7a19b11048e89372637d26279cdb7c430ed3cf8c1e224310421312bf986ebf6",
-    ),
-    (
-        "aarch64",
-        "macos",
-        "macos-universal.tar.xz",
-        "a7a19b11048e89372637d26279cdb7c430ed3cf8c1e224310421312bf986ebf6",
-    ),
-    (
-        "x86_64",
-        "windows",
-        "x86_64.zip",
-        "317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a",
-    ),
-    (
-        "aarch64",
-        "windows",
-        "aarch64.zip",
-        "9a835d5179c9f3a5a783c11a7f14062a249b4765dd11add64a66786864e82ab2",
-    ),
+/// The llvm-mingw archive for one host.
+struct HostBuild {
+    /// The host's architecture, as `std::env::consts::ARCH` names it.
+    arch: &'static str,
+    /// The host's OS, as `std::env::consts::OS` names it.
+    os: &'static str,
+    /// The end of the archive's file name.
+    suffix: &'static str,
+    /// The archive's SHA-256.
+    sha256: &'static str,
+}
+
+/// The llvm-mingw archive of each host.
+const LLVM_MINGW_HOSTS: &[HostBuild] = &[
+    HostBuild {
+        arch: "x86_64",
+        os: "linux",
+        suffix: "ubuntu-22.04-x86_64.tar.xz",
+        sha256: "5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4",
+    },
+    HostBuild {
+        arch: "aarch64",
+        os: "linux",
+        suffix: "ubuntu-22.04-aarch64.tar.xz",
+        sha256: "e77c4acfa44184f6b0c52b814d724ad63b2ecebb3c3f6f842c0846e717cbd23c",
+    },
+    HostBuild {
+        arch: "x86_64",
+        os: "macos",
+        suffix: "macos-universal.tar.xz",
+        sha256: "a7a19b11048e89372637d26279cdb7c430ed3cf8c1e224310421312bf986ebf6",
+    },
+    HostBuild {
+        arch: "aarch64",
+        os: "macos",
+        suffix: "macos-universal.tar.xz",
+        sha256: "a7a19b11048e89372637d26279cdb7c430ed3cf8c1e224310421312bf986ebf6",
+    },
+    HostBuild {
+        arch: "x86_64",
+        os: "windows",
+        suffix: "x86_64.zip",
+        sha256: "317492c456aa27ee607a5919f1d2d38dcdc1112516a24d0bf4b00d078f52d17a",
+    },
+    HostBuild {
+        arch: "aarch64",
+        os: "windows",
+        suffix: "aarch64.zip",
+        sha256: "9a835d5179c9f3a5a783c11a7f14062a249b4765dd11add64a66786864e82ab2",
+    },
 ];
 
-/// The `rust-std` archives of the pinned Rust toolchain for the musl
-/// targets: Rust target, sysroot directory, SHA-256.
+/// The date of the pinned Rust toolchain's release, which names its
+/// download directory.
 const RUST_STD_DATE: &str = "2026-10-15";
+
+/// The version of the pinned Rust toolchain.
 const RUST_VERSION: &str = "1.99.1";
-const RUST_STD_MUSL: &[(&str, &str, &str)] = &[
-    (
-        "x86_64-unknown-linux-musl",
-        "x86_64-linux",
-        "89703fc52323fad35169fcf649e56844b7dd62bf9dd9a4113bbcd96865690e36",
-    ),
-    (
-        "aarch64-unknown-linux-musl",
-        "aarch64-linux",
-        "5202b22bf78e62f95304f6dfafd7e3e10ac839fb808e01cd12d66bbb99e7c1b8",
-    ),
+
+/// A musl target whose pieces come from the pinned toolchain's `rust-std`.
+struct MuslTarget {
+    /// The Rust target.
+    target: &'static str,
+    /// The directory under `sysroot/`.
+    dir: &'static str,
+    /// The SHA-256 of its `rust-std` archive.
+    sha256: &'static str,
+}
+
+/// The musl targets.
+const RUST_STD_MUSL: &[MuslTarget] = &[
+    MuslTarget {
+        target: "x86_64-unknown-linux-musl",
+        dir: "x86_64-linux",
+        sha256: "89703fc52323fad35169fcf649e56844b7dd62bf9dd9a4113bbcd96865690e36",
+    },
+    MuslTarget {
+        target: "aarch64-unknown-linux-musl",
+        dir: "aarch64-linux",
+        sha256: "5202b22bf78e62f95304f6dfafd7e3e10ac839fb808e01cd12d66bbb99e7c1b8",
+    },
 ];
 
 /// The MinGW-w64 targets: llvm-mingw's architecture and the sysroot
@@ -107,17 +133,17 @@ const MINGW_EXCLUDED: &[&str] = &["gcrt0.o", "gcrt1.o", "gcrt2.o", "libgmon.a"];
 
 /// The llvm-mingw archive for a host.
 pub fn llvm_mingw(arch: &str, os: &str) -> Result<Archive, String> {
-    let (_, _, suffix, sha256) = LLVM_MINGW_HOSTS
+    let host = LLVM_MINGW_HOSTS
         .iter()
-        .find(|(a, o, _, _)| *a == arch && *o == os)
+        .find(|host| host.arch == arch && host.os == os)
         .ok_or_else(|| format!("no llvm-mingw build is pinned for {arch} {os}"))?;
-    let file = format!("llvm-mingw-{LLVM_MINGW}-ucrt-{suffix}");
+    let file = format!("llvm-mingw-{LLVM_MINGW}-ucrt-{}", host.suffix);
     Ok(Archive {
         url: format!(
             "https://github.com/mstorsjo/llvm-mingw/releases/download/{LLVM_MINGW}/{file}"
         ),
         file,
-        sha256: (*sha256).to_owned(),
+        sha256: host.sha256.to_owned(),
     })
 }
 
@@ -137,7 +163,7 @@ pub fn archives(arch: &str, os: &str) -> Result<Vec<Archive>, String> {
     archives.extend(
         RUST_STD_MUSL
             .iter()
-            .map(|(target, _, sha256)| rust_std(target, sha256)),
+            .map(|musl| rust_std(musl.target, musl.sha256)),
     );
     Ok(archives)
 }
@@ -446,11 +472,11 @@ pub fn install(archives: &[Archive], licenses: &Path, out: &Path) -> Result<Inst
         let root = unpack(path, &work)?;
         if archive.file.starts_with("llvm-mingw-") {
             install_llvm_mingw(&root, out)?;
-        } else if let Some((target, dir, _)) = RUST_STD_MUSL
+        } else if let Some(musl) = RUST_STD_MUSL
             .iter()
-            .find(|(target, _, _)| archive.file.contains(target))
+            .find(|musl| archive.file.contains(musl.target))
         {
-            install_rust_std(&root, target, dir, out)?;
+            install_rust_std(&root, musl.target, musl.dir, out)?;
         } else {
             return Err(format!("no install rule for {}", archive.file));
         }
@@ -493,14 +519,7 @@ fn lld_version(out: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("mora-xtask-sysroot-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::paths::{self, scratch};
 
     /// A `file://` URL that curl accepts on every platform.
     fn file_url(path: &Path) -> String {
@@ -887,7 +906,7 @@ mod tests {
 
     #[test]
     fn the_license_readme_lists_every_text() {
-        let licenses = Path::new(env!("CARGO_MANIFEST_DIR")).join("../LICENSES");
+        let licenses = paths::root().join("LICENSES");
         let readme = fs::read_to_string(licenses.join("README.md")).unwrap();
         for entry in fs::read_dir(&licenses).unwrap() {
             let name = entry.unwrap().file_name().into_string().unwrap();
@@ -899,7 +918,7 @@ mod tests {
 
     #[test]
     fn the_licenses_cover_every_component() {
-        let licenses = Path::new(env!("CARGO_MANIFEST_DIR")).join("../LICENSES");
+        let licenses = paths::root().join("LICENSES");
         for file in [
             "LLVM.txt",
             "musl.txt",

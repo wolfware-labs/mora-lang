@@ -372,19 +372,7 @@ fn sections(text: &str) -> Vec<(&str, String)> {
 /// Reads the spec, the pages and the uses in crate sources and UI tests.
 pub fn load(root: &Path) -> io::Result<Repo> {
     let spec = fs::read_to_string(root.join(SPEC))?;
-    let mut pages = Vec::new();
-    let pages_dir = root.join(PAGES);
-    if pages_dir.is_dir() {
-        for entry in fs::read_dir(&pages_dir)? {
-            let path = entry?.path();
-            if path.is_file()
-                && let Some(name) = path.file_name().and_then(|n| n.to_str())
-            {
-                pages.push((name.to_owned(), fs::read_to_string(&path)?));
-            }
-        }
-    }
-    pages.sort();
+    let pages = read_pages(root)?;
 
     let mut uses = Vec::new();
     let mut bypasses = Vec::new();
@@ -431,6 +419,25 @@ pub fn load(root: &Path) -> io::Result<Repo> {
         uses,
         bypasses,
     })
+}
+
+/// File name and text of every file in `docs/errors/`, sorted by name; none
+/// when the directory does not exist.
+pub fn read_pages(root: &Path) -> io::Result<Vec<(String, String)>> {
+    let mut pages = Vec::new();
+    let dir = root.join(PAGES);
+    if dir.is_dir() {
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_file()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            {
+                pages.push((name.to_owned(), fs::read_to_string(&path)?));
+            }
+        }
+    }
+    pages.sort();
+    Ok(pages)
 }
 
 /// The crate a file belongs to when it is in that crate's `src`

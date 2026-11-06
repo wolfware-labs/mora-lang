@@ -12,11 +12,14 @@
 //! This module reads arguments, finds the bench targets and reads and judges
 //! criterion's results; [`crate::bench_run`] runs git and cargo.
 
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cargo_metadata::Metadata;
 use serde_json::Value;
+
+use crate::paths::{self, error_at};
 
 /// The name of the criterion baseline the base revision saves.
 pub const BASELINE: &str = "base";
@@ -69,7 +72,7 @@ pub fn parse_args(args: &[&str]) -> Result<Options, String> {
 
 /// A criterion benchmark target of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Target {
+pub struct BenchTarget {
     /// The package that has it.
     pub package: String,
     /// The bench target's name.
@@ -80,7 +83,7 @@ pub struct Target {
 
 /// The bench targets of the workspace, which are criterion benchmarks: a
 /// bench target with the default harness would reject criterion's flags.
-pub fn targets(metadata: &Metadata) -> Vec<Target> {
+pub fn targets(metadata: &Metadata) -> Vec<BenchTarget> {
     // Cargo writes the workspace root and the source paths the same way, so
     // one is a prefix of the other on every platform.
     let root = metadata.workspace_root.as_std_path();
@@ -92,7 +95,7 @@ pub fn targets(metadata: &Metadata) -> Vec<Target> {
             }
             let source = target.src_path.as_std_path();
             let source = source.strip_prefix(root).unwrap_or(source);
-            found.push(Target {
+            found.push(BenchTarget {
                 package: package.name.to_string(),
                 name: target.name.clone(),
                 source: source.to_path_buf(),
@@ -122,11 +125,15 @@ pub struct Comparison {
 /// fractions: 0.05 is 5% slower.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Change {
+    /// The change of the mean.
     pub mean: f64,
+    /// The lower bound of its confidence interval.
     pub lower: f64,
+    /// The upper bound of its confidence interval.
     pub upper: f64,
 }
 
+/// What a comparison says about a benchmark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Only the working tree has the benchmark.
@@ -142,6 +149,8 @@ pub enum Verdict {
 }
 
 impl Comparison {
+    /// The verdict with `threshold`, the slowdown that counts as a
+    /// regression, as a fraction.
     pub fn verdict(&self, threshold: f64) -> Verdict {
         if self.new.is_none() {
             return Verdict::Removed;
@@ -158,9 +167,9 @@ impl Comparison {
 /// The targets the base also has, by package and name, and those it lacks.
 /// A source file left behind without its `[[bench]]` entry is not a target.
 pub fn split_by_base<'a>(
-    base: &[Target],
-    targets: &'a [Target],
-) -> (Vec<&'a Target>, Vec<&'a Target>) {
+    base: &[BenchTarget],
+    targets: &'a [BenchTarget],
+) -> (Vec<&'a BenchTarget>, Vec<&'a BenchTarget>) {
     targets.iter().partition(|target| {
         base.iter()
             .any(|other| other.package == target.package && other.name == target.name)
@@ -173,11 +182,8 @@ pub fn split_by_base<'a>(
 pub fn clear_new(home: &Path) -> Result<(), String> {
     let mut pending = vec![home.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let entries = fs::read_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-        for entry in entries {
-            let path = entry
-                .map_err(|err| format!("{}: {err}", dir.display()))?
-                .path();
+        for entry in fs::read_dir(&dir).map_err(error_at(&dir))? {
+            let path = entry.map_err(error_at(&dir))?.path();
             if !path.is_dir() {
                 continue;
             }
@@ -186,7 +192,7 @@ pub fn clear_new(home: &Path) -> Result<(), String> {
             if path.file_name().is_some_and(|name| name == "new")
                 && path.join("estimates.json").is_file()
             {
-                fs::remove_dir_all(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+                fs::remove_dir_all(&path).map_err(error_at(&path))?;
             } else {
                 pending.push(path);
             }
@@ -202,11 +208,8 @@ pub fn collect(home: &Path) -> Result<Vec<Comparison>, String> {
     let mut found = Vec::new();
     let mut pending = vec![home.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let entries = fs::read_dir(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-        for entry in entries {
-            let path = entry
-                .map_err(|err| format!("{}: {err}", dir.display()))?
-                .path();
+        for entry in fs::read_dir(&dir).map_err(error_at(&dir))? {
+            let path = entry.map_err(error_at(&dir))?.path();
             if path.is_dir() {
                 pending.push(path);
             }
@@ -216,40 +219,28 @@ pub fn collect(home: &Path) -> Result<Vec<Comparison>, String> {
         if !new.is_file() && !base.is_file() {
             continue;
         }
-        let id = dir
-            .strip_prefix(home)
-            .unwrap_or(&dir)
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        let change = dir.join("change/estimates.json");
         found.push(Comparison {
-            id,
-            new: if new.is_file() {
-                Some(mean(&read(&new)?, &new)?)
-            } else {
-                None
-            },
-            base: if base.is_file() {
-                Some(mean(&read(&base)?, &base)?)
-            } else {
-                None
-            },
-            change: if change.is_file() {
-                Some(relative_change(&read(&change)?, &change)?)
-            } else {
-                None
-            },
+            id: paths::relative(home, &dir),
+            new: read_if_file(&new, mean)?,
+            base: read_if_file(&base, mean)?,
+            change: read_if_file(&dir.join("change/estimates.json"), relative_change)?,
         });
     }
     found.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(found)
 }
 
-fn read(path: &Path) -> Result<Value, String> {
-    let text = fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
-    serde_json::from_str(&text).map_err(|err| format!("{}: {err}", path.display()))
+/// What `parse` reads from the JSON file at `path`, when there is one.
+fn read_if_file<T>(
+    path: &Path,
+    parse: fn(&Value, &Path) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path).map_err(error_at(path))?;
+    let value = serde_json::from_str(&text).map_err(error_at(path))?;
+    parse(&value, path).map(Some)
 }
 
 fn number(value: &Value, pointer: &str, path: &Path) -> Result<f64, String> {
@@ -287,7 +278,8 @@ pub fn duration(nanos: f64) -> String {
     format!("{value:.3} {unit}")
 }
 
-/// The report, one line per benchmark, and how many regressed.
+/// The report, one line per benchmark, and how many regressed. Writing to
+/// a `String` cannot fail, so the result of `writeln!` is ignored.
 pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) {
     let width = comparisons.iter().map(|c| c.id.len()).max().unwrap_or(0);
     let mut out = String::new();
@@ -317,10 +309,11 @@ pub fn report(comparisons: &[Comparison], options: &Options) -> (String, usize) 
             Verdict::Improved => "improved",
             Verdict::Unchanged => "unchanged",
         };
-        out.push_str(&format!(
-            "{:<width$}  {:>12}  {:>12}  {:<28}  {label}\n",
+        let _ = writeln!(
+            out,
+            "{:<width$}  {:>12}  {:>12}  {:<28}  {label}",
             comparison.id, base, new, change,
-        ));
+        );
     }
     (out, regressions)
 }
@@ -340,9 +333,9 @@ mod tests {
 
     #[test]
     fn bench_targets_come_from_the_workspace() {
-        let metadata = crate::metadata_command().exec().unwrap();
+        let metadata = crate::metadata_command(&paths::root()).exec().unwrap();
         let found = targets(&metadata);
-        let front_end = Target {
+        let front_end = BenchTarget {
             package: "mora-hir".to_owned(),
             name: "front_end".to_owned(),
             source: PathBuf::from("crates/mora-hir/benches/front_end.rs"),
@@ -361,7 +354,7 @@ mod tests {
 
     #[test]
     fn targets_the_base_lacks_are_new() {
-        let target = |package: &str, name: &str| Target {
+        let target = |package: &str, name: &str| BenchTarget {
             package: package.to_owned(),
             name: name.to_owned(),
             source: PathBuf::from(format!("{package}/benches/{name}.rs")),
@@ -446,8 +439,7 @@ mod tests {
 
     #[test]
     fn results_are_read_from_the_criterion_directory() {
-        let home = std::env::temp_dir().join(format!("bench-compare-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
+        let home = paths::scratch("bench-compare");
         let parse = home.join("cold/parse");
         write_estimates(&parse.join("new"), 2000.0, 1900.0, 2100.0);
         write_estimates(&parse.join("base"), 1000.0, 950.0, 1050.0);
@@ -492,8 +484,7 @@ mod tests {
 
     #[test]
     fn clearing_new_results_keeps_the_baseline() {
-        let home = std::env::temp_dir().join(format!("bench-compare-clear-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
+        let home = paths::scratch("bench-compare-clear");
         let parse = home.join("cold/parse");
         write_estimates(&parse.join("new"), 2000.0, 1900.0, 2100.0);
         write_estimates(&parse.join("base"), 1000.0, 950.0, 1050.0);
@@ -518,8 +509,7 @@ mod tests {
 
     #[test]
     fn a_malformed_estimate_is_an_error() {
-        let home = std::env::temp_dir().join(format!("bench-compare-bad-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
+        let home = paths::scratch("bench-compare-bad");
         let new = home.join("cold/parse/new");
         fs::create_dir_all(&new).unwrap();
         fs::write(new.join("estimates.json"), r#"{"mean":{}}"#).unwrap();

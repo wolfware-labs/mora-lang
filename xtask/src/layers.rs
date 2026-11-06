@@ -192,7 +192,7 @@ mod tests {
     fn workspace_json() -> Value {
         static JSON: OnceLock<Value> = OnceLock::new();
         JSON.get_or_init(|| {
-            let output = crate::metadata_command()
+            let output = crate::metadata_command(&crate::paths::root())
                 .cargo_command()
                 .output()
                 .expect("run cargo metadata");

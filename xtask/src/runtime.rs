@@ -3,10 +3,11 @@
 //! program against each one and checks its exit code.
 
 use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::{paths, tools};
 
 /// The C program `--test` links: its `__mora_main` returns [`EXIT_CODE`].
 pub const TEST_PROGRAM: &str = "crates/mora-rt/tests/c/exit_code.c";
@@ -54,7 +55,7 @@ pub fn native_libs(rustc_output: &str) -> Option<Vec<String>> {
 
 /// The triple of the machine running the build.
 pub fn host() -> Result<String, String> {
-    let output = Command::new(rustc())
+    let output = Command::new(tools::rustc())
         .arg("-vV")
         .output()
         .map_err(|err| format!("cannot run rustc: {err}"))?;
@@ -65,14 +66,9 @@ pub fn host() -> Result<String, String> {
         .ok_or_else(|| "rustc -vV printed no host".to_owned())
 }
 
-fn rustc() -> OsString {
-    env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())
-}
-
 /// Builds `variant` for `target` with the release profile.
 pub fn build(root: &Path, target: &str, variant: Variant) -> Result<Built, String> {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(tools::cargo());
     // Without color: CI forces it on, and the escape codes would end up in
     // the linker arguments read from rustc's note.
     command
@@ -99,8 +95,8 @@ pub fn build(root: &Path, target: &str, variant: Variant) -> Result<Built, Strin
             variant.file
         )
     })?;
-    // Cargo resolves a relative target directory against `root`, where it runs.
-    let target_dir = root.join(env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into()));
+    // Cargo runs in `root`, so it resolves the target directory as `paths` does.
+    let target_dir = paths::target_dir(root);
     let built = target_dir.join(target).join("release/libmora_rt.a");
     let dir = target_dir.join("runtime").join(target);
     let lib = dir.join(variant.file);
@@ -114,7 +110,7 @@ pub fn build(root: &Path, target: &str, variant: Variant) -> Result<Built, Strin
 /// the flags in `$CFLAGS`, runs it and checks that it exits with
 /// [`EXIT_CODE`]. The host must be able to run programs for `target`.
 pub fn test(root: &Path, target: &str, built: &Built) -> Result<(), String> {
-    let cc = env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let cc = tools::cc();
     let stem = built
         .lib
         .file_stem()
@@ -163,7 +159,7 @@ pub fn test(root: &Path, target: &str, built: &Built) -> Result<(), String> {
 /// The `self-contained` directory of the Rust standard library for `target`,
 /// if it has one.
 fn self_contained(target: &str) -> Option<PathBuf> {
-    let output = Command::new(rustc())
+    let output = Command::new(tools::rustc())
         .args(["--print", "sysroot"])
         .output()
         .ok()?;
@@ -191,8 +187,7 @@ mod tests {
 
     #[test]
     fn the_test_program_returns_the_expected_code() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let program = fs::read_to_string(root.join(TEST_PROGRAM)).unwrap();
+        let program = fs::read_to_string(paths::root().join(TEST_PROGRAM)).unwrap();
         assert!(program.contains(&format!("return {EXIT_CODE};")));
     }
 }
