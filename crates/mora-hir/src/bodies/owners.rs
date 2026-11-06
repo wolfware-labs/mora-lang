@@ -1,29 +1,31 @@
 //! The owners of the bodies of a file, and what each one lowers.
 
+use la_arena::RawIdx;
 use mora_span::{TextRange, TextSize};
 use mora_syntax::SyntaxNode;
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::lexer::ident_name;
 
 use super::lower::Lower;
 use super::{BodyKind, BodyOwner, Expr, FileBodies, LocalKind, Lowered};
-use crate::items::{ItemIdx, Visibility, item_nodes, visibility};
+use crate::items::{ItemIdx, Visibility, Written, item_nodes};
+use crate::name::name_of;
 
 /// Lowers every body of `file`: the top-level statements first, then the
 /// others in the order of the text.
 pub(super) fn file(file: &ast::SourceFile) -> FileBodies {
     let mut found = Vec::new();
     found.push((TextSize::new(0), BodyOwner::TopLevel, top_level(file)));
-    for (index, node) in item_nodes(file).iter().enumerate() {
-        let item = ItemIdx::from_raw(la_arena::RawIdx::from_u32(index as u32));
-        item_bodies(node, item, &mut found);
+    // The nodes are indexed like the item tree, so a node's position is its
+    // item's index.
+    for (raw, node) in (0u32..).zip(item_nodes(file)) {
+        item_bodies(&node, ItemIdx::from_raw(RawIdx::from_u32(raw)), &mut found);
     }
     let extensions = file.top_level_items().filter_map(|top| match top {
         ast::TopLevelItem::Item(ast::Item::ExtensionDecl(it)) => Some(it),
         _ => None,
     });
-    for (index, extension) in extensions.enumerate() {
-        extension_bodies(&extension, index as u32, &mut found);
+    for (index, extension) in (0u32..).zip(extensions) {
+        extension_bodies(&extension, index, &mut found);
     }
     // The top-level statements stay first; the sort is stable.
     found[1..].sort_by_key(|&(start, _, _)| start);
@@ -57,6 +59,7 @@ fn top_level(file: &ast::SourceFile) -> Lowered {
 struct Callable<'a> {
     /// The receiver of an extension member, a parameter before the others.
     receiver: Option<ast::Param<'a>>,
+    /// The parameters as written.
     params: Vec<ast::Param<'a>>,
     /// The type parameters it declares, and an extension's.
     type_params: Vec<ast::TypeParamList<'a>>,
@@ -74,7 +77,9 @@ struct Callable<'a> {
     value: Option<TextRange>,
     /// The arguments of a constructor's `: this(...)`.
     this_call: Option<ast::ArgList<'a>>,
+    /// The body as a block.
     block: Option<ast::Block<'a>>,
+    /// The body as `=> e`.
     expr: Option<ast::ExprBody<'a>>,
 }
 
@@ -99,11 +104,12 @@ impl Default for Callable<'_> {
 fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
     let mut lower = Lower::new(kind, name);
     lower.body.visibility = it.visibility;
-    for list in &it.type_params {
-        lower.push_type_params(list);
+    for &list in &it.type_params {
+        lower.push_type_params(Some(list));
     }
-    // The extension's own body checks the receiver's type and lowers its
-    // default.
+    // An extension member's receiver is declared without its type and
+    // default: the extension's own body, whose parameter it is, checks and
+    // lowers those.
     lower.params(
         it.receiver.as_ref(),
         &it.params,
@@ -151,19 +157,6 @@ fn initializer(
         lower.body.root = Some(lower.expr(Some(init), range));
     }
     lower.finish()
-}
-
-/// The visibility the modifiers write; none written is the folder's (D-97).
-fn written(modifiers: ast::AstChildren<ast::Modifier>) -> Visibility {
-    modifiers
-        .filter_map(|modifier| modifier.kind())
-        .find_map(|token| visibility(token.kind()))
-        .unwrap_or(Visibility::Folder)
-}
-
-fn name_of(name: Option<ast::Name>) -> Option<String> {
-    let token = name?.ident_token()?;
-    Some(ident_name(token.text()).into_owned())
 }
 
 /// The interface an explicit implementation names, as written.
@@ -220,7 +213,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
             .into_iter()
             .flat_map(|body| body.enum_members());
         let named = members.filter(|member| member.name().and_then(|n| n.ident_token()).is_some());
-        for (index, member) in named.enumerate() {
+        for (index, member) in (0u32..).zip(named) {
             if let Some(value) = member.value() {
                 let name = name_of(member.name()).unwrap_or_default();
                 let body = initializer(
@@ -230,7 +223,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
                     None,
                     Some(value),
                 );
-                let owner = BodyOwner::Value(item, index as u32);
+                let owner = BodyOwner::Value(item, index);
                 found.push((start(member.syntax()), owner, body));
             }
         }
@@ -244,16 +237,15 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
         (members(it.member_list()), 0, false)
     } else if let Some(it) = ast::UnionDecl::cast(*node) {
         let body = it.union_body();
-        let cases = body
-            .iter()
-            .flat_map(|body| body.union_cases())
-            .filter(|case| case.name().and_then(|n| n.ident_token()).is_some())
-            .count();
         let named = body
             .iter()
             .flat_map(|body| body.union_cases())
             .filter(|case| case.name().and_then(|n| n.ident_token()).is_some());
-        for (index, case) in named.enumerate() {
+        // The cases are the first value members.
+        let mut cases = 0;
+        for case in named {
+            let index = cases;
+            cases += 1;
             // A case's fields are typed like parameters, which no signature
             // holds yet.
             let Some(list) = case.param_list() else {
@@ -269,7 +261,7 @@ fn item_bodies(node: &SyntaxNode, item: ItemIdx, found: &mut Found) {
                     ..Callable::default()
                 },
             );
-            let owner = BodyOwner::Value(item, index as u32);
+            let owner = BodyOwner::Value(item, index);
             found.push((start(case.syntax()), owner, body));
         }
         let members = body.iter().flat_map(|body| body.members()).collect();
@@ -297,11 +289,11 @@ fn params(list: Option<ast::ParamList>) -> Vec<ast::Param> {
 fn member_bodies(
     members: &[ast::Member],
     owner: ItemIdx,
-    values_before: usize,
+    values_before: u32,
     is_struct: bool,
     found: &mut Found,
 ) {
-    let mut value = values_before as u32;
+    let mut value = values_before;
     let mut member = 0u32;
     for decl in members {
         let at = start(decl.syntax());
@@ -321,7 +313,7 @@ fn member_bodies(
                 let init = declarator.init();
                 if ty.is_some() || init.is_some() {
                     let body = initializer(
-                        written(it.modifiers()),
+                        Written::of(it.modifiers()).visibility_or_folder(),
                         BodyKind::Initializer,
                         name,
                         ty,
@@ -342,7 +334,7 @@ fn member_bodies(
                     explicit(&name, explicit_impl),
                     Callable {
                         visibility: if is_value {
-                            written(it.modifiers())
+                            Written::of(it.modifiers()).visibility_or_folder()
                         } else {
                             Visibility::Private
                         },
@@ -382,7 +374,7 @@ fn member_bodies(
                     BodyKind::Constructor,
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
-                        visibility: written(it.modifiers()),
+                        visibility: Written::of(it.modifiers()).visibility_or_folder(),
                         params: params(it.param_list()),
                         check_types: true,
                         this_call: it
@@ -413,7 +405,7 @@ fn member_bodies(
                     BodyKind::Operator,
                     op,
                     Callable {
-                        visibility: written(it.modifiers()),
+                        visibility: Written::of(it.modifiers()).visibility_or_folder(),
                         params: params(it.param_list()),
                         check_types: true,
                         ret: it.ret(),
@@ -426,37 +418,26 @@ fn member_bodies(
             }
             ast::Member::IndexerDecl(it) => {
                 let name = explicit("this[]", it.explicit_impl());
+                let visibility = Written::of(it.modifiers()).visibility_or_folder();
                 let indexer_params: Vec<_> = it.params().collect();
-                if let Some(expr) = it.expr_body() {
-                    let body = callable(
-                        BodyKind::Get,
-                        name.clone(),
-                        Callable {
-                            visibility: written(it.modifiers()),
-                            params: indexer_params.clone(),
-                            check_types: true,
-                            ret: it.ty(),
-                            expr: Some(expr),
-                            ..Callable::default()
-                        },
-                    );
-                    add_member(found, body);
-                }
+                let expr = it.expr_body();
                 let accessors: Vec<_> = it
                     .accessor_list()
                     .into_iter()
                     .flat_map(|list| list.accessors())
                     .collect();
-                if it.expr_body().is_none() && accessors.is_empty() {
-                    // No accessor to check the types with.
+                // An expression body is the getter; an indexer with neither
+                // it nor accessors still has its types checked.
+                if expr.is_some() || accessors.is_empty() {
                     let body = callable(
                         BodyKind::Get,
                         name.clone(),
                         Callable {
-                            visibility: written(it.modifiers()),
+                            visibility,
                             params: indexer_params.clone(),
                             check_types: true,
                             ret: it.ty(),
+                            expr,
                             ..Callable::default()
                         },
                     );
@@ -472,7 +453,7 @@ fn member_bodies(
                         if is_set { BodyKind::Set } else { BodyKind::Get },
                         name.clone(),
                         Callable {
-                            visibility: written(it.modifiers()),
+                            visibility,
                             params: indexer_params.clone(),
                             check_types,
                             with_defaults: check_types,
@@ -502,16 +483,21 @@ fn member_bodies(
 fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Found) {
     let receiver = extension.param();
     let own: Vec<_> = extension.type_param_list().into_iter().collect();
-    let mut header = Lower::new(BodyKind::Extension, "extension".to_owned());
-    header.body.visibility = written(extension.modifiers());
-    for list in &own {
-        header.push_type_params(list);
-    }
-    header.params(None, receiver.as_slice(), true, true);
+    let header = callable(
+        BodyKind::Extension,
+        "extension".to_owned(),
+        Callable {
+            visibility: Written::of(extension.modifiers()).visibility_or_folder(),
+            params: receiver.into_iter().collect(),
+            type_params: own.clone(),
+            check_types: true,
+            ..Callable::default()
+        },
+    );
     found.push((
         start(extension.syntax()),
         BodyOwner::Extension(index, 0),
-        header.finish(),
+        header,
     ));
     let mut member = 1u32;
     for decl in members(extension.member_list()) {
@@ -524,7 +510,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                     BodyKind::Function,
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
-                        visibility: written(it.modifiers()),
+                        visibility: Written::of(it.modifiers()).visibility_or_folder(),
                         receiver,
                         params: params(it.param_list()),
                         type_params,
@@ -540,7 +526,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                 BodyKind::Getter,
                 name_of(it.name()).unwrap_or_default(),
                 Callable {
-                    visibility: written(it.modifiers()),
+                    visibility: Written::of(it.modifiers()).visibility_or_folder(),
                     receiver,
                     type_params,
                     check_types: true,

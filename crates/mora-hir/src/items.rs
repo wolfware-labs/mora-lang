@@ -3,6 +3,7 @@ use mora_span::{Db, SourceFile, TextRange, TextSize};
 use mora_syntax::ast::{self, AstNode};
 use mora_syntax::{Parse, SyntaxKind, SyntaxNode, SyntaxToken};
 
+use crate::arena::arena_index;
 use crate::name::{name_of, token_name};
 use crate::type_ref::{self, SignatureRef, SignatureSource};
 
@@ -57,13 +58,6 @@ struct Lowered {
 
 /// An index into [`ItemTree::items`].
 pub type ItemIdx = Idx<Item>;
-
-/// The position of `idx` in a table indexed like [`ItemTree::items`], such
-/// as [`signature_refs`].
-pub(crate) fn item_index(idx: ItemIdx) -> usize {
-    // A `u32` always fits in the `usize` of the hosts the compiler runs on.
-    u32::from(idx.into_raw()) as usize
-}
 
 /// The declarations of one file (§4.2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -206,7 +200,7 @@ pub struct ItemSourceMap {
 
 impl ItemSourceMap {
     pub fn item(&self, idx: ItemIdx) -> &ItemSource {
-        &self.items[item_index(idx)]
+        &self.items[arena_index(idx)]
     }
 
     pub fn using(&self, index: usize) -> &UsingSource {

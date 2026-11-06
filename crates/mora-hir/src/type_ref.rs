@@ -1,9 +1,8 @@
 //! Types and signatures as written, before their names are looked up.
 
 use mora_span::TextRange;
-use mora_syntax::SyntaxKind;
-use mora_syntax::SyntaxNode;
 use mora_syntax::ast::{self, AstNode};
+use mora_syntax::{PREDEFINED_TYPES, SyntaxKind, SyntaxNode};
 
 use crate::items::{Visibility, Written};
 use crate::name::{name_of, token_name};
@@ -92,7 +91,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
     let node = *node;
     let mut signature = SignatureRef::default();
     if let Some(it) = ast::FunctionDecl::cast(node) {
-        signature.type_params = type_params(it.type_param_list());
+        signature.type_params = type_param_names(it.type_param_list()).collect();
         let params = it
             .param_list()
             .into_iter()
@@ -105,7 +104,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             is_async: Written::of(it.modifiers()).is_async,
         };
     } else if let Some(it) = ast::StructDecl::cast(node) {
-        signature.type_params = type_params(it.type_param_list());
+        signature.type_params = type_param_names(it.type_param_list()).collect();
         let fields = it
             .member_list()
             .into_iter()
@@ -120,20 +119,23 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
         let ty = it.variable_declarator().and_then(|v| v.ty());
         signature.kind = SignatureRefKind::Value(lower.optional(ty.as_ref()));
     } else if let Some(it) = ast::ClassDecl::cast(node) {
-        signature.type_params = type_params(it.type_param_list());
+        signature.type_params = type_param_names(it.type_param_list()).collect();
     } else if let Some(it) = ast::UnionDecl::cast(node) {
-        signature.type_params = type_params(it.type_param_list());
+        signature.type_params = type_param_names(it.type_param_list()).collect();
     } else if let Some(it) = ast::InterfaceDecl::cast(node) {
-        signature.type_params = type_params(it.type_param_list());
+        signature.type_params = type_param_names(it.type_param_list()).collect();
     }
     (signature, lower.source)
 }
 
-fn type_params(list: Option<ast::TypeParamList>) -> Vec<String> {
+/// The names of the type parameters `list` declares, in order; a parameter
+/// whose name the parser recovered from has none.
+pub(crate) fn type_param_names<'a>(
+    list: Option<ast::TypeParamList<'a>>,
+) -> impl Iterator<Item = String> + 'a {
     list.into_iter()
         .flat_map(|list| list.type_params())
         .filter_map(|param| name_of(param.name()))
-        .collect()
 }
 
 /// Lowers types as written and keeps where their paths are.
@@ -266,53 +268,34 @@ impl LowerTypes {
     }
 }
 
-/// The type a keyword names. It is `Copy`, unlike [`TypeRef`], so a lookup
-/// builds its `TypeRef` instead of cloning one: lowering does this for
-/// every keyword type it meets.
-#[derive(Clone, Copy)]
-enum Predefined {
-    Primitive(Primitive),
-    String,
-}
-
-/// The keywords that name types (§5.2, §5.3) and the type each names.
-const PREDEFINED: &[(SyntaxKind, Predefined)] = &[
-    (SyntaxKind::BoolKw, Predefined::Primitive(Primitive::Bool)),
-    (SyntaxKind::ByteKw, Predefined::Primitive(Primitive::Byte)),
-    (SyntaxKind::SbyteKw, Predefined::Primitive(Primitive::SByte)),
-    (SyntaxKind::ShortKw, Predefined::Primitive(Primitive::Short)),
-    (
-        SyntaxKind::UshortKw,
-        Predefined::Primitive(Primitive::UShort),
-    ),
-    (SyntaxKind::IntKw, Predefined::Primitive(Primitive::Int)),
-    (SyntaxKind::UintKw, Predefined::Primitive(Primitive::UInt)),
-    (SyntaxKind::LongKw, Predefined::Primitive(Primitive::Long)),
-    (SyntaxKind::UlongKw, Predefined::Primitive(Primitive::ULong)),
-    (SyntaxKind::NintKw, Predefined::Primitive(Primitive::NInt)),
-    (SyntaxKind::NuintKw, Predefined::Primitive(Primitive::NUInt)),
-    (SyntaxKind::FloatKw, Predefined::Primitive(Primitive::Float)),
-    (
-        SyntaxKind::DoubleKw,
-        Predefined::Primitive(Primitive::Double),
-    ),
-    (SyntaxKind::CharKw, Predefined::Primitive(Primitive::Char)),
-    (SyntaxKind::StringKw, Predefined::String),
-];
-
 /// The type a predefined keyword names, [`TypeRef::Missing`] for any other
-/// kind.
+/// kind. The keywords are [`PREDEFINED_TYPES`]: the parser decides what is
+/// a type keyword, and this says which type each one names.
 pub(crate) fn predefined(kind: SyntaxKind) -> TypeRef {
-    match PREDEFINED.iter().find(|&&(keyword, _)| keyword == kind) {
-        Some(&(_, Predefined::Primitive(primitive))) => TypeRef::Primitive(primitive),
-        Some((_, Predefined::String)) => TypeRef::String,
-        None => TypeRef::Missing,
+    use SyntaxKind as K;
+    match kind {
+        K::BoolKw => TypeRef::Primitive(Primitive::Bool),
+        K::ByteKw => TypeRef::Primitive(Primitive::Byte),
+        K::SbyteKw => TypeRef::Primitive(Primitive::SByte),
+        K::ShortKw => TypeRef::Primitive(Primitive::Short),
+        K::UshortKw => TypeRef::Primitive(Primitive::UShort),
+        K::IntKw => TypeRef::Primitive(Primitive::Int),
+        K::UintKw => TypeRef::Primitive(Primitive::UInt),
+        K::LongKw => TypeRef::Primitive(Primitive::Long),
+        K::UlongKw => TypeRef::Primitive(Primitive::ULong),
+        K::NintKw => TypeRef::Primitive(Primitive::NInt),
+        K::NuintKw => TypeRef::Primitive(Primitive::NUInt),
+        K::FloatKw => TypeRef::Primitive(Primitive::Float),
+        K::DoubleKw => TypeRef::Primitive(Primitive::Double),
+        K::CharKw => TypeRef::Primitive(Primitive::Char),
+        K::StringKw => TypeRef::String,
+        _ => TypeRef::Missing,
     }
 }
 
 /// The keywords that name types, for suggestions.
 pub(crate) fn type_keywords() -> impl Iterator<Item = &'static str> {
-    PREDEFINED.iter().filter_map(|&(keyword, _)| keyword.text())
+    PREDEFINED_TYPES.iter().filter_map(|keyword| keyword.text())
 }
 
 #[cfg(test)]
@@ -328,6 +311,13 @@ mod tests {
         );
         assert_eq!(predefined(SyntaxKind::Ident), TypeRef::Missing);
         assert_eq!(predefined(SyntaxKind::ClassKw), TypeRef::Missing);
+    }
+
+    #[test]
+    fn every_type_keyword_names_a_type() {
+        for &keyword in PREDEFINED_TYPES {
+            assert_ne!(predefined(keyword), TypeRef::Missing, "{keyword:?}");
+        }
     }
 
     #[test]

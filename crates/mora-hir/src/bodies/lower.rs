@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use mora_span::TextRange;
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::lexer::ident_name;
 use mora_syntax::{SyntaxKind, SyntaxToken};
 
 use super::{
@@ -12,12 +11,17 @@ use super::{
     InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
     PatId, Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
 };
-use crate::type_ref::{LowerTypes, TypeRef, predefined};
+use crate::items::Written;
+use crate::name::{name_ref_of, token_name};
+use crate::type_ref::{LowerTypes, TypeRef, predefined, type_param_names};
 
 /// Lowers one body.
 pub(super) struct Lower {
+    /// The body so far.
     pub(super) body: Body,
+    /// Where the parts of the body are.
     map: BodySourceMap,
+    /// Lowers the types written in the body and keeps where their paths are.
     types: LowerTypes,
     /// The innermost scope.
     scope: ScopeId,
@@ -94,8 +98,7 @@ impl Lower {
         ty: Option<TypeId>,
     ) -> Option<LocalId> {
         let token = name?.ident_token()?;
-        let name = ident_name(token.text()).into_owned();
-        Some(self.declare_named(name, token.text_range(), kind, ty))
+        Some(self.declare_named(token_name(token), token.text_range(), kind, ty))
     }
 
     /// Declares a local whose name the code does not write, such as a
@@ -122,12 +125,8 @@ impl Lower {
 
     /// Puts the type parameters of `list` in scope for the types lowered
     /// after it.
-    pub(super) fn push_type_params(&mut self, list: &ast::TypeParamList) {
-        self.type_params.extend(
-            list.type_params()
-                .filter_map(|param| param.name()?.ident_token())
-                .map(|token| ident_name(token.text()).into_owned()),
-        );
+    pub(super) fn push_type_params(&mut self, list: Option<ast::TypeParamList>) {
+        self.type_params.extend(type_param_names(list));
     }
 
     /// Declares the parameters of the body: an extension member's
@@ -368,10 +367,7 @@ impl Lower {
         let Some(decl) = decl else {
             return self.alloc_stmt(Stmt::Missing);
         };
-        let kind = match decl.kw().map(|kw| kw.kind()) {
-            Some(SyntaxKind::VarKw) => LocalKind::Var,
-            _ => LocalKind::Let,
-        };
+        let kind = binding_kind(decl.kw());
         let declarator = decl.variable_declarator();
         let ty = self.opt_ty(declarator.as_ref().and_then(|it| it.ty()));
         let init = declarator.as_ref().and_then(|it| it.init()).map(|init| {
@@ -391,12 +387,7 @@ impl Lower {
     /// A local function: its name is in scope after it and in its own body.
     fn local_function(&mut self, function: &ast::FunctionDecl) -> LocalFunction {
         let outer = self.type_params.len();
-        let own = function.type_param_list();
-        let own = own.iter().flat_map(|list| list.type_params());
-        self.type_params.extend(
-            own.filter_map(|param| param.name()?.ident_token())
-                .map(|token| ident_name(token.text()).into_owned()),
-        );
+        self.push_type_params(function.type_param_list());
         let function = self.local_function_inner(function);
         self.type_params.truncate(outer);
         function
@@ -415,7 +406,7 @@ impl Lower {
                 ty: None,
             })
         });
-        let is_async = has_modifier(function.modifiers(), SyntaxKind::AsyncKw);
+        let is_async = Written::of(function.modifiers()).is_async;
         self.scoped(|this| {
             let params: Vec<_> = function
                 .param_list()
@@ -444,26 +435,36 @@ impl Lower {
         for child in list.syntax().children() {
             if let Some(arm) = ast::MatchArm::cast(child) {
                 let range = arm.syntax().text_range();
-                arms.push(self.scoped(|this| {
-                    let pat = this.opt_pattern(arm.pattern());
-                    let guard = this.guard(arm.when_clause());
-                    let body = this.expr(arm.expr(), range);
-                    MatchArm { pat, guard, body }
+                arms.push(self.arm(arm.pattern(), arm.when_clause(), |this| {
+                    this.expr(arm.expr(), range)
                 }));
             } else if let Some(arm) = ast::MatchBlockArm::cast(child) {
                 let range = arm.syntax().text_range();
-                arms.push(self.scoped(|this| {
-                    let pat = this.opt_pattern(arm.pattern());
-                    let guard = this.guard(arm.when_clause());
-                    let body = match arm.block() {
+                arms.push(
+                    self.arm(arm.pattern(), arm.when_clause(), |this| match arm.block() {
                         Some(block) => this.block_expr(&block),
                         None => this.alloc_expr(Expr::Missing, range),
-                    };
-                    MatchArm { pat, guard, body }
-                }));
+                    }),
+                );
             }
         }
         arms
+    }
+
+    /// One arm of a `match`: the bindings of its pattern are in scope in
+    /// its guard and in the body that `body` lowers, and not after it.
+    fn arm(
+        &mut self,
+        pattern: Option<ast::Pattern>,
+        guard: Option<ast::WhenClause>,
+        body: impl FnOnce(&mut Self) -> ExprId,
+    ) -> MatchArm {
+        self.scoped(|this| {
+            let pat = this.opt_pattern(pattern);
+            let guard = this.guard(guard);
+            let body = body(this);
+            MatchArm { pat, guard, body }
+        })
     }
 
     fn guard(&mut self, clause: Option<ast::WhenClause>) -> Option<ExprId> {
@@ -483,7 +484,10 @@ impl Lower {
     fn lower_expr(&mut self, expr: &ast::Expr) -> ExprId {
         let range = expr.syntax().text_range();
         let lowered = match expr {
-            ast::Expr::LiteralExpr(it) => Expr::Literal(literal(it.value())),
+            // The token is what makes the node a literal.
+            ast::Expr::LiteralExpr(it) => it
+                .value()
+                .map_or(Expr::Missing, |token| Expr::Literal(literal(token))),
             ast::Expr::InterpString(it) => {
                 let parts = it
                     .interp_parts()
@@ -517,7 +521,7 @@ impl Lower {
             ast::Expr::ParenExpr(it) => return self.expr(it.expr(), range),
             ast::Expr::TupleExpr(it) => Expr::Tuple(
                 it.tuple_elems()
-                    .map(|elem| (name_ref(elem.name_ref()), self.expr(elem.expr(), range)))
+                    .map(|elem| (name_ref_of(elem.name_ref()), self.expr(elem.expr(), range)))
                     .collect(),
             ),
             ast::Expr::CollectionExpr(it) => Expr::Collection(
@@ -541,7 +545,7 @@ impl Lower {
                 };
                 let member = Expr::Member {
                     receiver,
-                    name: ident_name(token.text()).into_owned(),
+                    name: token_name(token),
                     optional,
                     args,
                 };
@@ -572,19 +576,10 @@ impl Lower {
             },
             ast::Expr::PropagateExpr(it) => Expr::Propagate(self.expr(it.expr(), range)),
             ast::Expr::PrefixExpr(it) => {
-                let op = match it.op().map(|op| op.kind()) {
-                    Some(SyntaxKind::Minus) => UnaryOp::Neg,
-                    Some(SyntaxKind::Bang) => UnaryOp::Not,
-                    Some(SyntaxKind::Tilde) => UnaryOp::BitNot,
-                    Some(SyntaxKind::PlusPlus) => UnaryOp::PreIncrement,
-                    Some(SyntaxKind::MinusMinus) => UnaryOp::PreDecrement,
-                    Some(SyntaxKind::Caret) => UnaryOp::FromEnd,
-                    _ => UnaryOp::Plus,
-                };
-                Expr::Unary {
-                    op,
-                    expr: self.expr(it.expr(), range),
-                }
+                let expr = self.expr(it.expr(), range);
+                // The operator is what makes the node a prefix expression.
+                let op = it.op().and_then(|op| unary_op(op.kind()));
+                op.map_or(Expr::Missing, |op| Expr::Unary { op, expr })
             }
             ast::Expr::CastExpr(it) => Expr::Cast {
                 ty: self.ty(it.ty()),
@@ -646,8 +641,7 @@ impl Lower {
                     .flat_map(|list| list.captures())
                     .filter_map(|capture| self.capture(&capture))
                     .unzip();
-                let is_async = has_modifier(it.modifiers(), SyntaxKind::AsyncKw);
-                let is_static = has_modifier(it.modifiers(), SyntaxKind::StaticKw);
+                let written = Written::of(it.modifiers());
                 let ((params, defaults), body) = self.scoped(|this| {
                     let params: Vec<_> = it
                         .lambda_param()
@@ -670,8 +664,8 @@ impl Lower {
                     params,
                     defaults,
                     captures,
-                    is_async,
-                    is_static,
+                    is_async: written.is_async,
+                    is_static: written.is_static,
                     body,
                 };
                 let id = self.alloc_expr(Expr::Lambda(lambda), range);
@@ -718,7 +712,7 @@ impl Lower {
             let Some(token) = segment.name_ref().and_then(|name| name.ident_token()) else {
                 break;
             };
-            segments.push(ident_name(token.text()).into_owned());
+            segments.push(token_name(token));
             ranges.push(token.text_range());
             args.push(self.generic_args(segment.generic_arg_list()));
         }
@@ -767,7 +761,7 @@ impl Lower {
             });
             let range = arg.syntax().text_range();
             Arg {
-                name: name_ref(arg.name()),
+                name: name_ref_of(arg.name()),
                 mode,
                 expr: self.expr(arg.expr(), range),
             }
@@ -781,7 +775,7 @@ impl Lower {
             list.member_inits()
                 .map(|init| {
                     let range = init.syntax().text_range();
-                    let name = name_ref(init.name_ref()).unwrap_or_default();
+                    let name = name_ref_of(init.name_ref()).unwrap_or_default();
                     (name, self.expr(init.expr(), range))
                 })
                 .collect(),
@@ -799,7 +793,7 @@ impl Lower {
             CaptureTarget::This
         } else {
             let token = capture.name_ref()?.ident_token()?;
-            let name = ident_name(token.text()).into_owned();
+            let name = token_name(token);
             match self.lookup(&name) {
                 Some(local) => CaptureTarget::Local(local),
                 None => {
@@ -898,7 +892,7 @@ impl Lower {
         fields
             .map(|field| {
                 (
-                    name_ref(field.name_ref()),
+                    name_ref_of(field.name_ref()),
                     self.opt_pattern(field.pattern()),
                 )
             })
@@ -936,21 +930,7 @@ fn binding_kind(kw: Option<SyntaxToken>) -> LocalKind {
     }
 }
 
-fn has_modifier(modifiers: ast::AstChildren<ast::Modifier>, kind: SyntaxKind) -> bool {
-    modifiers
-        .filter_map(|modifier| modifier.kind())
-        .any(|token| token.kind() == kind)
-}
-
-fn name_ref(name: Option<ast::NameRef>) -> Option<String> {
-    let token = name?.ident_token()?;
-    Some(ident_name(token.text()).into_owned())
-}
-
-fn literal(token: Option<SyntaxToken>) -> Literal {
-    let Some(token) = token else {
-        return Literal::None;
-    };
+fn literal(token: SyntaxToken) -> Literal {
     let text = token.text().to_owned();
     match token.kind() {
         SyntaxKind::IntNumber => Literal::Int(text),
@@ -961,6 +941,21 @@ fn literal(token: Option<SyntaxToken>) -> Literal {
         SyntaxKind::NoneKw => Literal::None,
         _ => Literal::String(text),
     }
+}
+
+fn unary_op(kind: SyntaxKind) -> Option<UnaryOp> {
+    use SyntaxKind as K;
+    use UnaryOp as U;
+    Some(match kind {
+        K::Plus => U::Plus,
+        K::Minus => U::Neg,
+        K::Bang => U::Not,
+        K::Tilde => U::BitNot,
+        K::PlusPlus => U::PreIncrement,
+        K::MinusMinus => U::PreDecrement,
+        K::Caret => U::FromEnd,
+        _ => return None,
+    })
 }
 
 fn binary_op(kind: SyntaxKind) -> Option<BinaryOp> {

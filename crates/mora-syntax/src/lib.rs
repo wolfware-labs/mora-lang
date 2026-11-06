@@ -8,7 +8,7 @@ mod tree;
 
 pub use generated::SyntaxKind;
 pub use lexer::{Lexed, SyntaxError, SyntaxFix, Token, lex};
-pub use parser::{Parse, parse};
+pub use parser::{PREDEFINED_TYPES, Parse, parse};
 pub use tree::{
     Checkpoint, GreenNode, SyntaxElement, SyntaxElementChildren, SyntaxNode, SyntaxNodeChildren,
     SyntaxToken, TreeBuilder,

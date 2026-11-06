@@ -24,7 +24,8 @@ use std::sync::Arc;
 use la_arena::{Arena, Idx};
 use mora_span::{Db, SourceFile, TextRange};
 
-use crate::items::{ItemIdx, Visibility, parse};
+use crate::arena::arena_index;
+use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::type_ref::TypeRef;
 
 pub use dump::hir_dump;
@@ -57,14 +58,21 @@ pub enum BodyOwner {
 /// What kind of declaration a body comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BodyKind {
+    /// The top-level statements of a file.
     #[default]
     TopLevel,
+    /// A function: an item, an implementation of an interface member, or an
+    /// extension member.
     Function,
     /// The initializer of a field, a constant or an enum member.
     Initializer,
+    /// A getter.
     Getter,
+    /// A constructor.
     Constructor,
+    /// A destructor.
     Destructor,
+    /// An operator.
     Operator,
     /// An indexer's `get` accessor, or an indexer with an expression body.
     Get,
@@ -76,11 +84,17 @@ pub enum BodyKind {
     Case,
 }
 
+/// An index into [`Body::exprs`].
 pub type ExprId = Idx<Expr>;
+/// An index into [`Body::stmts`].
 pub type StmtId = Idx<Stmt>;
+/// An index into [`Body::pats`].
 pub type PatId = Idx<Pat>;
+/// An index into [`Body::locals`].
 pub type LocalId = Idx<Local>;
+/// An index into [`Body::scopes`].
 pub type ScopeId = Idx<ScopeData>;
+/// An index into [`Body::types`].
 pub type TypeId = Idx<TypeRef>;
 
 /// The statements and expressions of one owner.
@@ -184,6 +198,7 @@ pub struct Path {
     pub scope: ScopeId,
 }
 
+/// An expression of a body (§7).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     /// An expression the parser recovered from.
@@ -212,25 +227,18 @@ pub enum Expr {
         args: Vec<TypeId>,
     },
     /// `f(args)`.
-    Call {
-        callee: ExprId,
-        args: Vec<Arg>,
-    },
+    Call { callee: ExprId, args: Vec<Arg> },
     /// `a[i]` or `a?[i]`.
     Index {
         base: ExprId,
         args: Vec<Arg>,
         optional: bool,
     },
-    Unary {
-        op: UnaryOp,
-        expr: ExprId,
-    },
+    /// A prefix operator applied to `expr`.
+    Unary { op: UnaryOp, expr: ExprId },
     /// `x++` and `x--`.
-    Postfix {
-        increment: bool,
-        expr: ExprId,
-    },
+    Postfix { increment: bool, expr: ExprId },
+    /// `a op b`.
     Binary {
         op: BinaryOp,
         lhs: ExprId,
@@ -245,16 +253,15 @@ pub enum Expr {
     /// `e?` (§7.4).
     Propagate(ExprId),
     /// `(T)e`.
-    Cast {
-        ty: TypeId,
-        expr: ExprId,
-    },
+    Cast { ty: TypeId, expr: ExprId },
+    /// `await e`.
     Await(ExprId),
     /// `a..b` with either end left out.
     Range {
         start: Option<ExprId>,
         end: Option<ExprId>,
     },
+    /// `match (e) { ... }` as an expression.
     Match {
         scrutinee: ExprId,
         arms: Vec<MatchArm>,
@@ -265,21 +272,16 @@ pub enum Expr {
         inits: Vec<(String, ExprId)>,
     },
     /// `e is pattern`.
-    Is {
-        expr: ExprId,
-        pat: PatId,
-    },
+    Is { expr: ExprId, pat: PatId },
     /// `e as T`.
-    As {
-        expr: ExprId,
-        ty: TypeId,
-    },
+    As { expr: ExprId, ty: TypeId },
     /// `c ? a : b`.
     Conditional {
         condition: ExprId,
         then: ExprId,
         r#else: ExprId,
     },
+    /// A lambda.
     Lambda(Lambda),
     /// `new T(args) { F = v }`, each part optional.
     New {
@@ -295,7 +297,9 @@ pub enum Expr {
     },
     /// `default` or `default(T)`.
     Default(Option<TypeId>),
+    /// `nameof(e)`.
     Nameof(ExprId),
+    /// `sizeof(T)`.
     Sizeof(TypeId),
     /// A block, as a function or lambda body or a `match` arm.
     Block(Vec<StmtId>),
@@ -307,11 +311,17 @@ pub enum Expr {
 /// A literal as written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
+    /// An integer literal, as written.
     Int(String),
+    /// A real literal, as written.
     Real(String),
+    /// A character literal, quotes included.
     Char(String),
+    /// A string literal, quotes included.
     String(String),
+    /// `true` or `false`.
     Bool(bool),
+    /// `none`.
     None,
 }
 
@@ -339,6 +349,7 @@ pub struct Arg {
     pub expr: ExprId,
 }
 
+/// How an argument is passed, as written at the call site (§10.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ArgMode {
     Ref,
@@ -383,26 +394,38 @@ pub struct Capture {
     pub target: CaptureTarget,
 }
 
+/// What a [`Capture`] captures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureTarget {
+    /// `this`.
     This,
+    /// A local in scope.
     Local(LocalId),
     /// A name that is no local in scope (`MR0127`).
     Unresolved(String),
 }
 
+/// A prefix operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnaryOp {
+    /// `+x`.
     Plus,
+    /// `-x`.
     Neg,
+    /// `!x`.
     Not,
+    /// `~x`.
     BitNot,
+    /// `++x`.
     PreIncrement,
+    /// `--x`.
     PreDecrement,
     /// `^i`, an index from the end.
     FromEnd,
 }
 
+/// A binary operator; also the operator of a compound assignment or of a
+/// relational pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     Mul,
@@ -430,6 +453,7 @@ pub enum BinaryOp {
     Coalesce,
 }
 
+/// A statement of a body (§7.10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stmt {
     /// A statement the parser recovered from.
@@ -442,26 +466,22 @@ pub enum Stmt {
         init: Option<ExprId>,
     },
     /// `let (a, b) = e;`.
-    Deconstruct {
-        pat: PatId,
-        init: ExprId,
-    },
+    Deconstruct { pat: PatId, init: ExprId },
     /// A local function.
     Function(LocalFunction),
+    /// `{ ... }`.
     Block(Vec<StmtId>),
+    /// `if (c) s else t`.
     If {
         condition: ExprId,
         then: StmtId,
         r#else: Option<StmtId>,
     },
-    While {
-        condition: ExprId,
-        body: StmtId,
-    },
-    DoWhile {
-        body: StmtId,
-        condition: ExprId,
-    },
+    /// `while (c) s`.
+    While { condition: ExprId, body: StmtId },
+    /// `do s while (c);`.
+    DoWhile { body: StmtId, condition: ExprId },
+    /// `for (init; condition; update) s`.
     For {
         init: Vec<StmtId>,
         condition: Option<ExprId>,
@@ -475,9 +495,13 @@ pub enum Stmt {
         iterable: ExprId,
         body: StmtId,
     },
+    /// `break;`.
     Break,
+    /// `continue;`.
     Continue,
+    /// `return;` or `return e;`.
     Return(Option<ExprId>),
+    /// `match (e) { ... }` as a statement.
     Match {
         scrutinee: ExprId,
         arms: Vec<MatchArm>,
@@ -511,21 +535,18 @@ pub enum Pat {
     /// A constant, compared for equality.
     Constant(ExprId),
     /// `User u` or `User`: the type, and the binding when there is one.
-    Type {
-        ty: TypeId,
-        binding: Option<PatId>,
-    },
+    Type { ty: TypeId, binding: Option<PatId> },
     /// `let x`, `var x`, or the name of a designation.
     Bind(LocalId),
     /// `_`.
     Discard,
     /// `< 0`.
-    Relational {
-        op: BinaryOp,
-        value: ExprId,
-    },
+    Relational { op: BinaryOp, value: ExprId },
+    /// `not p`.
     Not(PatId),
+    /// `p and q`.
     And(PatId, PatId),
+    /// `p or q`.
     Or(PatId, PatId),
     /// `Circle(let r)`: the case's path, as an [`Expr::Path`], and its fields.
     Case {
@@ -565,12 +586,14 @@ pub struct BodySourceMap {
 }
 
 impl BodySourceMap {
+    /// Where `expr` is.
     pub fn expr(&self, expr: ExprId) -> TextRange {
-        self.exprs[u32::from(expr.into_raw()) as usize]
+        self.exprs[arena_index(expr)]
     }
 
+    /// Where the name of `local` is.
     pub fn local(&self, local: LocalId) -> TextRange {
-        self.locals[u32::from(local.into_raw()) as usize]
+        self.locals[arena_index(local)]
     }
 }
 
@@ -580,6 +603,7 @@ struct FileBodies {
     /// Every owner: the top-level statements first, then the others in the
     /// order of the text.
     owners: Vec<BodyOwner>,
+    /// The body and source map of each owner.
     bodies: HashMap<BodyOwner, Lowered>,
 }
 
@@ -611,7 +635,7 @@ fn lowered(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<&Lowered> 
 /// The owners of `file` that have a body: the top-level statements when
 /// there are any, then the others in the order of the text.
 pub fn body_owners(db: &dyn Db, file: SourceFile) -> Vec<BodyOwner> {
-    let has_statements = crate::item_tree(db, file).has_statements();
+    let has_statements = item_tree(db, file).has_statements();
     file_bodies(db, file)
         .owners
         .iter()
@@ -956,6 +980,23 @@ mod tests {
         assert_eq!(
             owners,
             ["top", "F", "A#0", "A.0", "G", "extension0.0", "H", "K"]
+        );
+    }
+
+    #[test]
+    fn union_values_count_every_named_case() {
+        let db = TestDb::new();
+        let text = "union U { C(x: int), D, E(y: int);\n    const K: int = 1;\n}\n";
+        let file = db.file("src/A.mr", text);
+        let union = ItemIdx::from_raw(la_arena::RawIdx::from_u32(0));
+        // `D` has no fields to check, so no body, but it is value 1.
+        assert_eq!(
+            body_owners(&db, file),
+            [
+                BodyOwner::Value(union, 0),
+                BodyOwner::Value(union, 2),
+                BodyOwner::Value(union, 3),
+            ]
         );
     }
 
