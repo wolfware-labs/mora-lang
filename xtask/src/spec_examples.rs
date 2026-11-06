@@ -19,7 +19,7 @@ use mora_testkit::Compiler;
 use mora_testkit::harness::guarded;
 use mora_testkit::run;
 
-use crate::error_codes::{PAGES, SPEC};
+use crate::paths::{PAGE_TEMPLATE, PAGES, SPEC};
 
 /// The list of examples that may fail, relative to the repository root.
 pub const PENDING: &str = "tests/spec-examples.pending";
@@ -328,7 +328,7 @@ pub fn load(root: &Path) -> io::Result<Repo> {
     pages.sort();
     for page in pages {
         // The README holds the page template, not a page.
-        let Some(code) = page.strip_suffix(".md").filter(|_| page != "README.md") else {
+        let Some(code) = page.strip_suffix(".md").filter(|_| page != PAGE_TEMPLATE) else {
             continue;
         };
         let text = fs::read_to_string(root.join(PAGES).join(&page))?;

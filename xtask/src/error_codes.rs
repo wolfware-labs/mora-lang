@@ -9,18 +9,14 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mora_diag::Code;
 use mora_diag::registry::{CodeRange, Entry};
 use mora_testkit::ui;
 
+use crate::paths::{self, PAGE_TEMPLATE, PAGES, SPEC};
 use crate::spec_examples::{self, Expects};
-
-/// Where the spec lives, relative to the repository root.
-pub const SPEC: &str = "docs/design/mora.md";
-/// Where the pages live, relative to the repository root.
-pub const PAGES: &str = "docs/errors";
 
 /// A code at a place in the repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +41,13 @@ pub struct Repo {
     pub bypasses: Vec<(String, &'static str)>,
 }
 
+impl Repo {
+    /// The pages, without the template.
+    pub fn code_pages(&self) -> impl Iterator<Item = &(String, String)> {
+        self.pages.iter().filter(|(file, _)| file != PAGE_TEMPLATE)
+    }
+}
+
 /// The crate that owns the registry, where constructing codes is allowed.
 const REGISTRY_CRATE: &str = "mora-diag";
 
@@ -64,6 +67,7 @@ const BYPASSES: &[(&str, &str)] = &[
     ),
 ];
 
+/// What the check found wrong, one problem per place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Problem {
     /// The range table of §17.6 and the registry's ranges differ.
@@ -119,7 +123,7 @@ impl fmt::Display for Problem {
             }
             Problem::StrayPage { file } => write!(
                 f,
-                "{PAGES}/{file}: not README.md or a page for a registered code"
+                "{PAGES}/{file}: not {PAGE_TEMPLATE} or a page for a registered code"
             ),
             Problem::BadPage { file, reason } => write!(f, "{PAGES}/{file}: {reason}"),
             Problem::Bypass { at, reason } => write!(f, "{at}: {reason}"),
@@ -136,7 +140,7 @@ pub fn check(repo: &Repo, ranges: &[CodeRange], codes: &[Entry]) -> Vec<Problem>
     let spec_ranges = range_rows(&repo.spec);
     let registry_ranges: Vec<String> = ranges
         .iter()
-        .map(|r| format!("{}-{} {}", r.first, r.last, r.kind))
+        .map(|r| range_text(r.first, r.last, r.kind))
         .collect();
     if spec_ranges != registry_ranges {
         problems.push(Problem::RangeTable {
@@ -186,8 +190,8 @@ pub fn check(repo: &Repo, ranges: &[CodeRange], codes: &[Entry]) -> Vec<Problem>
         .collect();
     let mut uses = repo.uses.clone();
     uses.extend(examples(SPEC, &repo.spec));
-    // The template in README.md holds placeholder examples, not uses.
-    for (file, text) in repo.pages.iter().filter(|(file, _)| file != "README.md") {
+    // The template holds placeholder examples, not uses.
+    for (file, text) in repo.code_pages() {
         uses.extend(examples(&format!("{PAGES}/{file}"), text));
     }
     for used in &uses {
@@ -204,10 +208,7 @@ pub fn check(repo: &Repo, ranges: &[CodeRange], codes: &[Entry]) -> Vec<Problem>
         }
     }
 
-    for (file, text) in &repo.pages {
-        if file == "README.md" {
-            continue;
-        }
+    for (file, text) in repo.code_pages() {
         match page_code(file) {
             Some(code) if registered(code) => {
                 if let Err(reason) = check_page(code, text) {
@@ -235,14 +236,20 @@ fn page_code(file: &str) -> Option<Code> {
     file.strip_suffix(".md")?.parse().ok()
 }
 
-/// The rows of the §17.6 range table as `MR0001-MR0099 Lexical`.
+/// The rows of the §17.6 range table as [`range_text`] shows them.
 fn range_rows(spec: &str) -> Vec<String> {
     spec.lines()
         .filter_map(range_row)
-        .map(|(first, last, kind)| format!("{first}-{last} {kind}"))
+        .map(|(first, last, kind)| range_text(first, last, kind))
         .collect()
 }
 
+/// A range as the range-table problem shows it: `MR0001-MR0099 Lexical`.
+fn range_text(first: Code, last: Code, kind: &str) -> String {
+    format!("{first}-{last} {kind}")
+}
+
+/// The first code, last code and kind of a row of the §17.6 range table.
 fn range_row(line: &str) -> Option<(Code, Code, &str)> {
     let rest = line.strip_prefix("| `")?;
     let (first, rest) = rest.split_once("`-`")?;
@@ -254,14 +261,14 @@ fn range_row(line: &str) -> Option<(Code, Code, &str)> {
 /// Every code the spec names outside the range table.
 fn spec_mentions(spec: &str) -> Vec<Use> {
     let mut mentions = Vec::new();
-    for (index, line) in spec.lines().enumerate() {
+    for (number, line) in (1usize..).zip(spec.lines()) {
         if range_row(line).is_some() {
             continue;
         }
         for code in codes_in(line) {
             mentions.push(Use {
                 code,
-                at: format!("{SPEC}:{}", index + 1),
+                at: format!("{SPEC}:{number}"),
             });
         }
     }
@@ -382,21 +389,22 @@ pub fn load(root: &Path) -> io::Result<Repo> {
     let mut uses = Vec::new();
     let mut bypasses = Vec::new();
     let crates = root.join("crates");
-    for file in files_with_extension(&crates, "rs")? {
+    for file in paths::files_with_extension(&crates, "rs")? {
         let Some(crate_name) = source_crate(&crates, &file) else {
             continue;
         };
+        let at = paths::relative(root, &file);
+        let text = fs::read_to_string(&file)?;
         if crate_name != REGISTRY_CRATE {
-            let text = fs::read_to_string(&file)?;
-            for (index, line) in text.lines().enumerate() {
+            for (number, line) in (1usize..).zip(text.lines()) {
                 for (pattern, reason) in BYPASSES {
                     if path_matches(line, pattern).next().is_some() {
-                        bypasses.push((format!("{}:{}", shown(root, &file), index + 1), *reason));
+                        bypasses.push((format!("{at}:{number}"), *reason));
                     }
                 }
             }
         }
-        scan(root, &file, &mut uses, |line| {
+        scan(&at, &text, &mut uses, |line| {
             path_matches(line, "codes::")
                 .filter_map(|rest| {
                     let boundary = rest
@@ -406,15 +414,16 @@ pub fn load(root: &Path) -> io::Result<Repo> {
                     rest.get(..6).filter(|_| boundary)?.parse().ok()
                 })
                 .collect()
-        })?;
+        });
     }
-    for file in files_with_extension(&root.join("tests/ui"), "mr")? {
-        scan(root, &file, &mut uses, |line| {
+    for file in paths::files_with_extension(&root.join("tests/ui"), "mr")? {
+        let text = fs::read_to_string(&file)?;
+        scan(&paths::relative(root, &file), &text, &mut uses, |line| {
             ui::line_annotations(line)
                 .into_iter()
                 .filter_map(|annotation| annotation.ok().map(|(_, code)| code))
                 .collect()
-        })?;
+        });
     }
     Ok(Repo {
         spec,
@@ -445,60 +454,23 @@ fn path_matches<'a>(line: &'a str, pattern: &'a str) -> impl Iterator<Item = &'a
         })
 }
 
-/// A path relative to the repository root, with `/` separators.
-fn shown(root: &Path, file: &Path) -> String {
-    file.strip_prefix(root)
-        .unwrap_or(file)
-        .display()
-        .to_string()
-        .replace('\\', "/")
-}
-
-fn scan(
-    root: &Path,
-    file: &Path,
-    uses: &mut Vec<Use>,
-    codes: impl Fn(&str) -> Vec<Code>,
-) -> io::Result<()> {
-    let text = fs::read_to_string(file)?;
-    let shown = shown(root, file);
-    for (index, line) in text.lines().enumerate() {
+/// Adds to `uses` the codes that `codes` finds on each line of `text`, the
+/// file at `at`.
+fn scan(at: &str, text: &str, uses: &mut Vec<Use>, codes: impl Fn(&str) -> Vec<Code>) {
+    for (number, line) in (1usize..).zip(text.lines()) {
         for code in codes(line) {
             uses.push(Use {
                 code,
-                at: format!("{shown}:{}", index + 1),
+                at: format!("{at}:{number}"),
             });
         }
     }
-    Ok(())
-}
-
-/// Every file under `dir` with the extension, skipping `target`; none when
-/// `dir` does not exist.
-fn files_with_extension(dir: &Path, extension: &str) -> io::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    if !dir.is_dir() {
-        return Ok(files);
-    }
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|name| name != "target") {
-                    pending.push(path);
-                }
-            } else if path.extension().is_some_and(|ext| ext == extension) {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use mora_diag::registry::{CODES, RANGES};
 
     use super::*;
@@ -758,8 +730,7 @@ A file that is not UTF-8 is error `MR0001`.
 
     #[test]
     fn repository_passes() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let repo = load(&root).unwrap();
+        let repo = load(&paths::root()).unwrap();
         let problems = check(&repo, RANGES, CODES);
         assert!(problems.is_empty(), "{problems:#?}");
     }

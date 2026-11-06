@@ -45,10 +45,9 @@ pub const LAYERS: &[(&str, u8)] = &[
 pub const RUNTIME_DEPS: &[(&str, &[&str])] =
     &[("mora-rt-core", &[]), ("mora-rt", &["mora-rt-core"])];
 
+/// Which rule an edge of a [`Violation`] breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Problem {
-    /// A workspace crate that [`LAYERS`] does not list.
-    UnknownCrate,
     /// An edge to a crate in the same or a higher layer.
     NotLower { from_layer: u8, to_layer: u8 },
     /// A runtime crate depending on a workspace crate outside [`RUNTIME_DEPS`].
@@ -57,51 +56,66 @@ pub enum Problem {
     OnXtask,
 }
 
+/// A crate or an edge that breaks the layering rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Violation {
-    pub from: String,
-    pub to: String,
-    pub kind: &'static str,
-    pub problem: Problem,
+pub enum Violation {
+    /// A workspace crate that [`LAYERS`] does not list.
+    UnknownCrate { name: String },
+    /// An edge between workspace crates, of a dependency kind (`normal`,
+    /// `dev` or `build`), that breaks a rule.
+    Edge {
+        from: String,
+        to: String,
+        kind: &'static str,
+        problem: Problem,
+    },
 }
 
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.problem {
-            Problem::UnknownCrate => write!(
-                f,
-                "{}: crate has no layer in xtask/src/layers.rs",
-                self.from
-            ),
-            Problem::NotLower {
-                from_layer,
-                to_layer,
-            } => write!(
-                f,
-                "{} (layer {from_layer}) -> {} (layer {to_layer}) ({}): a crate may only depend on lower layers",
-                self.from, self.to, self.kind
-            ),
-            Problem::RuntimeIsolation => write!(
-                f,
-                "{} -> {} ({}): runtime crates may not depend on this crate",
-                self.from, self.to, self.kind
-            ),
-            Problem::OnXtask => write!(
-                f,
-                "{} -> {} ({}): nothing may depend on xtask",
-                self.from, self.to, self.kind
-            ),
+        match self {
+            Violation::UnknownCrate { name } => {
+                write!(f, "{name}: crate has no layer in xtask/src/layers.rs")
+            }
+            Violation::Edge {
+                from,
+                to,
+                kind,
+                problem,
+            } => match problem {
+                Problem::NotLower {
+                    from_layer,
+                    to_layer,
+                } => write!(
+                    f,
+                    "{from} (layer {from_layer}) -> {to} (layer {to_layer}) ({kind}): a crate may only depend on lower layers"
+                ),
+                Problem::RuntimeIsolation => write!(
+                    f,
+                    "{from} -> {to} ({kind}): runtime crates may not depend on this crate"
+                ),
+                Problem::OnXtask => {
+                    write!(f, "{from} -> {to} ({kind}): nothing may depend on xtask")
+                }
+            },
         }
     }
 }
 
+/// The layer of a workspace crate, if [`LAYERS`] lists it.
 pub fn layer(name: &str) -> Option<u8> {
-    LAYERS
-        .iter()
-        .find(|(crate_name, _)| *crate_name == name)
-        .map(|(_, layer)| *layer)
+    lookup(LAYERS, name)
 }
 
+/// The value a table of crate names gives `name`.
+fn lookup<T: Copy>(table: &[(&str, T)], name: &str) -> Option<T> {
+    table
+        .iter()
+        .find(|(crate_name, _)| *crate_name == name)
+        .map(|(_, value)| *value)
+}
+
+/// How a violation names the kind of a dependency.
 fn kind_name(kind: DependencyKind) -> &'static str {
     match kind {
         DependencyKind::Development => "dev",
@@ -122,25 +136,19 @@ pub fn check(metadata: &Metadata) -> Vec<Violation> {
             continue;
         }
         let Some(from_layer) = layer(from) else {
-            violations.push(Violation {
-                from: from.to_owned(),
-                to: String::new(),
-                kind: "normal",
-                problem: Problem::UnknownCrate,
+            violations.push(Violation::UnknownCrate {
+                name: from.to_owned(),
             });
             continue;
         };
-        let runtime_deps = RUNTIME_DEPS
-            .iter()
-            .find(|(name, _)| *name == from)
-            .map(|(_, deps)| *deps);
+        let runtime_deps = lookup(RUNTIME_DEPS, from);
 
         for dep in &package.dependencies {
             let to = dep.name.as_str();
             if dep.path.is_none() || !is_member(to) {
                 continue;
             }
-            let violation = |problem| Violation {
+            let violation = |problem| Violation::Edge {
                 from: from.to_owned(),
                 to: to.to_owned(),
                 kind: kind_name(dep.kind),
@@ -240,6 +248,15 @@ mod tests {
         violations.into_iter().next().unwrap()
     }
 
+    fn edge(from: &str, to: &str, kind: &'static str, problem: Problem) -> Violation {
+        Violation::Edge {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            kind,
+            problem,
+        }
+    }
+
     #[test]
     fn real_workspace_passes() {
         assert_eq!(run(workspace_json()), vec![]);
@@ -260,11 +277,16 @@ mod tests {
         add_dep(&mut meta, "mora-syntax", "mora-hir", None);
         let v = single(meta);
         assert_eq!(
-            v.problem,
-            Problem::NotLower {
-                from_layer: 3,
-                to_layer: 4
-            }
+            v,
+            edge(
+                "mora-syntax",
+                "mora-hir",
+                "normal",
+                Problem::NotLower {
+                    from_layer: 3,
+                    to_layer: 4
+                }
+            )
         );
         assert_eq!(
             v.to_string(),
@@ -277,11 +299,16 @@ mod tests {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-mir", "mora-check", None);
         assert_eq!(
-            single(meta).problem,
-            Problem::NotLower {
-                from_layer: 5,
-                to_layer: 5
-            }
+            single(meta),
+            edge(
+                "mora-mir",
+                "mora-check",
+                "normal",
+                Problem::NotLower {
+                    from_layer: 5,
+                    to_layer: 5
+                }
+            )
         );
     }
 
@@ -298,8 +325,29 @@ mod tests {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-span", "mora-syntax", Some("build"));
         add_dep(&mut meta, "mora-diag", "mora-hir", Some("dev"));
-        let kinds: Vec<&str> = run(meta).iter().map(|v| v.kind).collect();
-        assert_eq!(kinds, ["build", "dev"]);
+        assert_eq!(
+            run(meta),
+            [
+                edge(
+                    "mora-span",
+                    "mora-syntax",
+                    "build",
+                    Problem::NotLower {
+                        from_layer: 1,
+                        to_layer: 3
+                    }
+                ),
+                edge(
+                    "mora-diag",
+                    "mora-hir",
+                    "dev",
+                    Problem::NotLower {
+                        from_layer: 2,
+                        to_layer: 4
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -322,7 +370,10 @@ mod tests {
     fn normal_edge_from_runtime_to_testkit_fails() {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-rt-core", TESTKIT, None);
-        assert_eq!(single(meta).problem, Problem::RuntimeIsolation);
+        assert_eq!(
+            single(meta),
+            edge("mora-rt-core", TESTKIT, "normal", Problem::RuntimeIsolation)
+        );
     }
 
     #[test]
@@ -330,11 +381,16 @@ mod tests {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-syntax", TESTKIT, None);
         assert_eq!(
-            single(meta).problem,
-            Problem::NotLower {
-                from_layer: 3,
-                to_layer: 9
-            }
+            single(meta),
+            edge(
+                "mora-syntax",
+                TESTKIT,
+                "normal",
+                Problem::NotLower {
+                    from_layer: 3,
+                    to_layer: 9
+                }
+            )
         );
     }
 
@@ -343,7 +399,15 @@ mod tests {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-rt-core", "mora-span", None);
         let v = single(meta);
-        assert_eq!(v.problem, Problem::RuntimeIsolation);
+        assert_eq!(
+            v,
+            edge(
+                "mora-rt-core",
+                "mora-span",
+                "normal",
+                Problem::RuntimeIsolation
+            )
+        );
         assert_eq!(
             v.to_string(),
             "mora-rt-core -> mora-span (normal): runtime crates may not depend on this crate"
@@ -354,14 +418,27 @@ mod tests {
     fn hosted_runtime_depends_only_on_runtime_core() {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-rt", "mora-target", None);
-        assert_eq!(single(meta).problem, Problem::RuntimeIsolation);
+        assert_eq!(
+            single(meta),
+            edge(
+                "mora-rt",
+                "mora-target",
+                "normal",
+                Problem::RuntimeIsolation
+            )
+        );
     }
 
     #[test]
     fn edge_on_xtask_fails() {
         let mut meta = workspace_json();
         add_dep(&mut meta, "mora-cli", XTASK, Some("dev"));
-        assert_eq!(single(meta).problem, Problem::OnXtask);
+        let v = single(meta);
+        assert_eq!(v, edge("mora-cli", XTASK, "dev", Problem::OnXtask));
+        assert_eq!(
+            v.to_string(),
+            "mora-cli -> xtask (dev): nothing may depend on xtask"
+        );
     }
 
     #[test]
@@ -393,7 +470,12 @@ mod tests {
             .unwrap()
             .push(json!(id));
         let v = single(meta);
-        assert_eq!(v.problem, Problem::UnknownCrate);
+        assert_eq!(
+            v,
+            Violation::UnknownCrate {
+                name: "mora-extra".to_owned()
+            }
+        );
         assert_eq!(
             v.to_string(),
             "mora-extra: crate has no layer in xtask/src/layers.rs"
