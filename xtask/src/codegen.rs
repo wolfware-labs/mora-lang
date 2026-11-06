@@ -14,6 +14,8 @@ use std::process::{Command, Stdio};
 
 use ungrammar::{Grammar, Rule};
 
+use crate::paths::SPEC;
+
 /// The grammar, relative to the repository root.
 pub const GRAMMAR: &str = "crates/mora-syntax/mora.ungram";
 /// The generated `SyntaxKind`, relative to the repository root.
@@ -21,106 +23,128 @@ pub const KINDS: &str = "crates/mora-syntax/src/generated/kinds.rs";
 /// The generated AST views, relative to the repository root.
 pub const NODES: &str = "crates/mora-syntax/src/generated/nodes.rs";
 
-/// Tokens without fixed text: name, spelling in the grammar, doc, trivia.
-const OTHER_TOKENS: &[(&str, &str, &str, bool)] = &[
-    (
-        "Whitespace",
-        "whitespace",
-        "Spaces, tabs, a lone carriage return, a form feed, or a byte order mark at the start of the file.",
-        true,
-    ),
-    ("Newline", "newline", "`\\n` or `\\r\\n`.", true),
-    (
-        "LineComment",
-        "line_comment",
-        "`//` to the end of the line.",
-        true,
-    ),
-    (
-        "DocComment",
-        "doc_comment",
-        "`///` to the end of the line.",
-        true,
-    ),
-    ("BlockComment", "block_comment", "`/* ... */`.", true),
-    (
-        "Ident",
-        "ident",
-        "A name, possibly with an `@` prefix.",
-        false,
-    ),
-    (
-        "IntNumber",
-        "int_number",
-        "An integer literal, such as `0x4D2` or `10ul`.",
-        false,
-    ),
-    (
-        "RealNumber",
-        "real_number",
-        "A real literal, such as `1.5e-3f`.",
-        false,
-    ),
-    (
-        "Char",
-        "char_literal",
-        "A character literal, such as `'a'`.",
-        false,
-    ),
-    (
-        "String",
-        "string_literal",
-        "A regular string literal, such as `\"a\\tb\"` or `\"abc\"u8`.",
-        false,
-    ),
-    (
-        "RawString",
-        "raw_string",
-        "A raw string literal, delimited by backticks.",
-        false,
-    ),
-    (
-        "InterpStart",
-        "interp_start",
-        "The start of an interpolated string, such as `$\"`, `` $` `` or `` $$` ``.",
-        false,
-    ),
-    (
-        "InterpText",
-        "interp_text",
-        "Literal text inside an interpolated string.",
-        false,
-    ),
-    (
-        "HoleOpen",
-        "hole_open",
-        "The `{` (or `{{` after `$$`) that opens a hole.",
-        false,
-    ),
-    (
-        "HoleFormat",
-        "hole_format",
-        "The `:format` part of a hole, from the colon to the closing brace.",
-        false,
-    ),
-    (
-        "HoleClose",
-        "hole_close",
-        "The `}` (or `}}` after `$$`) that closes a hole.",
-        false,
-    ),
-    (
-        "InterpEnd",
-        "interp_end",
-        "The quotes that end an interpolated string.",
-        false,
-    ),
-    (
-        "Unknown",
-        "unknown",
-        "A character that cannot start a token.",
-        false,
-    ),
+/// A token kind without fixed text.
+struct OtherToken {
+    /// The `SyntaxKind` variant.
+    name: &'static str,
+    /// How `mora.ungram` spells it, without quotes; also the accessor stem.
+    spelling: &'static str,
+    /// The variant's doc comment.
+    doc: &'static str,
+    /// Whether the parser skips it.
+    trivia: bool,
+}
+
+/// Tokens without fixed text.
+const OTHER_TOKENS: &[OtherToken] = &[
+    OtherToken {
+        name: "Whitespace",
+        spelling: "whitespace",
+        doc: "Spaces, tabs, a lone carriage return, a form feed, or a byte order mark at the start of the file.",
+        trivia: true,
+    },
+    OtherToken {
+        name: "Newline",
+        spelling: "newline",
+        doc: "`\\n` or `\\r\\n`.",
+        trivia: true,
+    },
+    OtherToken {
+        name: "LineComment",
+        spelling: "line_comment",
+        doc: "`//` to the end of the line.",
+        trivia: true,
+    },
+    OtherToken {
+        name: "DocComment",
+        spelling: "doc_comment",
+        doc: "`///` to the end of the line.",
+        trivia: true,
+    },
+    OtherToken {
+        name: "BlockComment",
+        spelling: "block_comment",
+        doc: "`/* ... */`.",
+        trivia: true,
+    },
+    OtherToken {
+        name: "Ident",
+        spelling: "ident",
+        doc: "A name, possibly with an `@` prefix.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "IntNumber",
+        spelling: "int_number",
+        doc: "An integer literal, such as `0x4D2` or `10ul`.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "RealNumber",
+        spelling: "real_number",
+        doc: "A real literal, such as `1.5e-3f`.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "Char",
+        spelling: "char_literal",
+        doc: "A character literal, such as `'a'`.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "String",
+        spelling: "string_literal",
+        doc: "A regular string literal, such as `\"a\\tb\"` or `\"abc\"u8`.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "RawString",
+        spelling: "raw_string",
+        doc: "A raw string literal, delimited by backticks.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "InterpStart",
+        spelling: "interp_start",
+        doc: "The start of an interpolated string, such as `$\"`, `` $` `` or `` $$` ``.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "InterpText",
+        spelling: "interp_text",
+        doc: "Literal text inside an interpolated string.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "HoleOpen",
+        spelling: "hole_open",
+        doc: "The `{` (or `{{` after `$$`) that opens a hole.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "HoleFormat",
+        spelling: "hole_format",
+        doc: "The `:format` part of a hole, from the colon to the closing brace.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "HoleClose",
+        spelling: "hole_close",
+        doc: "The `}` (or `}}` after `$$`) that closes a hole.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "InterpEnd",
+        spelling: "interp_end",
+        doc: "The quotes that end an interpolated string.",
+        trivia: false,
+    },
+    OtherToken {
+        name: "Unknown",
+        spelling: "unknown",
+        doc: "A character that cannot start a token.",
+        trivia: false,
+    },
 ];
 
 /// Punctuation as the lexer produces it (§3.6).
@@ -232,11 +256,11 @@ impl Tokens {
         let keywords = reserved_keywords(spec)?;
         let contextual = contextual_keywords(spec)?;
         let mut all = Vec::new();
-        for (name, spelling, _, _) in OTHER_TOKENS {
+        for token in OTHER_TOKENS {
             all.push(TokenKind {
-                name: (*name).into(),
-                spelling: (*spelling).into(),
-                stem: (*spelling).into(),
+                name: token.name.into(),
+                spelling: token.spelling.into(),
+                stem: token.spelling.into(),
             });
         }
         for (name, text) in PUNCTUATION.iter().chain(JOINED) {
@@ -272,10 +296,11 @@ fn reserved_keywords(spec: &str) -> Result<Vec<String>, String> {
         .find("Reserved keywords (never identifiers):")
         .ok_or("the spec has no reserved-keyword block in §3.4")?;
     let block = &spec[start..];
+    let fence = "```text";
     let open = block
-        .find("```text")
+        .find(fence)
         .ok_or("the reserved-keyword block has no ```text fence")?
-        + 7;
+        + fence.len();
     let close = block[open..]
         .find("```")
         .ok_or("the reserved-keyword block is not closed")?
@@ -542,19 +567,18 @@ fn lower_rule(
             });
             Ok(())
         }
-        Rule::Alt(alternatives) if label.is_some() => {
+        Rule::Alt(alternatives) if let Some(label) = label => {
             let mut kinds = Vec::new();
             for alt in alternatives {
                 let Rule::Token(token) = alt else {
                     return Err(format!(
-                        "label `{}` names a choice that is not only tokens; make the choice its own node",
-                        label.unwrap_or_default()
+                        "label `{label}` names a choice that is not only tokens; make the choice its own node"
                     ));
                 };
                 kinds.push(token_kind(grammar, tokens, *token)?.name.clone());
             }
             out.push(Field::Token {
-                name: method(label.unwrap_or_default()),
+                name: method(label),
                 kinds,
             });
             Ok(())
@@ -717,13 +741,15 @@ fn show(grammar: &Grammar, rule: &Rule, nested: bool) -> String {
     }
 }
 
+/// The generated `SyntaxKind`. Writing to a `String` cannot fail, so the
+/// results of `write!` are ignored.
 fn render_kinds(tokens: &Tokens, defs: &[AstDef]) -> String {
     let mut out = String::new();
     out.push_str("//! Generated by `cargo xtask codegen` from §3.4 of the spec and `mora.ungram`; do not edit.\n\n");
     out.push_str("/// The kind of a token or a node.\n");
     out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]\n#[repr(u16)]\npub enum SyntaxKind {\n");
     let mut all = Vec::new();
-    for (name, _, doc, _) in OTHER_TOKENS {
+    for OtherToken { name, doc, .. } in OTHER_TOKENS {
         let _ = writeln!(out, "    /// {doc}\n    {name},");
         all.push((*name).to_owned());
     }
@@ -827,8 +853,8 @@ fn render_kinds(tokens: &Tokens, defs: &[AstDef]) -> String {
     out.push_str("\n    pub fn is_contextual_keyword(self) -> bool {\n        Self::CONTEXTUAL_KEYWORDS.contains(&self)\n    }\n");
     let trivia: Vec<_> = OTHER_TOKENS
         .iter()
-        .filter(|(_, _, _, trivia)| *trivia)
-        .map(|(name, ..)| *name)
+        .filter(|token| token.trivia)
+        .map(|token| token.name)
         .collect();
     let _ = writeln!(
         out,
@@ -842,6 +868,17 @@ fn render_kinds(tokens: &Tokens, defs: &[AstDef]) -> String {
     out
 }
 
+/// `SyntaxKind::A, SyntaxKind::B`: kind names as a list of paths.
+fn kind_paths(kinds: &[String]) -> String {
+    kinds
+        .iter()
+        .map(|kind| format!("SyntaxKind::{kind}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The generated AST views. Writing to a `String` cannot fail, so the
+/// results of `write!` are ignored.
 fn render_nodes(defs: &[AstDef]) -> String {
     let mut out = String::new();
     out.push_str("//! Generated by `cargo xtask codegen` from `mora.ungram`; do not edit.\n\n");
@@ -858,12 +895,10 @@ fn render_nodes(defs: &[AstDef]) -> String {
                     for field in fields {
                         match field {
                             Field::Token { name, kinds } => {
-                                let kinds: Vec<_> =
-                                    kinds.iter().map(|k| format!("SyntaxKind::{k}")).collect();
                                 let _ = writeln!(
                                     out,
                                     "    pub fn {name}(&self) -> Option<SyntaxToken<'a>> {{\n        support::token(&self.syntax, &[{}])\n    }}",
-                                    kinds.join(", ")
+                                    kind_paths(kinds)
                                 );
                             }
                             Field::Node {
@@ -884,18 +919,11 @@ fn render_nodes(defs: &[AstDef]) -> String {
                                 before,
                                 ..
                             } if !after.is_empty() || !before.is_empty() => {
-                                let list = |kinds: &[String]| {
-                                    kinds
-                                        .iter()
-                                        .map(|k| format!("SyntaxKind::{k}"))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                };
                                 let _ = writeln!(
                                     out,
                                     "    pub fn {name}(&self) -> Option<{ty}<'a>> {{\n        support::child_between(&self.syntax, &[{}], &[{}])\n    }}",
-                                    list(after),
-                                    list(before)
+                                    kind_paths(after),
+                                    kind_paths(before)
                                 );
                             }
                             Field::Node {
@@ -996,7 +1024,7 @@ pub fn outputs(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     let read = |path: &str| {
         std::fs::read_to_string(root.join(path)).map_err(|err| format!("{path}: {err}"))
     };
-    let tokens = Tokens::from_spec(&read(crate::error_codes::SPEC)?)?;
+    let tokens = Tokens::from_spec(&read(SPEC)?)?;
     let grammar: Grammar = read(GRAMMAR)?
         .parse()
         .map_err(|err| format!("{GRAMMAR}: {err}"))?;
@@ -1023,11 +1051,11 @@ pub fn stale(outputs: &[(PathBuf, String)]) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    const SPEC: &str = "Reserved keywords (never identifiers):\n\n```text\nclass if\nstruct\n```\n\nContextual keywords (keywords only in the listed position): `get`, `set` (accessors); `when`.\n\nNext paragraph `ignored`.\n";
+    const SPEC_TEXT: &str = "Reserved keywords (never identifiers):\n\n```text\nclass if\nstruct\n```\n\nContextual keywords (keywords only in the listed position): `get`, `set` (accessors); `when`.\n\nNext paragraph `ignored`.\n";
 
     #[test]
     fn keywords_come_from_the_spec() {
-        let tokens = Tokens::from_spec(SPEC).unwrap();
+        let tokens = Tokens::from_spec(SPEC_TEXT).unwrap();
         assert_eq!(tokens.keywords, ["class", "if", "struct"]);
         assert_eq!(tokens.contextual, ["get", "set", "when"]);
         assert_eq!(tokens.by_spelling("struct").unwrap().name, "StructKw");
@@ -1037,7 +1065,7 @@ mod tests {
 
     #[test]
     fn the_real_spec_has_both_keyword_lists() {
-        let spec = std::fs::read_to_string(crate::root().join(crate::error_codes::SPEC)).unwrap();
+        let spec = std::fs::read_to_string(crate::paths::root().join(SPEC)).unwrap();
         let tokens = Tokens::from_spec(&spec).unwrap();
         assert_eq!(tokens.keywords.len(), 68);
         assert!(tokens.contextual.contains(&"adds".to_owned()));
@@ -1046,7 +1074,7 @@ mod tests {
 
     fn lower_text(text: &str) -> Result<Vec<AstDef>, String> {
         let grammar: Grammar = text.parse().map_err(|err| format!("{err}"))?;
-        lower(&grammar, &Tokens::from_spec(SPEC).unwrap())
+        lower(&grammar, &Tokens::from_spec(SPEC_TEXT).unwrap())
     }
 
     #[test]
@@ -1242,7 +1270,7 @@ mod tests {
 
     #[test]
     fn generated_files_are_up_to_date() {
-        let outputs = outputs(&crate::root()).unwrap();
+        let outputs = outputs(&crate::paths::root()).unwrap();
         assert_eq!(
             stale(&outputs),
             Vec::<PathBuf>::new(),

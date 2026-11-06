@@ -19,7 +19,7 @@ use mora_testkit::Compiler;
 use mora_testkit::harness::guarded;
 use mora_testkit::run;
 
-use crate::error_codes::{PAGES, SPEC};
+use crate::paths::{PAGES, SPEC};
 
 /// The list of examples that may fail, relative to the repository root.
 pub const PENDING: &str = "tests/spec-examples.pending";

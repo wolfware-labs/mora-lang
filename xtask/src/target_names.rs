@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn allowed_files_exist() {
-        let root = crate::root();
+        let root = crate::paths::root();
         for (path, reason) in ALLOW {
             assert!(root.join(path).is_file(), "{path}");
             assert!(!reason.is_empty(), "{path}");
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn the_workspace_has_no_hits() {
-        let hits = check(&crate::root()).unwrap();
+        let hits = check(&crate::paths::root()).unwrap();
         assert!(hits.is_empty(), "{hits:?}");
     }
 }
