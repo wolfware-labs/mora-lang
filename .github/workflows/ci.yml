@@ -325,9 +325,37 @@ jobs:
           path: ${{ runner.temp }}/mutants.out
           retention-days: 7
 
+  # The front-end benchmarks on CodSpeed's simulated CPU, which counts
+  # instructions and cache misses, so other work on the runner does not move
+  # the numbers. Pushes to main record the baseline; CodSpeed reports a pull
+  # request's changes against it as its own check.
+  benchmarks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: benchmarks
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --version 6.0.0 --locked
+      - name: Build the benchmarks
+        run: cargo codspeed build -p mora-hir --bench front_end --locked
+      - uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
+        with:
+          mode: simulation
+          run: cargo codspeed run -p mora-hir --bench front_end
+
   # One stable check name for rulesets: passes when every job above passed
-  # or was skipped by the change filter. `coverage-upload` is left out: its
-  # failure only means Codecov missed a report.
+  # or was skipped by the change filter. `coverage-upload` and `benchmarks`
+  # are left out: CodSpeed reports regressions as a check of its own, and a
+  # failed upload to either service says nothing about the change.
   ci-ok:
     needs: [changes, linux, platforms, thumbv7em, runtime, coverage, mutants]
     if: always()

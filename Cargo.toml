@@ -72,7 +72,9 @@ cranelift-frontend = "0.137.0"
 cranelift-jit = "0.137.0"
 cranelift-module = "0.137.0"
 cranelift-object = "0.137.0"
-criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+# Criterion's API; plain Criterion under `cargo bench`, measured by CodSpeed
+# under `cargo codspeed` (ci.yml, `benchmarks`).
+criterion = { package = "codspeed-criterion-compat", version = "6.0.0", default-features = false, features = ["cargo_bench_support"] }
 gimli = "0.34.0"
 httparse = "1.10.1"
 la-arena = "0.3.1"
