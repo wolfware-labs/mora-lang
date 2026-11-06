@@ -113,7 +113,6 @@ pub fn ui_suite(
     })
 }
 
-/// Runs the run cases in `root/dir`: every `.mr` file below it.
 /// Compares `actual` with the snapshot in `file`, or with `bless` writes it
 /// there; an empty `actual` means no snapshot file. Returns the problems.
 fn snapshot(file: &Path, actual: &str, bless: bool) -> Vec<String> {
@@ -142,6 +141,9 @@ fn snapshot(file: &Path, actual: &str, bless: bool) -> Vec<String> {
     }
 }
 
+/// Runs the run cases in `root/dir`: every `.mr` file below it, with the
+/// snapshot of its HIR in the `.hir` file beside it. With `--bless` the
+/// snapshots are written (and removed for an empty HIR) instead of compared.
 pub fn run_suite(
     compiler: &dyn Compiler,
     root: &Path,

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use std::{process, ptr, thread};
 
-use mora_rt_core::pal::{FOREVER, signatures};
+use mora_rt_core::pal::{FOREVER, NO_CLOCK, signatures};
 
 // The definitions must match the declarations the core links against.
 const _: signatures::Alloc = mora_pal_alloc;
@@ -17,6 +17,8 @@ const _: signatures::WriteDiagnostic = mora_pal_write_diagnostic;
 const _: signatures::Now = mora_pal_now;
 const _: signatures::Wait = mora_pal_wait;
 
+/// Allocates from the global allocator; see [`mora_rt_core::pal::alloc`].
+///
 /// # Safety
 ///
 /// `size` is not zero and `align` is a power of two.
@@ -29,6 +31,8 @@ pub unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
     }
 }
 
+/// Resizes through the global allocator; see [`mora_rt_core::pal::realloc`].
+///
 /// # Safety
 ///
 /// `ptr` came from `mora_pal_alloc` or `mora_pal_realloc` with `old_size` and
@@ -53,6 +57,8 @@ pub unsafe extern "C" fn mora_pal_realloc(
     }
 }
 
+/// Frees through the global allocator; see [`mora_rt_core::pal::free`].
+///
 /// # Safety
 ///
 /// `ptr` came from `mora_pal_alloc` or `mora_pal_realloc` with `size` and
@@ -65,11 +71,14 @@ pub unsafe extern "C" fn mora_pal_free(ptr: *mut u8, size: usize, align: usize) 
     }
 }
 
+/// Aborts the process; see [`mora_rt_core::pal::abort`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_abort() -> ! {
     process::abort()
 }
 
+/// Writes to stderr; see [`mora_rt_core::pal::write_diagnostic`].
+///
 /// # Safety
 ///
 /// `ptr` and `len` describe readable memory.
@@ -81,12 +90,14 @@ pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
     let _ = std::io::stderr().write_all(text);
 }
 
+/// Nanoseconds since the first call; see [`mora_rt_core::pal::now`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_now() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     let elapsed = START.get_or_init(Instant::now).elapsed();
-    // A process would need to run for 584 years to overflow.
-    u64::try_from(elapsed.as_nanos()).unwrap_or(FOREVER - 1)
+    // A process would need to run for 584 years to overflow; even then the
+    // clock must not read as `NO_CLOCK`.
+    u64::try_from(elapsed.as_nanos()).unwrap_or(NO_CLOCK - 1)
 }
 
 /// Sleeps until the timeout passes, or parks the thread when there is none;

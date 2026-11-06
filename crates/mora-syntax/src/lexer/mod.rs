@@ -849,20 +849,20 @@ impl<'a> Lexer<'a> {
                 self.replace_top(Frame::Hole(s, 0, self.holes.len() - 1));
             }
             Stop::End(n) => {
-                let holes = self.holes[s.first_hole..].to_vec();
                 if raw {
+                    // Taken out for the check, which reports through `self`,
+                    // and put back: no copy of the ranges.
+                    let holes = std::mem::take(&mut self.holes);
                     self.check_raw(
                         s.start + s.prefix - s.delim_len,
                         s.delim_len,
                         self.pos,
-                        &holes,
+                        &holes[s.first_hole..],
                     );
+                    self.holes = holes;
                 }
                 self.push(SyntaxKind::InterpEnd, n);
-                self.stack.pop();
-                if self.stack.is_empty() {
-                    self.holes.clear();
-                }
+                self.leave_interp();
             }
             Stop::Unterminated => {
                 self.error(
@@ -870,11 +870,17 @@ impl<'a> Lexer<'a> {
                     s.start..s.start + s.prefix,
                     "this interpolated string is not closed",
                 );
-                self.stack.pop();
-                if self.stack.is_empty() {
-                    self.holes.clear();
-                }
+                self.leave_interp();
             }
+        }
+    }
+
+    /// Leaves the innermost interpolated string; the hole ranges are kept
+    /// until the outermost one ends, since raw strings around it read them.
+    fn leave_interp(&mut self) {
+        self.stack.pop();
+        if self.stack.is_empty() {
+            self.holes.clear();
         }
     }
 

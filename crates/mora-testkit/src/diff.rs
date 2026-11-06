@@ -1,3 +1,5 @@
+//! Line diffs for the problems of snapshot and output comparisons.
+
 /// A line diff from `old` to `new`: unchanged lines start with two spaces,
 /// removed ones with `- ` and added ones with `+ `. A side that does not end
 /// with a newline gets a `\ ` line saying so, as `git diff` does, so a
