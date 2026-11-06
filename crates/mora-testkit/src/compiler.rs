@@ -1,3 +1,8 @@
+//! The [`Compiler`] the harnesses drive, and the stand-ins used until the
+//! driver can compile.
+
+use std::fmt::Write;
+
 use mora_diag::{Diagnostic, Files, Severity};
 use mora_span::{FileId, Project, SourceFile};
 
@@ -87,48 +92,37 @@ struct Analysis {
 impl FrontEnd {
     fn analyze(&self, path: &str, text: &str) -> Analysis {
         let case = case::split(path, text).unwrap_or_else(|problem| panic!("{problem}"));
+        let namespace = case
+            .namespace
+            .or_else(|| mora_hir::pascal_case(&case.name))
+            .unwrap_or_else(|| panic!("the project name `{}` gives no namespace", case.name));
         let db = Database::default();
         let mut files = Files::new();
         let mut sources = Vec::new();
         let mut inputs = Vec::new();
-        for file in &case.files {
+        let mut shown = Vec::new();
+        let mut diagnostics = Vec::new();
+        for file in case.files {
             let id = files.add(&file.shown, &file.text);
+            let input = SourceFile::new(&db, id, file.path, file.text);
+            let parse = mora_hir::parse(&db, input);
+            diagnostics.extend(parse.errors().iter().map(|error| error.to_diagnostic(id)));
             sources.push(id);
-            inputs.push(SourceFile::new(
-                &db,
-                id,
-                file.path.clone(),
-                file.text.clone(),
-            ));
+            inputs.push(input);
+            shown.push(file.shown);
         }
-        let namespace = case
-            .namespace
-            .clone()
-            .or_else(|| mora_hir::pascal_case(&case.name))
-            .unwrap_or_else(|| panic!("the project name `{}` gives no namespace", case.name));
         let project = Project::new(
             &db,
-            case.name.clone(),
+            case.name,
             inputs.clone(),
             namespace,
             case.kind,
-            case.entry.clone(),
+            case.entry,
             Vec::new(),
         );
-        let mut diagnostics: Vec<_> = inputs
-            .iter()
-            .flat_map(|&file| {
-                let id = file.id(&db);
-                mora_hir::parse(&db, file)
-                    .errors()
-                    .iter()
-                    .map(move |error| error.to_diagnostic(id))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
         diagnostics.extend(mora_hir::diagnostics(&db, project).iter().cloned());
         Analysis {
-            shown: case.files.iter().map(|file| file.shown.clone()).collect(),
+            shown,
             db,
             project,
             inputs,
@@ -170,7 +164,8 @@ impl Compiler for FrontEnd {
         let several = analysis.inputs.len() > 1;
         for (file, shown) in analysis.inputs.iter().zip(&analysis.shown) {
             if several {
-                out.push_str(&format!("//@ file {shown}\n"));
+                // Writing to a `String` cannot fail.
+                let _ = writeln!(out, "//@ file {shown}");
             }
             out.push_str(&mora_hir::hir_dump(&analysis.db, analysis.project, *file));
         }
@@ -190,13 +185,17 @@ pub struct Checked {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// A way of building a program that a run test goes through (§20.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
+    /// Compiled just in time, in memory, and run at once.
     Jit,
+    /// Built ahead of time into an executable that runs as its own process.
     Aot,
 }
 
 impl Backend {
+    /// The name problems are reported under.
     pub fn name(self) -> &'static str {
         match self {
             Self::Jit => "jit",

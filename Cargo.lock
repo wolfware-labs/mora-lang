@@ -654,6 +654,8 @@ name = "mora-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

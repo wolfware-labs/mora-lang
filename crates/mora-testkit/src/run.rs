@@ -21,20 +21,19 @@ pub struct Expected {
 pub fn expected(text: &str) -> Result<Expected, String> {
     let mut stdout = String::new();
     let mut exit = None;
-    for (index, line) in text.lines().enumerate() {
+    for (number, line) in (1usize..).zip(text.lines()) {
         let line = line.trim_start();
         if let Some(rest) = line.strip_prefix(EXPECT) {
             stdout.push_str(rest.strip_prefix(' ').unwrap_or(rest));
             stdout.push('\n');
         } else if let Some(rest) = line.strip_prefix(EXIT) {
-            let line = index + 1;
             if exit.is_some() {
-                return Err(format!("line {line}: a second `{EXIT}` line"));
+                return Err(format!("line {number}: a second `{EXIT}` line"));
             }
             let code = rest.trim();
             exit = Some(
                 code.parse()
-                    .map_err(|_| format!("line {line}: `{code}` is not an exit code"))?,
+                    .map_err(|_| format!("line {number}: `{code}` is not an exit code"))?,
             );
         }
     }

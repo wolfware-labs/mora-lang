@@ -4,6 +4,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 /// The exit codes of §17.1.
 mod exit {
@@ -29,6 +30,7 @@ struct Cli {
     command: Command,
 }
 
+/// When diagnostics and messages are colored.
 #[derive(Clone, Copy, ValueEnum)]
 enum Color {
     /// Color when the output is a terminal and NO_COLOR is unset or empty.
@@ -39,6 +41,7 @@ enum Color {
     Never,
 }
 
+/// How diagnostics and command results are printed.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum MessageFormat {
     /// Rendered for a terminal (§17.6).
@@ -47,12 +50,14 @@ enum MessageFormat {
     Json,
 }
 
+/// A project template for `mora new`.
 #[derive(Clone, Copy, ValueEnum)]
 enum Template {
     /// The program of §2.2 trimmed to one endpoint.
     Web,
 }
 
+/// An intermediate form `mora build` can also write.
 #[derive(Clone, Copy, ValueEnum)]
 enum Emit {
     /// An object file.
@@ -150,7 +155,7 @@ impl Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match &cli.command {
-        Command::Version => version(&cli),
+        Command::Version => version(cli.message_format),
         command => {
             let error = paint("error", "1;31", colored(cli.color));
             eprintln!("{error}: `mora {}` is not implemented yet", command.name());
@@ -181,18 +186,26 @@ fn paint(text: &str, code: &str, color: bool) -> String {
     }
 }
 
-fn version(cli: &Cli) -> ExitCode {
+/// What `mora version` prints as JSON, one object on one line.
+#[derive(Serialize)]
+struct VersionJson<'a> {
+    version: &'a str,
+    commit: &'a str,
+    runtime_targets: &'a [String],
+}
+
+fn version(format: MessageFormat) -> ExitCode {
     let version = env!("CARGO_PKG_VERSION");
     let commit = env!("MORA_COMMIT");
     let targets = runtime_targets();
-    if cli.message_format == MessageFormat::Json {
-        let targets: Vec<String> = targets.iter().map(|t| json_string(t)).collect();
-        println!(
-            "{{\"version\":{},\"commit\":{},\"runtime_targets\":[{}]}}",
-            json_string(version),
-            json_string(commit),
-            targets.join(",")
-        );
+    if format == MessageFormat::Json {
+        let json = VersionJson {
+            version,
+            commit,
+            runtime_targets: &targets,
+        };
+        // Serializing a plain struct of strings cannot fail.
+        println!("{}", serde_json::to_string(&json).unwrap_or_default());
     } else {
         let targets = if targets.is_empty() {
             "none".to_owned()
@@ -222,30 +235,21 @@ fn runtime_targets() -> Vec<String> {
     targets
 }
 
-/// A JSON string literal.
-fn json_string(text: &str) -> String {
-    let mut out = String::from("\"");
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn json_strings_escape_quotes_backslashes_and_controls() {
-        assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\u000a\"");
-        assert_eq!(json_string("\u{1f}"), "\"\\u001f\"");
-        assert_eq!(json_string(" ~"), "\" ~\"");
+    fn version_json_escapes_quotes_backslashes_and_controls() {
+        let json = VersionJson {
+            version: "1\"2",
+            commit: "a\\b",
+            runtime_targets: &["t\tx".to_owned(), "\u{1}".to_owned()],
+        };
+        assert_eq!(
+            serde_json::to_string(&json).unwrap(),
+            r#"{"version":"1\"2","commit":"a\\b","runtime_targets":["t\tx","\u0001"]}"#
+        );
     }
 
     #[test]

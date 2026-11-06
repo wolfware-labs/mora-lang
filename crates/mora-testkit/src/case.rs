@@ -54,8 +54,7 @@ pub fn split(path: &str, text: &str) -> Result<Case, String> {
         files: Vec::new(),
     };
     let mut current: Option<CaseFile> = None;
-    for (index, line) in text.split_inclusive('\n').enumerate() {
-        let number = index + 1;
+    for (number, line) in (1usize..).zip(text.split_inclusive('\n')) {
         let Some(directive) = line.trim().strip_prefix("//@") else {
             if let Some(file) = &mut current {
                 file.text.push_str(line);

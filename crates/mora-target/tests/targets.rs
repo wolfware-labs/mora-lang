@@ -1,6 +1,9 @@
 // Test code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+//! Built-in target descriptions, the rules every description follows, and
+//! `--target` resolution (§19.4).
+
 use std::path::{Path, PathBuf};
 
 use mora_target::{Capability, Error, Target, builtin_names};
@@ -120,6 +123,16 @@ fn rule_breaks_are_errors() {
             "flavor = \"lld-link\"",
             "`object-format` is Elf",
         ),
+        (
+            "flavor = \"ld.lld\"",
+            "flavor = \"wasm-ld\"",
+            "reads Wasm objects",
+        ),
+        (
+            "triple = \"x86_64-unknown-linux-musl\"",
+            "triple = \"\"",
+            "`triple` is empty",
+        ),
         ("os = \"linux\"", "os = \"Linux\"", "`os` must be lowercase"),
         ("name = \"x86_64-linux\"", "name = \"\"", "`name` must be"),
         ("backend = \"cranelift\"", "backend = \"llvm\"", "llvm"),
@@ -171,7 +184,7 @@ fn a_bad_file_names_its_path() {
     assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
     assert!(std::error::Error::source(&Target::resolve("x86_64-freebsd").unwrap_err()).is_none());
 
-    let dir = std::env::temp_dir().join(format!("mora-target-{}", std::process::id()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bad-target");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bad.toml");
     std::fs::write(

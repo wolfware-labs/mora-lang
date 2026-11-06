@@ -39,9 +39,9 @@ pub fn line_annotations(line: &str) -> Vec<Result<(Severity, Code), String>> {
             let Some(code) = words.next() else {
                 return Err("`//~` needs a code after the severity".to_owned());
             };
-            code.parse()
+            code.parse::<Code>()
                 .map(|code| (severity, code))
-                .map_err(|error| format!("{error}"))
+                .map_err(|error| error.to_string())
         })
         .collect()
 }
@@ -50,15 +50,15 @@ pub fn line_annotations(line: &str) -> Vec<Result<(Severity, Code), String>> {
 pub fn annotations(text: &str) -> Result<Vec<Annotation>, Vec<String>> {
     let mut found = Vec::new();
     let mut problems = Vec::new();
-    for (index, line) in text.lines().enumerate() {
+    for (number, line) in (1usize..).zip(text.lines()) {
         for annotation in line_annotations(line) {
             match annotation {
                 Ok((severity, code)) => found.push(Annotation {
-                    line: index + 1,
+                    line: number,
                     severity,
                     code,
                 }),
-                Err(problem) => problems.push(format!("line {}: {problem}", index + 1)),
+                Err(problem) => problems.push(format!("line {number}: {problem}")),
             }
         }
     }
