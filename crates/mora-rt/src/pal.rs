@@ -118,14 +118,14 @@ pub extern "C" fn mora_pal_wait(timeout_ns: u64) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use mora_rt_core::pal;
 
-    use mora_rt_core::pal::{self, NO_CLOCK};
+    use super::*;
 
     #[test]
     fn an_overflowing_clock_stops_short_of_no_clock() {
-        assert_eq!(super::nanos(Duration::from_nanos(7)), 7);
-        assert_eq!(super::nanos(Duration::MAX), NO_CLOCK - 1);
+        assert_eq!(nanos(Duration::from_nanos(7)), 7);
+        assert_eq!(nanos(Duration::MAX), NO_CLOCK - 1);
     }
 
     #[test]
