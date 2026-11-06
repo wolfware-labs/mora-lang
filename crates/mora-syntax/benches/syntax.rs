@@ -7,7 +7,8 @@
 //! `small` is one file of a few dozen lines, as an editor sees on most
 //! keystrokes; `large` is one file of about 10,000 lines.
 //!
-//! `cargo bench -p mora-syntax --bench syntax`.
+//! `cargo bench -p mora-syntax --bench syntax`, or `cargo xtask bench-compare`
+//! to compare a branch with `origin/main`.
 
 // Benchmark code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -18,8 +19,9 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use mora_syntax::{lex, parse};
 
-/// One block of declarations: a struct with methods, a class, a union, a
-/// match, loops, lambdas, string interpolation and raw strings.
+/// One block of declarations: a doc-commented struct with methods, a class,
+/// a union with a `match` over it, and a function whose body has loops, a
+/// lambda, interpolated and raw strings and a float literal.
 fn block(text: &mut String, n: usize) {
     writeln!(
         text,
@@ -59,6 +61,16 @@ fn block(text: &mut String, n: usize) {
          \x20   public Describe(prefix: string): string => $\"{{prefix}}: {{_count}} points (0x{n:X})\";\n\
          }}\n\
          \n\
+         public union Shape{n} {{\n\
+         \x20   Circle(Radius: int),\n\
+         \x20   Rect(Width: int, Height: int),\n\
+         }}\n\
+         \n\
+         public Area{n}(s: Shape{n}): int => match (s) {{\n\
+         \x20   Circle(let r) => 3 * r * r,\n\
+         \x20   Rect(let w, let h) => w * h,\n\
+         }};\n\
+         \n\
          public Helper{n}(a: int, b: string, flag: bool): int {{\n\
          \x20   var sum = 0;\n\
          \x20   for (var i = 0; i < a; i++) {{\n\
@@ -70,7 +82,9 @@ fn block(text: &mut String, n: usize) {
          \x20   }}\n\
          \x20   let label = $\"{{b}} {{sum}}\";\n\
          \x20   let scale = 1_000.5e-3;\n\
-         \x20   return sum + label.Length;\n\
+         \x20   let path = `C:\\data\\points{n}.json`;\n\
+         \x20   let twice = (x: int) => x * 2;\n\
+         \x20   return sum + label.Length + path.Length + twice(a);\n\
          }}\n"
     )
     .unwrap();
@@ -93,8 +107,9 @@ fn source(blocks: usize) -> String {
     text
 }
 
+/// The benchmark inputs: one block is 64 lines.
 fn inputs() -> [(&'static str, String); 2] {
-    [("small", source(1)), ("large", source(200))]
+    [("small", source(1)), ("large", source(160))]
 }
 
 fn lexing(c: &mut Criterion) {
