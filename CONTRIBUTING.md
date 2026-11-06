@@ -51,6 +51,13 @@ cargo xtask bench-compare
 
 It checks `origin/main` out under the target directory, runs every benchmark there and then on your working tree, and prints the change of each mean with its 95% confidence interval. A benchmark that is more than 10% slower, with the whole interval above zero, fails the command (§20.6). `--base <rev>` compares with another revision and `--threshold <percent>` changes the limit. Close other programs while it runs; the base build is kept in `target/bench-compare/base-target`, so later runs only rebuild what changed. A pull request that accepts a slowdown says why in its description. Run one suite directly with `cargo bench -p mora-hir --bench front_end`.
 
+The benchmarks use `codspeed-criterion-compat`, which behaves as criterion under `cargo bench`. The `codspeed` workflow also runs them on every pull request under [CodSpeed](https://codspeed.io)'s CPU simulation, which reports the change of each benchmark on the pull request. To run them that way locally, install `cargo-codspeed` and the `codspeed` CLI, then:
+
+```sh
+cargo codspeed build -m simulation --workspace
+codspeed run -m simulation -- cargo codspeed run
+```
+
 A pull request that changes only Markdown files skips the Rust build, except for `docs/design/mora.md`, `docs/errors/` and `docs/guide/`: they contain executable examples, so the example checks always run for them.
 
 ## Spec first
