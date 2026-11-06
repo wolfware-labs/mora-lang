@@ -325,13 +325,13 @@ jobs:
           path: ${{ runner.temp }}/mutants.out
           retention-days: 7
 
-  # The front-end benchmarks on CodSpeed's simulated CPU, which counts
-  # instructions and cache misses, so other work on the runner does not move
-  # the numbers. Pushes to main record the baseline; CodSpeed reports a pull
-  # request's changes against it as its own check. The suite is built and
-  # run once without measuring first, so a benchmark that no longer builds
-  # or panics fails the job; only the measured run, which uploads to
-  # CodSpeed, may fail without failing it.
+  # Every benchmark suite in the workspace (`crates/*/benches/`) on
+  # CodSpeed's simulated CPU, which counts instructions and cache misses, so
+  # other work on the runner does not move the numbers. Pushes to main record
+  # the baseline; CodSpeed reports a pull request's changes against it as its
+  # own check. The suites are built and run once without measuring first, so
+  # a benchmark that no longer builds or panics fails the job; only the
+  # measured run, which uploads to CodSpeed, may fail without failing it.
   benchmarks:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -349,15 +349,15 @@ jobs:
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed --version 6.0.0 --locked
       - name: Build the benchmarks
-        run: cargo codspeed build -p mora-hir --bench front_end --locked
+        run: cargo codspeed build --workspace --locked
       - name: Run each benchmark once
-        run: cargo codspeed run -p mora-hir --bench front_end
+        run: cargo codspeed run
       - name: Measure on CodSpeed
         continue-on-error: true
         uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: simulation
-          run: cargo codspeed run -p mora-hir --bench front_end
+          run: cargo codspeed run
 
   # One stable check name for rulesets: passes when every job above passed
   # or was skipped by the change filter. `coverage-upload` is left out: its

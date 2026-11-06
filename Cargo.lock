@@ -737,6 +737,7 @@ dependencies = [
 name = "mora-syntax"
 version = "0.0.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "hashbrown 0.17.1",
  "logos",
  "mora-diag",
