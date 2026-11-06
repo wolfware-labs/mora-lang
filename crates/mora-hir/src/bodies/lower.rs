@@ -578,10 +578,8 @@ impl Lower {
             ast::Expr::PrefixExpr(it) => {
                 let expr = self.expr(it.expr(), range);
                 // The operator is what makes the node a prefix expression.
-                match it.op().and_then(|op| unary_op(op.kind())) {
-                    Some(op) => Expr::Unary { op, expr },
-                    None => Expr::Missing,
-                }
+                let op = it.op().and_then(|op| unary_op(op.kind()));
+                op.map_or(Expr::Missing, |op| Expr::Unary { op, expr })
             }
             ast::Expr::CastExpr(it) => Expr::Cast {
                 ty: self.ty(it.ty()),

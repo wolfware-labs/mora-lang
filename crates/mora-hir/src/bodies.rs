@@ -988,15 +988,16 @@ mod tests {
         let db = TestDb::new();
         let text = "union U { C(x: int), D, E(y: int);\n    const K: int = 1;\n}\n";
         let file = db.file("src/A.mr", text);
-        let owners: Vec<_> = body_owners(&db, file)
-            .into_iter()
-            .filter_map(|owner| match owner {
-                BodyOwner::Value(_, index) => Some(index),
-                _ => None,
-            })
-            .collect();
+        let union = ItemIdx::from_raw(la_arena::RawIdx::from_u32(0));
         // `D` has no fields to check, so no body, but it is value 1.
-        assert_eq!(owners, [0, 2, 3]);
+        assert_eq!(
+            body_owners(&db, file),
+            [
+                BodyOwner::Value(union, 0),
+                BodyOwner::Value(union, 2),
+                BodyOwner::Value(union, 3),
+            ]
+        );
     }
 
     #[test]
