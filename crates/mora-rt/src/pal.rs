@@ -94,9 +94,12 @@ pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_now() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
-    let elapsed = START.get_or_init(Instant::now).elapsed();
-    // A process would need to run for 584 years to overflow; even then the
-    // clock must not read as `NO_CLOCK`.
+    nanos(START.get_or_init(Instant::now).elapsed())
+}
+
+/// `elapsed` in nanoseconds. A process would need to run for 584 years to
+/// overflow; even then the clock must not read as `NO_CLOCK`.
+fn nanos(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_nanos()).unwrap_or(NO_CLOCK - 1)
 }
 
@@ -115,7 +118,15 @@ pub extern "C" fn mora_pal_wait(timeout_ns: u64) {
 
 #[cfg(test)]
 mod tests {
-    use mora_rt_core::pal;
+    use std::time::Duration;
+
+    use mora_rt_core::pal::{self, NO_CLOCK};
+
+    #[test]
+    fn an_overflowing_clock_stops_short_of_no_clock() {
+        assert_eq!(super::nanos(Duration::from_nanos(7)), 7);
+        assert_eq!(super::nanos(Duration::MAX), NO_CLOCK - 1);
+    }
 
     #[test]
     fn memory_round_trips_through_the_core() {
