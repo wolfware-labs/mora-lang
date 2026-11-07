@@ -10,7 +10,7 @@ help: convert it explicitly with `(int)`
 12 |     i = (int)l; //~ ERROR MR0203
    |         +++++
 
-error[MR0204]: `+` is not defined for `string` and `int`
+error[MR0204]: `+=` is not defined for `string` and `int`
   --> tests/ui/types/assignments.mr:23:5
    |
 23 |     s += 1; //~ ERROR MR0204
@@ -21,7 +21,7 @@ error[MR0204]: `+` is not defined for `string` and `int`
    |
    = note: `+` joins two `string` values; interpolation formats other values as text, as in `$"{a}{b}"`
 
-error[MR0204]: `+` is not defined for `bool` and `bool`
+error[MR0204]: `+=` is not defined for `bool` and `bool`
   --> tests/ui/types/assignments.mr:26:5
    |
 26 |     flag += flag; //~ ERROR MR0204
@@ -61,3 +61,18 @@ help: convert it explicitly with `(int)`
    |
 33 |     let w = p with { X = (int)1.5 }; //~ ERROR MR0203
    |                          +++++
+
+error[MR0204]: `+=` is not defined for `ulong` and `long`
+  --> tests/ui/types/assignments.mr:39:5
+   |
+39 |     u += l; //~ ERROR MR0204
+   |     -^^^^-
+   |     |    |
+   |     |    this is `long`
+   |     this is `ulong`
+   |
+   = note: `ulong` and `long` have no common type that holds every value of both
+help: convert it explicitly with `(ulong)`
+   |
+39 |     u += (ulong)l; //~ ERROR MR0204
+   |          +++++++

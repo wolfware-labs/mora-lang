@@ -278,7 +278,13 @@ fn binary(
     (lhs_expr, lhs): (ExprId, &Ty),
     (rhs_expr, rhs): (ExprId, &Ty),
 ) -> Diagnostic {
-    let sym = op.text();
+    // A compound assignment is named as written, `+=`.
+    let compound = matches!(source.body.exprs[expr], Expr::Assign { .. });
+    let sym = if compound {
+        format!("{}=", op.text())
+    } else {
+        op.text().to_owned()
+    };
     let (l, r) = (source.name(lhs), source.name(rhs));
     if matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr) {
         return Diagnostic::error(
@@ -306,7 +312,10 @@ fn binary(
             // Defined only on integers.
             Some(_) => diagnostic.with_note(format!("`{sym}` is defined only on integer types")),
             None => {
-                let (side, to) = cast_side(a, b);
+                // The place of a compound assignment cannot be cast; its
+                // value can, to the place's type, with which every numeric
+                // operation is defined.
+                let (side, to) = if compound { (true, a) } else { cast_side(a, b) };
                 let operand = if side { rhs_expr } else { lhs_expr };
                 let native = |ty| matches!(ty, Primitive::NInt | Primitive::NUInt);
                 let note = if native(a) || native(b) {

@@ -635,6 +635,46 @@ mod tests {
     }
 
     #[test]
+    fn a_compound_assignment_is_named_and_fixed_through_its_value() {
+        let text = "var u = 1ul;\nlet l = 2L;\nu += l;\nvar f: float = 1.5;\nf -= l;\n\
+                    var s = \"\";\ns += 1;\nvar x = 1.5;\nx <<= 1;\n";
+        let reported = diagnostics_of(text);
+        let shown: Vec<_> = reported
+            .iter()
+            .map(|d| {
+                let fix = d.fixes.first().map(|fix| {
+                    let edit = &fix.edits[0];
+                    let at = usize::try_from(u32::from(edit.span.range.start())).unwrap();
+                    (
+                        fix.message.clone(),
+                        text[at..].lines().next().unwrap().to_owned(),
+                    )
+                });
+                (d.message.clone(), fix)
+            })
+            .collect();
+        let fixed = |message: &str, at: &str| Some((message.to_owned(), at.to_owned()));
+        assert_eq!(
+            shown,
+            [
+                (
+                    "`+=` is not defined for `ulong` and `long`".to_owned(),
+                    fixed("convert it explicitly with `(ulong)`", "l;")
+                ),
+                (
+                    "`-=` is not defined for `float` and `long`".to_owned(),
+                    fixed("convert it explicitly with `(float)`", "l;")
+                ),
+                (
+                    "`+=` is not defined for `string` and `int`".to_owned(),
+                    None
+                ),
+                ("`<<=` cannot shift a `double`".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

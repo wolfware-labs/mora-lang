@@ -32,3 +32,9 @@ Assign(p: Point, l: long) {
     let z: int = p.Y; //~ ERROR MR0203
     let w = p with { X = 1.5 }; //~ ERROR MR0203
 }
+
+// A compound assignment is named as written, and only its value is cast.
+Mixed(l: long) {
+    var u = 1ul;
+    u += l; //~ ERROR MR0204
+}
