@@ -8,9 +8,7 @@ use crate::arena::arena_index;
 use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
 use crate::defs::ItemId;
 use crate::inference::constant::{self, Value};
-use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same,
-};
+use crate::inference::{Callee, Context, NamedProblem, TypeError, converts, is_known, numeric};
 use crate::items::{ItemKind, signature_refs};
 use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
@@ -66,17 +64,12 @@ enum Argument {
     Typed(Option<Ty>),
 }
 
-/// How an argument converts to a parameter's type.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Conversion {
-    /// It has the type, or a literal takes it.
-    Identity,
-    /// It converts implicitly (§5.10).
-    Implicit,
-    /// Its type, or the parameter's, is unknown: it may convert.
-    Unknown,
-    /// It does not convert.
-    None,
+impl Argument {
+    /// Whether its type is not known yet, so that it fits any parameter
+    /// and ranks no overload above another (D-137).
+    fn is_unknown(&self) -> bool {
+        matches!(self, Argument::Typed(ty) if !ty.as_ref().is_some_and(is_known))
+    }
 }
 
 /// Why the arguments of a call do not go to a candidate's parameters.
@@ -173,24 +166,16 @@ impl Check<'_> {
     fn callees(&mut self, callee: ExprId) -> Callees {
         let body = self.body;
         match &body.exprs[callee] {
-            Expr::Path(path) => {
-                let Some(resolution) = self.resolution.paths.get(&callee) else {
-                    return Callees::Unknown;
-                };
-                let named = resolution.segments.max(1);
-                if named == path.segments.len() {
-                    return match &resolution.target {
+            // A path names what it calls; a member of a value is an
+            // `Expr::Member`.
+            Expr::Path(_) => {
+                self.resolution
+                    .paths
+                    .get(&callee)
+                    .map_or(Callees::Unknown, |resolution| match &resolution.target {
                         Target::Item(Resolved::Functions(items)) => self.functions(items),
-                        _ => self.not_callable(self.target(&resolution.target)),
-                    };
-                }
-                // The last segment is a method of the value the others name.
-                let mut receiver = self.target(&resolution.target);
-                let last = path.segments.len() - 1;
-                for name in &path.segments[named..last] {
-                    receiver = self.field(receiver.as_ref(), name);
-                }
-                self.methods(receiver.as_ref(), &path.segments[last])
+                        target => self.not_callable(self.target(target)),
+                    })
             }
             Expr::Member {
                 receiver,
@@ -243,16 +228,13 @@ impl Check<'_> {
     }
 
     /// The non-static methods named `name` of a value of type `receiver`,
-    /// when it is a struct that is not generic. A call through a value of
-    /// any other type, or of a static method, is not checked yet.
+    /// when it is a struct; a generic struct's type is not `Ty::Struct`. A
+    /// call through a value of any other type, or of a static method, is
+    /// not checked yet (D-137).
     fn methods(&self, receiver: Option<&Ty>, name: &str) -> Callees {
         let Some(Ty::Struct(ty)) = receiver else {
             return Callees::Unknown;
         };
-        let refs = signature_refs(self.db, ty.file);
-        if !refs[arena_index(ty.item)].type_params.is_empty() {
-            return Callees::Unknown;
-        }
         let tree = crate::items::item_tree(self.db, ty.file);
         let methods: Vec<_> = item_data(self.db, *ty)
             .members
@@ -411,34 +393,28 @@ impl Check<'_> {
         args: &[Arg],
         arguments: &[Argument],
     ) -> Option<Ty> {
-        // Each applicable candidate, with the parameter of each argument and
-        // how each argument converts to it.
-        let applicable: Vec<(usize, Vec<usize>, Vec<Conversion>)> = candidates
+        // Each applicable candidate, with the parameter of each argument.
+        let applicable: Vec<(usize, Vec<usize>)> = candidates
             .iter()
             .enumerate()
             .filter_map(|(index, candidate)| {
                 let params = bind(candidate, args).ok()?;
-                let conversions: Vec<_> = args
-                    .iter()
+                args.iter()
                     .zip(arguments)
                     .zip(&params)
-                    .map(|((arg, argument), &param)| {
+                    .all(|((arg, argument), &param)| {
                         let parameter = &candidate.params[param];
-                        if mode_fits(parameter.mode, arg.mode) {
-                            conversion(argument, &parameter.ty)
-                        } else {
-                            Conversion::None
-                        }
+                        mode_fits(parameter.mode, arg.mode) && fits(argument, &parameter.ty)
                     })
-                    .collect();
-                (!conversions.contains(&Conversion::None)).then_some((index, params, conversions))
+                    .then_some((index, params))
             })
             .collect();
+        // Overloads are declarations, never local functions.
         let listed = |check: &Self, indexes: &mut dyn Iterator<Item = usize>| {
             indexes
-                .map(|index| {
+                .filter_map(|index| {
                     let candidate = &candidates[index];
-                    (candidate.origin, check.signature_text(candidate))
+                    Some((candidate.origin.item()?, check.signature_text(candidate)))
                 })
                 .collect::<Vec<_>>()
         };
@@ -452,21 +428,21 @@ impl Check<'_> {
             });
             return None;
         }
-        let beats = |a: &(usize, Vec<usize>, Vec<Conversion>),
-                     b: &(usize, Vec<usize>, Vec<Conversion>)| {
-            better(&candidates[a.0], a, &candidates[b.0], b)
+        let beats = |(a, a_params): &(usize, Vec<usize>), (b, b_params): &(usize, Vec<usize>)| {
+            better(
+                (&candidates[*a], a_params),
+                (&candidates[*b], b_params),
+                arguments,
+            )
         };
         let best = applicable
             .iter()
             .find(|a| applicable.iter().all(|b| a.0 == b.0 || beats(a, b)));
-        let Some((index, params, _)) = best else {
+        let Some((index, params)) = best else {
             self.infer_literals(args, arguments);
             // An argument of unknown type may be what makes the call
             // ambiguous, so it is not reported.
-            let unknown = arguments
-                .iter()
-                .any(|argument| matches!(argument, Argument::Typed(ty) if !ty.as_ref().is_some_and(is_known)));
-            if !unknown {
+            if !arguments.iter().any(Argument::is_unknown) {
                 let tied = listed(self, &mut applicable.iter().map(|(index, ..)| *index));
                 self.errors.push(TypeError::Ambiguous {
                     expr,
@@ -565,30 +541,28 @@ fn mode_fits(needs: Option<ParamMode>, given: Option<ArgMode>) -> bool {
     }
 }
 
-/// How an argument converts to a parameter of type `ty`.
-fn conversion(argument: &Argument, ty: &Ty) -> Conversion {
-    if !is_known(ty) {
-        return Conversion::Unknown;
+/// Whether an argument fits a parameter of type `ty`: it converts to it
+/// (§5.10), it is a literal whose value the type holds (§3.5), or its type
+/// or the parameter's is not known yet.
+fn fits(argument: &Argument, ty: &Ty) -> bool {
+    if !is_known(ty) || argument.is_unknown() {
+        return true;
     }
     match argument {
-        Argument::Typed(None) => Conversion::Unknown,
-        Argument::Typed(Some(found)) if !is_known(found) => Conversion::Unknown,
-        Argument::Typed(Some(found)) if same(found, ty) => Conversion::Identity,
-        Argument::Typed(Some(found)) if converts(found, ty) => Conversion::Implicit,
-        Argument::Typed(Some(_)) => Conversion::None,
-        Argument::Literal(value) => literal_conversion(*value, ty),
+        Argument::Typed(found) => found.as_ref().is_some_and(|found| converts(found, ty)),
+        Argument::Literal(value) => literal_fits(*value, ty),
     }
 }
 
-/// How a literal, or an operation made only of literals, converts to a
-/// parameter of the known type `ty`: it takes a numeric type that holds its
-/// value, as for any target (§3.5), and otherwise converts as the type it
-/// would have without one.
-fn literal_conversion(value: Value, ty: &Ty) -> Conversion {
+/// Whether a literal, or an operation made only of literals, takes the
+/// known type `ty`: a numeric type that holds its value, as for any target
+/// (§3.5). The type it would have without a target converts to no other
+/// type that does not hold the value, so this is also where it converts.
+fn literal_fits(value: Value, ty: &Ty) -> bool {
     let Some(target) = numeric::as_numeric(ty) else {
-        return Conversion::None;
+        return false;
     };
-    let takes = match value {
+    match value {
         Value::Int(value) => numeric::holds(target, value),
         Value::Real(value) => match target {
             Primitive::Float => !too_large_for_float(value),
@@ -597,37 +571,31 @@ fn literal_conversion(value: Value, ty: &Ty) -> Conversion {
         },
         // Too large to compute: MR0010 says so once the call is chosen.
         Value::Overflow | Value::Infinity | Value::OverflowReal => true,
-    };
-    if takes {
-        return Conversion::Identity;
-    }
-    let natural = match value {
-        Value::Int(value) => numeric::default_integer(value),
-        _ => Some(Primitive::Double),
-    };
-    match natural {
-        Some(natural) if numeric::converts(natural, target) => Conversion::Implicit,
-        _ => Conversion::None,
     }
 }
 
 /// Whether the applicable candidate `a` is better than `b` (§6.9): no
 /// argument converts worse to it and one converts better, or, when neither
-/// is better that way, it needs no default and the other does.
+/// is better that way, it needs no default and the other does. With the
+/// conversions of §5.10, a conversion to `Pa` is better than one to `Pb`
+/// exactly when `Pa` converts to `Pb` and not back: the identity is that
+/// case too. An argument of unknown type ranks neither above the other.
 fn better(
-    a: &Candidate,
-    (_, a_params, a_conversions): &(usize, Vec<usize>, Vec<Conversion>),
-    b: &Candidate,
-    (_, b_params, b_conversions): &(usize, Vec<usize>, Vec<Conversion>),
+    (a, a_params): (&Candidate, &[usize]),
+    (b, b_params): (&Candidate, &[usize]),
+    arguments: &[Argument],
 ) -> bool {
     let mut some_better = false;
-    for index in 0..a_params.len() {
+    for (index, argument) in arguments.iter().enumerate() {
+        if argument.is_unknown() {
+            continue;
+        }
         let pa = &a.params[a_params[index]].ty;
         let pb = &b.params[b_params[index]].ty;
-        match compare(a_conversions[index], pa, b_conversions[index], pb) {
-            std::cmp::Ordering::Less => return false,
-            std::cmp::Ordering::Greater => some_better = true,
-            std::cmp::Ordering::Equal => {}
+        match (converts(pa, pb), converts(pb, pa)) {
+            (false, true) => return false,
+            (true, false) => some_better = true,
+            _ => {}
         }
     }
     if some_better {
@@ -635,25 +603,6 @@ fn better(
     }
     let defaults = |candidate: &Candidate, params: &[usize]| candidate.params.len() > params.len();
     !defaults(a, a_params) && defaults(b, b_params)
-}
-
-/// Whether an argument's conversion to `pa` is better (`Greater`), worse or
-/// neither than its conversion to `pb` (§6.9).
-fn compare(ca: Conversion, pa: &Ty, cb: Conversion, pb: &Ty) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    if ca == Conversion::Unknown || cb == Conversion::Unknown {
-        return Ordering::Equal;
-    }
-    match (ca == Conversion::Identity, cb == Conversion::Identity) {
-        (true, false) => return Ordering::Greater,
-        (false, true) => return Ordering::Less,
-        _ => {}
-    }
-    match (converts(pa, pb), converts(pb, pa)) {
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        _ => Ordering::Equal,
-    }
 }
 
 #[cfg(test)]
@@ -680,20 +629,25 @@ mod tests {
         let int = Ty::Primitive(Primitive::Int);
         let byte = Ty::Primitive(Primitive::Byte);
         let float = Ty::Primitive(Primitive::Float);
+        let double = Ty::Primitive(Primitive::Double);
         let long = Ty::Primitive(Primitive::Long);
-        assert!(literal_conversion(Value::Int(1), &byte) == Conversion::Identity);
-        assert!(literal_conversion(Value::Int(300), &byte) == Conversion::None);
-        assert!(literal_conversion(Value::Int(3_000_000_000), &long) == Conversion::Identity);
-        assert!(literal_conversion(Value::Real(1.5), &float) == Conversion::Identity);
-        assert!(literal_conversion(Value::Real(1.5), &int) == Conversion::None);
-        assert!(literal_conversion(Value::Real(1e39), &float) == Conversion::None);
-        assert!(literal_conversion(Value::Overflow, &int) == Conversion::Identity);
-        assert!(literal_conversion(Value::Int(1), &Ty::String) == Conversion::None);
+        assert!(literal_fits(Value::Int(1), &byte));
+        assert!(!literal_fits(Value::Int(300), &byte));
+        assert!(literal_fits(Value::Int(3_000_000_000), &long));
+        assert!(literal_fits(Value::Real(1.5), &float));
+        assert!(literal_fits(Value::Real(1.5), &double));
+        assert!(!literal_fits(Value::Real(1.5), &int));
+        assert!(!literal_fits(Value::Real(1e39), &float));
+        assert!(literal_fits(Value::Overflow, &int));
+        assert!(!literal_fits(Value::Int(1), &Ty::String));
         // An integer that is not exact in a `float` would be an `int`.
-        assert!(literal_conversion(Value::Int(16_777_217), &float) == Conversion::None);
-        assert!(
-            literal_conversion(Value::Int(16_777_217), &Ty::Primitive(Primitive::Double))
-                == Conversion::Identity
-        );
+        assert!(!literal_fits(Value::Int(16_777_217), &float));
+        assert!(literal_fits(Value::Int(16_777_217), &double));
+    }
+
+    #[test]
+    fn only_a_declaration_has_an_item() {
+        let local = LocalId::from_raw(la_arena::RawIdx::from_u32(0));
+        assert_eq!(Callee::Local(local).item(), None);
     }
 }

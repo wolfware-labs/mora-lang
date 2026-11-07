@@ -172,14 +172,14 @@ pub(crate) enum TypeError {
     NoOverload {
         expr: ExprId,
         name: String,
-        candidates: Vec<(Callee, String)>,
+        candidates: Vec<(ItemId, String)>,
     },
     /// Of the overloads named `name` applicable to the call `expr`, none is
     /// better than the others; each of them with its signature (`MR0206`).
     Ambiguous {
         expr: ExprId,
         name: String,
-        candidates: Vec<(Callee, String)>,
+        candidates: Vec<(ItemId, String)>,
     },
     /// The named argument `arg`, or the positional one after a named one,
     /// is wrong (`MR0207`).
@@ -209,6 +209,16 @@ pub enum Callee {
     Item(ItemId),
     /// A local function of the body.
     Local(LocalId),
+}
+
+impl Callee {
+    /// The declaration of a [`Callee::Item`].
+    pub fn item(self) -> Option<ItemId> {
+        match self {
+            Callee::Item(item) => Some(item),
+            Callee::Local(_) => None,
+        }
+    }
 }
 
 /// What expects the type of a [`TypeError::Mismatch`].
@@ -1530,5 +1540,68 @@ mod tests {
         // Calls of unknown things, and arguments inside them, still work.
         let unknown = "let f = (x: int) => x;\nf(1);\nlet s: string = Console.ReadLine(!1);\n";
         assert_eq!(reported(unknown), ["MR0204"]);
+    }
+
+    #[test]
+    fn a_failed_call_still_types_its_literal_arguments() {
+        let types = expr_types("F(a: int): int => a;\nF(1, 2);\n");
+        assert!(types.contains(&"2: int".to_owned()), "{types:?}");
+    }
+
+    #[test]
+    fn named_argument_messages_say_what_is_wrong() {
+        let text = "Greet(name: string, greeting: string = \"Hi\") {}\n\
+                    Greet(name: \"Ada\", name: \"Bo\");\nGreet(\"Ada\", name: \"Bo\");\n\
+                    Greet(greeting: \"Hi\", \"Ada\");\n";
+        assert_eq!(
+            messages(&diagnostics_of(text)),
+            [
+                "the argument `name` is named twice",
+                "the parameter `name` is given by position and by name",
+                "a positional argument after a named one",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_function_default_value_is_its_own() {
+        let text = "F() {\n    G(x: int, y: int = 1): int => x;\n    let z: string = G(1);\n}\n";
+        assert_eq!(reported(text), ["MR0203"]);
+    }
+
+    #[test]
+    fn signatures_in_messages_show_modes_and_return_types() {
+        let text = "Bump(ref x: int) {}\nTake(move x: int): int => x;\nRead(x: int) {}\n\
+                    var n = 1;\nBump(n);\nTake(in n);\nRead();\n";
+        assert_eq!(
+            messages(&diagnostics_of(text)),
+            [
+                "the argument for `ref x` in `Bump(ref x: int)` must be marked `ref`",
+                "the parameter `x` of `Take(move x: int): int` does not take an argument marked `in`",
+                "missing an argument for `x` in this call of `Read(x: int)`",
+            ]
+        );
+    }
+
+    #[test]
+    fn overloads_with_unknown_or_marked_arguments() {
+        let decls = "O(x: int): int => 1;\nO(x: string): string => \"\";\n\
+                     P(x: int): int => 1;\nP(x: long): string => \"\";\n\
+                     R(x: double): int => 1;\nR(x: string): string => \"\";\n\
+                     M(ref x: int): int => 1;\nM(x: string): string => \"\";\n\
+                     struct S {\n    X: int;\n    Get(): int => X;\n}\n\
+                     static Origin: S = new S { X = 1 };\n";
+        let text = format!(
+            "{decls}let g: int? = 1;\nlet a = O(g);\nlet b = P(Console.A());\nlet c = R(1.5);\n\
+             var n = 1;\nlet d = M(ref n);\nlet s = Origin;\nlet e = s?.Get();\n"
+        );
+        assert_eq!(
+            local_types(&text),
+            [
+                "g: _", "a: ?", "b: ?", "c: int", "n: int", "d: int", "s: S", "e: ?"
+            ]
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        assert_eq!(reported(&format!("{decls}var n = 1;\nM(n);\n")), ["MR0205"]);
     }
 }

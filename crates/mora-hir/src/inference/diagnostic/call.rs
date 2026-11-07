@@ -5,7 +5,8 @@ use mora_span::{Span, TextRange, TextSize};
 
 use super::Source;
 use crate::bodies::{ArgMode, ExprId};
-use crate::inference::{Callee, NamedProblem};
+use crate::defs::ItemId;
+use crate::inference::NamedProblem;
 use crate::report::item_name_span;
 use crate::ty::{ParamMode, Ty};
 
@@ -115,13 +116,10 @@ pub(super) fn mode(
 fn with_candidates(
     source: &Source<'_>,
     mut diagnostic: Diagnostic,
-    candidates: &[(Callee, String)],
+    candidates: &[(ItemId, String)],
 ) -> Diagnostic {
-    for (callee, signature) in candidates {
-        let span = match callee {
-            Callee::Item(item) => item_name_span(source.db, *item),
-            Callee::Local(local) => Span::new(source.file.id(source.db), source.map.local(*local)),
-        };
+    for (item, signature) in candidates {
+        let span = item_name_span(source.db, *item);
         diagnostic = diagnostic.with_secondary(Label::new(span, format!("`{signature}`")));
     }
     diagnostic
@@ -132,7 +130,7 @@ pub(super) fn no_overload(
     source: &Source<'_>,
     expr: ExprId,
     name: &str,
-    candidates: &[(Callee, String)],
+    candidates: &[(ItemId, String)],
 ) -> Diagnostic {
     let diagnostic = Diagnostic::error(
         codes::MR0205,
@@ -154,7 +152,7 @@ pub(super) fn ambiguous(
     source: &Source<'_>,
     expr: ExprId,
     name: &str,
-    candidates: &[(Callee, String)],
+    candidates: &[(ItemId, String)],
 ) -> Diagnostic {
     let diagnostic = Diagnostic::error(
         codes::MR0206,
