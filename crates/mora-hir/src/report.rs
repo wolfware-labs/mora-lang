@@ -6,7 +6,7 @@ use crate::bodies::{
     BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::inference::{Source, infer, type_error};
+use crate::inference::{Source, type_error, type_errors};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
@@ -252,7 +252,7 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
             body,
             map,
         };
-        for error in &infer(db, project, file, owner).errors {
+        for error in &type_errors(db, project, file, owner) {
             out.push(type_error(&source, error));
         }
     }

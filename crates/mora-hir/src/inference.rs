@@ -127,6 +127,19 @@ pub fn infer(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) 
     check::infer_body(db, project, file, owner)
 }
 
+/// The type errors of the body of `owner`, found by checking it again
+/// rather than through [`infer`]. The diagnostics of a file run once per
+/// edit of that file, and each body's memo of [`infer`] would otherwise be
+/// one more memo that every later revision has to verify.
+pub(crate) fn type_errors(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Vec<TypeError> {
+    check::infer_body(db, project, file, owner).errors
+}
+
 /// Whether everything about `ty` is known, so that a diagnostic can be
 /// about it: an unsupported type or an error inside it makes it unknown.
 pub(crate) fn is_known(ty: &Ty) -> bool {
@@ -437,16 +450,51 @@ mod tests {
         let text = |n: u32| format!("A(): int {{\n    return {n};\n}}\nB(): int => 2;\n");
         let project = app(&db, &[("src/Program.mr", &text(1))]);
         let file = file_named(&db, project, "src/Program.mr");
-        assert_eq!(diagnostics(&db, project), &[]);
+        let infer_all = |db: &TestDb| {
+            for owner in body_owners(db, file) {
+                infer(db, project, file, owner);
+            }
+        };
+        infer_all(&db);
         db.take_executed();
         file.set_text(&mut db).to(text(12345));
-        assert_eq!(diagnostics(&db, project), &[]);
+        infer_all(&db);
         let inferred = db
             .take_executed()
             .iter()
             .filter(|key| key.starts_with("infer("))
             .count();
         assert_eq!(inferred, 1);
+    }
+
+    #[test]
+    fn diagnostics_check_the_bodies_of_an_edited_file_only() {
+        let mut db = TestDb::new();
+        let text = |n: u32| format!("A(): int {{\n    return {n};\n}}\nB(): int => \"b\";\n");
+        let project = app(
+            &db,
+            &[
+                ("src/Program.mr", &text(1)),
+                ("src/Other.mr", "C(): int => \"c\";\n"),
+            ],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        assert_eq!(codes(diagnostics(&db, project)), ["MR0203", "MR0203"]);
+        db.take_executed();
+        file.set_text(&mut db).to(text(12345));
+        assert_eq!(codes(diagnostics(&db, project)), ["MR0203", "MR0203"]);
+        let executed = db.take_executed();
+        // No memo of `infer` is made for the diagnostics, and only the
+        // edited file's are built again.
+        assert!(
+            !executed.iter().any(|key| key.starts_with("infer(")),
+            "{executed:?}"
+        );
+        let rebuilt = executed
+            .iter()
+            .filter(|key| key.starts_with("body_diagnostics("))
+            .count();
+        assert_eq!(rebuilt, 1);
     }
 
     /// What `src/Program.mr` alone in an app reports.
