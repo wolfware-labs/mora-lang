@@ -761,6 +761,13 @@ mod tests {
     }
 
     #[test]
+    fn a_real_divided_by_an_integer_zero_is_folded() {
+        assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
+        assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);
+        assert_eq!(reported("let c: int = 1 / 0;\n"), Vec::<String>::new());
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

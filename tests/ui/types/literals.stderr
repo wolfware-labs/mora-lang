@@ -129,3 +129,11 @@ error[MR0010]: the value of `9223372036854775808 * 9223372036854775808 - 1 + 922
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a `float` would round it
    |
    = note: a `float` holds every integer from -16777216 to 16777216 exactly, and only some beyond
+
+error[MR0010]: the value of `1.5 / 0` is too large for a `double`
+  --> tests/ui/types/literals.mr:43:24
+   |
+43 | let infinite: double = 1.5 / 0; //~ ERROR MR0010
+   |                        ^^^^^^^ this would be infinity as a `double`
+   |
+   = note: write it as a `double`, or use a smaller value
