@@ -36,18 +36,12 @@ impl Source<'_> {
     }
 
     /// The edits that put `before` and `after` around `expr`, with
-    /// parentheses around it when `parens` says it would otherwise bind
-    /// differently.
-    fn wrap(
-        &self,
-        expr: ExprId,
-        parens: fn(&Expr) -> bool,
-        before: &str,
-        after: &str,
-    ) -> Vec<TextEdit> {
+    /// parentheses around it when it binds looser than `min`, so that they
+    /// would otherwise split it.
+    fn wrap(&self, expr: ExprId, min: Precedence, before: &str, after: &str) -> Vec<TextEdit> {
         let range = self.map.expr(expr);
         let file = self.file.id(self.db);
-        let (before, after) = if parens(&self.body.exprs[expr]) {
+        let (before, after) = if precedence(&self.body.exprs[expr]) < min {
             (format!("{before}("), format!("){after}"))
         } else {
             (before.to_owned(), after.to_owned())
@@ -64,7 +58,7 @@ impl Source<'_> {
         let keyword = ty.keyword();
         Fix::new(
             format!("convert it explicitly with `({keyword})`"),
-            self.wrap(expr, is_operation, &format!("({keyword})"), ""),
+            self.wrap(expr, Precedence::Unary, &format!("({keyword})"), ""),
         )
     }
 
@@ -72,45 +66,59 @@ impl Source<'_> {
     fn compare_with_zero(&self, expr: ExprId) -> Fix {
         Fix::new(
             "compare it with zero",
-            self.wrap(expr, binds_at_or_below_equality, "", " != 0"),
+            self.wrap(expr, Precedence::Relational, "", " != 0"),
         )
     }
 }
 
-/// Whether `expr` binds no tighter than `==`, so that ` != 0` after it
-/// would compare only its last operand (§7.1).
-fn binds_at_or_below_equality(expr: &Expr) -> bool {
-    match expr {
-        Expr::Binary { op, .. } => matches!(
-            op,
-            BinaryOp::Eq
-                | BinaryOp::Ne
-                | BinaryOp::BitAnd
-                | BinaryOp::BitXor
-                | BinaryOp::BitOr
-                | BinaryOp::And
-                | BinaryOp::Or
-                | BinaryOp::Coalesce
-        ),
-        Expr::Conditional { .. } | Expr::Assign { .. } | Expr::Lambda(_) => true,
-        _ => false,
-    }
+/// The levels of §7.1, loosest first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Precedence {
+    AssignOrLambda,
+    Conditional,
+    Coalesce,
+    Or,
+    And,
+    BitOr,
+    BitXor,
+    BitAnd,
+    Equality,
+    Relational,
+    Shift,
+    Additive,
+    Multiplicative,
+    With,
+    Range,
+    Unary,
+    Primary,
 }
 
-/// Whether `expr` is an operation below the unary operators, which a cast
-/// or a comparison put before or after it would split.
-fn is_operation(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::Binary { .. }
-            | Expr::Assign { .. }
-            | Expr::Conditional { .. }
-            | Expr::Is { .. }
-            | Expr::As { .. }
-            | Expr::Range { .. }
-            | Expr::Lambda(_)
-            | Expr::With { .. }
-    )
+/// The level of §7.1 that `expr` binds at.
+fn precedence(expr: &Expr) -> Precedence {
+    use BinaryOp as B;
+    use Precedence as P;
+    match expr {
+        Expr::Assign { .. } | Expr::Lambda(_) => P::AssignOrLambda,
+        Expr::Conditional { .. } => P::Conditional,
+        Expr::Binary { op, .. } => match op {
+            B::Coalesce => P::Coalesce,
+            B::Or => P::Or,
+            B::And => P::And,
+            B::BitOr => P::BitOr,
+            B::BitXor => P::BitXor,
+            B::BitAnd => P::BitAnd,
+            B::Eq | B::Ne => P::Equality,
+            B::Lt | B::Gt | B::Le | B::Ge => P::Relational,
+            B::Shl | B::Shr | B::UShr => P::Shift,
+            B::Add | B::Sub | B::WrappingAdd | B::WrappingSub => P::Additive,
+            B::Mul | B::Div | B::Rem | B::WrappingMul => P::Multiplicative,
+        },
+        Expr::Is { .. } | Expr::As { .. } => P::Relational,
+        Expr::With { .. } => P::With,
+        Expr::Range { .. } => P::Range,
+        Expr::Unary { .. } | Expr::Cast { .. } | Expr::Await(_) => P::Unary,
+        _ => P::Primary,
+    }
 }
 
 /// The diagnostic for a type error of a body.
@@ -220,7 +228,7 @@ fn mismatch(
             match found {
                 Some(_) => diagnostic.with_fix(Fix::new(
                     "format it with interpolation",
-                    source.wrap(expr, is_operation, "$\"{", "}\""),
+                    source.wrap(expr, Precedence::Unary, "$\"{", "}\""),
                 )),
                 None => diagnostic,
             }

@@ -715,48 +715,30 @@ mod tests {
                 }
             }
         }
-        let reported = diagnostics_of(&text);
-        let mut edits: Vec<_> = reported
-            .iter()
-            .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.iter()))
-            .collect();
-        assert!(edits.len() > 100, "{}", edits.len());
-        // Edits apply from the end of the text, so earlier offsets hold.
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
-        let mut fixed = text.clone();
-        for edit in &edits {
-            fixed.replace_range(
-                std::ops::Range::<usize>::from(edit.span.range),
-                &edit.replacement,
-            );
-        }
-        // Every line a fix changed now type-checks. A cast adds no line, so
-        // a line has one number in both texts.
-        let line_of =
-            |index: &mora_span::LineIndex, offset| index.line_col(offset).map(|at| at.line);
-        let before = mora_span::LineIndex::new(&text);
-        let fixed_lines: std::collections::BTreeSet<_> = edits
-            .iter()
-            .map(|edit| line_of(&before, edit.span.range.start()))
-            .collect();
-        let after = mora_span::LineIndex::new(&fixed);
-        let lines: Vec<_> = fixed.lines().collect();
-        let remaining: Vec<_> = diagnostics_of(&fixed)
-            .iter()
-            .map(|d| line_of(&after, d.primary.span.range.start()))
-            .filter(|line| fixed_lines.contains(line))
-            .map(|line| line.map_or("?", |line| lines[line as usize]))
-            .collect();
-        assert_eq!(remaining, Vec::<&str>::new());
+        let fixed = apply_fixes(&text);
+        assert!(fixed.edits > 100, "{}", fixed.edits);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
     }
 
-    /// `text` with the edits of every fix its diagnostics offer, and the
-    /// diagnostics left on the lines they changed, which must be none.
-    fn apply_fixes(text: &str) -> (String, Vec<String>) {
+    /// A text with the edits of every fix its diagnostics offer applied.
+    struct Fixed {
+        /// The text after the edits.
+        text: String,
+        /// How many edits were applied.
+        edits: usize,
+        /// The lines a fix changed that still report a diagnostic, which
+        /// must be none.
+        remaining: Vec<String>,
+    }
+
+    /// `text` with every fix its diagnostics offer applied. A fix adds no
+    /// line, so a line has one number in both texts.
+    fn apply_fixes(text: &str) -> Fixed {
         let mut edits: Vec<_> = diagnostics_of(text)
             .iter()
             .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.clone()))
             .collect();
+        // Edits apply from the end of the text, so earlier offsets hold.
         edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
         let mut fixed = text.to_owned();
         for edit in &edits {
@@ -765,29 +747,26 @@ mod tests {
                 &edit.replacement,
             );
         }
+        let line_of =
+            |index: &mora_span::LineIndex, offset| index.line_col(offset).map(|at| at.line);
         let before = mora_span::LineIndex::new(text);
         let fixed_lines: std::collections::BTreeSet<_> = edits
             .iter()
-            .filter_map(|edit| before.line_col(edit.span.range.start()).map(|at| at.line))
+            .map(|edit| line_of(&before, edit.span.range.start()))
             .collect();
         let after = mora_span::LineIndex::new(&fixed);
+        let lines: Vec<_> = fixed.lines().collect();
         let remaining = diagnostics_of(&fixed)
             .iter()
-            .filter_map(|d| {
-                after
-                    .line_col(d.primary.span.range.start())
-                    .map(|at| at.line)
-            })
+            .map(|d| line_of(&after, d.primary.span.range.start()))
             .filter(|line| fixed_lines.contains(line))
-            .map(|line| {
-                fixed
-                    .lines()
-                    .nth(line as usize)
-                    .unwrap_or_default()
-                    .to_owned()
-            })
+            .map(|line| line.map_or("?", |line| lines[line as usize]).to_owned())
             .collect();
-        (fixed, remaining)
+        Fixed {
+            edits: edits.len(),
+            text: fixed,
+            remaining,
+        }
     }
 
     #[test]
@@ -796,8 +775,9 @@ mod tests {
                     let a = n && c;\n    let d = c || x;\n    let e = (n + 1) && c;\n    \
                     let f = (n & 1) || c;\n    let g = (c ? n : 2) && c;\n    \
                     let h = c && (b ^ b);\n    let i = s && c;\n}\n";
-        let (fixed, remaining) = apply_fixes(text);
-        assert_eq!(remaining, Vec::<String>::new());
+        let fixed = apply_fixes(text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        let fixed = fixed.text;
         for expected in [
             "let a = n != 0 && c;",
             "let d = c || x != 0;",
