@@ -6,6 +6,7 @@ use crate::bodies::{
     BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
+use crate::inference::{Source, infer, type_error};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
@@ -19,7 +20,8 @@ use crate::type_ref::type_keywords;
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
 /// `MR0123`), the member names of its types (`MR0146`), the locals of its
-/// bodies (`MR0180`) and its entry point (`MR0124`, `MR0125`). Lexical and
+/// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
+/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and
 /// syntax errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
@@ -148,8 +150,9 @@ fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagn
     )
 }
 
-/// The errors in the bodies of a file: `MR0180`, and names and types that
-/// do not resolve. A file whose bodies did not change keeps its result.
+/// The errors in the bodies of a file: `MR0180`, names and types that do
+/// not resolve, and type errors. A file whose bodies did not change keeps
+/// its result.
 #[salsa::tracked(returns(ref))]
 fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
@@ -242,6 +245,15 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                     .with_note("a capture list names locals or parameters of the enclosing code, or `this`")
                 }
             });
+        }
+        let source = Source {
+            db,
+            file,
+            body,
+            map,
+        };
+        for error in &infer(db, project, file, owner).errors {
+            out.push(type_error(&source, error));
         }
     }
     // Each body reports its errors by kind; the file reads them in order.

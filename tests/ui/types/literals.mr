@@ -1,0 +1,28 @@
+// A literal takes the type its target asks for when it fits, and does not
+// fit is MR0010 (§3.5).
+let a: byte = 255;
+let b: byte = 256; //~ ERROR MR0010
+let c: sbyte = -128;
+let d: sbyte = -129; //~ ERROR MR0010
+let e: ushort = -1; //~ ERROR MR0010
+let f: float = 1.5;
+let g: float = 1e39; //~ ERROR MR0010
+let h: float = 16777216;
+let k: float = 16777217; //~ ERROR MR0010
+let m = 4294967296u; //~ ERROR MR0010
+let n = 9223372036854775808L; //~ ERROR MR0010
+let o = -18446744073709551615; //~ ERROR MR0010
+let p: long = 3_000_000_000;
+let q = 18446744073709551615;
+let r: double = 1;
+let s: (byte, float) = (1, 2.5);
+let t: (byte, byte) = (1, 300); //~ ERROR MR0010
+
+// An operation made only of unsuffixed literals takes its target type like
+// one literal, with its value computed exactly.
+let u: float = 1.5 * 2.0;
+let v: byte = 1 + 2;
+let w: sbyte = -(64 * 2);
+let x: byte = 200 + 100; //~ ERROR MR0010
+let y: long = 9223372036854775807 * 2; //~ ERROR MR0010
+let z: float = 1e38 * 10.0; //~ ERROR MR0010

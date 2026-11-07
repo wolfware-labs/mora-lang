@@ -1,0 +1,12 @@
+// `nint` and `nuint` convert implicitly to and from nothing else; they mix
+// with other integers only through a cast (§7.12).
+Native(n: nint, nu: nuint, i: int, b: byte) {
+    let a: nint = i; //~ ERROR MR0203
+    let c: long = n; //~ ERROR MR0203
+    let d: nuint = b; //~ ERROR MR0203
+    let e = n + i; //~ ERROR MR0204
+    let f = n + nu; //~ ERROR MR0204
+    let g: nint = n + n;
+    let h: nint = (nint)i + n;
+    let k: nint = n + 1;
+}

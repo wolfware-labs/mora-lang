@@ -1,0 +1,21 @@
+// Operators on operands they are not defined for (§7.12).
+Operators(n: int, x: double, flag: bool, c: char, s: string) {
+    let a = x & x; //~ ERROR MR0204
+    let b = x +% 1.0; //~ ERROR MR0204
+    let d = ~x; //~ ERROR MR0204
+    let e = x << 1; //~ ERROR MR0204
+    let f = !n; //~ ERROR MR0204
+    let g = s + n; //~ ERROR MR0204
+    let h = flag < flag; //~ ERROR MR0204
+    let k = flag + flag; //~ ERROR MR0204
+    let m = n == flag; //~ ERROR MR0204
+    let o = -s; //~ ERROR MR0204
+    var p = flag;
+    p++; //~ ERROR MR0204
+    let q = s * 2; //~ ERROR MR0204
+    let ok1: bool = flag & !flag;
+    let ok2: string = s + s;
+    let ok3: bool = c < 'z' && s != "a" && s < "b";
+    let ok4: bool = n == 1 || flag == true;
+    let ok5: int = n << 1L; //~ ERROR MR0203
+}

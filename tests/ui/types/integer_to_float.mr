@@ -1,0 +1,22 @@
+// An integer converts implicitly to `float` or `double` only where every
+// value is exact (§5.10), and `float` converts to `double`.
+Exact(b: byte, sb: sbyte, s: short, us: ushort, i: int, u: uint, f: float) {
+    let a1: float = b;
+    let a2: float = sb;
+    let a3: float = s;
+    let a4: float = us;
+    let a5: double = i;
+    let a6: double = u;
+    let a7: double = us;
+    let a8: double = f;
+}
+
+Inexact(i: int, u: uint, l: long, ul: ulong, d: double) {
+    let b1: float = i; //~ ERROR MR0203
+    let b2: float = u; //~ ERROR MR0203
+    let b3: double = l; //~ ERROR MR0203
+    let b4: double = ul; //~ ERROR MR0203
+    let b5: float = d; //~ ERROR MR0203
+    let b6: int = d; //~ ERROR MR0203
+    let ok: float = (float)d;
+}

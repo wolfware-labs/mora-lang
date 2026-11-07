@@ -5,9 +5,10 @@
 //! is followed by what it names in braces, as `Console.WriteLine{external}`
 //! or `X{field App.Point.X}`, and so is a member of a namespace or a type,
 //! as `Color.Red{enum member App.Color.Red}`. A member without braces is a
-//! member of a value, which type checking looks up. An operand that is
-//! itself an operation is in parentheses, so the dump shows how the
-//! expression was grouped.
+//! member of a value, which type checking looks up. A local declared
+//! without a type shows the type inference gives it, when that is known,
+//! as `let total#0: int = 0;`. An operand that is itself an operation is in
+//! parentheses, so the dump shows how the expression was grouped.
 
 use std::fmt::Write;
 
@@ -19,6 +20,7 @@ use super::{
     UnaryOp, body, body_owners, body_resolution,
 };
 use crate::arena::arena_index;
+use crate::inference::{Inference, infer, is_known, ty_name};
 use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::report::{full_name, item_full_name};
 use crate::resolve::{Resolved, Scope, item_data};
@@ -34,6 +36,7 @@ pub fn hir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
             db,
             body,
             resolution: body_resolution(db, project, file, owner),
+            inference: infer(db, project, file, owner),
             out: String::new(),
             indent: 0,
         };
@@ -55,6 +58,7 @@ struct Printer<'a> {
     db: &'a dyn Db,
     body: &'a Body,
     resolution: &'a BodyResolution,
+    inference: &'a Inference,
     out: String,
     indent: usize,
 }
@@ -193,6 +197,8 @@ impl Printer<'_> {
         if let Some(ty) = data.ty {
             self.out.push_str(": ");
             self.ty(ty);
+        } else if let Some(ty) = self.inference.local(local).filter(|ty| is_known(ty)) {
+            let _ = write!(self.out, ": {}", ty_name(self.db, ty));
         }
     }
 
@@ -814,7 +820,7 @@ impl Printer<'_> {
     }
 }
 
-fn unary_text(op: UnaryOp) -> &'static str {
+pub(crate) fn unary_text(op: UnaryOp) -> &'static str {
     match op {
         UnaryOp::Plus => "+",
         UnaryOp::Neg => "-",
@@ -826,7 +832,7 @@ fn unary_text(op: UnaryOp) -> &'static str {
     }
 }
 
-fn binary_text(op: BinaryOp) -> &'static str {
+pub(crate) fn binary_text(op: BinaryOp) -> &'static str {
     use BinaryOp as B;
     match op {
         B::Mul => "*",
@@ -858,7 +864,7 @@ fn binary_text(op: BinaryOp) -> &'static str {
 /// A type as written.
 fn type_text(ty: &TypeRef) -> String {
     match ty {
-        TypeRef::Primitive(primitive) => format!("{primitive:?}").to_lowercase(),
+        TypeRef::Primitive(primitive) => primitive.keyword().to_owned(),
         TypeRef::String => "string".to_owned(),
         TypeRef::Path(path) => {
             let mut text = path.segments.join(".");

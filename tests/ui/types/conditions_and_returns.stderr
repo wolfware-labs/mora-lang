@@ -1,0 +1,111 @@
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/conditions_and_returns.mr:3:9
+  |
+3 |     if (n) { //~ ERROR MR0203
+  |         ^ this is `int`
+  |
+  = note: a condition must be a `bool`
+help: compare it with zero
+  |
+3 |     if (n != 0) { //~ ERROR MR0203
+  |           ++++
+
+error[MR0203]: mismatched types: expected `bool`, found `string`
+ --> tests/ui/types/conditions_and_returns.mr:6:12
+  |
+6 |     while (s) {} //~ ERROR MR0203
+  |            ^ this is `string`
+  |
+  = note: a condition must be a `bool`
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/conditions_and_returns.mr:7:21
+  |
+7 |     for (var i = 0; i; i++) {} //~ ERROR MR0203
+  |                     ^ this is `int`
+  |
+  = note: a condition must be a `bool`
+help: compare it with zero
+  |
+7 |     for (var i = 0; i != 0; i++) {} //~ ERROR MR0203
+  |                       ++++
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/conditions_and_returns.mr:8:18
+  |
+8 |     do {} while (n & 1); //~ ERROR MR0203
+  |                  ^^^^^ this is `int`
+  |
+  = note: a condition must be a `bool`
+help: compare it with zero
+  |
+8 |     do {} while ((n & 1) != 0); //~ ERROR MR0203
+  |                  +     ++++++
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/conditions_and_returns.mr:9:16
+  |
+9 |     let pick = n ? 1 : 2; //~ ERROR MR0203
+  |                ^ this is `int`
+  |
+  = note: a condition must be a `bool`
+help: compare it with zero
+  |
+9 |     let pick = n != 0 ? 1 : 2; //~ ERROR MR0203
+  |                  ++++
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+  --> tests/ui/types/conditions_and_returns.mr:10:29
+   |
+10 |     let mixed = n > 0 ? 1 : "one"; //~ ERROR MR0203
+   |                         -   ^^^^^ this is `string`
+   |                         |
+   |                         this is `int`
+   |
+   = note: the branches of `c ? a : b` must have one type that the other converts to
+
+error[MR0203]: mismatched types: expected `bool`, found `string`
+  --> tests/ui/types/conditions_and_returns.mr:12:25
+   |
+12 |     let both = n > 0 && s; //~ ERROR MR0203
+   |                         ^ this is `string`
+   |
+   = note: a condition must be a `bool`
+
+error[MR0203]: mismatched types: expected `long`, found `double`
+  --> tests/ui/types/conditions_and_returns.mr:13:12
+   |
+13 |     return 1.5; //~ ERROR MR0203
+   |            ^^^ this is `double`
+   |
+   = note: `double` converts to `long` only through an explicit cast, because not every value of `double` is a value of `long`
+help: convert it explicitly with `(long)`
+   |
+13 |     return (long)1.5; //~ ERROR MR0203
+   |            ++++++
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+  --> tests/ui/types/conditions_and_returns.mr:16:25
+   |
+16 | Name(n: int): string => n; //~ ERROR MR0203
+   |                         ^ this is `int`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+16 | Name(n: int): string => $"{n}"; //~ ERROR MR0203
+   |                         +++ ++
+
+error[MR0010]: the literal `300` does not fit in `byte`
+  --> tests/ui/types/conditions_and_returns.mr:18:18
+   |
+18 | Count(): byte => 300; //~ ERROR MR0010
+   |                  ^^^ out of range
+   |
+   = note: `byte` holds values from 0 to 255
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+  --> tests/ui/types/conditions_and_returns.mr:20:19
+   |
+20 | Defaults(a: int = "zero", b: byte = 1) {} //~ ERROR MR0203
+   |                   ^^^^^^ this is `string`

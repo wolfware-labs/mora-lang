@@ -42,6 +42,28 @@ pub enum Primitive {
     Char,
 }
 
+impl Primitive {
+    /// The keyword that names the type.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Primitive::Bool => "bool",
+            Primitive::Byte => "byte",
+            Primitive::SByte => "sbyte",
+            Primitive::Short => "short",
+            Primitive::UShort => "ushort",
+            Primitive::Int => "int",
+            Primitive::UInt => "uint",
+            Primitive::Long => "long",
+            Primitive::ULong => "ulong",
+            Primitive::NInt => "nint",
+            Primitive::NUInt => "nuint",
+            Primitive::Float => "float",
+            Primitive::Double => "double",
+            Primitive::Char => "char",
+        }
+    }
+}
+
 /// An element of a tuple type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TupleElem {

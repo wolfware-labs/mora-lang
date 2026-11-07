@@ -1,0 +1,77 @@
+error[MR0203]: mismatched types: expected `byte`, found `int`
+  --> tests/ui/types/promotion.mr:19:25
+   |
+19 |     let notByte: byte = b + b; //~ ERROR MR0203
+   |                         ^^^^^ this is `int`
+   |
+   = note: `int` converts to `byte` only through an explicit cast, because not every value of `int` is a value of `byte`
+help: convert it explicitly with `(byte)`
+   |
+19 |     let notByte: byte = (byte)(b + b); //~ ERROR MR0203
+   |                         +++++++     +
+
+error[MR0203]: mismatched types: expected `int`, found `long`
+  --> tests/ui/types/promotion.mr:20:23
+   |
+20 |     let notInt: int = i + u; //~ ERROR MR0203
+   |                       ^^^^^ this is `long`
+   |
+   = note: `long` converts to `int` only through an explicit cast, because not every value of `long` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+20 |     let notInt: int = (int)(i + u); //~ ERROR MR0203
+   |                       ++++++     +
+
+error[MR0203]: mismatched types: expected `float`, found `double`
+  --> tests/ui/types/promotion.mr:21:27
+   |
+21 |     let notFloat: float = i * f; //~ ERROR MR0203
+   |                           ^^^^^ this is `double`
+   |
+   = note: `double` converts to `float` only through an explicit cast, because not every value of `double` is a value of `float`
+help: convert it explicitly with `(float)`
+   |
+21 |     let notFloat: float = (float)(i * f); //~ ERROR MR0203
+   |                           ++++++++     +
+
+error[MR0204]: `+` is not defined for `long` and `ulong`
+  --> tests/ui/types/promotion.mr:22:20
+   |
+22 |     let noCommon = l + ul; //~ ERROR MR0204
+   |                    -^^^--
+   |                    |   |
+   |                    |   this is `ulong`
+   |                    this is `long`
+   |
+   = note: `long` and `ulong` have no common type that holds every value of both
+help: convert it explicitly with `(long)`
+   |
+22 |     let noCommon = l + (long)ul; //~ ERROR MR0204
+   |                        ++++++
+
+error[MR0204]: `*` is not defined for `long` and `float`
+  --> tests/ui/types/promotion.mr:23:20
+   |
+23 |     let alsoNone = l * f; //~ ERROR MR0204
+   |                    -^^^-
+   |                    |   |
+   |                    |   this is `float`
+   |                    this is `long`
+   |
+   = note: `long` and `float` have no common type that holds every value of both
+help: convert it explicitly with `(double)`
+   |
+23 |     let alsoNone = (double)l * f; //~ ERROR MR0204
+   |                    ++++++++
+
+error[MR0204]: `-` is not defined for `ulong`
+  --> tests/ui/types/promotion.mr:24:20
+   |
+24 |     let negative = -ul; //~ ERROR MR0204
+   |                    ^^^ the operand is `ulong`
+   |
+   = note: the negation of a `ulong` may not fit in any integer type; cast it to a signed type first
+help: convert it explicitly with `(long)`
+   |
+24 |     let negative = -(long)ul; //~ ERROR MR0204
+   |                     ++++++

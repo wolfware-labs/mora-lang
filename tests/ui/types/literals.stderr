@@ -1,0 +1,95 @@
+error[MR0010]: the literal `256` does not fit in `byte`
+ --> tests/ui/types/literals.mr:4:15
+  |
+4 | let b: byte = 256; //~ ERROR MR0010
+  |               ^^^ out of range
+  |
+  = note: `byte` holds values from 0 to 255
+
+error[MR0010]: the literal `-129` does not fit in `sbyte`
+ --> tests/ui/types/literals.mr:6:16
+  |
+6 | let d: sbyte = -129; //~ ERROR MR0010
+  |                ^^^^ out of range
+  |
+  = note: `sbyte` holds values from -128 to 127
+
+error[MR0010]: the literal `-1` does not fit in `ushort`
+ --> tests/ui/types/literals.mr:7:17
+  |
+7 | let e: ushort = -1; //~ ERROR MR0010
+  |                 ^^ out of range
+  |
+  = note: `ushort` holds values from 0 to 65535
+
+error[MR0010]: the literal `1e39` is too large for a `float`
+ --> tests/ui/types/literals.mr:9:16
+  |
+9 | let g: float = 1e39; //~ ERROR MR0010
+  |                ^^^^ this would be infinity as a `float`
+  |
+  = note: write it as a `double`, or use a smaller value
+
+error[MR0010]: the literal `16777217` is not exact as a `float`
+  --> tests/ui/types/literals.mr:11:16
+   |
+11 | let k: float = 16777217; //~ ERROR MR0010
+   |                ^^^^^^^^ a `float` would round it
+   |
+   = note: a `float` holds every integer from -16777216 to 16777216 exactly, and only some beyond
+
+error[MR0010]: the literal `4294967296u` does not fit in `uint`
+  --> tests/ui/types/literals.mr:12:9
+   |
+12 | let m = 4294967296u; //~ ERROR MR0010
+   |         ^^^^^^^^^^^ out of range
+   |
+   = note: `uint` holds values from 0 to 4294967295
+
+error[MR0010]: the literal `9223372036854775808L` does not fit in `long`
+  --> tests/ui/types/literals.mr:13:9
+   |
+13 | let n = 9223372036854775808L; //~ ERROR MR0010
+   |         ^^^^^^^^^^^^^^^^^^^^ out of range
+   |
+   = note: `long` holds values from -9223372036854775808 to 9223372036854775807
+
+error[MR0010]: the literal `-18446744073709551615` does not fit in any integer type
+  --> tests/ui/types/literals.mr:14:9
+   |
+14 | let o = -18446744073709551615; //~ ERROR MR0010
+   |         ^^^^^^^^^^^^^^^^^^^^^ out of range
+   |
+   = note: an integer literal is at least -9223372036854775808 and at most 18446744073709551615
+
+error[MR0010]: the literal `300` does not fit in `byte`
+  --> tests/ui/types/literals.mr:19:27
+   |
+19 | let t: (byte, byte) = (1, 300); //~ ERROR MR0010
+   |                           ^^^ out of range
+   |
+   = note: `byte` holds values from 0 to 255
+
+error[MR0010]: the value of `200 + 100` does not fit in `byte`
+  --> tests/ui/types/literals.mr:26:15
+   |
+26 | let x: byte = 200 + 100; //~ ERROR MR0010
+   |               ^^^^^^^^^ out of range
+   |
+   = note: `byte` holds values from 0 to 255
+
+error[MR0010]: the value of `9223372036854775807 * 2` does not fit in `long`
+  --> tests/ui/types/literals.mr:27:15
+   |
+27 | let y: long = 9223372036854775807 * 2; //~ ERROR MR0010
+   |               ^^^^^^^^^^^^^^^^^^^^^^^ out of range
+   |
+   = note: `long` holds values from -9223372036854775808 to 9223372036854775807
+
+error[MR0010]: the value of `1e38 * 10.0` is too large for a `float`
+  --> tests/ui/types/literals.mr:28:16
+   |
+28 | let z: float = 1e38 * 10.0; //~ ERROR MR0010
+   |                ^^^^^^^^^^^ this would be infinity as a `float`
+   |
+   = note: write it as a `double`, or use a smaller value

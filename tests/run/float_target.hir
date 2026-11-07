@@ -1,0 +1,12 @@
+top-level {
+    let x#0: float = 1.5;
+    let y#1: float = x#0 + 1;
+    let z#2: double = 0.25;
+    let w#3: float = 3;
+    let tenth#4: float = 0.1;
+    Console{external}.WriteLine{external}(x#0);
+    Console{external}.WriteLine{external}(y#1);
+    Console{external}.WriteLine{external}(z#2);
+    Console{external}.WriteLine{external}(w#3 / 2);
+    Console{external}.WriteLine{external}(tenth#4);
+}

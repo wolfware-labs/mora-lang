@@ -1,0 +1,63 @@
+error[MR0203]: mismatched types: expected `int`, found `long`
+  --> tests/ui/types/assignments.mr:12:9
+   |
+12 |     i = l; //~ ERROR MR0203
+   |         ^ this is `long`
+   |
+   = note: `long` converts to `int` only through an explicit cast, because not every value of `long` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+12 |     i = (int)l; //~ ERROR MR0203
+   |         +++++
+
+error[MR0204]: `+` is not defined for `string` and `int`
+  --> tests/ui/types/assignments.mr:23:5
+   |
+23 |     s += 1; //~ ERROR MR0204
+   |     -^^^^-
+   |     |    |
+   |     |    this is `int`
+   |     this is `string`
+   |
+   = note: `+` joins two `string` values; interpolation formats other values as text, as in `$"{a}{b}"`
+
+error[MR0204]: `+` is not defined for `bool` and `bool`
+  --> tests/ui/types/assignments.mr:26:5
+   |
+26 |     flag += flag; //~ ERROR MR0204
+   |     ----^^^^----
+   |     |       |
+   |     |       this is `bool`
+   |     this is `bool`
+   |
+   = note: `bool` values are not ordered and are not numbers
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+  --> tests/ui/types/assignments.mr:30:11
+   |
+30 |     q.X = "x"; //~ ERROR MR0203
+   |           ^^^ this is `string`
+
+error[MR0203]: mismatched types: expected `int`, found `float`
+  --> tests/ui/types/assignments.mr:32:18
+   |
+32 |     let z: int = p.Y; //~ ERROR MR0203
+   |                  ^^^ this is `float`
+   |
+   = note: `float` converts to `int` only through an explicit cast, because not every value of `float` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+32 |     let z: int = (int)p.Y; //~ ERROR MR0203
+   |                  +++++
+
+error[MR0203]: mismatched types: expected `int`, found `double`
+  --> tests/ui/types/assignments.mr:33:26
+   |
+33 |     let w = p with { X = 1.5 }; //~ ERROR MR0203
+   |                          ^^^ this is `double`
+   |
+   = note: `double` converts to `int` only through an explicit cast, because not every value of `double` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+33 |     let w = p with { X = (int)1.5 }; //~ ERROR MR0203
+   |                          +++++

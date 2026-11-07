@@ -1,0 +1,126 @@
+error[MR0204]: `&` is not defined for `double` and `double`
+ --> tests/ui/types/operators.mr:3:13
+  |
+3 |     let a = x & x; //~ ERROR MR0204
+  |             -^^^-
+  |             |   |
+  |             |   this is `double`
+  |             this is `double`
+  |
+  = note: `&` is defined only on integer types
+
+error[MR0204]: `+%` is not defined for `double` and `double`
+ --> tests/ui/types/operators.mr:4:13
+  |
+4 |     let b = x +% 1.0; //~ ERROR MR0204
+  |             -^^^^---
+  |             |    |
+  |             |    this is `double`
+  |             this is `double`
+  |
+  = note: `+%` is defined only on integer types
+
+error[MR0204]: `~` is not defined for `double`
+ --> tests/ui/types/operators.mr:5:13
+  |
+5 |     let d = ~x; //~ ERROR MR0204
+  |             ^^ the operand is `double`
+  |
+  = note: `~` is defined only on integer types
+
+error[MR0204]: `<<` cannot shift a `double`
+ --> tests/ui/types/operators.mr:6:13
+  |
+6 |     let e = x << 1; //~ ERROR MR0204
+  |             -^^^^^
+  |             |
+  |             this is `double`
+  |
+  = note: only a value of an integer type can be shifted
+
+error[MR0204]: `!` is not defined for `int`
+ --> tests/ui/types/operators.mr:7:13
+  |
+7 |     let f = !n; //~ ERROR MR0204
+  |             ^^ the operand is `int`
+  |
+  = note: `!` negates a `bool`; compare a number explicitly, as in `x == 0`
+
+error[MR0204]: `+` is not defined for `string` and `int`
+ --> tests/ui/types/operators.mr:8:13
+  |
+8 |     let g = s + n; //~ ERROR MR0204
+  |             -^^^-
+  |             |   |
+  |             |   this is `int`
+  |             this is `string`
+  |
+  = note: `+` joins two `string` values; interpolation formats other values as text, as in `$"{a}{b}"`
+
+error[MR0204]: `<` is not defined for `bool` and `bool`
+ --> tests/ui/types/operators.mr:9:13
+  |
+9 |     let h = flag < flag; //~ ERROR MR0204
+  |             ----^^^----
+  |             |      |
+  |             |      this is `bool`
+  |             this is `bool`
+  |
+  = note: `bool` values are not ordered and are not numbers
+
+error[MR0204]: `+` is not defined for `bool` and `bool`
+  --> tests/ui/types/operators.mr:10:13
+   |
+10 |     let k = flag + flag; //~ ERROR MR0204
+   |             ----^^^----
+   |             |      |
+   |             |      this is `bool`
+   |             this is `bool`
+   |
+   = note: `bool` values are not ordered and are not numbers
+
+error[MR0204]: `==` is not defined for `int` and `bool`
+  --> tests/ui/types/operators.mr:11:13
+   |
+11 |     let m = n == flag; //~ ERROR MR0204
+   |             -^^^^----
+   |             |    |
+   |             |    this is `bool`
+   |             this is `int`
+
+error[MR0204]: `-` is not defined for `string`
+  --> tests/ui/types/operators.mr:12:13
+   |
+12 |     let o = -s; //~ ERROR MR0204
+   |             ^^ the operand is `string`
+   |
+   = note: `-` is defined only on numeric types
+
+error[MR0204]: `++` is not defined for `bool`
+  --> tests/ui/types/operators.mr:14:5
+   |
+14 |     p++; //~ ERROR MR0204
+   |     ^^^ the operand is `bool`
+   |
+   = note: `++` is defined only on numeric types
+
+error[MR0204]: `*` is not defined for `string` and `int`
+  --> tests/ui/types/operators.mr:15:13
+   |
+15 |     let q = s * 2; //~ ERROR MR0204
+   |             -^^^-
+   |             |   |
+   |             |   this is `int`
+   |             this is `string`
+
+error[MR0203]: mismatched types: expected `int`, found `long`
+  --> tests/ui/types/operators.mr:20:25
+   |
+20 |     let ok5: int = n << 1L; //~ ERROR MR0203
+   |                         ^^ this is `long`
+   |
+   = note: `long` converts to `int` only through an explicit cast, because not every value of `long` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+20 |     let ok5: int = n << (int)1L; //~ ERROR MR0203
+   |                         +++++
