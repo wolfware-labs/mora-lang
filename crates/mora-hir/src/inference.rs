@@ -568,6 +568,24 @@ mod tests {
     }
 
     #[test]
+    fn only_arithmetic_prefix_operators_fold_a_huge_literal_operation() {
+        let huge = "(18446744073709551615 * 18446744073709551615 * 18446744073709551615)";
+        // `!` and `^` are not arithmetic: the operation follows §7.12, where
+        // `ulong * ulong` is a `ulong`, and `!` on it is MR0204.
+        assert_eq!(reported(&format!("let a: bool = !{huge};\n")), ["MR0204"]);
+        assert_eq!(
+            reported(&format!("let b: long = ^{huge};\n")),
+            Vec::<String>::new()
+        );
+        assert_eq!(reported(&format!("let c: long = ~{huge};\n")), ["MR0010"]);
+        // Dividing by zero is not folded, so it is not MR0010.
+        assert_eq!(
+            reported(&format!("let d: ulong = {huge} / 0;\n")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

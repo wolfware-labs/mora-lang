@@ -113,3 +113,11 @@ error[MR0010]: the value of `-(-(9223372036854775808 * 9223372036854775808) * 2)
    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ out of range
    |
    = note: `long` holds values from -9223372036854775808 to 9223372036854775807
+
+error[MR0204]: `!` is not defined for `ulong`
+  --> tests/ui/types/literals.mr:38:23
+   |
+38 | let notFolded: bool = !(18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the operand is `ulong`
+   |
+   = note: `!` negates a `bool`; compare a number explicitly, as in `x == 0`

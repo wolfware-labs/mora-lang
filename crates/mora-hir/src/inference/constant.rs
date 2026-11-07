@@ -36,7 +36,9 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
         Expr::Unary { op, expr } => {
             let value = value(exprs, *expr)?;
             match (op, value) {
-                (UnaryOp::Plus, _) | (_, Value::Overflow) => Some(value),
+                (UnaryOp::Plus, _) | (UnaryOp::Neg | UnaryOp::BitNot, Value::Overflow) => {
+                    Some(value)
+                }
                 // `-i128::MIN` is too large to compute.
                 (UnaryOp::Neg, Value::Int(v)) => {
                     Some(v.checked_neg().map_or(Value::Overflow, Value::Int))
@@ -53,15 +55,17 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
 
 fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
     use BinaryOp as B;
+    // An integer division by zero panics when the program runs (§7.12),
+    // so it is not folded, whatever the dividend.
+    if matches!(op, B::Div | B::Rem) && b == Value::Int(0) {
+        return None;
+    }
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => {
             let value = match op {
                 B::Add => a.checked_add(b),
                 B::Sub => a.checked_sub(b),
                 B::Mul => a.checked_mul(b),
-                // Division by zero panics when the program runs (§7.12).
-                B::Div if b == 0 => return None,
-                B::Rem if b == 0 => return None,
                 B::Div => a.checked_div(b),
                 B::Rem => a.checked_rem(b),
                 B::BitAnd => Some(a & b),
@@ -164,6 +168,9 @@ mod tests {
         assert_eq!(of(BinaryOp::Mul, Overflow, Real(1.5)), Some(Overflow));
         assert_eq!(of(BinaryOp::BitOr, Int(1), Overflow), Some(Overflow));
         assert_eq!(of(BinaryOp::Shl, Overflow, Int(1)), None);
+        assert_eq!(of(BinaryOp::Div, Overflow, Int(0)), None);
+        assert_eq!(of(BinaryOp::Rem, Overflow, Int(0)), None);
+        assert_eq!(of(BinaryOp::Div, Overflow, Int(2)), Some(Overflow));
     }
 
     #[test]

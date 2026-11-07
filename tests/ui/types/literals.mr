@@ -33,3 +33,7 @@ let huger: double = 1e400 + 1.0; //~ ERROR MR0010
 // Not a number fits; only infinity is too large.
 let nan: double = 0.0 / 0.0;
 let nanf: float = 0.0 / 0.0;
+// Only `-`, `+` and `~` fold a value too large to compute, and a
+// division by zero is never folded.
+let notFolded: bool = !(18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+let byZero: ulong = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) / 0;
