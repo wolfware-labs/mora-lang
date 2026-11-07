@@ -4,16 +4,29 @@
 //! until the checker can look `IFrom` up (M3.6), this table stands in for
 //! those implementations (D-135).
 
-use crate::ty::Primitive;
+use crate::ty::{Primitive, Ty};
 
 /// Whether `ty` is a numeric type: an integer type, `float` or `double`.
 pub(crate) fn is_numeric(ty: Primitive) -> bool {
     !matches!(ty, Primitive::Bool | Primitive::Char)
 }
 
+/// The primitive type `ty` is, when it is a numeric type.
+pub(crate) fn as_numeric(ty: &Ty) -> Option<Primitive> {
+    match ty {
+        Ty::Primitive(ty) if is_numeric(*ty) => Some(*ty),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is a floating-point type: `float` or `double`.
+pub(crate) fn is_floating_point(ty: Primitive) -> bool {
+    matches!(ty, Primitive::Float | Primitive::Double)
+}
+
 /// Whether `ty` is an integer type.
 pub(crate) fn is_integer(ty: Primitive) -> bool {
-    is_numeric(ty) && !matches!(ty, Primitive::Float | Primitive::Double)
+    is_numeric(ty) && !is_floating_point(ty)
 }
 
 /// Whether a value of `from` converts implicitly to `to` (§5.10): the
@@ -56,7 +69,7 @@ pub(crate) fn promote(a: Primitive, b: Primitive) -> Option<Primitive> {
 /// The type of the operand of unary `+`, `-` and `~`, and of the left
 /// operand of a shift, after widening: `byte`, `sbyte`, `short` and
 /// `ushort` widen to `int` (§7.12).
-pub(crate) fn widen(ty: Primitive) -> Primitive {
+pub(crate) fn widen_small(ty: Primitive) -> Primitive {
     match ty {
         Primitive::Byte | Primitive::SByte | Primitive::Short | Primitive::UShort => Primitive::Int,
         other => other,
@@ -210,10 +223,10 @@ mod tests {
     #[test]
     fn unary_operands_and_shifted_values_widen_to_int() {
         for small in [Byte, SByte, Short, UShort] {
-            assert_eq!(widen(small), Int);
+            assert_eq!(widen_small(small), Int);
         }
         for ty in [Int, UInt, Long, ULong, NInt, NUInt, Float, Double] {
-            assert_eq!(widen(ty), ty);
+            assert_eq!(widen_small(ty), ty);
         }
     }
 
@@ -252,6 +265,13 @@ mod tests {
         assert!(!is_integer(Float));
         assert!(!is_numeric(Bool));
         assert!(!is_numeric(Char));
+        assert!(is_floating_point(Float));
+        assert!(is_floating_point(Double));
+        assert!(!is_floating_point(Long));
+        assert!(!is_floating_point(Char));
+        assert_eq!(as_numeric(&Ty::Primitive(Double)), Some(Double));
+        assert_eq!(as_numeric(&Ty::Primitive(Bool)), None);
+        assert_eq!(as_numeric(&Ty::String), None);
         assert!(is_signed(Long));
         assert!(!is_signed(NUInt));
         assert_eq!(bits(NInt), 64);

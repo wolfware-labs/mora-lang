@@ -29,7 +29,6 @@ use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::type_ref::TypeRef;
 
 pub use dump::hir_dump;
-pub(crate) use dump::{binary_text, unary_text};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -425,6 +424,21 @@ pub enum UnaryOp {
     FromEnd,
 }
 
+impl UnaryOp {
+    /// The operator as code writes it, `++` and `--` in either position.
+    pub fn text(self) -> &'static str {
+        match self {
+            UnaryOp::Plus => "+",
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+            UnaryOp::BitNot => "~",
+            UnaryOp::PreIncrement => "++",
+            UnaryOp::PreDecrement => "--",
+            UnaryOp::FromEnd => "^",
+        }
+    }
+}
+
 /// A binary operator; also the operator of a compound assignment or of a
 /// relational pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -452,6 +466,38 @@ pub enum BinaryOp {
     And,
     Or,
     Coalesce,
+}
+
+impl BinaryOp {
+    /// The operator as code writes it; a compound assignment adds `=`.
+    pub fn text(self) -> &'static str {
+        use BinaryOp as B;
+        match self {
+            B::Mul => "*",
+            B::Div => "/",
+            B::Rem => "%",
+            B::WrappingMul => "*%",
+            B::Add => "+",
+            B::Sub => "-",
+            B::WrappingAdd => "+%",
+            B::WrappingSub => "-%",
+            B::Shl => "<<",
+            B::Shr => ">>",
+            B::UShr => ">>>",
+            B::Lt => "<",
+            B::Gt => ">",
+            B::Le => "<=",
+            B::Ge => ">=",
+            B::Eq => "==",
+            B::Ne => "!=",
+            B::BitAnd => "&",
+            B::BitXor => "^",
+            B::BitOr => "|",
+            B::And => "&&",
+            B::Or => "||",
+            B::Coalesce => "??",
+        }
+    }
 }
 
 /// A statement of a body (§7.10).

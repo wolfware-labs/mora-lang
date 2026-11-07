@@ -316,7 +316,14 @@ mod tests {
     #[test]
     fn every_type_keyword_names_a_type() {
         for &keyword in PREDEFINED_TYPES {
-            assert_ne!(predefined(keyword), TypeRef::Missing, "{keyword:?}");
+            match predefined(keyword) {
+                TypeRef::Missing => panic!("{keyword:?} names no type"),
+                // `Primitive::keyword` gives the text back.
+                TypeRef::Primitive(primitive) => {
+                    assert_eq!(Some(primitive.keyword()), keyword.text(), "{keyword:?}");
+                }
+                _ => {}
+            }
         }
     }
 

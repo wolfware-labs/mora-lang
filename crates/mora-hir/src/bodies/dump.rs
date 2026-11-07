@@ -17,7 +17,7 @@ use mora_span::{Db, Project, SourceFile};
 use super::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId,
     InterpPart, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId,
-    UnaryOp, body, body_owners, body_resolution,
+    body, body_owners, body_resolution,
 };
 use crate::arena::arena_index;
 use crate::inference::{Inference, infer, is_known, ty_name};
@@ -487,7 +487,7 @@ impl Printer<'_> {
                 self.args(if *optional { '?' } else { '[' }, args, ']');
             }
             Expr::Unary { op, expr } => {
-                self.out.push_str(unary_text(*op));
+                self.out.push_str(op.text());
                 self.operand(*expr);
             }
             Expr::Postfix { increment, expr } => {
@@ -496,12 +496,12 @@ impl Printer<'_> {
             }
             Expr::Binary { op, lhs, rhs } => {
                 self.operand(*lhs);
-                let _ = write!(self.out, " {} ", binary_text(*op));
+                let _ = write!(self.out, " {} ", op.text());
                 self.operand(*rhs);
             }
             Expr::Assign { op, lhs, rhs } => {
                 self.operand(*lhs);
-                let op = op.map_or("", binary_text);
+                let op = op.map_or("", BinaryOp::text);
                 let _ = write!(self.out, " {op}= ");
                 self.operand(*rhs);
             }
@@ -715,7 +715,7 @@ impl Printer<'_> {
             Pat::Bind(local) => self.local_decl(*local),
             Pat::Discard => self.out.push('_'),
             Pat::Relational { op, value } => {
-                let _ = write!(self.out, "{} ", binary_text(*op));
+                let _ = write!(self.out, "{} ", op.text());
                 self.expr(*value);
             }
             Pat::Not(inner) => {
@@ -817,47 +817,6 @@ impl Printer<'_> {
                 format!("{kind} {ty}.{}", member.name)
             }
         }
-    }
-}
-
-pub(crate) fn unary_text(op: UnaryOp) -> &'static str {
-    match op {
-        UnaryOp::Plus => "+",
-        UnaryOp::Neg => "-",
-        UnaryOp::Not => "!",
-        UnaryOp::BitNot => "~",
-        UnaryOp::PreIncrement => "++",
-        UnaryOp::PreDecrement => "--",
-        UnaryOp::FromEnd => "^",
-    }
-}
-
-pub(crate) fn binary_text(op: BinaryOp) -> &'static str {
-    use BinaryOp as B;
-    match op {
-        B::Mul => "*",
-        B::Div => "/",
-        B::Rem => "%",
-        B::WrappingMul => "*%",
-        B::Add => "+",
-        B::Sub => "-",
-        B::WrappingAdd => "+%",
-        B::WrappingSub => "-%",
-        B::Shl => "<<",
-        B::Shr => ">>",
-        B::UShr => ">>>",
-        B::Lt => "<",
-        B::Gt => ">",
-        B::Le => "<=",
-        B::Ge => ">=",
-        B::Eq => "==",
-        B::Ne => "!=",
-        B::BitAnd => "&",
-        B::BitXor => "^",
-        B::BitOr => "|",
-        B::And => "&&",
-        B::Or => "||",
-        B::Coalesce => "??",
     }
 }
 

@@ -1,7 +1,9 @@
 //! The walk over a body that gives each expression and local its type.
 
 use mora_span::{Db, Project, SourceFile};
-use mora_syntax::lexer::number::{IntSuffix, RealSuffix, int_value, real_value};
+use mora_syntax::lexer::number::{
+    IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
+};
 
 use super::{Context, Inference, TypeError, constant, converts, is_known, numeric, same};
 use crate::arena::arena_index;
@@ -107,6 +109,8 @@ pub(super) fn infer_body(
     }
 }
 
+/// The state of the walk over one body: what it reads, and the types and
+/// errors found so far.
 struct Check<'a> {
     /// The database the signatures are read from.
     db: &'a dyn Db,
@@ -350,9 +354,9 @@ impl Check<'_> {
 
     /// The type of `expr`, recorded for it.
     fn expr(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
-        if let Expect::Target(Ty::Primitive(target)) = expect
-            && numeric::is_numeric(*target)
-            && let Some(ty) = self.constant(expr, *target)
+        if let Expect::Target(target) = expect
+            && let Some(target) = numeric::as_numeric(target)
+            && let Some(ty) = self.constant(expr, target)
         {
             return Some(ty);
         }
@@ -374,7 +378,7 @@ impl Check<'_> {
         let fits = match value {
             constant::Value::Int(value) => numeric::holds(target, value),
             constant::Value::Real(value) => match target {
-                Primitive::Float => !(value as f32).is_infinite(),
+                Primitive::Float => !too_large_for_float(value),
                 Primitive::Double => value.is_finite(),
                 _ => return None,
             },
@@ -598,12 +602,12 @@ impl Check<'_> {
             }
             return Some(Ty::Tuple(expected.clone()));
         }
+        // Empty without an expected tuple, else as long as `elems`.
+        let mut hints = expected.into_iter().flatten().map(|expected| &expected.ty);
         let mut types = Vec::with_capacity(elems.len());
         let mut known = true;
-        for (index, (name, elem)) in elems.iter().enumerate() {
-            let expect =
-                expected.map_or(Expect::None, |expected| Expect::Hint(&expected[index].ty));
-            match self.expr(*elem, expect) {
+        for (name, elem) in elems {
+            match self.expr(*elem, hint(hints.next())) {
                 Some(ty) => types.push(TupleElem {
                     name: name.clone(),
                     ty,
@@ -660,11 +664,11 @@ impl Check<'_> {
             IntSuffix::Ul => Primitive::ULong,
             IntSuffix::None => {
                 let (asked, target) = match expect {
-                    Expect::Hint(Ty::Primitive(ty)) => (Some(*ty), false),
-                    Expect::Target(Ty::Primitive(ty)) => (Some(*ty), true),
-                    _ => (None, false),
+                    Expect::None => (None, false),
+                    Expect::Hint(ty) => (numeric::as_numeric(ty), false),
+                    Expect::Target(ty) => (numeric::as_numeric(ty), true),
                 };
-                match asked.filter(|&ty| numeric::is_numeric(ty)) {
+                match asked {
                     Some(ty) if numeric::holds(ty, value) => ty,
                     // The literal still takes the type, so nothing else is
                     // reported about it.
@@ -696,8 +700,7 @@ impl Check<'_> {
         let Some((value, suffix)) = real_value(text).filter(|(value, _)| value.is_finite()) else {
             return Some(Ty::Error);
         };
-        // Whether the value is too large for a `float` is the question.
-        let too_large = (value as f32).is_infinite();
+        let too_large = too_large_for_float(value);
         let ty = match (suffix, expect) {
             (RealSuffix::F, _) => Primitive::Float,
             (RealSuffix::None, Expect::Target(&Ty::Primitive(Primitive::Float))) => {
@@ -754,15 +757,15 @@ impl Check<'_> {
             UnaryOp::PreIncrement | UnaryOp::PreDecrement => self.step(expr, op, operand),
             UnaryOp::Plus | UnaryOp::Neg | UnaryOp::BitNot => {
                 let found = self.infer(operand)?;
-                let result = match found {
-                    Ty::Primitive(ty) if numeric::is_numeric(ty) => match (op, ty) {
+                let result = match numeric::as_numeric(&found) {
+                    Some(ty) => match (op, ty) {
                         (UnaryOp::Neg, Primitive::UInt) => Some(Primitive::Long),
-                        (UnaryOp::Neg, Primitive::ULong | Primitive::NUInt)
-                        | (UnaryOp::BitNot, Primitive::Float | Primitive::Double) => None,
-                        _ => Some(numeric::widen(ty)),
+                        (UnaryOp::Neg, Primitive::ULong | Primitive::NUInt) => None,
+                        (UnaryOp::BitNot, ty) if numeric::is_floating_point(ty) => None,
+                        _ => Some(numeric::widen_small(ty)),
                     },
-                    _ if !is_known(&found) => return None,
-                    _ => None,
+                    None if !is_known(&found) => return None,
+                    None => None,
                 };
                 self.operated(expr, op, found, result)
             }
@@ -772,11 +775,10 @@ impl Check<'_> {
     /// `++` and `--`, prefix or postfix: the operand keeps its numeric type.
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
         let found = self.infer(operand)?;
-        let result = match found {
-            Ty::Primitive(ty) if numeric::is_numeric(ty) => Some(ty),
-            _ if !is_known(&found) => return None,
-            _ => None,
-        };
+        let result = numeric::as_numeric(&found);
+        if result.is_none() && !is_known(&found) {
+            return None;
+        }
         self.operated(expr, op, found, result)
     }
 
@@ -850,12 +852,10 @@ impl Check<'_> {
                 let value = self.infer(lhs);
                 self.check(rhs, &INT);
                 let value = value?;
-                return match value {
-                    Ty::Primitive(ty) if numeric::is_integer(ty) => {
-                        Some(Ty::Primitive(numeric::widen(ty)))
-                    }
-                    _ if !is_known(&value) => None,
-                    _ => {
+                return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
+                    Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
+                    None if !is_known(&value) => None,
+                    None => {
                         let rhs = self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error);
                         self.errors.push(TypeError::Binary {
                             expr,
@@ -918,7 +918,7 @@ impl Check<'_> {
             && is_known(&from)
             && is_known(&to)
             && !same(&from, &to)
-            && !(is_numeric(&from) && is_numeric(&to))
+            && (numeric::as_numeric(&from).is_none() || numeric::as_numeric(&to).is_none())
         {
             self.errors.push(TypeError::Cast {
                 expr,
@@ -976,19 +976,12 @@ fn negatable(literal: &Literal) -> bool {
     }
 }
 
-fn is_numeric(ty: &Ty) -> bool {
-    matches!(ty, Ty::Primitive(ty) if numeric::is_numeric(*ty))
-}
-
 /// The type `op` gives on operands of the known types `l` and `r`, or
 /// `None` when it is not defined on them (§5.3, §7.12).
 fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
     use BinaryOp as B;
-    if let (Ty::Primitive(a), Ty::Primitive(b)) = (l, r)
-        && numeric::is_numeric(*a)
-        && numeric::is_numeric(*b)
-    {
-        let ty = numeric::promote(*a, *b)?;
+    if let (Some(a), Some(b)) = (numeric::as_numeric(l), numeric::as_numeric(r)) {
+        let ty = numeric::promote(a, b)?;
         return match op {
             B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => Some(BOOL),
             B::BitAnd | B::BitOr | B::BitXor | B::WrappingAdd | B::WrappingSub | B::WrappingMul => {

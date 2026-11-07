@@ -4,9 +4,7 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
 use super::{Context, TypeError, constant, numeric, ty_name};
-use crate::bodies::{
-    BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp, binary_text, unary_text,
-};
+use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
 use crate::ty::{Primitive, Ty};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
@@ -93,32 +91,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
         TypeError::Binary { expr, op, lhs, rhs } => binary(source, *expr, *op, lhs, rhs),
         TypeError::Unary { expr, op, operand } => unary(source, *expr, *op, operand),
-        TypeError::Cast { expr, from, to } => {
-            let char_and_integer = |a: &Ty, b: &Ty| {
-                *a == Ty::Primitive(Primitive::Char)
-                    && matches!(b, Ty::Primitive(ty) if numeric::is_integer(*ty))
-            };
-            let note = if char_and_integer(from, to) || char_and_integer(to, from) {
-                "a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function"
-            } else {
-                "a cast `(T)x` converts only from one numeric type to another"
-            };
-            let (from, to) = (source.name(from), source.name(to));
-            let operand = match &source.body.exprs[*expr] {
-                Expr::Cast { expr, .. } => *expr,
-                _ => *expr,
-            };
-            Diagnostic::error(
-                codes::MR0204,
-                format!("cannot cast `{from}` to `{to}`"),
-                Label::new(source.span(*expr), "not a numeric conversion"),
-            )
-            .with_secondary(Label::new(
-                source.span(operand),
-                format!("this is `{from}`"),
-            ))
-            .with_note(note)
-        }
+        TypeError::Cast { expr, from, to } => cast(source, *expr, from, to),
     }
 }
 
@@ -136,6 +109,8 @@ fn mismatch(
         format!("mismatched types: expected `{e}`, found `{f}`"),
         Label::new(source.span(expr), format!("this is `{f}`")),
     );
+    let (found_number, expected_number) =
+        (numeric::as_numeric(found), numeric::as_numeric(expected));
     let found = match found {
         Ty::Primitive(ty) => Some(*ty),
         _ => None,
@@ -149,7 +124,7 @@ fn mismatch(
     }
     if context == Context::Condition {
         let diagnostic = diagnostic.with_note("a condition must be a `bool`");
-        return match found.filter(|&ty| numeric::is_numeric(ty)) {
+        return match found_number {
             Some(_) => diagnostic.with_fix(Fix::new(
                 "compare it with zero",
                 source.wrap(expr, "", " != 0"),
@@ -157,14 +132,14 @@ fn mismatch(
             None => diagnostic,
         };
     }
+    if let (Some(_), Some(to)) = (found_number, expected_number) {
+        return diagnostic
+            .with_note(format!(
+                "`{f}` converts to `{e}` only through an explicit cast, because not every value of `{f}` is a value of `{e}`"
+            ))
+            .with_fix(source.cast_fix(expr, to));
+    }
     match (found, expected) {
-        (Some(from), Ty::Primitive(to)) if numeric::is_numeric(from) && numeric::is_numeric(*to) => {
-            diagnostic
-                .with_note(format!(
-                    "`{f}` converts to `{e}` only through an explicit cast, because not every value of `{f}` is a value of `{e}`"
-                ))
-                .with_fix(source.cast_fix(expr, *to))
-        }
         (Some(Primitive::Bool), Ty::Primitive(_)) | (_, Ty::Primitive(Primitive::Bool)) => {
             diagnostic.with_note("there is no implicit conversion to or from `bool`")
         }
@@ -172,8 +147,9 @@ fn mismatch(
             diagnostic.with_note("there is no implicit conversion to or from `char`")
         }
         (_, Ty::String) => {
-            let diagnostic = diagnostic
-                .with_note("nothing converts to `string` implicitly; interpolation formats a value as text");
+            let diagnostic = diagnostic.with_note(
+                "nothing converts to `string` implicitly; interpolation formats a value as text",
+            );
             match found {
                 Some(_) => diagnostic.with_fix(Fix::new(
                     "format it with interpolation",
@@ -184,6 +160,34 @@ fn mismatch(
         }
         _ => diagnostic,
     }
+}
+
+/// `MR0204`: a cast between types that are not both numeric.
+fn cast(source: &Source<'_>, expr: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
+    let char_and_integer = |a: &Ty, b: &Ty| {
+        *a == Ty::Primitive(Primitive::Char)
+            && numeric::as_numeric(b).is_some_and(numeric::is_integer)
+    };
+    let note = if char_and_integer(from, to) || char_and_integer(to, from) {
+        "a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function"
+    } else {
+        "a cast `(T)x` converts only from one numeric type to another"
+    };
+    let (from, to) = (source.name(from), source.name(to));
+    let operand = match &source.body.exprs[expr] {
+        Expr::Cast { expr, .. } => *expr,
+        _ => expr,
+    };
+    Diagnostic::error(
+        codes::MR0204,
+        format!("cannot cast `{from}` to `{to}`"),
+        Label::new(source.span(expr), "not a numeric conversion"),
+    )
+    .with_secondary(Label::new(
+        source.span(operand),
+        format!("this is `{from}`"),
+    ))
+    .with_note(note)
 }
 
 /// `MR0010`: a literal that does not fit the type it takes.
@@ -239,11 +243,13 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
             Label::new(span, format!("a `{keyword}` would round it")),
         )
         .with_note({
-            let limit = if ty == Primitive::Float {
-                "16777216"
+            // The largest power of two up to which every integer is exact.
+            let digits = if ty == Primitive::Float {
+                f32::MANTISSA_DIGITS
             } else {
-                "9007199254740992"
+                f64::MANTISSA_DIGITS
             };
+            let limit = 1u64 << digits;
             format!(
                 "a `{keyword}` holds every integer from -{limit} to {limit} exactly, and only some beyond"
             )
@@ -253,7 +259,7 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
 
 /// `MR0204`: a binary operator that is not defined for its operands.
 fn binary(source: &Source<'_>, expr: ExprId, op: BinaryOp, lhs: &Ty, rhs: &Ty) -> Diagnostic {
-    let sym = binary_text(op);
+    let sym = op.text();
     let (l, r) = (source.name(lhs), source.name(rhs));
     let (lhs_expr, rhs_expr) = match &source.body.exprs[expr] {
         Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => (*lhs, *rhs),
@@ -275,28 +281,27 @@ fn binary(source: &Source<'_>, expr: ExprId, op: BinaryOp, lhs: &Ty, rhs: &Ty) -
     )
     .with_secondary(Label::new(source.span(lhs_expr), format!("this is `{l}`")))
     .with_secondary(Label::new(source.span(rhs_expr), format!("this is `{r}`")));
-    match (lhs, rhs) {
-        (Ty::Primitive(a), Ty::Primitive(b))
-            if numeric::is_numeric(*a) && numeric::is_numeric(*b) =>
-        {
-            match numeric::promote(*a, *b) {
-                // Defined only on integers.
-                Some(_) => diagnostic.with_note(format!("`{sym}` is defined only on integer types")),
-                None => {
-                    let (side, to) = cast_side(*a, *b);
-                    let operand = if side { rhs_expr } else { lhs_expr };
-                    let native = |ty| matches!(ty, Primitive::NInt | Primitive::NUInt);
-                    let note = if native(*a) || native(*b) {
-                        "`nint` and `nuint` mix with other integer types only through an explicit cast".to_owned()
-                    } else {
-                        format!("`{l}` and `{r}` have no common type that holds every value of both")
-                    };
-                    diagnostic
-                        .with_note(note)
-                        .with_fix(source.cast_fix(operand, to))
-                }
+    if let (Some(a), Some(b)) = (numeric::as_numeric(lhs), numeric::as_numeric(rhs)) {
+        return match numeric::promote(a, b) {
+            // Defined only on integers.
+            Some(_) => diagnostic.with_note(format!("`{sym}` is defined only on integer types")),
+            None => {
+                let (side, to) = cast_side(a, b);
+                let operand = if side { rhs_expr } else { lhs_expr };
+                let native = |ty| matches!(ty, Primitive::NInt | Primitive::NUInt);
+                let note = if native(a) || native(b) {
+                    "`nint` and `nuint` mix with other integer types only through an explicit cast"
+                        .to_owned()
+                } else {
+                    format!("`{l}` and `{r}` have no common type that holds every value of both")
+                };
+                diagnostic
+                    .with_note(note)
+                    .with_fix(source.cast_fix(operand, to))
             }
-        }
+        };
+    }
+    match (lhs, rhs) {
         (Ty::String, _) | (_, Ty::String) if op == BinaryOp::Add => diagnostic.with_note(
             "`+` joins two `string` values; interpolation formats other values as text, as in `$\"{a}{b}\"`",
         ),
@@ -312,9 +317,8 @@ fn binary(source: &Source<'_>, expr: ExprId, op: BinaryOp, lhs: &Ty, rhs: &Ty) -
 /// when one is a floating-point type, else the wider type, or the signed
 /// one of two as wide, or the left one's.
 fn cast_side(a: Primitive, b: Primitive) -> (bool, Primitive) {
-    let float = |ty| matches!(ty, Primitive::Float | Primitive::Double);
-    if float(a) || float(b) {
-        return (float(a), Primitive::Double);
+    if numeric::is_floating_point(a) || numeric::is_floating_point(b) {
+        return (numeric::is_floating_point(a), Primitive::Double);
     }
     let a_first =
         (numeric::bits(a), numeric::is_signed(a)) >= (numeric::bits(b), numeric::is_signed(b));
@@ -323,7 +327,7 @@ fn cast_side(a: Primitive, b: Primitive) -> (bool, Primitive) {
 
 /// `MR0204`: a unary operator that is not defined for its operand.
 fn unary(source: &Source<'_>, expr: ExprId, op: UnaryOp, operand: &Ty) -> Diagnostic {
-    let sym = unary_text(op);
+    let sym = op.text();
     let t = source.name(operand);
     let operand_expr = match &source.body.exprs[expr] {
         Expr::Unary { expr, .. } | Expr::Postfix { expr, .. } => *expr,
