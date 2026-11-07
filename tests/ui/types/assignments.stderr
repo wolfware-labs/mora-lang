@@ -76,3 +76,25 @@ help: convert it explicitly with `(ulong)`
    |
 39 |     u += (ulong)l; //~ ERROR MR0204
    |          +++++++
+
+error[MR0204]: `&=` is not defined for `float` and `long`
+  --> tests/ui/types/assignments.mr:45:5
+   |
+45 |     g &= l; //~ ERROR MR0204
+   |     -^^^^-
+   |     |    |
+   |     |    this is `long`
+   |     this is `float`
+   |
+   = note: `float` and `long` have no common type that holds every value of both
+
+error[MR0204]: `|` is not defined for `long` and `float`
+  --> tests/ui/types/assignments.mr:46:13
+   |
+46 |     let h = l | f; //~ ERROR MR0204
+   |             -^^^-
+   |             |   |
+   |             |   this is `float`
+   |             this is `long`
+   |
+   = note: `long` and `float` have no common type that holds every value of both

@@ -38,3 +38,10 @@ Mixed(l: long) {
     var u = 1ul;
     u += l; //~ ERROR MR0204
 }
+
+// A cast cannot make an integer-only operator work on a `float`.
+Bits(f: float, l: long) {
+    var g = f;
+    g &= l; //~ ERROR MR0204
+    let h = l | f; //~ ERROR MR0204
+}

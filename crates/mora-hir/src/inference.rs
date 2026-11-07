@@ -704,6 +704,63 @@ mod tests {
     }
 
     #[test]
+    fn every_cast_fix_for_mixed_operands_type_checks() {
+        const NUMERIC: [&str; 12] = [
+            "byte", "sbyte", "short", "ushort", "int", "uint", "long", "ulong", "nint", "nuint",
+            "float", "double",
+        ];
+        const OPERATORS: [&str; 11] = ["+", "-", "*", "/", "%", "&", "|", "^", "+%", "-%", "*%"];
+        let mut text = String::new();
+        let mut index = 0;
+        for place in NUMERIC {
+            for value in NUMERIC {
+                for op in OPERATORS {
+                    text.push_str(&format!(
+                        "F{index}(p: {place}, x: {value}) {{\n    var q = p;\n    q {op}= x;\n    \
+                         let r = p {op} x;\n}}\n"
+                    ));
+                    index += 1;
+                }
+            }
+        }
+        let reported = diagnostics_of(&text);
+        let mut edits: Vec<_> = reported
+            .iter()
+            .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.iter()))
+            .collect();
+        assert!(edits.len() > 100, "{}", edits.len());
+        // Edits apply from the end of the text, so earlier offsets hold.
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
+        let mut fixed = text.clone();
+        for edit in &edits {
+            fixed.replace_range(
+                std::ops::Range::<usize>::from(edit.span.range),
+                &edit.replacement,
+            );
+        }
+        // Every line a fix changed now type-checks.
+        let fixed_lines: Vec<_> = edits
+            .iter()
+            .map(|edit| {
+                text[..usize::from(edit.span.range.start())]
+                    .matches('\n')
+                    .count()
+            })
+            .collect();
+        let remaining: Vec<_> = diagnostics_of(&fixed)
+            .iter()
+            .map(|d| {
+                fixed[..usize::from(d.primary.span.range.start())]
+                    .matches('\n')
+                    .count()
+            })
+            .filter(|line| fixed_lines.contains(line))
+            .map(|line| fixed.lines().nth(line).unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(remaining, Vec::<String>::new());
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

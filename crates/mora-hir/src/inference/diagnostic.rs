@@ -323,11 +323,6 @@ fn binary(
             // Defined only on integers.
             Some(_) => diagnostic.with_note(format!("`{sym}` is defined only on integer types")),
             None => {
-                // The place of a compound assignment cannot be cast; its
-                // value can, to the place's type, with which every numeric
-                // operation is defined.
-                let (side, to) = if compound { (true, a) } else { cast_side(a, b) };
-                let operand = if side { rhs_expr } else { lhs_expr };
                 let native = |ty| matches!(ty, Primitive::NInt | Primitive::NUInt);
                 let note = if native(a) || native(b) {
                     "`nint` and `nuint` mix with other integer types only through an explicit cast"
@@ -335,9 +330,29 @@ fn binary(
                 } else {
                     format!("`{l}` and `{r}` have no common type that holds every value of both")
                 };
-                diagnostic
-                    .with_note(note)
-                    .with_fix(source.cast_fix(operand, to))
+                let diagnostic = diagnostic.with_note(note);
+                // A cast cannot make an operator defined only on integers
+                // work on a `float` or a `double`.
+                let integers_only = matches!(
+                    op,
+                    BinaryOp::BitAnd
+                        | BinaryOp::BitOr
+                        | BinaryOp::BitXor
+                        | BinaryOp::WrappingAdd
+                        | BinaryOp::WrappingSub
+                        | BinaryOp::WrappingMul
+                );
+                if integers_only && (numeric::is_floating_point(a) || numeric::is_floating_point(b))
+                {
+                    return diagnostic;
+                }
+                // The place of a compound assignment cannot be cast; its
+                // value can, to the place's type: the operation then has two
+                // operands of one numeric type, which every operator left
+                // here is defined on.
+                let (side, to) = if compound { (true, a) } else { cast_side(a, b) };
+                let operand = if side { rhs_expr } else { lhs_expr };
+                diagnostic.with_fix(source.cast_fix(operand, to))
             }
         };
     }
