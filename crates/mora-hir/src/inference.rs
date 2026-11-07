@@ -73,23 +73,32 @@ pub(crate) enum TypeError {
     /// (`MR0010`).
     Literal { expr: ExprId, ty: Option<Primitive> },
     /// The binary operator of `expr`, an operation or a compound
-    /// assignment, is not defined for its operands (`MR0204`).
+    /// assignment, is not defined for its operands `lhs` and `rhs`, of
+    /// types `lhs_ty` and `rhs_ty` (`MR0204`).
     Binary {
         expr: ExprId,
         op: BinaryOp,
-        lhs: Ty,
-        rhs: Ty,
+        lhs: ExprId,
+        rhs: ExprId,
+        lhs_ty: Ty,
+        rhs_ty: Ty,
     },
     /// The prefix or postfix operator of `expr` is not defined for its
-    /// operand (`MR0204`); `++` and `--` are the prefix forms.
+    /// operand, of type `ty` (`MR0204`); `++` and `--` are the prefix forms.
     Unary {
         expr: ExprId,
         op: UnaryOp,
-        operand: Ty,
+        operand: ExprId,
+        ty: Ty,
     },
-    /// The cast `expr` converts between types that are not both numeric
-    /// (`MR0204`).
-    Cast { expr: ExprId, from: Ty, to: Ty },
+    /// The cast `expr` of `operand` converts between types that are not
+    /// both numeric (`MR0204`).
+    Cast {
+        expr: ExprId,
+        operand: ExprId,
+        from: Ty,
+        to: Ty,
+    },
 }
 
 /// What expects the type of a [`TypeError::Mismatch`].
@@ -430,5 +439,272 @@ mod tests {
             .filter(|key| key.starts_with("infer("))
             .count();
         assert_eq!(inferred, 1);
+    }
+
+    /// What `src/Program.mr` alone in an app reports.
+    fn diagnostics_of(text: &str) -> Vec<mora_diag::Diagnostic> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        diagnostics(&db, project).clone()
+    }
+
+    /// The note of the one diagnostic `text` reports.
+    fn note(text: &str) -> String {
+        let reported = diagnostics_of(text);
+        assert_eq!(reported.len(), 1, "{text}: {reported:#?}");
+        reported[0].note.clone().unwrap_or_default()
+    }
+
+    /// Each expression of the top-level statements of `text`, as written,
+    /// with its type, `?` for one that is unknown.
+    fn expr_types(text: &str) -> Vec<String> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        body.exprs
+            .iter()
+            .map(|(expr, _)| {
+                let ty = inference
+                    .expr(expr)
+                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
+                format!("{}: {ty}", &text[map.expr(expr)])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn equality_and_ordering_cover_bool_char_and_string() {
+        let text = "let a = \"a\" == \"b\";\nlet b = 'a' != 'b';\nlet c = true == false;\n\
+                    let d = \"a\" < \"b\";\nlet e = 'a' >= 'b';\nlet f = true & false;\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(reported("let f = true & 1;\n"), ["MR0204"]);
+    }
+
+    #[test]
+    fn an_expression_body_of_a_unit_function_is_not_a_return_value() {
+        let text = "Unit() => 1;\nAlso(): () => 1;\nBlock(): int {\n    return 1;\n}\nlet n = 1;\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn only_a_synchronous_local_function_checks_what_it_returns() {
+        let text = "F() {\n    G(): int => \"s\";\n    async H(): int => \"s\";\n}\n";
+        assert_eq!(reported(text), ["MR0203"]);
+    }
+
+    #[test]
+    fn expressions_inside_matches_patterns_and_arguments_are_checked() {
+        let n = "let n = 1;\n";
+        for (text, code) in [
+            ("let a = match (n) { 1 => !n, _ => true };\n", "MR0204"),
+            (
+                "let a = match (n) { var m when n => 1, _ => 2 };\n",
+                "MR0203",
+            ),
+            ("let b = n is < -true;\n", "MR0204"),
+            ("let c = (n, n) is (1, < -true);\n", "MR0204"),
+            ("Console.WriteLine(!n);\n", "MR0204"),
+        ] {
+            assert_eq!(reported(&format!("{n}{text}")), [code], "{text}");
+        }
+    }
+
+    #[test]
+    fn every_part_of_an_operation_on_literals_takes_the_target_type() {
+        assert_eq!(
+            expr_types("let c: sbyte = -(1 + 2);\n"),
+            [
+                "1: sbyte",
+                "2: sbyte",
+                "1 + 2: sbyte",
+                "-(1 + 2): sbyte",
+                // The top-level statements, a block, have no value.
+                "let c: sbyte = -(1 + 2);: ?"
+            ]
+        );
+    }
+
+    #[test]
+    fn operations_on_literals_follow_their_operators() {
+        let fine = "let a: byte = +(1 + 2);\nlet b: float = -(1.5 * 2.0);\n";
+        assert_eq!(reported(fine), Vec::<String>::new());
+        let huge = "18446744073709551615 * 18446744073709551615 * 18446744073709551615";
+        for (text, code) in [
+            ("let d: double = 1e308 * 10.0;\n".to_owned(), "MR0010"),
+            (format!("let l: long = -({huge});\n"), "MR0010"),
+            (format!("let l: double = {huge} * 1.5;\n"), "MR0010"),
+            ("let x: double = ~(1.5 + 1.0);\n".to_owned(), "MR0204"),
+            ("let b: byte = 1u + 1;\n".to_owned(), "MR0203"),
+            ("let f: float = 1.5f * 2.0;\n".to_owned(), "MR0203"),
+        ] {
+            assert_eq!(reported(&text), [code], "{text}");
+        }
+    }
+
+    #[test]
+    fn literal_operands_take_the_other_operand_type() {
+        let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
+                    let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";
+        assert_eq!(
+            local_types(text),
+            [
+                "x: float",
+                "y: double",
+                "z: float",
+                "w: float",
+                "n: long",
+                "c: ?",
+                "u: ushort"
+            ]
+        );
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn operands_of_unknown_type_cause_no_diagnostic() {
+        let text = "let e: Unknwn = 1;\nlet a = -e;\nlet b = e << 1;\nvar c = e;\nc++;\n\
+                    let d = true ? e : \"s\";\nlet f = true ? Console.A() : 1;\n";
+        assert_eq!(reported(text), ["MR0127"]);
+        assert_eq!(
+            reported("let a = -\"s\";\nlet b = -true;\nlet c = -'c';\n"),
+            ["MR0204"; 3]
+        );
+    }
+
+    #[test]
+    fn initializers_check_against_their_declared_type() {
+        let text = "const Limit: byte = 300;\nclass A {\n    X: byte = 300;\n}\nlet n = 1;\n";
+        assert_eq!(reported(text), ["MR0010", "MR0010"]);
+    }
+
+    #[test]
+    fn tuples_match_by_length_and_element_types_but_not_names() {
+        let text = "let t: (int, int) = (1, 2, 3);\nlet p = (1, 2);\n\
+                    let q: (Left: int, Right: int) = p;\nlet r: (int,) = p;\n";
+        assert_eq!(reported(text), ["MR0203", "MR0203"]);
+    }
+
+    #[test]
+    fn members_after_a_value_and_optional_members() {
+        let text = "struct P {\n    X: int;\n}\nstatic Origin: P = new P { X = 1 };\n\
+                    let p = Origin;\nlet v = p?.X;\nlet x = Origin.X;\n";
+        assert_eq!(local_types(text), ["p: P", "v: ?", "x: int"]);
+        assert_eq!(
+            reported(&format!("{text}let s: string = Origin.X;\n")),
+            ["MR0203"]
+        );
+    }
+
+    #[test]
+    fn a_parameter_without_a_name_leaves_the_others_unknown() {
+        let text = "F(a: int = !1, : string, c: bool): bool => c;\nlet n = 1;\n";
+        assert_eq!(reported(text), ["MR0204"]);
+    }
+
+    #[test]
+    fn notes_say_why_a_value_does_not_convert() {
+        for (text, expected) in [
+            (
+                "let b: bool = 1;\n",
+                "there is no implicit conversion to or from `bool`",
+            ),
+            (
+                "let c: char = 65;\n",
+                "there is no implicit conversion to or from `char`",
+            ),
+            (
+                "let d: double = 9007199254740993;\n",
+                "a `double` holds every integer from -9007199254740992 to 9007199254740992 exactly, and only some beyond",
+            ),
+            (
+                "let g: float = 16777217;\n",
+                "a `float` holds every integer from -16777216 to 16777216 exactly, and only some beyond",
+            ),
+            (
+                "let n: nint = 1;\nlet i = 2;\nlet a = n + i;\n",
+                "`nint` and `nuint` mix with other integer types only through an explicit cast",
+            ),
+            (
+                "let s = \"s\" + 1;\n",
+                "`+` joins two `string` values; interpolation formats other values as text, as in `$\"{a}{b}\"`",
+            ),
+            ("let s = \"s\" - 1;\n", ""),
+            (
+                "let u = true < false;\n",
+                "`bool` values are not ordered and are not numbers",
+            ),
+            (
+                "let v = !1;\n",
+                "`!` negates a `bool`; compare a number explicitly, as in `x == 0`",
+            ),
+            ("let w = ~1.5;\n", "`~` is defined only on integer types"),
+        ] {
+            assert_eq!(note(text), expected, "{text}");
+        }
+        let reported = diagnostics_of("let s: string = (1, 2);\nlet f: float = 1e39;\n");
+        assert!(reported[0].fixes.is_empty());
+        assert_eq!(
+            reported[1].message,
+            "the literal `1e39` is too large for a `float`"
+        );
+    }
+
+    #[test]
+    fn mixed_and_negated_native_integers_get_a_cast_fix() {
+        let text = "let n: nint = 1;\nlet b: byte = 2;\nlet k = b + n;\nlet nu: nuint = 1;\nlet x = -nu;\n";
+        let fixes: Vec<_> = diagnostics_of(text)
+            .iter()
+            .map(|d| d.fixes[0].message.clone())
+            .collect();
+        assert_eq!(
+            fixes,
+            [
+                "convert it explicitly with `(nint)`",
+                "convert it explicitly with `(nint)`"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cast_between_char_and_an_integer_points_to_a_function() {
+        let named = "a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function";
+        let plain = "a cast `(T)x` converts only from one numeric type to another";
+        for (text, expected) in [
+            ("let a = (int)'c';\n", named),
+            ("let l = 1L;\nlet b = (char)l;\n", named),
+            ("let c = (int)true;\n", plain),
+            ("let d = (string)'c';\n", plain),
+        ] {
+            assert_eq!(note(text), expected, "{text}");
+        }
+        let text = "let t = true;\nlet c = (int)t;\n";
+        let reported = diagnostics_of(text);
+        let operand = reported[0].secondary[0].span.range;
+        assert_eq!(&text[operand], "t");
+    }
+
+    #[test]
+    fn types_are_named_as_code_writes_them() {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", "struct P {}\n")]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let point = crate::test_db::item_named(&db, project, file, "P");
+        let int = TupleElem {
+            name: None,
+            ty: Ty::Primitive(Primitive::Int),
+        };
+        let named = TupleElem {
+            name: Some("Id".to_owned()),
+            ty: Ty::Struct(point),
+        };
+        assert_eq!(
+            super::ty_name(&db, &Ty::Tuple(vec![named, int.clone()])),
+            "(Id: P, int)"
+        );
+        assert_eq!(super::ty_name(&db, &Ty::Tuple(vec![int])), "(int,)");
+        assert_eq!(super::ty_name(&db, &Ty::Error), "_");
     }
 }

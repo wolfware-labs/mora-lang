@@ -89,9 +89,26 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             context,
         } => mismatch(source, *expr, expected, found, *context),
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
-        TypeError::Binary { expr, op, lhs, rhs } => binary(source, *expr, *op, lhs, rhs),
-        TypeError::Unary { expr, op, operand } => unary(source, *expr, *op, operand),
-        TypeError::Cast { expr, from, to } => cast(source, *expr, from, to),
+        TypeError::Binary {
+            expr,
+            op,
+            lhs,
+            rhs,
+            lhs_ty,
+            rhs_ty,
+        } => binary(source, *expr, *op, (*lhs, lhs_ty), (*rhs, rhs_ty)),
+        TypeError::Unary {
+            expr,
+            op,
+            operand,
+            ty,
+        } => unary(source, *expr, *op, *operand, ty),
+        TypeError::Cast {
+            expr,
+            operand,
+            from,
+            to,
+        } => cast(source, *expr, *operand, from, to),
     }
 }
 
@@ -163,7 +180,7 @@ fn mismatch(
 }
 
 /// `MR0204`: a cast between types that are not both numeric.
-fn cast(source: &Source<'_>, expr: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
+fn cast(source: &Source<'_>, expr: ExprId, operand: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
     let char_and_integer = |a: &Ty, b: &Ty| {
         *a == Ty::Primitive(Primitive::Char)
             && numeric::as_numeric(b).is_some_and(numeric::is_integer)
@@ -174,10 +191,6 @@ fn cast(source: &Source<'_>, expr: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
         "a cast `(T)x` converts only from one numeric type to another"
     };
     let (from, to) = (source.name(from), source.name(to));
-    let operand = match &source.body.exprs[expr] {
-        Expr::Cast { expr, .. } => *expr,
-        _ => expr,
-    };
     Diagnostic::error(
         codes::MR0204,
         format!("cannot cast `{from}` to `{to}`"),
@@ -258,13 +271,15 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
 }
 
 /// `MR0204`: a binary operator that is not defined for its operands.
-fn binary(source: &Source<'_>, expr: ExprId, op: BinaryOp, lhs: &Ty, rhs: &Ty) -> Diagnostic {
+fn binary(
+    source: &Source<'_>,
+    expr: ExprId,
+    op: BinaryOp,
+    (lhs_expr, lhs): (ExprId, &Ty),
+    (rhs_expr, rhs): (ExprId, &Ty),
+) -> Diagnostic {
     let sym = op.text();
     let (l, r) = (source.name(lhs), source.name(rhs));
-    let (lhs_expr, rhs_expr) = match &source.body.exprs[expr] {
-        Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => (*lhs, *rhs),
-        _ => (expr, expr),
-    };
     if matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr) {
         return Diagnostic::error(
             codes::MR0204,
@@ -326,13 +341,15 @@ fn cast_side(a: Primitive, b: Primitive) -> (bool, Primitive) {
 }
 
 /// `MR0204`: a unary operator that is not defined for its operand.
-fn unary(source: &Source<'_>, expr: ExprId, op: UnaryOp, operand: &Ty) -> Diagnostic {
+fn unary(
+    source: &Source<'_>,
+    expr: ExprId,
+    op: UnaryOp,
+    operand_expr: ExprId,
+    operand: &Ty,
+) -> Diagnostic {
     let sym = op.text();
     let t = source.name(operand);
-    let operand_expr = match &source.body.exprs[expr] {
-        Expr::Unary { expr, .. } | Expr::Postfix { expr, .. } => *expr,
-        _ => expr,
-    };
     let diagnostic = Diagnostic::error(
         codes::MR0204,
         format!("`{sym}` is not defined for `{t}`"),

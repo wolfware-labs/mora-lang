@@ -67,34 +67,36 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
             };
             Some(value.map_or(Value::Overflow, Value::Int))
         }
-        (Value::Overflow, _) | (_, Value::Overflow) => match op {
-            B::Add | B::Sub | B::Mul | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor => {
-                Some(Value::Overflow)
+        _ => match (real(a), real(b)) {
+            (Some(a), Some(b)) => {
+                let value = match op {
+                    B::Add => a + b,
+                    B::Sub => a - b,
+                    B::Mul => a * b,
+                    B::Div => a / b,
+                    B::Rem => a % b,
+                    _ => return None,
+                };
+                Some(Value::Real(value))
             }
-            _ => None,
+            // An operand too large to compute makes the result so too.
+            _ => matches!(
+                op,
+                B::Add | B::Sub | B::Mul | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor
+            )
+            .then_some(Value::Overflow),
         },
-        (a, b) => {
-            let (a, b) = (real(a), real(b));
-            let value = match op {
-                B::Add => a + b,
-                B::Sub => a - b,
-                B::Mul => a * b,
-                B::Div => a / b,
-                B::Rem => a % b,
-                _ => return None,
-            };
-            Some(Value::Real(value))
-        }
     }
 }
 
-fn real(value: Value) -> f64 {
+/// `value` as a real, `None` for an integer too large to compute. An
+/// integer converts exactly where it matters: the result is only checked
+/// against the range of a `float` or a `double`.
+fn real(value: Value) -> Option<f64> {
     match value {
-        // Exact for the integers that matter here; the result is only
-        // checked against the range of a `float` or a `double`.
-        Value::Int(value) => value as f64,
-        Value::Real(value) => value,
-        Value::Overflow => f64::INFINITY,
+        Value::Int(value) => Some(value as f64),
+        Value::Real(value) => Some(value),
+        Value::Overflow => None,
     }
 }
 
@@ -132,5 +134,57 @@ mod tests {
         assert_eq!(of(BinaryOp::Mul, Real(1.5), Int(2)), Some(Real(3.0)));
         assert_eq!(of(BinaryOp::BitAnd, Real(1.5), Int(2)), None);
         assert_eq!(of(BinaryOp::Shl, Int(1), Int(2)), None);
+    }
+
+    #[test]
+    fn each_integer_operator_computes_its_value() {
+        use Value::Int;
+        assert_eq!(of(BinaryOp::Rem, Int(7), Int(4)), Some(Int(3)));
+        assert_eq!(of(BinaryOp::Rem, Int(7), Int(0)), None);
+        assert_eq!(of(BinaryOp::BitOr, Int(6), Int(3)), Some(Int(7)));
+        assert_eq!(of(BinaryOp::Sub, Int(6), Int(3)), Some(Int(3)));
+    }
+
+    #[test]
+    fn each_real_operator_computes_its_value() {
+        use Value::{Int, Real};
+        assert_eq!(of(BinaryOp::Add, Real(1.5), Int(2)), Some(Real(3.5)));
+        assert_eq!(of(BinaryOp::Sub, Real(1.5), Real(0.5)), Some(Real(1.0)));
+        assert_eq!(of(BinaryOp::Div, Real(3.0), Int(2)), Some(Real(1.5)));
+        assert_eq!(of(BinaryOp::Rem, Real(3.5), Int(2)), Some(Real(1.5)));
+    }
+
+    #[test]
+    fn an_operand_too_large_to_compute_overflows_the_result() {
+        use Value::{Int, Overflow, Real};
+        assert_eq!(of(BinaryOp::Mul, Overflow, Real(1.5)), Some(Overflow));
+        assert_eq!(of(BinaryOp::BitOr, Int(1), Overflow), Some(Overflow));
+        assert_eq!(of(BinaryOp::Shl, Overflow, Int(1)), None);
+    }
+
+    #[test]
+    fn unary_operators_apply_to_the_value() {
+        let mut exprs = Arena::new();
+        let mut literal = |literal| exprs.alloc(Expr::Literal(literal));
+        let real = literal(Literal::Real("1.5".to_owned()));
+        let int = literal(Literal::Int("6".to_owned()));
+        let suffixed = literal(Literal::Int("6u".to_owned()));
+        let float = literal(Literal::Real("1.5f".to_owned()));
+        let mut unary = |op, expr| exprs.alloc(Expr::Unary { op, expr });
+        let neg = unary(UnaryOp::Neg, real);
+        let not = unary(UnaryOp::BitNot, int);
+        let plus = unary(UnaryOp::Plus, int);
+        let not_real = unary(UnaryOp::BitNot, real);
+        let neg_int = unary(UnaryOp::Neg, int);
+        assert_eq!(value(&exprs, neg), Some(Value::Real(-1.5)));
+        assert_eq!(value(&exprs, not), Some(Value::Int(-7)));
+        assert_eq!(value(&exprs, plus), Some(Value::Int(6)));
+        assert_eq!(value(&exprs, neg_int), Some(Value::Int(-6)));
+        assert_eq!(value(&exprs, not_real), None);
+        assert_eq!(value(&exprs, suffixed), None);
+        assert_eq!(value(&exprs, float), None);
+        let mut seen = Vec::new();
+        parts(&exprs, neg, &mut |part| seen.push(part));
+        assert_eq!(seen, [neg, real]);
     }
 }

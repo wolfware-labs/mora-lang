@@ -12,7 +12,6 @@ use crate::bodies::{
     LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
 };
 use crate::defs::ItemId;
-use crate::items::ItemKind;
 use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
@@ -144,7 +143,8 @@ impl Check<'_> {
     fn function_body(&mut self, root: ExprId, ret: Option<Ty>) {
         let outer = std::mem::replace(&mut self.ret, ret);
         match &self.ret {
-            Some(ret) if *ret != Ty::UNIT && !matches!(self.body.exprs[root], Expr::Block(_)) => {
+            // A block has no value of its own to check.
+            Some(ret) if *ret != Ty::UNIT => {
                 let ret = ret.clone();
                 self.check(root, &ret);
             }
@@ -550,14 +550,11 @@ impl Check<'_> {
     fn target(&self, target: &Target) -> Option<Ty> {
         match target {
             Target::Error => Some(Ty::Error),
-            Target::Item(Resolved::Item(item))
-                if item_data(self.db, *item).kind == ItemKind::Field =>
-            {
-                match signature(self.db, *item) {
-                    Signature::Value(ty) => Some(ty.clone()),
-                    _ => None,
-                }
-            }
+            // Only a constant or a static has a value signature.
+            Target::Item(Resolved::Item(item)) => match signature(self.db, *item) {
+                Signature::Value(ty) => Some(ty.clone()),
+                _ => None,
+            },
             Target::Item(_) => None,
             Target::Value(value) => {
                 let member = item_data(self.db, value.ty).values.get(value.index)?;
@@ -745,7 +742,8 @@ impl Check<'_> {
                     self.errors.push(TypeError::Unary {
                         expr,
                         op,
-                        operand: found,
+                        operand,
+                        ty: found,
                     });
                 }
                 Some(BOOL)
@@ -767,7 +765,7 @@ impl Check<'_> {
                     None if !is_known(&found) => return None,
                     None => None,
                 };
-                self.operated(expr, op, found, result)
+                self.operated(expr, op, (operand, found), result)
             }
         }
     }
@@ -779,21 +777,27 @@ impl Check<'_> {
         if result.is_none() && !is_known(&found) {
             return None;
         }
-        self.operated(expr, op, found, result)
+        self.operated(expr, op, (operand, found), result)
     }
 
-    /// The type of a unary operation, or its error when `result` is `None`.
+    /// The type of a unary operation on `operand`, of type `ty`, or its
+    /// error when `result` is `None`.
     fn operated(
         &mut self,
         expr: ExprId,
         op: UnaryOp,
-        operand: Ty,
+        (operand, ty): (ExprId, Ty),
         result: Option<Primitive>,
     ) -> Option<Ty> {
         match result {
             Some(ty) => Some(Ty::Primitive(ty)),
             None => {
-                self.errors.push(TypeError::Unary { expr, op, operand });
+                self.errors.push(TypeError::Unary {
+                    expr,
+                    op,
+                    operand,
+                    ty,
+                });
                 Some(Ty::Error)
             }
         }
@@ -856,12 +860,14 @@ impl Check<'_> {
                     Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
                     None if !is_known(&value) => None,
                     None => {
-                        let rhs = self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error);
+                        let rhs_ty = self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error);
                         self.errors.push(TypeError::Binary {
                             expr,
                             op,
-                            lhs: value,
+                            lhs,
                             rhs,
+                            lhs_ty: value,
+                            rhs_ty,
                         });
                         Some(Ty::Error)
                     }
@@ -886,8 +892,10 @@ impl Check<'_> {
                 self.errors.push(TypeError::Binary {
                     expr,
                     op,
-                    lhs: l,
-                    rhs: r,
+                    lhs,
+                    rhs,
+                    lhs_ty: l,
+                    rhs_ty: r,
                 });
                 Some(otherwise.unwrap_or(Ty::Error))
             }
@@ -922,6 +930,7 @@ impl Check<'_> {
         {
             self.errors.push(TypeError::Cast {
                 expr,
+                operand,
                 from,
                 to: to.clone(),
             });
