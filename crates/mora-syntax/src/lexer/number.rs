@@ -52,6 +52,13 @@ pub fn real_value(text: &str) -> Option<(f64, RealSuffix)> {
     Some((value, suffix))
 }
 
+/// Whether the finite real `value` is too large for a `float`: it would
+/// round to infinity there.
+pub fn too_large_for_float(value: f64) -> bool {
+    // The conversion is the point: it rounds to the nearest `float`.
+    (value as f32).is_infinite()
+}
+
 /// The integer suffix written `text`, in either case.
 fn int_suffix(text: &str) -> Option<IntSuffix> {
     [
@@ -138,7 +145,7 @@ pub(crate) fn check(text: &str) -> (SyntaxKind, Vec<(Code, String)>) {
     }
     if parts.real {
         match real_value(text) {
-            Some((value, RealSuffix::F)) if (value as f32).is_infinite() => errors.push((
+            Some((value, RealSuffix::F)) if too_large_for_float(value) => errors.push((
                 codes::MR0010,
                 "the literal is too large for a `float`".into(),
             )),
@@ -249,6 +256,14 @@ mod tests {
     fn codes_of(text: &str) -> (SyntaxKind, Vec<Code>) {
         let (kind, errors) = check(text);
         (kind, errors.into_iter().map(|(code, _)| code).collect())
+    }
+
+    #[test]
+    fn a_float_is_too_large_past_its_largest_finite_value() {
+        assert!(!too_large_for_float(f64::from(f32::MAX)));
+        assert!(!too_large_for_float(-f64::from(f32::MAX)));
+        assert!(too_large_for_float(1e39));
+        assert!(too_large_for_float(-1e39));
     }
 
     #[test]

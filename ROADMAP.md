@@ -315,8 +315,8 @@ Bidirectional checking of literals (target typing of §3.5), numeric conversions
 
 Done when:
 
-- UI tests for each conversion row of §5.10 and each error code above.
-- Run tests for integer promotion and float target typing (`float x = 1.5;`).
+- UI tests for each numeric conversion row of §5.10, the explicit numeric cast, the rule that nothing converts implicitly between `bool` and integers, between `char` and integers or to `string`, and each error code above.
+- Run tests for integer promotion and float target typing (`let x: float = 1.5;`).
 
 ### M1.10 MIR and lowering from HIR
 
@@ -711,6 +711,7 @@ Done when:
 
 - Run tests for every operator.
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
+- UI tests for the `T` to `T?` row of §5.10.
 
 ### M3.6 Operators, conversions and indexers
 
@@ -722,6 +723,7 @@ Done when:
 
 - Run tests for a vector type with operators and an indexer.
 - UI test for an unpaired `==`.
+- UI tests for the newtype-to-underlying-type row of §5.10, and for a conversion through a user type's `IFrom<S>`.
 
 ### M3.7 Results and `?` propagation
 
@@ -733,6 +735,7 @@ Done when:
 
 - §2.4's `Total` runs.
 - A top-level `?` that fails prints `error: ...` and exits with 1.
+- UI tests for the `T` to `Result<T, E>` and `@From` rows of §5.10.
 
 ### M3.8 Generics and constraints
 
@@ -777,6 +780,7 @@ Done when:
 
 - Run tests for `List<IShape>` holding a class and a boxed struct.
 - A failing `(C)i` cast panics with the message of §11.4.
+- UI tests for the boxing and interface-value rows of §5.10.
 
 ### M3.12 Tuples, collection expressions and smaller expressions
 

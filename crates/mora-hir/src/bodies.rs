@@ -424,6 +424,21 @@ pub enum UnaryOp {
     FromEnd,
 }
 
+impl UnaryOp {
+    /// The operator as code writes it, `++` and `--` in either position.
+    pub fn text(self) -> &'static str {
+        match self {
+            UnaryOp::Plus => "+",
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+            UnaryOp::BitNot => "~",
+            UnaryOp::PreIncrement => "++",
+            UnaryOp::PreDecrement => "--",
+            UnaryOp::FromEnd => "^",
+        }
+    }
+}
+
 /// A binary operator; also the operator of a compound assignment or of a
 /// relational pattern.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -451,6 +466,38 @@ pub enum BinaryOp {
     And,
     Or,
     Coalesce,
+}
+
+impl BinaryOp {
+    /// The operator as code writes it; a compound assignment adds `=`.
+    pub fn text(self) -> &'static str {
+        use BinaryOp as B;
+        match self {
+            B::Mul => "*",
+            B::Div => "/",
+            B::Rem => "%",
+            B::WrappingMul => "*%",
+            B::Add => "+",
+            B::Sub => "-",
+            B::WrappingAdd => "+%",
+            B::WrappingSub => "-%",
+            B::Shl => "<<",
+            B::Shr => ">>",
+            B::UShr => ">>>",
+            B::Lt => "<",
+            B::Gt => ">",
+            B::Le => "<=",
+            B::Ge => ">=",
+            B::Eq => "==",
+            B::Ne => "!=",
+            B::BitAnd => "&",
+            B::BitXor => "^",
+            B::BitOr => "|",
+            B::And => "&&",
+            B::Or => "||",
+            B::Coalesce => "??",
+        }
+    }
 }
 
 /// A statement of a body (§7.10).
@@ -675,7 +722,7 @@ mod tests {
             dump(text),
             "top-level {\n    let p#0 = new Point { X = 3 };\n    \
              Console{external}.WriteLine{external}(p#0.Length());\n}\n\n\
-             fn UsersApi.Point.Length() {\n    let d#0 = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
+             fn UsersApi.Point.Length() {\n    let d#0: int = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
              return d#0 + Twice{fn UsersApi.Twice}(X{field UsersApi.Point.X});\n}\n\n\
              fn UsersApi.Twice(n#0) => n#0 * 2;\n"
         );
@@ -690,12 +737,12 @@ mod tests {
                     let t = match (total) { 0 => \"none\", var n when n > 1 => \"many\", _ => \"one\" };\n";
         assert_eq!(
             dump(text),
-            "top-level {\n    var total#0 = 0;\n    \
-             for (var i#1 = 0; i#1 < 10; i#1++) {\n        \
+            "top-level {\n    var total#0: int = 0;\n    \
+             for (var i#1: int = 0; i#1 < 10; i#1++) {\n        \
              if (((i#1 % 2) == 0) && (i#1 > 2)) {\n            total#0 += i#1;\n        \
              } else {\n            continue;\n        }\n    }\n    \
              while (total#0 > 5) total#0 = (total#0 - 1);\n    \
-             let s#2 = $\"{total#0,4:x} items\";\n    \
+             let s#2: string = $\"{total#0,4:x} items\";\n    \
              let t#4 = match (total#0) {\n        0 => \"none\",\n        \
              var n#3 when n#3 > 1 => \"many\",\n        _ => \"one\",\n    };\n}\n"
         );
@@ -1096,13 +1143,13 @@ fn UsersApi.Use(a#0) => 0;
 fn UsersApi.Id(x#0) => x#0;
 
 fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
-    var i#6 = 0;
-    var j#7 = 1;
+    var i#6: int = 0;
+    var j#7: int = 1;
     for (i#6 = 0, j#7 = 1; i#6 < n#3; i#6++, j#7--) {}
     let (let a#8, let b#9) = (1, 2);
-    let marked#10 = 1;
+    let marked#10: int = 1;
     let lits#11 = (1, 2.5, 'c', "s", true, false, none);
-    let one#12 = (n#3,);
+    let one#12: (int,) = (n#3,);
     let named#13 = (Left: a#8, Right: b#9);
     let ops#14 = (-n#3, !flag#5, ~n#3, ++i#6, --i#6, ^1, +n#3);
     let bins#15 = (n#3 / 2, n#3 *% 2, n#3 + 1, n#3 +% 1, n#3 -% 1, n#3 << 1, n#3 >> 1, n#3 >>> 1, n#3 <= 1, n#3 >= 1, n#3 != 1, n#3 & 1, n#3 ^ 1, n#3 | 1, flag#5 || flag#5, s#4 ?? "d");
@@ -1132,17 +1179,17 @@ fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
         Shape.Rect{case UsersApi.Shape.Rect}((> 0.0 and < 1.0), (not 2.0 or 3.0)) => 2,
         _ => 0,
     };
-    let lp#28 = (xs#2 is [1, .. var rest#26]) && (p#1 is P {X: 1, Y: _} let pq#27);
+    let lp#28: bool = (xs#2 is [1, .. var rest#26]) && (p#1 is P {X: 1, Y: _} let pq#27);
     let e#29 = xs#2?[0];
     let w#30 = q#23 with { X = 3, Y = 4 };
     let c#31 = ((long)n#3) as long;
     let arr#32 = new int[n#3];
     let sa#33 = stackalloc int[2];
     let d#34 = default(int);
-    let nm#35 = nameof(n#3);
-    let sz#36 = sizeof(int);
+    let nm#35: string = nameof(n#3);
+    let sz#36: int = sizeof(int);
     let r#37 = 1..n#3;
-    let str#38 = $"{n#3,4:x} {flag#5}";
+    let str#38: string = $"{n#3,4:x} {flag#5}";
     foreach (ref var x#39 in xs#2) {}
     do {
         i#6++;
@@ -1464,7 +1511,7 @@ get extension#0.Empty(items#0) => items#0[0];
             "let u#11 = Shape{union UsersApi.Shape};",
             "let sh#12 = IShape{interface UsersApi.IShape};",
             "let m#13 = M{macro UsersApi.M};",
-            "let lim#14 = Limit{value UsersApi.Limit};",
+            "let lim#14: int = Limit{value UsersApi.Limit};",
             "let n#15 = int.Parse(\"1\");",
             "let skipped#16 = F{fn UsersApi.F}.Name;",
             "UsersApi.Shape.Circle{case UsersApi.Shape.Circle}(let r#17) => {",
@@ -1515,7 +1562,7 @@ get extension#0.Empty(items#0) => items#0[0];
         for expected in [
             "let made#2 = new P(1);",
             "let empty#3 = new P {};",
-            "let isInt#4 = n#1 is int;",
+            "let isInt#4: bool = n#1 is int;",
             "let f#5 = [move nope{error}] () => 1;",
             "p#0.Q(_) => {},",
         ] {

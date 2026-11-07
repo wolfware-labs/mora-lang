@@ -1,0 +1,15 @@
+// There is no implicit conversion between `bool` and integers, between
+// `char` and integers, or from anything to `string` (§5.10).
+Convert(flag: bool, c: char, n: int, x: double) {
+    let a: int = flag; //~ ERROR MR0203
+    let b: bool = n; //~ ERROR MR0203
+    let d: bool = 0; //~ ERROR MR0203
+    let e: int = c; //~ ERROR MR0203
+    let f: char = n; //~ ERROR MR0203
+    let g: char = 65; //~ ERROR MR0203
+    let h: string = n; //~ ERROR MR0203
+    let k: string = x; //~ ERROR MR0203
+    let m: string = c; //~ ERROR MR0203
+    let o: string = flag; //~ ERROR MR0203
+    let p: string = $"{n}";
+}

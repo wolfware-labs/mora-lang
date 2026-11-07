@@ -1,0 +1,17 @@
+// An explicit cast converts between any two numeric types (§5.10), and
+// between nothing else.
+Cast(b: byte, l: long, ul: ulong, x: double, f: float, flag: bool, c: char, s: string) {
+    let a1 = (byte)l;
+    let a2 = (int)x;
+    let a3 = (float)ul;
+    let a4 = (ulong)b;
+    let a5 = (nint)f;
+    let a6 = (double)(l + 1);
+    let a7 = (string)s;
+    let b1 = (int)flag; //~ ERROR MR0204
+    let b2 = (bool)b; //~ ERROR MR0204
+    let b3 = (int)c; //~ ERROR MR0204
+    let b4 = (char)l; //~ ERROR MR0204
+    let b5 = (string)x; //~ ERROR MR0204
+    let b6 = (long)s; //~ ERROR MR0204
+}

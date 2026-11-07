@@ -316,7 +316,12 @@ mod tests {
     #[test]
     fn every_type_keyword_names_a_type() {
         for &keyword in PREDEFINED_TYPES {
-            assert_ne!(predefined(keyword), TypeRef::Missing, "{keyword:?}");
+            let ty = predefined(keyword);
+            assert_ne!(ty, TypeRef::Missing, "{keyword:?} names no type");
+            // `Primitive::keyword` gives the text back.
+            if let TypeRef::Primitive(primitive) = ty {
+                assert_eq!(Some(primitive.keyword()), keyword.text(), "{keyword:?}");
+            }
         }
     }
 

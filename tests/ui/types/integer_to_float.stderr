@@ -1,0 +1,71 @@
+error[MR0203]: mismatched types: expected `float`, found `int`
+  --> tests/ui/types/integer_to_float.mr:15:21
+   |
+15 |     let b1: float = i; //~ ERROR MR0203
+   |                     ^ this is `int`
+   |
+   = note: `int` converts to `float` only through an explicit cast, because not every value of `int` is a value of `float`
+help: convert it explicitly with `(float)`
+   |
+15 |     let b1: float = (float)i; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `float`, found `uint`
+  --> tests/ui/types/integer_to_float.mr:16:21
+   |
+16 |     let b2: float = u; //~ ERROR MR0203
+   |                     ^ this is `uint`
+   |
+   = note: `uint` converts to `float` only through an explicit cast, because not every value of `uint` is a value of `float`
+help: convert it explicitly with `(float)`
+   |
+16 |     let b2: float = (float)u; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `double`, found `long`
+  --> tests/ui/types/integer_to_float.mr:17:22
+   |
+17 |     let b3: double = l; //~ ERROR MR0203
+   |                      ^ this is `long`
+   |
+   = note: `long` converts to `double` only through an explicit cast, because not every value of `long` is a value of `double`
+help: convert it explicitly with `(double)`
+   |
+17 |     let b3: double = (double)l; //~ ERROR MR0203
+   |                      ++++++++
+
+error[MR0203]: mismatched types: expected `double`, found `ulong`
+  --> tests/ui/types/integer_to_float.mr:18:22
+   |
+18 |     let b4: double = ul; //~ ERROR MR0203
+   |                      ^^ this is `ulong`
+   |
+   = note: `ulong` converts to `double` only through an explicit cast, because not every value of `ulong` is a value of `double`
+help: convert it explicitly with `(double)`
+   |
+18 |     let b4: double = (double)ul; //~ ERROR MR0203
+   |                      ++++++++
+
+error[MR0203]: mismatched types: expected `float`, found `double`
+  --> tests/ui/types/integer_to_float.mr:19:21
+   |
+19 |     let b5: float = d; //~ ERROR MR0203
+   |                     ^ this is `double`
+   |
+   = note: `double` converts to `float` only through an explicit cast, because not every value of `double` is a value of `float`
+help: convert it explicitly with `(float)`
+   |
+19 |     let b5: float = (float)d; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `int`, found `double`
+  --> tests/ui/types/integer_to_float.mr:20:19
+   |
+20 |     let b6: int = d; //~ ERROR MR0203
+   |                   ^ this is `double`
+   |
+   = note: `double` converts to `int` only through an explicit cast, because not every value of `double` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+20 |     let b6: int = (int)d; //~ ERROR MR0203
+   |                   +++++

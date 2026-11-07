@@ -1,0 +1,95 @@
+error[MR0203]: mismatched types: expected `int`, found `bool`
+ --> tests/ui/types/no_implicit_conversions.mr:4:18
+  |
+4 |     let a: int = flag; //~ ERROR MR0203
+  |                  ^^^^ this is `bool`
+  |
+  = note: there is no implicit conversion to or from `bool`
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/no_implicit_conversions.mr:5:19
+  |
+5 |     let b: bool = n; //~ ERROR MR0203
+  |                   ^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `bool`
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/types/no_implicit_conversions.mr:6:19
+  |
+6 |     let d: bool = 0; //~ ERROR MR0203
+  |                   ^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `bool`
+
+error[MR0203]: mismatched types: expected `int`, found `char`
+ --> tests/ui/types/no_implicit_conversions.mr:7:18
+  |
+7 |     let e: int = c; //~ ERROR MR0203
+  |                  ^ this is `char`
+  |
+  = note: there is no implicit conversion to or from `char`
+
+error[MR0203]: mismatched types: expected `char`, found `int`
+ --> tests/ui/types/no_implicit_conversions.mr:8:19
+  |
+8 |     let f: char = n; //~ ERROR MR0203
+  |                   ^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `char`
+
+error[MR0203]: mismatched types: expected `char`, found `int`
+ --> tests/ui/types/no_implicit_conversions.mr:9:19
+  |
+9 |     let g: char = 65; //~ ERROR MR0203
+  |                   ^^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `char`
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+  --> tests/ui/types/no_implicit_conversions.mr:10:21
+   |
+10 |     let h: string = n; //~ ERROR MR0203
+   |                     ^ this is `int`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+10 |     let h: string = $"{n}"; //~ ERROR MR0203
+   |                     +++ ++
+
+error[MR0203]: mismatched types: expected `string`, found `double`
+  --> tests/ui/types/no_implicit_conversions.mr:11:21
+   |
+11 |     let k: string = x; //~ ERROR MR0203
+   |                     ^ this is `double`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+11 |     let k: string = $"{x}"; //~ ERROR MR0203
+   |                     +++ ++
+
+error[MR0203]: mismatched types: expected `string`, found `char`
+  --> tests/ui/types/no_implicit_conversions.mr:12:21
+   |
+12 |     let m: string = c; //~ ERROR MR0203
+   |                     ^ this is `char`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+12 |     let m: string = $"{c}"; //~ ERROR MR0203
+   |                     +++ ++
+
+error[MR0203]: mismatched types: expected `string`, found `bool`
+  --> tests/ui/types/no_implicit_conversions.mr:13:21
+   |
+13 |     let o: string = flag; //~ ERROR MR0203
+   |                     ^^^^ this is `bool`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+13 |     let o: string = $"{flag}"; //~ ERROR MR0203
+   |                     +++    ++

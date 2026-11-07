@@ -20,6 +20,6 @@ fn App.Factorial(n#0) {
 }
 
 fn App.Add(a#0, b#1) {
-    let result#2 = a#0 + b#1;
+    let result#2: int = a#0 + b#1;
     return result#2;
 }

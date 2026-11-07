@@ -1,0 +1,25 @@
+// The numeric operators work in one type (§7.12): a literal takes the
+// other operand's type, two operands of one type of `int` or wider keep
+// it, and otherwise the first of `int`, `uint`, `long`, `ulong`, `float`
+// and `double` that both convert to.
+Promote(b: byte, s: short, us: ushort, i: int, u: uint, l: long, ul: ulong, f: float) {
+    let bytes: int = b + b;
+    let shorts: int = s * us;
+    let mixed: long = i + u;
+    let floats: double = i + f;
+    let half: float = f * 0.5;
+    let small: float = b * f;
+    let same: uint = u + u;
+    let wide: ulong = ul + b;
+    let literal: long = l + 1;
+    let neg: long = -u;
+    let widened: int = ~b;
+    let shifted: int = b << 2;
+    let compared: bool = b < ul;
+    let notByte: byte = b + b; //~ ERROR MR0203
+    let notInt: int = i + u; //~ ERROR MR0203
+    let notFloat: float = i * f; //~ ERROR MR0203
+    let noCommon = l + ul; //~ ERROR MR0204
+    let alsoNone = l * f; //~ ERROR MR0204
+    let negative = -ul; //~ ERROR MR0204
+}

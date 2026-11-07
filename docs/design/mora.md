@@ -320,9 +320,11 @@ The compiler knows only Mora's syntax (D-59). A word that is not a keyword is an
 
 ### 3.5 Literals
 
-**Integer literals.** Decimal `1234`, hexadecimal `0x4D2`, binary `0b1001`, with `_` separators allowed between digits. Suffixes `u`, `l`, `ul` (any case) pick `uint`, `long`, `ulong`. An unsuffixed literal takes the expected type when there is one and the value fits; otherwise it is the first of `int`, `long` and `ulong` that holds its value. A literal that does not fit its type is error `MR0010`. A malformed literal (no digits after `0x` or `0b`, a `_` that is not between two digits, an unknown suffix) is error `MR0014`.
+**Integer literals.** Decimal `1234`, hexadecimal `0x4D2`, binary `0b1001`, with `_` separators allowed between digits. Suffixes `u`, `l`, `ul` (any case) pick `uint`, `long`, `ulong`. An unsuffixed literal takes the expected type when there is one and the value fits; otherwise it is the first of `int`, `long` and `ulong` that holds its value. A value fits `float` or `double` when it is exact there, and a `-` written before a literal belongs to its value, so `let b: sbyte = -128;` compiles. A literal that does not fit its type is error `MR0010`. A malformed literal (no digits after `0x` or `0b`, a `_` that is not between two digits, an unknown suffix) is error `MR0014`.
 
 **Real literals.** `1.5`, `1e9`, `1.5e-3`, with suffixes `f` (`float`), `d` (`double`). An unsuffixed real takes the expected type when it is `float` or `double`; otherwise `double`, so `let x: float = 1.5;` compiles. The suffix `m` (`decimal`) is reserved (OQ-12) and is error `MR0014`. A real literal too large for its type is error `MR0010`.
+
+**Operations on literals.** An expression whose every operand is an unsuffixed literal, combined only with parentheses, unary `-`, `+` and `~`, and binary `+`, `-`, `*`, `/`, `%`, `&`, `|` and `^`, takes the numeric type it is expected to have as one literal would. Its value is computed exactly for integers and as a `double` computes it for reals, and it is error `MR0010` when the value does not fit that type, an integer too large to compute included (a real result fits unless computing it gives an infinity at any step, so `0.0 / 0.0` fits and `(1e308 * 10.0) * 0.0` does not), so `let f: float = 1.5 * 2.0;` and `let b: byte = 1 + 2;` compile and `let b: byte = 200 + 100;` does not. An integer division by zero, a real where an integer type is expected, and an expression without an expected type follow the rules of §7.12 instead.
 
 **Character literals.** `'a'`. A `char` is a Unicode scalar value (§5.2), so `'𝄞'` (U+1D11E, outside the BMP) is one `char`. Escapes: `\'`, `\"`, `\\`, `\0`, `\a`, `\b`, `\f`, `\n`, `\r`, `\t`, `\v`, `\uXXXX` (four hex digits, not a surrogate), `\u{X...}` (one to six hex digits). Any other escape, `\u` with the wrong number of digits, or a code point that is not a scalar value is error `MR0013`. A character literal holds exactly one character: `''` and `'ab'` are error `MR0015`.
 
@@ -585,7 +587,9 @@ public interface IFrom<S> {
 }
 ```
 
-The compiler knows no conversion of its own beyond boxing into `any I`: the standard library's types get theirs by implementing `IFrom` like any other type.
+The compiler knows no conversion of its own beyond boxing into `any I`: the standard library's types get theirs by implementing `IFrom` like any other type. Until the compiler can look `IFrom` implementations up (roadmap deliverable M3.6), it carries the numeric rows of the table below as a built-in table that stands in for those of `Std` and gives the same conversions (D-135).
+
+A value of type `S` where a value of type `T` is expected, as the initializer of a local declared `T`, a value assigned to a place of type `T`, a value returned from a function that returns `T` or a condition, which expects `bool`, is error `MR0203` unless `S` is `T` or `T` implements `IFrom<S>`.
 
 | From | To | Through |
 |---|---|---|
@@ -604,6 +608,7 @@ The compiler knows no conversion of its own beyond boxing into `any I`: the stan
 - A conversion that can fail, or that has a cost the reader should see, is a named function called explicitly: `int.TryFrom(x)` gives `int?`, `Port.From(n)` gives `Port?`.
 - Conversions do not chain: `A` to `C` through `B` needs `C : IFrom<A>`.
 - There is no implicit conversion between `bool` and integers, between `char` and integers, or from anything to `string`.
+- An explicit cast `(T)x` converts only between numeric types; any other cast is error `MR0204`, unless `x` already has type `T` or the cast is from an interface value as the last row allows.
 - `implicit operator` and `explicit operator` declarations do not exist.
 
 ## 6. Declarations
@@ -1167,17 +1172,19 @@ let total = 4;       // MR0180: `total` is in scope
 
 ### 7.11 Statements
 
-`if`/`else`, `while`, `do`/`while`, `for`, `foreach`, `break`, `continue`, `return`, blocks, local functions, expression statements (calls, assignments, increments, `await`) and `match`. `foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
+`if`/`else`, `while`, `do`/`while`, `for`, `foreach`, `break`, `continue`, `return`, blocks, local functions, expression statements (calls, assignments, increments, `await`) and `match`. The condition of `if`, `while`, `do`/`while` and `for`, like that of `c ? a : b`, is a `bool`, and there is no implicit conversion to `bool` (`MR0203`). The two branches of `c ? a : b` take the type expected of it, or else have one type that the other converts to. `foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
 
 ### 7.12 Arithmetic
 
 - **Numeric promotion.** The binary operators `+`, `-`, `*`, `/`, `%`, `+%`, `-%`, `*%`, `&`, `|`, `^`, `==`, `!=`, `<`, `>`, `<=` and `>=` on two numeric operands pick one type to work in:
   1. An unsuffixed integer literal operand takes the other operand's type when that type is numeric and holds the literal's value exactly, and an unsuffixed real literal operand takes the other operand's type when it is `float` or `double` (§3.5), so `x * 0.5` with `x: float` works in `float`.
   2. If both operands have the same type and it is `int`, `uint`, `nint`, `nuint`, `long`, `ulong`, `float` or `double`, the operation works in that type.
-  3. Otherwise it works in the first of `int`, `uint`, `long`, `ulong`, `float` and `double` that both operands convert to implicitly (§5.10), so `byte + byte` is `int`, `int + uint` is `long` and `int + float` is `double`. When there is none, as for `long` and `ulong`, the expression is an error and an explicit cast `(T)x` on one operand is the fix. §5.10 has no implicit conversion to or from `nint` and `nuint`, so they mix with another integer type only through an explicit cast.
+  3. Otherwise it works in the first of `int`, `uint`, `long`, `ulong`, `float` and `double` that both operands convert to implicitly (§5.10), so `byte + byte` is `int`, `int + uint` is `long` and `int + float` is `double`. When there is none, as for `long` and `ulong`, the expression is error `MR0204` and an explicit cast `(T)x` on one operand is the fix. §5.10 has no implicit conversion to or from `nint` and `nuint`, so they mix with another integer type only through an explicit cast.
 
   The result has that type; comparisons give `bool`. Among numeric types, `&`, `|`, `^`, `+%`, `-%` and `*%` are defined only on integer types.
-- **Unary operators.** Unary `+`, `-` and `~` widen `byte`, `sbyte`, `short` and `ushort` to `int`; `-x` on a `uint` gives a `long`, and on a `ulong` is an error.
+- **Unary operators.** Unary `+`, `-` and `~` widen `byte`, `sbyte`, `short` and `ushort` to `int`; `-x` on a `uint` gives a `long`, and on a `ulong` or an `nuint` is error `MR0204`. `~` is defined only on integer types, and `++` and `--` keep the numeric type of their operand.
+- **Other operands.** `!`, `&&` and `||` take `bool` operands and give `bool`; `&`, `|` and `^` on two `bool` values give `bool` and evaluate both. `==` and `!=` compare two values of one type, and `<`, `>`, `<=` and `>=` order numbers, `char` values and `string` values (§8.5). `+` on two `string` values concatenates them (§5.3). An operator on operands it is not defined for, such as `string + int`, `!` on an `int` or `<` on two `bool` values, is error `MR0204`.
+- **Compound assignment.** `x op= y`, with `x` of type `T`, means `x = (T)(x op y)` with `x` evaluated once: whenever `x op y` is defined, its result converts back to `T` as the cast would, so `b += 1` with `b: byte` compiles although `byte + byte` is an `int`. Overflow follows the rules above, checked or wrapping as for `op`, so `+%=`, `-%=` and `*%=` always wrap. When `x op y` is not defined, as for `s += 1` with `s: string`, it is error `MR0204`.
 - **Overflow** in `+`, `-`, `*`, unary `-`, `++` and `--` panics in debug builds and wraps in release builds, unless the profile sets `overflow-checks = true` (§17.2). `+%`, `-%`, `*%` and their compound forms always wrap (D-12).
 - Integer division and remainder by zero panic in every build. `int.MinValue / -1` panics.
 - **Shifts.** The left operand of `<<`, `>>` and `>>>` widens from `byte`, `sbyte`, `short` and `ushort` to `int`, and the result has its type. The count converts implicitly to `int` and is masked to the width of the result type: `count & 31` for a 32-bit type and `count & 63` for a 64-bit one. `>>` fills with the sign bit for a signed type and with zeros for an unsigned one; `>>>` is the unsigned shift, which always fills with zeros.
@@ -3307,6 +3314,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-132 | The bindings of an `is` pattern are in scope to the end of the statement that holds it, so a negated test with an early return does not bind for the code after it | user | 7.8 |
 | D-133 | Types and values are looked up apart: a type position skips the value members of the enclosing types, so a field may share its type's name | user | 14.5 |
 | D-134 | Nesting is limited to 256 levels, chains included; deeper nesting is error `MR0018`, once per statement | user | 3.1, 14.4 |
+| D-135 | Until the compiler can look up `IFrom` implementations (M3.6), the checker carries the numeric rows of §5.10 as a built-in table that stands in for those of `Std`; the conversions are the same | user | 5.10 |
 
 ## 24. Open questions
 

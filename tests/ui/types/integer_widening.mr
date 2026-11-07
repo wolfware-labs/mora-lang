@@ -1,0 +1,35 @@
+// An integer converts implicitly to a wider integer type of the same
+// signedness, or to a wider signed type (§5.10).
+Widen(b: byte, sb: sbyte, s: short, us: ushort, i: int, u: uint) {
+    let a1: ushort = b;
+    let a2: uint = b;
+    let a3: ulong = b;
+    let a4: short = b;
+    let a5: int = b;
+    let a6: long = b;
+    let a7: short = sb;
+    let a8: int = sb;
+    let a9: long = sb;
+    let a10: int = s;
+    let a11: long = s;
+    let a12: uint = us;
+    let a13: ulong = us;
+    let a14: int = us;
+    let a15: long = us;
+    let a16: long = i;
+    let a17: ulong = u;
+    let a18: long = u;
+}
+
+// Narrowing, or changing to an unsigned type, needs an explicit cast.
+Narrow(sb: sbyte, s: short, i: int, l: long, u: uint, ul: ulong) {
+    let b1: byte = sb; //~ ERROR MR0203
+    let b2: sbyte = s; //~ ERROR MR0203
+    let b3: short = i; //~ ERROR MR0203
+    let b4: int = l; //~ ERROR MR0203
+    let b5: uint = i; //~ ERROR MR0203
+    let b6: int = u; //~ ERROR MR0203
+    let b7: ulong = l; //~ ERROR MR0203
+    let b8: long = ul; //~ ERROR MR0203
+    let ok: int = (int)l;
+}

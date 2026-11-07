@@ -2,7 +2,7 @@
 //!
 //! Every crate reports problems as a [`Diagnostic`]: a [`Code`], a
 //! [`Severity`], a one-line message, a primary [`Label`], optional secondary
-//! labels, an optional note and zero or more [`Fix`]es. [`render`] prints one
+//! labels, an optional note and zero or more [`Fix`]es. [`render()`] prints one
 //! in the terminal layout of §17.6, and [`to_json_line`] prints it for
 //! `--message-format json`. Both read file paths and texts through
 //! [`Sources`]. Codes come from [`codes`], generated from the

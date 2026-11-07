@@ -127,6 +127,8 @@ registry! {
     MR0190 = 190: "`default` of a type that has no default value",
     MR0201 = 201: "`?` cannot convert the error to the function's error type",
     MR0202 = 202: "`?` on an option in a function that does not return an option",
+    MR0203 = 203: "mismatched types: a value of type `S` where `T` is expected and `T` does not implement `IFrom<S>`",
+    MR0204 = 204: "an operator is not defined for the types of its operands",
     MR0220 = 220: "polymorphic recursion without bound",
     MR0230 = 230: "a move-only value converted to an interface value",
     MR0231 = 231: "an interface with static abstract members or generic methods used as a type",

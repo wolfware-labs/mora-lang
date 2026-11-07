@@ -1,0 +1,95 @@
+error[MR0203]: mismatched types: expected `byte`, found `sbyte`
+  --> tests/ui/types/integer_widening.mr:26:20
+   |
+26 |     let b1: byte = sb; //~ ERROR MR0203
+   |                    ^^ this is `sbyte`
+   |
+   = note: `sbyte` converts to `byte` only through an explicit cast, because not every value of `sbyte` is a value of `byte`
+help: convert it explicitly with `(byte)`
+   |
+26 |     let b1: byte = (byte)sb; //~ ERROR MR0203
+   |                    ++++++
+
+error[MR0203]: mismatched types: expected `sbyte`, found `short`
+  --> tests/ui/types/integer_widening.mr:27:21
+   |
+27 |     let b2: sbyte = s; //~ ERROR MR0203
+   |                     ^ this is `short`
+   |
+   = note: `short` converts to `sbyte` only through an explicit cast, because not every value of `short` is a value of `sbyte`
+help: convert it explicitly with `(sbyte)`
+   |
+27 |     let b2: sbyte = (sbyte)s; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `short`, found `int`
+  --> tests/ui/types/integer_widening.mr:28:21
+   |
+28 |     let b3: short = i; //~ ERROR MR0203
+   |                     ^ this is `int`
+   |
+   = note: `int` converts to `short` only through an explicit cast, because not every value of `int` is a value of `short`
+help: convert it explicitly with `(short)`
+   |
+28 |     let b3: short = (short)i; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `int`, found `long`
+  --> tests/ui/types/integer_widening.mr:29:19
+   |
+29 |     let b4: int = l; //~ ERROR MR0203
+   |                   ^ this is `long`
+   |
+   = note: `long` converts to `int` only through an explicit cast, because not every value of `long` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+29 |     let b4: int = (int)l; //~ ERROR MR0203
+   |                   +++++
+
+error[MR0203]: mismatched types: expected `uint`, found `int`
+  --> tests/ui/types/integer_widening.mr:30:20
+   |
+30 |     let b5: uint = i; //~ ERROR MR0203
+   |                    ^ this is `int`
+   |
+   = note: `int` converts to `uint` only through an explicit cast, because not every value of `int` is a value of `uint`
+help: convert it explicitly with `(uint)`
+   |
+30 |     let b5: uint = (uint)i; //~ ERROR MR0203
+   |                    ++++++
+
+error[MR0203]: mismatched types: expected `int`, found `uint`
+  --> tests/ui/types/integer_widening.mr:31:19
+   |
+31 |     let b6: int = u; //~ ERROR MR0203
+   |                   ^ this is `uint`
+   |
+   = note: `uint` converts to `int` only through an explicit cast, because not every value of `uint` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+31 |     let b6: int = (int)u; //~ ERROR MR0203
+   |                   +++++
+
+error[MR0203]: mismatched types: expected `ulong`, found `long`
+  --> tests/ui/types/integer_widening.mr:32:21
+   |
+32 |     let b7: ulong = l; //~ ERROR MR0203
+   |                     ^ this is `long`
+   |
+   = note: `long` converts to `ulong` only through an explicit cast, because not every value of `long` is a value of `ulong`
+help: convert it explicitly with `(ulong)`
+   |
+32 |     let b7: ulong = (ulong)l; //~ ERROR MR0203
+   |                     +++++++
+
+error[MR0203]: mismatched types: expected `long`, found `ulong`
+  --> tests/ui/types/integer_widening.mr:33:20
+   |
+33 |     let b8: long = ul; //~ ERROR MR0203
+   |                    ^^ this is `ulong`
+   |
+   = note: `ulong` converts to `long` only through an explicit cast, because not every value of `ulong` is a value of `long`
+help: convert it explicitly with `(long)`
+   |
+33 |     let b8: long = (long)ul; //~ ERROR MR0203
+   |                    ++++++

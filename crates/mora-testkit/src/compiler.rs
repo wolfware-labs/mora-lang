@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn the_hir_of_one_file_has_no_header() {
         let hir = FrontEnd.hir("a.mr", "let x = 1;\n").unwrap();
-        assert_eq!(hir, "top-level {\n    let x#0 = 1;\n}\n");
+        assert_eq!(hir, "top-level {\n    let x#0: int = 1;\n}\n");
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let hir = FrontEnd.hir("a.mr", text).unwrap();
         assert_eq!(
             hir,
-            "//@ file src/Program.mr\ntop-level {\n    let x#0 = 1;\n}\n//@ file src/Util.mr\nfn App.F() {}\n"
+            "//@ file src/Program.mr\ntop-level {\n    let x#0: int = 1;\n}\n//@ file src/Util.mr\nfn App.F() {}\n"
         );
     }
 }
