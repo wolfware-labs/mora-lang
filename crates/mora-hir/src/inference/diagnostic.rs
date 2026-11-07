@@ -36,12 +36,18 @@ impl Source<'_> {
     }
 
     /// The edits that put `before` and `after` around `expr`, with
-    /// parentheses around an operation, which would otherwise bind
+    /// parentheses around it when `parens` says it would otherwise bind
     /// differently.
-    fn wrap(&self, expr: ExprId, before: &str, after: &str) -> Vec<TextEdit> {
+    fn wrap(
+        &self,
+        expr: ExprId,
+        parens: fn(&Expr) -> bool,
+        before: &str,
+        after: &str,
+    ) -> Vec<TextEdit> {
         let range = self.map.expr(expr);
         let file = self.file.id(self.db);
-        let (before, after) = if is_operation(&self.body.exprs[expr]) {
+        let (before, after) = if parens(&self.body.exprs[expr]) {
             (format!("{before}("), format!("){after}"))
         } else {
             (before.to_owned(), after.to_owned())
@@ -58,8 +64,36 @@ impl Source<'_> {
         let keyword = ty.keyword();
         Fix::new(
             format!("convert it explicitly with `({keyword})`"),
-            self.wrap(expr, &format!("({keyword})"), ""),
+            self.wrap(expr, is_operation, &format!("({keyword})"), ""),
         )
+    }
+
+    /// The fix that compares the number `expr` with zero, giving a `bool`.
+    fn compare_with_zero(&self, expr: ExprId) -> Fix {
+        Fix::new(
+            "compare it with zero",
+            self.wrap(expr, binds_at_or_below_equality, "", " != 0"),
+        )
+    }
+}
+
+/// Whether `expr` binds no tighter than `==`, so that ` != 0` after it
+/// would compare only its last operand (§7.1).
+fn binds_at_or_below_equality(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary { op, .. } => matches!(
+            op,
+            BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::BitAnd
+                | BinaryOp::BitXor
+                | BinaryOp::BitOr
+                | BinaryOp::And
+                | BinaryOp::Or
+                | BinaryOp::Coalesce
+        ),
+        Expr::Conditional { .. } | Expr::Assign { .. } | Expr::Lambda(_) => true,
+        _ => false,
     }
 }
 
@@ -116,7 +150,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
 /// `MR0204`: an operand of `&&` or `||` that is not a `bool`.
 fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty) -> Diagnostic {
     let t = source.name(operand);
-    Diagnostic::error(
+    let diagnostic = Diagnostic::error(
         codes::MR0204,
         format!(
             "`{}` takes `bool` operands, and this one is `{t}`",
@@ -124,7 +158,11 @@ fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty
         ),
         Label::new(source.span(operand_expr), format!("this is `{t}`")),
     )
-    .with_note("`&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`")
+    .with_note("`&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`");
+    match numeric::as_numeric(operand) {
+        Some(_) => diagnostic.with_fix(source.compare_with_zero(operand_expr)),
+        None => diagnostic,
+    }
 }
 
 /// `MR0203`: a value whose type does not convert to the expected one.
@@ -157,10 +195,7 @@ fn mismatch(
     if context == Context::Condition {
         let diagnostic = diagnostic.with_note("a condition must be a `bool`");
         return match found_number {
-            Some(_) => diagnostic.with_fix(Fix::new(
-                "compare it with zero",
-                source.wrap(expr, "", " != 0"),
-            )),
+            Some(_) => diagnostic.with_fix(source.compare_with_zero(expr)),
             None => diagnostic,
         };
     }
@@ -185,7 +220,7 @@ fn mismatch(
             match found {
                 Some(_) => diagnostic.with_fix(Fix::new(
                     "format it with interpolation",
-                    source.wrap(expr, "$\"{", "}\""),
+                    source.wrap(expr, is_operation, "$\"{", "}\""),
                 )),
                 None => diagnostic,
             }

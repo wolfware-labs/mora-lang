@@ -750,6 +750,69 @@ mod tests {
         assert_eq!(remaining, Vec::<&str>::new());
     }
 
+    /// `text` with the edits of every fix its diagnostics offer, and the
+    /// diagnostics left on the lines they changed, which must be none.
+    fn apply_fixes(text: &str) -> (String, Vec<String>) {
+        let mut edits: Vec<_> = diagnostics_of(text)
+            .iter()
+            .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.clone()))
+            .collect();
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
+        let mut fixed = text.to_owned();
+        for edit in &edits {
+            fixed.replace_range(
+                std::ops::Range::<usize>::from(edit.span.range),
+                &edit.replacement,
+            );
+        }
+        let before = mora_span::LineIndex::new(text);
+        let fixed_lines: std::collections::BTreeSet<_> = edits
+            .iter()
+            .filter_map(|edit| before.line_col(edit.span.range.start()).map(|at| at.line))
+            .collect();
+        let after = mora_span::LineIndex::new(&fixed);
+        let remaining = diagnostics_of(&fixed)
+            .iter()
+            .filter_map(|d| {
+                after
+                    .line_col(d.primary.span.range.start())
+                    .map(|at| at.line)
+            })
+            .filter(|line| fixed_lines.contains(line))
+            .map(|line| {
+                fixed
+                    .lines()
+                    .nth(line as usize)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        (fixed, remaining)
+    }
+
+    #[test]
+    fn a_number_in_a_logical_operation_is_compared_with_zero() {
+        let text = "F(n: int, x: double, b: byte, c: bool, s: string) {\n    \
+                    let a = n && c;\n    let d = c || x;\n    let e = (n + 1) && c;\n    \
+                    let f = (n & 1) || c;\n    let g = (c ? n : 2) && c;\n    \
+                    let h = c && (b ^ b);\n    let i = s && c;\n}\n";
+        let (fixed, remaining) = apply_fixes(text);
+        assert_eq!(remaining, Vec::<String>::new());
+        for expected in [
+            "let a = n != 0 && c;",
+            "let d = c || x != 0;",
+            "let e = (n + 1 != 0) && c;",
+            "let f = ((n & 1) != 0) || c;",
+            "let g = ((c ? n : 2) != 0) && c;",
+            "let h = c && ((b ^ b) != 0);",
+            "let i = s && c;",
+        ] {
+            assert!(fixed.contains(expected), "{expected}\n{fixed}");
+        }
+        // A string has no fix.
+        assert_eq!(reported(&fixed), ["MR0204"]);
+    }
+
     #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);

@@ -159,6 +159,10 @@ error[MR0204]: `&&` takes `bool` operands, and this one is `int`
    |                                   ^ this is `int`
    |
    = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+help: compare it with zero
+   |
+35 |     let a = Console.ReadLine() && n != 0; //~ ERROR MR0204
+   |                                     ++++
 
 error[MR0204]: `||` takes `bool` operands, and this one is `int`
   --> tests/ui/types/operators.mr:36:13
@@ -167,6 +171,10 @@ error[MR0204]: `||` takes `bool` operands, and this one is `int`
    |             ^ this is `int`
    |
    = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+help: compare it with zero
+   |
+36 |     let b = 1 != 0 || 2; //~ ERROR MR0204 //~ ERROR MR0204
+   |               ++++
 
 error[MR0204]: `||` takes `bool` operands, and this one is `int`
   --> tests/ui/types/operators.mr:36:18
@@ -175,6 +183,10 @@ error[MR0204]: `||` takes `bool` operands, and this one is `int`
    |                  ^ this is `int`
    |
    = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+help: compare it with zero
+   |
+36 |     let b = 1 || 2 != 0; //~ ERROR MR0204 //~ ERROR MR0204
+   |                    ++++
 
 error[MR0204]: `==` is not defined for `((int, int), int)` and `(int, int)`
   --> tests/ui/types/operators.mr:42:13
