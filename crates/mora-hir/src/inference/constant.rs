@@ -16,6 +16,9 @@ pub(crate) enum Value {
     Real(f64),
     /// An integer too large to compute, which fits no type.
     Overflow,
+    /// A real whose computation gave an infinity at some step, which fits
+    /// no type (§3.5).
+    Infinity,
 }
 
 /// The value of `expr` when every leaf of it is an unsuffixed literal
@@ -44,6 +47,7 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
                     Some(v.checked_neg().map_or(Value::Overflow, Value::Int))
                 }
                 (UnaryOp::Neg, Value::Real(v)) => Some(Value::Real(-v)),
+                (UnaryOp::Neg, Value::Infinity) => Some(Value::Infinity),
                 (UnaryOp::BitNot, Value::Int(v)) => Some(Value::Int(!v)),
                 _ => None,
             }
@@ -89,13 +93,21 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
                     B::Rem => a % b,
                     _ => return None,
                 };
-                Some(Value::Real(value))
+                // NaN fits, as `0.0 / 0.0` gives; an infinity never does,
+                // even when a later step would make the result finite.
+                Some(if value.is_infinite() {
+                    Value::Infinity
+                } else {
+                    Value::Real(value)
+                })
             }
             // An operand too large to compute makes the result so too;
             // `&`, `|` and `^` are not defined on a real at all.
             _ => {
-                let real = matches!(a, Value::Real(_)) || matches!(b, Value::Real(_));
+                let is_real = |value| matches!(value, Value::Real(_) | Value::Infinity);
+                let real = is_real(a) || is_real(b);
                 match op {
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem if real => Some(Value::Infinity),
                     B::Add | B::Sub | B::Mul | B::Div | B::Rem => Some(Value::Overflow),
                     B::BitAnd | B::BitOr | B::BitXor if !real => Some(Value::Overflow),
                     _ => None,
@@ -105,14 +117,14 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
     }
 }
 
-/// `value` as a real, `None` for an integer too large to compute. An
+/// `value` as a real, `None` for a value too large to compute. An
 /// integer converts exactly where it matters: the result is only checked
 /// against the range of a `float` or a `double`.
 fn real(value: Value) -> Option<f64> {
     match value {
         Value::Int(value) => Some(value as f64),
         Value::Real(value) => Some(value),
-        Value::Overflow => None,
+        Value::Overflow | Value::Infinity => None,
     }
 }
 
@@ -178,7 +190,7 @@ mod tests {
     #[test]
     fn an_operand_too_large_to_compute_overflows_the_result() {
         use Value::{Int, Overflow, Real};
-        assert_eq!(of(BinaryOp::Mul, Overflow, Real(1.5)), Some(Overflow));
+        assert_eq!(of(BinaryOp::Mul, Overflow, Int(3)), Some(Overflow));
         assert_eq!(of(BinaryOp::BitOr, Int(1), Overflow), Some(Overflow));
         assert_eq!(of(BinaryOp::BitAnd, Real(1.5), Overflow), None);
         assert_eq!(of(BinaryOp::BitXor, Overflow, Real(1.5)), None);
@@ -186,10 +198,18 @@ mod tests {
         assert_eq!(of(BinaryOp::Div, Overflow, Int(0)), None);
         assert_eq!(of(BinaryOp::Rem, Overflow, Int(0)), None);
         assert_eq!(of(BinaryOp::Div, Overflow, Int(2)), Some(Overflow));
-        assert_eq!(
-            of(BinaryOp::Div, Real(1.5), Int(0)),
-            Some(Real(f64::INFINITY))
-        );
+        assert_eq!(of(BinaryOp::Div, Real(1.5), Int(0)), Some(Value::Infinity));
+    }
+
+    #[test]
+    fn an_infinity_at_any_step_stays_an_infinity() {
+        use Value::{Infinity, Int, Overflow, Real};
+        assert_eq!(of(BinaryOp::Mul, Real(1e308), Real(10.0)), Some(Infinity));
+        assert_eq!(of(BinaryOp::Sub, Infinity, Infinity), Some(Infinity));
+        assert_eq!(of(BinaryOp::Mul, Infinity, Real(0.0)), Some(Infinity));
+        assert_eq!(of(BinaryOp::Add, Overflow, Real(1.5)), Some(Infinity));
+        assert_eq!(of(BinaryOp::BitAnd, Infinity, Int(1)), None);
+        assert!(matches!(of(BinaryOp::Div, Real(0.0), Real(0.0)), Some(Real(v)) if v.is_nan()));
     }
 
     #[test]

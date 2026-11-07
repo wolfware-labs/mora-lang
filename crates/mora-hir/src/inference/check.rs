@@ -378,12 +378,15 @@ impl Check<'_> {
         let value = constant::value(&body.exprs, expr)?;
         let fits = match value {
             constant::Value::Int(value) => numeric::holds(target, value),
+            // A real is never infinite here: an infinity is its own value.
             constant::Value::Real(value) => match target {
                 Primitive::Float => !too_large_for_float(value),
-                // NaN fits; only infinity is too large.
-                Primitive::Double => !value.is_infinite(),
+                Primitive::Double => true,
                 _ => return None,
             },
+            constant::Value::Infinity if numeric::is_floating_point(target) => false,
+            // A real for an integer type follows the usual rules.
+            constant::Value::Infinity => return None,
             constant::Value::Overflow => false,
         };
         if !fits {

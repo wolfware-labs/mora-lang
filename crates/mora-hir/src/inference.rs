@@ -787,6 +787,37 @@ mod tests {
     }
 
     #[test]
+    fn an_infinity_at_any_step_does_not_fit() {
+        let huge = "(18446744073709551615 * 18446744073709551615 * 18446744073709551615)";
+        for (text, expected) in [
+            (
+                "let a: double = (1e308 * 10.0) - (1e308 * 10.0);\n".to_owned(),
+                vec!["MR0010"],
+            ),
+            (
+                "let b: double = (1e308 * 10.0) * 0.0;\n".to_owned(),
+                vec!["MR0010"],
+            ),
+            (
+                "let c: float = -(1e308 * 10.0);\n".to_owned(),
+                vec!["MR0010"],
+            ),
+            ("let d: double = 0.0 / 0.0;\n".to_owned(), vec![]),
+            // A real for an integer type follows the usual rules.
+            ("let e: int = 1e308 * 10.0;\n".to_owned(), vec!["MR0203"]),
+            (format!("let f: long = {huge} + 1.5;\n"), vec!["MR0204"]),
+            (
+                "let g: long = ~(1e308 * 10.0);\n".to_owned(),
+                vec!["MR0204"],
+            ),
+        ] {
+            assert_eq!(reported(&text), expected, "{text}");
+        }
+        // The parts of a fitting real operation take the target type.
+        assert_eq!(expr_types("let h: double = 1 + 0.5;\n")[0], "1: double");
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

@@ -43,3 +43,5 @@ let max: float = 9223372036854775808 * 9223372036854775808 - 1 + 922337203685477
 let infinite: double = 1.5 / 0; //~ ERROR MR0010
 let remainder: long = (-(9223372036854775808 * 9223372036854775808) * 2) % -1;
 let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+// An infinity at any step does not fit, even if a later step is finite.
+let gone: double = (1e308 * 10.0) * 0.0; //~ ERROR MR0010

@@ -148,3 +148,11 @@ error[MR0204]: `&` is not defined for `double` and `ulong`
    |                        this is `double`
    |
    = note: `double` and `ulong` have no common type that holds every value of both
+
+error[MR0010]: the value of `(1e308 * 10.0) * 0.0` is too large for a `double`
+  --> tests/ui/types/literals.mr:47:20
+   |
+47 | let gone: double = (1e308 * 10.0) * 0.0; //~ ERROR MR0010
+   |                    ^^^^^^^^^^^^^^^^^^^^ this would be infinity as a `double`
+   |
+   = note: write it as a `double`, or use a smaller value
