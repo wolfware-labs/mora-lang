@@ -379,7 +379,8 @@ impl Check<'_> {
             constant::Value::Int(value) => numeric::holds(target, value),
             constant::Value::Real(value) => match target {
                 Primitive::Float => !too_large_for_float(value),
-                Primitive::Double => value.is_finite(),
+                // NaN fits; only infinity is too large.
+                Primitive::Double => !value.is_infinite(),
                 _ => return None,
             },
             constant::Value::Overflow => false,

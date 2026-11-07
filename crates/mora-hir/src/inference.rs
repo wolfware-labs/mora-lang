@@ -562,6 +562,12 @@ mod tests {
     }
 
     #[test]
+    fn a_real_operation_that_is_not_a_number_fits() {
+        let text = "let a: double = 0.0 / 0.0;\nlet b: float = 0.0 / 0.0;\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

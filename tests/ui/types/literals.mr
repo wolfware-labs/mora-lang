@@ -30,3 +30,6 @@ let big: long = -(-(9223372036854775808 * 9223372036854775808) * 2); //~ ERROR M
 // The lexer reports a real too large for a `double`, once.
 let huge: double = -1e400; //~ ERROR MR0010
 let huger: double = 1e400 + 1.0; //~ ERROR MR0010
+// Not a number fits; only infinity is too large.
+let nan: double = 0.0 / 0.0;
+let nanf: float = 0.0 / 0.0;
