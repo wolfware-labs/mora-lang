@@ -97,11 +97,17 @@ pub(crate) fn integer_range(ty: Primitive) -> Option<(i128, i128)> {
 /// an integer type, or exact as a `float` or `double`.
 pub(crate) fn holds(ty: Primitive, value: i128) -> bool {
     // The conversions below are the point: a value is exact when it comes
-    // back unchanged. Every integer literal is within the range of `f32`,
-    // so neither conversion saturates.
+    // back unchanged. A value that rounds up to 2^127 would saturate on the
+    // way back to `i128::MAX`, so that rounding is not exact.
     match ty {
-        Primitive::Float => (value as f32) as i128 == value,
-        Primitive::Double => (value as f64) as i128 == value,
+        Primitive::Float => {
+            let rounded = value as f32;
+            rounded < i128::MAX as f32 && rounded as i128 == value
+        }
+        Primitive::Double => {
+            let rounded = value as f64;
+            rounded < i128::MAX as f64 && rounded as i128 == value
+        }
         _ => integer_range(ty).is_some_and(|(min, max)| (min..=max).contains(&value)),
     }
 }
@@ -244,6 +250,10 @@ mod tests {
         assert!(!holds(Float, 16_777_217));
         assert!(holds(Double, 9_007_199_254_740_992));
         assert!(!holds(Double, 9_007_199_254_740_993));
+        assert!(!holds(Float, i128::MAX));
+        assert!(!holds(Double, i128::MAX));
+        assert!(holds(Float, i128::MIN));
+        assert!(holds(Double, i128::MIN));
         assert!(!holds(Bool, 0));
         assert!(!holds(Char, 0));
         assert!(holds(NInt, i32::MAX.into()));

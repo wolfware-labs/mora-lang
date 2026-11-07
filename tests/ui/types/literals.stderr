@@ -121,3 +121,11 @@ error[MR0204]: `!` is not defined for `ulong`
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the operand is `ulong`
    |
    = note: `!` negates a `bool`; compare a number explicitly, as in `x == 0`
+
+error[MR0010]: the value of `9223372036854775808 * 9223372036854775808 - 1 + 9223372036854775808 * 9223372036854775808` is not exact as a `float`
+  --> tests/ui/types/literals.mr:41:18
+   |
+41 | let max: float = 9223372036854775808 * 9223372036854775808 - 1 + 9223372036854775808 * 9223372036854775808; //~ ERROR MR0010
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a `float` would round it
+   |
+   = note: a `float` holds every integer from -16777216 to 16777216 exactly, and only some beyond
