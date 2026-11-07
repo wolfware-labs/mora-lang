@@ -63,3 +63,11 @@ help: convert it explicitly with `(nint)`
   |
 8 |     let f = n + (nint)nu; //~ ERROR MR0204
   |                 ++++++
+
+error[MR0010]: the literal `3000000000` does not fit in `nint`
+  --> tests/ui/types/native_integers.mr:15:17
+   |
+15 | let big: nint = 3000000000; //~ ERROR MR0010
+   |                 ^^^^^^^^^^ out of range
+   |
+   = note: a literal of type `nint` must be from -2147483648 to 2147483647, the range of `int`, so that it is valid on every target; cast a `long` for a larger value

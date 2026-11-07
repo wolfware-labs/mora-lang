@@ -1019,6 +1019,24 @@ mod tests {
     }
 
     #[test]
+    fn a_native_integer_literal_fits_every_target() {
+        assert_eq!(
+            note("let n: nint = 3000000000;\n"),
+            "a literal of type `nint` must be from -2147483648 to 2147483647, the range of \
+             `int`, so that it is valid on every target; cast a `long` for a larger value"
+        );
+        assert_eq!(
+            note("let u: nuint = 5000000000;\n"),
+            "a literal of type `nuint` must be from 0 to 4294967295, the range of `uint`, so \
+             that it is valid on every target; cast a `ulong` for a larger value"
+        );
+        assert_eq!(
+            reported("let n: nint = 2147483647;\nlet m: nint = (nint)3000000000L;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
         assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);

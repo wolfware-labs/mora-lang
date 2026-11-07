@@ -320,7 +320,16 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
             format!("{what} `{text}` does not fit in `{keyword}`"),
             Label::new(span, "out of range"),
         )
-        .with_note(format!("`{keyword}` holds values from {min} to {max}")),
+        .with_note(match ty {
+            // The range of every target, not only of this one.
+            Primitive::NInt | Primitive::NUInt => format!(
+                "a literal of type `{keyword}` must be from {min} to {max}, the range of `{}`, \
+                 so that it is valid on every target; cast a `{}` for a larger value",
+                if ty == Primitive::NInt { "int" } else { "uint" },
+                if ty == Primitive::NInt { "long" } else { "ulong" },
+            ),
+            _ => format!("`{keyword}` holds values from {min} to {max}"),
+        }),
         None => Diagnostic::error(
             codes::MR0010,
             format!("{what} `{text}` is not exact as a `{keyword}`"),

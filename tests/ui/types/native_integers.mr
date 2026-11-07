@@ -10,3 +10,7 @@ Native(n: nint, nu: nuint, i: int, b: byte) {
     let h: nint = (nint)i + n;
     let k: nint = n + 1;
 }
+
+// A native integer literal must be valid on every target.
+let big: nint = 3000000000; //~ ERROR MR0010
+let wide: nint = (nint)3000000000L;
