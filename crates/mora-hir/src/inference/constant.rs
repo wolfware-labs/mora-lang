@@ -70,7 +70,8 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
                 B::Sub => a.checked_sub(b),
                 B::Mul => a.checked_mul(b),
                 B::Div => a.checked_div(b),
-                B::Rem => a.checked_rem(b),
+                // The divisor is not zero, and `i128::MIN % -1` is 0.
+                B::Rem => Some(a.wrapping_rem(b)),
                 B::BitAnd => Some(a & b),
                 B::BitOr => Some(a | b),
                 B::BitXor => Some(a ^ b),
@@ -152,6 +153,11 @@ mod tests {
         use Value::Int;
         assert_eq!(of(BinaryOp::Rem, Int(7), Int(4)), Some(Int(3)));
         assert_eq!(of(BinaryOp::Rem, Int(7), Int(0)), None);
+        assert_eq!(of(BinaryOp::Rem, Int(i128::MIN), Int(-1)), Some(Int(0)));
+        assert_eq!(
+            of(BinaryOp::Div, Int(i128::MIN), Int(-1)),
+            Some(Value::Overflow)
+        );
         assert_eq!(of(BinaryOp::BitOr, Int(6), Int(3)), Some(Int(7)));
         assert_eq!(of(BinaryOp::Sub, Int(6), Int(3)), Some(Int(3)));
     }

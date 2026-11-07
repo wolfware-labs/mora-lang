@@ -41,3 +41,4 @@ let byZero: ulong = (18446744073709551615 * 18446744073709551615 * 1844674407370
 let max: float = 9223372036854775808 * 9223372036854775808 - 1 + 9223372036854775808 * 9223372036854775808; //~ ERROR MR0010
 // A real divided by zero is an infinity, whether the zero is a real or not.
 let infinite: double = 1.5 / 0; //~ ERROR MR0010
+let remainder: long = (-(9223372036854775808 * 9223372036854775808) * 2) % -1;
