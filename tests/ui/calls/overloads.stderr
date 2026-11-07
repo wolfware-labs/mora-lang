@@ -1,0 +1,25 @@
+error[MR0205]: no overload of `Show` takes these arguments
+  --> tests/ui/calls/overloads.mr:17:1
+   |
+ 3 | Show(x: int): int => x;
+   | ---- `Show(x: int): int`
+ 4 | Show(x: string): string => x;
+   | ---- `Show(x: string): string`
+...
+17 | Show(true); //~ ERROR MR0205
+   | ^^^^^^^^^^ none of the 2 overloads fits
+   |
+   = note: an overload fits when every argument goes to a parameter, by position or by name, converts to its type and has the marker its mode needs
+
+error[MR0206]: the call of `Scale` is ambiguous
+  --> tests/ui/calls/overloads.mr:18:1
+   |
+ 7 | Scale(x: int, factor: long) {}
+   | ----- `Scale(x: int, factor: long)`
+ 8 | Scale(x: long, factor: int) {}
+   | ----- `Scale(x: long, factor: int)`
+...
+18 | Scale(2, 3); //~ ERROR MR0206
+   | ^^^^^^^^^^^ 2 overloads fit equally well
+   |
+   = note: convert an argument explicitly, as with a cast `(T)x`, to choose one

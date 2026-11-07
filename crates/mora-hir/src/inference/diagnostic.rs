@@ -3,6 +3,8 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
+mod call;
+
 use super::{Context, TypeError, constant, numeric, ty_name};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
 use crate::ty::{Primitive, Ty};
@@ -152,6 +154,30 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             from,
             to,
         } => cast(source, *expr, *operand, from, to),
+        TypeError::Arity {
+            expr,
+            signature,
+            missing,
+        } => call::arity(source, *expr, signature, missing.as_deref()),
+        TypeError::Mode {
+            arg,
+            signature,
+            param,
+            needs,
+            given,
+        } => call::mode(source, *arg, signature, param, *needs, *given),
+        TypeError::NoOverload {
+            expr,
+            name,
+            candidates,
+        } => call::no_overload(source, *expr, name, candidates),
+        TypeError::Ambiguous {
+            expr,
+            name,
+            candidates,
+        } => call::ambiguous(source, *expr, name, candidates),
+        TypeError::NamedArgument { arg, problem } => call::named(source, *arg, problem),
+        TypeError::NotCallable { expr, ty } => call::not_callable(source, *expr, ty),
     }
 }
 

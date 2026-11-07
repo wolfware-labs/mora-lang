@@ -7,7 +7,11 @@ use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
 
-use super::{Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same};
+mod call;
+
+use super::{
+    Callee, Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same,
+};
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
@@ -54,6 +58,8 @@ pub(super) fn infer_body(
         resolution,
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
+        calls: HashMap::new(),
+        local_functions: None,
         constants: HashMap::new(),
         errors: Vec::new(),
         ret: None,
@@ -107,6 +113,7 @@ pub(super) fn infer_body(
     Inference {
         exprs: check.exprs,
         locals: check.locals,
+        calls: check.calls,
         constants: check.constants,
         errors: check.errors,
     }
@@ -125,6 +132,11 @@ struct Check<'a> {
     exprs: Vec<Option<Ty>>,
     /// The type of each local so far.
     locals: Vec<Option<Ty>>,
+    /// The function each checked call calls, so far.
+    calls: HashMap<ExprId, Callee>,
+    /// The statement of each local function, found on the first call of
+    /// one.
+    local_functions: Option<HashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
     constants: HashMap<ExprId, Constant>,
     /// The errors so far.
@@ -490,11 +502,7 @@ impl Check<'_> {
                 }
                 self.field(receiver.as_ref(), name)
             }
-            Expr::Call { callee, args } => {
-                self.infer(*callee);
-                self.args(args);
-                None
-            }
+            Expr::Call { callee, args } => self.call(expr, *callee, args),
             Expr::Index { base, args, .. } => {
                 self.infer(*base);
                 self.args(args);

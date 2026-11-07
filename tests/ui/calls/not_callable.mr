@@ -1,0 +1,14 @@
+// Only a function, a method or a value of a function type can be called.
+public struct Point {
+    public X: int;
+
+    public Length(): int => X;
+}
+
+static Origin: Point = new Point { X = 0 };
+
+let n = 1;
+n(); //~ ERROR MR0208
+"text"(); //~ ERROR MR0208
+Origin.X(); //~ ERROR MR0208
+let length: int = Origin.Length();

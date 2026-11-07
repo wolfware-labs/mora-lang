@@ -1,0 +1,22 @@
+// With overloads, the best applicable one is called (§6.9): MR0205 when
+// none applies, MR0206 when none is best.
+Show(x: int): int => x;
+Show(x: string): string => x;
+Widen(x: int): int => x;
+Widen(x: long): string => "";
+Scale(x: int, factor: long) {}
+Scale(x: long, factor: int) {}
+Pad(x: int): int => x;
+Pad(x: int, width: int = 4): string => "";
+
+let a: int = Show(1);
+let b: string = Show("s");
+let c: int = Widen(1);
+let d: string = Widen(1L);
+let e: int = Pad(1);
+Show(true); //~ ERROR MR0205
+Scale(2, 3); //~ ERROR MR0206
+Scale(2, 3L);
+// An argument of a type not known yet may be what decides, so it is not
+// reported.
+let f = Show(Console.ReadLine());

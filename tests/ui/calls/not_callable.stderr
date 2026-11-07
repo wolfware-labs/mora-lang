@@ -1,0 +1,23 @@
+error[MR0208]: cannot call a value of type `int`
+  --> tests/ui/calls/not_callable.mr:11:1
+   |
+11 | n(); //~ ERROR MR0208
+   | ^ this is `int`, not a function
+   |
+   = note: only a function, a method or a value of a function type can be called
+
+error[MR0208]: cannot call a value of type `string`
+  --> tests/ui/calls/not_callable.mr:12:1
+   |
+12 | "text"(); //~ ERROR MR0208
+   | ^^^^^^ this is `string`, not a function
+   |
+   = note: only a function, a method or a value of a function type can be called
+
+error[MR0208]: cannot call a value of type `int`
+  --> tests/ui/calls/not_callable.mr:13:1
+   |
+13 | Origin.X(); //~ ERROR MR0208
+   | ^^^^^^^^ this is `int`, not a function
+   |
+   = note: only a function, a method or a value of a function type can be called

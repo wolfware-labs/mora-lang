@@ -1078,6 +1078,7 @@ mod tests {
 union Shape { Circle(r: float), Rect(w: float, h: float) }
 Use(a: int): int => a;
 Use(a: string): int => 0;
+Use(ref a: int, in b: int, move c: string?): int => 0;
 Id<T>(x: T): T => x;
 G(o: Shape, p: P, xs: int[], n: int, s: string?, flag: bool) {
     var i = 0;
@@ -1139,6 +1140,8 @@ G(o: Shape, p: P, xs: int[], n: int, s: string?, flag: bool) {
             r#"fn UsersApi.Use(a#0) => a#0;
 
 fn UsersApi.Use(a#0) => 0;
+
+fn UsersApi.Use(a#0, b#1, c#2) => 0;
 
 fn UsersApi.Id(x#0) => x#0;
 

@@ -516,7 +516,7 @@ fn widen(db: &dyn Db, item: ItemId, keyword: &str) -> TextEdit {
     }
 }
 
-fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
+pub(crate) fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
     Span::new(
         item.file.id(db),
         item_source_map(db, item.file).item(item.item).name,

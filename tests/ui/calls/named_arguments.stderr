@@ -1,0 +1,31 @@
+error[MR0207]: a positional argument after a named one
+ --> tests/ui/calls/named_arguments.mr:6:31
+  |
+6 | let c = Greet(greeting: "Hi", "Ada"); //~ ERROR MR0207
+  |                               ^^^^^ name this argument too, or move it before the named ones
+  |
+  = note: arguments come by position first; after the first named one, every argument is named, each name once
+
+error[MR0207]: the argument `name` is named twice
+ --> tests/ui/calls/named_arguments.mr:7:34
+  |
+7 | let d = Greet(name: "Ada", name: "Bo"); //~ ERROR MR0207
+  |                                  ^^^^ named again here
+  |
+  = note: arguments come by position first; after the first named one, every argument is named, each name once
+
+error[MR0207]: `Greet` has no parameter named `salutation`
+ --> tests/ui/calls/named_arguments.mr:8:34
+  |
+8 | let e = Greet("Ada", salutation: "Hi"); //~ ERROR MR0207
+  |                                  ^^^^ no parameter of this name
+  |
+  = note: arguments come by position first; after the first named one, every argument is named, each name once
+
+error[MR0207]: the parameter `name` is given by position and by name
+ --> tests/ui/calls/named_arguments.mr:9:28
+  |
+9 | let f = Greet("Ada", name: "Bo"); //~ ERROR MR0207
+  |                            ^^^^ given by name here
+  |
+  = note: arguments come by position first; after the first named one, every argument is named, each name once

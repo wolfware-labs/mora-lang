@@ -1,0 +1,15 @@
+// An argument has the marker its parameter's mode needs (§10.3).
+Bump(ref x: int) {}
+Read(x: int) {}
+Take(move x: int) {}
+
+var n = 1;
+Bump(ref n);
+Bump(n); //~ ERROR MR0205
+Bump(in n); //~ ERROR MR0205
+Read(n);
+Read(in n);
+Read(ref n); //~ ERROR MR0205
+Take(n);
+Take(move n);
+Take(in n); //~ ERROR MR0205
