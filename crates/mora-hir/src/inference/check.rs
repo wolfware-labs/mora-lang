@@ -902,6 +902,12 @@ impl Check<'_> {
         if !comparison && (is_struct(Some(&l)) || is_struct(Some(&r))) {
             return None;
         }
+        // Comparing tuples of different element types is for the rules of
+        // tuples to decide (§5.5).
+        let tuple = matches!(l, Ty::Tuple(_)) || matches!(r, Ty::Tuple(_));
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && tuple && !same(&l, &r) {
+            return None;
+        }
         match operator(op, &l, &r) {
             Some(ty) => Some(ty),
             None => {

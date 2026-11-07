@@ -19,3 +19,11 @@ Operators(n: int, x: double, flag: bool, c: char, s: string) {
     let ok4: bool = n == 1 || flag == true;
     let ok5: int = n << 1L; //~ ERROR MR0203
 }
+
+// Tuples of different element types compare to an unknown result, which
+// the rules of tuples decide later.
+Tuples(t: (byte, byte)) {
+    let a = t == (1, 2);
+    let b: bool = t == t;
+    let c = t < t; //~ ERROR MR0204
+}

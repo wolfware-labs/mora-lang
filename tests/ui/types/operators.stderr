@@ -124,3 +124,12 @@ help: convert it explicitly with `(int)`
    |
 20 |     let ok5: int = n << (int)1L; //~ ERROR MR0203
    |                         +++++
+
+error[MR0204]: `<` is not defined for `(byte, byte)` and `(byte, byte)`
+  --> tests/ui/types/operators.mr:28:13
+   |
+28 |     let c = t < t; //~ ERROR MR0204
+   |             -^^^-
+   |             |   |
+   |             |   this is `(byte, byte)`
+   |             this is `(byte, byte)`

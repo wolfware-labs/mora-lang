@@ -601,6 +601,25 @@ mod tests {
     }
 
     #[test]
+    fn tuples_of_different_types_compare_to_an_unknown_result() {
+        let text = "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\nlet b = t != 1;\n\
+                    let c = t == t;\nlet d: (Left: byte, Right: byte) = t;\nlet e = t == d;\n";
+        assert_eq!(
+            local_types(text),
+            [
+                "t: (byte, byte)",
+                "a: ?",
+                "b: ?",
+                "c: bool",
+                "d: (Left: byte, Right: byte)",
+                "e: bool"
+            ]
+        );
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(reported("let t = (1, 2);\nlet a = t < t;\n"), ["MR0204"]);
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";
