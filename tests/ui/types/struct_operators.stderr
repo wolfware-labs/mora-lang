@@ -1,0 +1,8 @@
+error[MR0204]: `==` is not defined for `Money` and `int`
+  --> tests/ui/types/struct_operators.mr:18:17
+   |
+18 |     let wrong = a == 1; //~ ERROR MR0204
+   |                 -^^^^-
+   |                 |    |
+   |                 |    this is `int`
+   |                 this is `Money`

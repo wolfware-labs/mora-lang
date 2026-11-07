@@ -739,6 +739,9 @@ impl Check<'_> {
         match op {
             UnaryOp::Not => {
                 let found = self.infer(operand);
+                if is_struct(found.as_ref()) {
+                    return None;
+                }
                 if let Some(found) = found.filter(|found| is_known(found) && *found != BOOL) {
                     self.errors.push(TypeError::Unary {
                         expr,
@@ -756,6 +759,9 @@ impl Check<'_> {
             UnaryOp::PreIncrement | UnaryOp::PreDecrement => self.step(expr, op, operand),
             UnaryOp::Plus | UnaryOp::Neg | UnaryOp::BitNot => {
                 let found = self.infer(operand)?;
+                if is_struct(Some(&found)) {
+                    return None;
+                }
                 let result = match numeric::as_numeric(&found) {
                     Some(ty) => match (op, ty) {
                         (UnaryOp::Neg, Primitive::UInt) => Some(Primitive::Long),
@@ -775,7 +781,7 @@ impl Check<'_> {
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
         let found = self.infer(operand)?;
         let result = numeric::as_numeric(&found);
-        if result.is_none() && !is_known(&found) {
+        if result.is_none() && (!is_known(&found) || is_struct(Some(&found))) {
             return None;
         }
         self.operated(expr, op, (operand, found), result)
@@ -855,7 +861,11 @@ impl Check<'_> {
             }
             BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr => {
                 let value = self.infer(lhs);
-                self.check(rhs, &INT);
+                let count = self.expr(rhs, Expect::Target(&INT));
+                if is_struct(value.as_ref()) || is_struct(count.as_ref()) {
+                    return None;
+                }
+                self.coerce(rhs, count.as_ref(), &INT, Context::Value);
                 let value = value?;
                 return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
                     Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
@@ -886,6 +896,11 @@ impl Check<'_> {
         };
         if !is_known(&l) || !is_known(&r) {
             return otherwise;
+        }
+        // A struct may declare its arithmetic, bitwise and shift operators
+        // (§6.9), which this milestone does not look up.
+        if !comparison && (is_struct(Some(&l)) || is_struct(Some(&r))) {
+            return None;
         }
         match operator(op, &l, &r) {
             Some(ty) => Some(ty),
@@ -974,6 +989,11 @@ impl Check<'_> {
             Some(Ty::Error)
         }
     }
+}
+
+/// Whether `ty` is a struct, which may declare operators (§6.9).
+fn is_struct(ty: Option<&Ty>) -> bool {
+    matches!(ty, Some(Ty::Struct(_)))
 }
 
 /// Whether unary `-` on `literal` makes a negative literal: an integer

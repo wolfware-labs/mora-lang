@@ -586,6 +586,21 @@ mod tests {
     }
 
     #[test]
+    fn operators_on_a_struct_are_left_to_its_declarations() {
+        let text = "public struct Money {\n    public Cents: int;\n    \
+                    public static operator +(a: Money, b: Money): Money => a;\n    \
+                    public static operator -(a: Money): Money => a;\n}\n\
+                    F(a: Money, b: Money) {\n    let c: int = a + b;\n    let d = -a;\n    \
+                    let e = a << 1;\n    let f = 1 << a;\n    var g = a;\n    g++;\n    \
+                    g += b;\n    let h = !a;\n    let i = ~a;\n    let j = a == b;\n    \
+                    let k = a < b;\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        // Comparing a struct with a number is still not defined.
+        let mixed = text.replace("let k = a < b;", "let k = a == 1;");
+        assert_eq!(reported(&mixed), ["MR0204"]);
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";
