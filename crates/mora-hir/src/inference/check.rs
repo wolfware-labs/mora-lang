@@ -5,7 +5,9 @@ use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
 
-use super::{Context, Inference, TypeError, constant, converts, is_known, numeric, same};
+use std::collections::HashMap;
+
+use super::{Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same};
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
@@ -52,6 +54,7 @@ pub(super) fn infer_body(
         resolution,
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
+        constants: HashMap::new(),
         errors: Vec::new(),
         ret: None,
     };
@@ -104,6 +107,7 @@ pub(super) fn infer_body(
     Inference {
         exprs: check.exprs,
         locals: check.locals,
+        constants: check.constants,
         errors: check.errors,
     }
 }
@@ -121,6 +125,8 @@ struct Check<'a> {
     exprs: Vec<Option<Ty>>,
     /// The type of each local so far.
     locals: Vec<Option<Ty>>,
+    /// The value of each operation made only of literals so far.
+    constants: HashMap<ExprId, Constant>,
     /// The errors so far.
     errors: Vec<TypeError>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
@@ -382,24 +388,39 @@ impl Check<'_> {
             return Some(ty);
         }
         let value = constant::value(&body.exprs, expr)?;
-        let fits = match value {
-            constant::Value::Int(value) => numeric::holds(target, value),
+        // The exact value converted to `target`, `None` when it does not fit.
+        let real = |value: f64| match target {
+            // The nearest `float`, which a `double` holds exactly.
+            Primitive::Float => Constant::Real(f64::from(value as f32).to_bits()),
+            _ => Constant::Real(value.to_bits()),
+        };
+        let fitting = match value {
+            constant::Value::Int(value) if numeric::holds(target, value) => {
+                if numeric::is_floating_point(target) {
+                    // `holds` says the value is exact in `target`.
+                    Some(real(value as f64))
+                } else {
+                    Some(Constant::Int(value))
+                }
+            }
+            constant::Value::Int(_) | constant::Value::Overflow => None,
             // A real is never infinite here: an infinity is its own value.
             constant::Value::Real(value) => match target {
-                Primitive::Float => !too_large_for_float(value),
-                Primitive::Double => true,
+                Primitive::Float => (!too_large_for_float(value)).then(|| real(value)),
+                Primitive::Double => Some(real(value)),
                 _ => return None,
             },
             constant::Value::Infinity | constant::Value::OverflowReal
                 if numeric::is_floating_point(target) =>
             {
-                false
+                None
             }
             // A real for an integer type follows the usual rules.
             constant::Value::Infinity | constant::Value::OverflowReal => return None,
-            constant::Value::Overflow => false,
         };
-        if !fits {
+        if let Some(value) = fitting {
+            self.constants.insert(expr, value);
+        } else {
             self.errors.push(TypeError::Literal {
                 expr,
                 ty: Some(target),

@@ -20,6 +20,8 @@ mod constant;
 mod diagnostic;
 mod numeric;
 
+use std::collections::HashMap;
+
 use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
@@ -38,11 +40,52 @@ pub struct Inference {
     exprs: Vec<Option<Ty>>,
     /// The type of each local, indexed like [`crate::Body::locals`].
     locals: Vec<Option<Ty>>,
+    /// The value of each operation made only of literals that took a target
+    /// type and fits it.
+    constants: HashMap<ExprId, Constant>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
 }
 
+/// The value of an operation made only of literals that takes its target
+/// type (§3.5): the exact result, converted to that type. It is the
+/// operation's value: code generation uses it and does not evaluate the
+/// operators in the target type, which could give another result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Constant {
+    /// A value of an integer type.
+    Int(i128),
+    /// A value of `float` or `double`, as the bits of the `double` that
+    /// holds it, exactly for a `float` too.
+    Real(u64),
+}
+
+impl Constant {
+    /// The value of a [`Constant::Real`] as a number.
+    pub fn real(self) -> Option<f64> {
+        match self {
+            Constant::Real(bits) => Some(f64::from_bits(bits)),
+            Constant::Int(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Constant::Int(value) => write!(f, "{value}"),
+            Constant::Real(bits) => write!(f, "{}", f64::from_bits(*bits)),
+        }
+    }
+}
+
 impl Inference {
+    /// The value of `expr` when it is an operation made only of literals
+    /// that took its target type (§3.5): what the operation evaluates to.
+    pub fn constant(&self, expr: ExprId) -> Option<Constant> {
+        self.constants.get(&expr).copied()
+    }
+
     /// The type of `expr`: `None` while it is unknown, because a later
     /// milestone gives it meaning, and [`Ty::Error`] when a diagnostic says
     /// why it has none.
@@ -924,6 +967,55 @@ mod tests {
         // On an integer type, and without such an operator, it folds.
         let fine = "let a: int = ~1 & 3;\nlet b: float = 1.5 * 2;\nlet c: double = -(1 + 2);\n";
         assert_eq!(reported(fine), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_operation_on_literals_has_its_exact_value_in_the_target_type() {
+        let db = TestDb::new();
+        let text = "let a: double = 9007199254740993 - 9007199254740992;\n\
+                    let b: float = 1 / 3;\nlet c: byte = 200 + 55;\nlet d: float = 0.1 * 1;\n\
+                    let e: double = 0.1 * 1;\nlet f: float = 1 + 2;\nlet g: int = 1 + n;\n\
+                    let h: byte = 200 + 100;\nlet n = 1;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let values: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Local {
+                    init: Some(init), ..
+                } => Some(inference.constant(*init)),
+                _ => None,
+            })
+            .collect();
+        let float = |value: f32| Some(Constant::Real(f64::from(value).to_bits()));
+        assert_eq!(
+            values,
+            [
+                Some(Constant::Real(1.0f64.to_bits())),
+                float(0.0),
+                Some(Constant::Int(255)),
+                float(0.1),
+                Some(Constant::Real(0.1f64.to_bits())),
+                float(3.0),
+                // Not made only of literals, and not fitting.
+                None,
+                None,
+                // A literal on its own is not an operation.
+                None,
+            ]
+        );
+        assert_eq!(Constant::Int(3).real(), None);
+        assert_eq!(Constant::Real(0.5f64.to_bits()).real(), Some(0.5));
+        assert_eq!(Constant::Real(0.5f64.to_bits()).to_string(), "0.5");
+        let dumped = hir_dump(&db, project, file);
+        assert!(
+            dumped.contains("let a#0: double = 9007199254740993 - 9007199254740992{= 1};"),
+            "{dumped}"
+        );
+        assert!(dumped.contains("let b#1: float = 1 / 3{= 0};"), "{dumped}");
     }
 
     #[test]

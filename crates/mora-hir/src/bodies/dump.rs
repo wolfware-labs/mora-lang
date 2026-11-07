@@ -7,8 +7,10 @@
 //! as `Color.Red{enum member App.Color.Red}`. A member without braces is a
 //! member of a value, which type checking looks up. A local declared
 //! without a type shows the type inference gives it, when that is known,
-//! as `let total#0: int = 0;`. An operand that is itself an operation is in
-//! parentheses, so the dump shows how the expression was grouped.
+//! as `let total#0: int = 0;`, and an operation made only of literals that
+//! took its target type is followed by its value, as `1 / 3{= 0}`. An
+//! operand that is itself an operation is in parentheses, so the dump shows
+//! how the expression was grouped.
 
 use std::fmt::Write;
 
@@ -627,6 +629,9 @@ impl Printer<'_> {
             }
             Expr::Block(stmts) => self.block(stmts),
             Expr::Macro => self.out.push_str("<macro>"),
+        }
+        if let Some(value) = self.inference.constant(expr) {
+            let _ = write!(self.out, "{{= {value}}}");
         }
     }
 
