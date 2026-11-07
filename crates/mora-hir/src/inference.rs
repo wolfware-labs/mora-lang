@@ -808,6 +808,21 @@ mod tests {
     }
 
     #[test]
+    fn tuples_of_tuples_compare_by_shape_at_every_level() {
+        let t = "let t = ((1, 2), 3);\n";
+        for (text, expected) in [
+            ("let a = t == (1, 3);\n", vec!["MR0204"]),
+            ("let b = t == ((1, 2, 3), 3);\n", vec!["MR0204"]),
+            ("let c = t != ((1, 2), (3, 4));\n", vec!["MR0204"]),
+            ("let d = t == ((1L, 2), 3);\n", vec![]),
+        ] {
+            assert_eq!(reported(&format!("{t}{text}")), expected, "{text}");
+        }
+        let types = local_types(&format!("{t}let d = t == ((1L, 2), 3);\nlet e = t == t;\n"));
+        assert_eq!(types[1..], ["d: ?", "e: bool"]);
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

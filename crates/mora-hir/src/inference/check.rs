@@ -906,10 +906,14 @@ impl Check<'_> {
         if !comparison && (is_struct(&l) || is_struct(&r)) {
             return None;
         }
-        // Comparing two tuples of one length but different element types is
+        // Comparing two tuples of one shape but different element types is
         // for the rules of tuples to decide (§5.5).
-        let tuples = matches!((&l, &r), (Ty::Tuple(a), Ty::Tuple(b)) if a.len() == b.len());
-        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && tuples && !same(&l, &r) {
+        let tuples = matches!((&l, &r), (Ty::Tuple(_), Ty::Tuple(_)));
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+            && tuples
+            && same_shape(&l, &r)
+            && !same(&l, &r)
+        {
             return None;
         }
         match operator(op, &l, &r) {
@@ -998,6 +1002,18 @@ impl Check<'_> {
             });
             Some(Ty::Error)
         }
+    }
+}
+
+/// Whether two types have one shape: at every level both are tuples of one
+/// length, or neither is a tuple.
+fn same_shape(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Tuple(a), Ty::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_shape(&a.ty, &b.ty))
+        }
+        (Ty::Tuple(_), _) | (_, Ty::Tuple(_)) => false,
+        _ => true,
     }
 }
 

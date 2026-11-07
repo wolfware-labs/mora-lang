@@ -175,3 +175,21 @@ error[MR0204]: `||` takes `bool` operands, and this one is `int`
    |                  ^ this is `int`
    |
    = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+
+error[MR0204]: `==` is not defined for `((int, int), int)` and `(int, int)`
+  --> tests/ui/types/operators.mr:42:13
+   |
+42 |     let b = t == (1, 3); //~ ERROR MR0204
+   |             -^^^^------
+   |             |    |
+   |             |    this is `(int, int)`
+   |             this is `((int, int), int)`
+
+error[MR0204]: `!=` is not defined for `((int, int), int)` and `((int, int), (int, int))`
+  --> tests/ui/types/operators.mr:43:13
+   |
+43 |     let c = t != ((1, 2), (3, 4)); //~ ERROR MR0204
+   |             -^^^^----------------
+   |             |    |
+   |             |    this is `((int, int), (int, int))`
+   |             this is `((int, int), int)`
