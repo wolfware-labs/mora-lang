@@ -19,6 +19,7 @@ use mora_testkit::Compiler;
 use mora_testkit::harness::guarded;
 use mora_testkit::run;
 
+use crate::error_codes;
 use crate::paths::{PAGE_TEMPLATE, PAGES, SPEC};
 
 /// The list of examples that may fail, relative to the repository root.
@@ -39,6 +40,7 @@ pub struct Example {
     pub text: String,
 }
 
+/// What an example's first line says it does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expects {
     /// `// expect:`: the program runs and prints what its `// expect:` lines say.
@@ -55,7 +57,7 @@ pub fn extract(path: &str, page: Option<&str>, text: &str) -> Vec<Example> {
     let mut examples = Vec::new();
     let mut section = page.unwrap_or("0").to_owned();
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut lines = text.lines().enumerate();
+    let mut lines = (1usize..).zip(text.lines());
     while let Some((_, line)) = lines.next() {
         if let Some(number) = section_number(line).filter(|_| page.is_none()) {
             section = number.to_owned();
@@ -74,7 +76,7 @@ pub fn extract(path: &str, page: Option<&str>, text: &str) -> Vec<Example> {
             }
             continue;
         }
-        let Some((index, first)) = lines.next() else {
+        let Some((number, first)) = lines.next() else {
             break;
         };
         let mut body = vec![first];
@@ -91,7 +93,7 @@ pub fn extract(path: &str, page: Option<&str>, text: &str) -> Vec<Example> {
         *count += 1;
         examples.push(Example {
             id: format!("{section}#{count}"),
-            at: format!("{path}:{}", index + 1),
+            at: format!("{path}:{number}"),
             expects,
             text: body.iter().map(|line| format!("{line}\n")).collect(),
         });
@@ -141,9 +143,10 @@ pub struct Pending {
 }
 
 impl Pending {
+    /// Reads the pending list's text.
     pub fn parse(text: &str) -> Self {
         let mut pending = Self::default();
-        for (index, line) in text.lines().enumerate() {
+        for (number, line) in (1usize..).zip(text.lines()) {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -152,9 +155,9 @@ impl Pending {
                 [id, deliverable] => {
                     pending
                         .entries
-                        .push((id.to_owned(), deliverable.to_owned(), index + 1));
+                        .push((id.to_owned(), deliverable.to_owned(), number));
                 }
-                _ => pending.malformed.push(index + 1),
+                _ => pending.malformed.push(number),
             }
         }
         pending
@@ -172,6 +175,7 @@ pub struct Repo {
     pub deliverables: Vec<String>,
 }
 
+/// What fails the check.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Problem {
     /// A line of the pending list that is not `id deliverable`.
@@ -322,16 +326,11 @@ fn run_example(example: &Example, compiler: &dyn Compiler) -> Vec<String> {
 /// Reads the spec, the error pages, the pending list and the roadmap.
 pub fn load(root: &Path) -> io::Result<Repo> {
     let mut examples = extract(SPEC, None, &fs::read_to_string(root.join(SPEC))?);
-    let mut pages: Vec<_> = fs::read_dir(root.join(PAGES))?
-        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-        .collect::<io::Result<_>>()?;
-    pages.sort();
-    for page in pages {
+    for (page, text) in error_codes::read_pages(root)? {
         // The README holds the page template, not a page.
         let Some(code) = page.strip_suffix(".md").filter(|_| page != PAGE_TEMPLATE) else {
             continue;
         };
-        let text = fs::read_to_string(root.join(PAGES).join(&page))?;
         examples.extend(extract(&format!("{PAGES}/{page}"), Some(code), &text));
     }
     let pending = Pending::parse(&fs::read_to_string(root.join(PENDING))?);
@@ -607,8 +606,7 @@ F();
 
     #[test]
     fn repository_passes() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let repo = load(&root).unwrap();
+        let repo = load(&crate::paths::root()).unwrap();
         assert!(repo.examples.len() > 1);
         assert!(repo.deliverables.contains(&"M1.4".to_owned()));
         let outcome = check(&repo, mora_testkit::compiler());

@@ -13,6 +13,8 @@ use std::path::Path;
 
 use mora_target::{Target, builtin_names};
 
+use crate::paths;
+
 /// The crates that may match on target names, relative to the repository root.
 pub const OWNERS: &[&str] = &[
     "crates/mora-target",
@@ -23,10 +25,14 @@ pub const OWNERS: &[&str] = &[
 /// Files outside [`OWNERS`] that may name a target, each with the reason.
 pub const ALLOW: &[(&str, &str)] = &[];
 
+/// A quoted target name outside the crates that may name targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
+    /// The file, relative to the repository root with `/` separators.
     pub path: String,
+    /// The 1-based line of the literal.
     pub line: usize,
+    /// The target name it quotes.
     pub word: String,
 }
 
@@ -63,9 +69,13 @@ pub fn scan(text: &str, words: &[String]) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// A string literal of Rust source.
 struct Literal {
+    /// The 1-based line it starts on.
     line: usize,
+    /// Its value.
     text: String,
+    /// Whether it is inside the parentheses of a `cfg`.
     in_cfg: bool,
 }
 
@@ -77,7 +87,7 @@ struct Literal {
 /// `linux`; raw strings are taken as written.
 fn literals(text: &str) -> Vec<Literal> {
     let chars: Vec<char> = text.chars().collect();
-    let at = |i: usize| chars.get(i).copied().unwrap_or_default();
+    let at = |i: usize| char_at(&chars, i);
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut found = Vec::new();
     let mut line = 1;
@@ -275,10 +285,16 @@ fn unescape(raw: &[char]) -> String {
     out
 }
 
+/// The character at `i`, or `'\0'` past the end, so that looking ahead
+/// needs no bounds check.
+fn char_at(chars: &[char], i: usize) -> char {
+    chars.get(i).copied().unwrap_or_default()
+}
+
 /// The index just past the comment that starts at `i`, if one does. Block
 /// comments nest, as in Rust.
 fn comment_end(chars: &[char], i: usize) -> Option<usize> {
-    let at = |i: usize| chars.get(i).copied().unwrap_or_default();
+    let at = |i: usize| char_at(chars, i);
     if at(i) != '/' {
         return None;
     }
@@ -314,8 +330,11 @@ fn comment_end(chars: &[char], i: usize) -> Option<usize> {
 /// Scans every `.rs` file under `crates/` outside [`OWNERS`] and [`ALLOW`].
 pub fn check(root: &Path) -> io::Result<Vec<Hit>> {
     let words = words();
-    let mut files = Vec::new();
-    collect(root, &root.join("crates"), &mut files)?;
+    let mut files: Vec<String> = paths::files_with_extension(&root.join("crates"), "rs")?
+        .iter()
+        .map(|file| paths::relative(root, file))
+        .collect();
+    // By text, so that hits come in the same order on every platform.
     files.sort();
     let mut hits = Vec::new();
     for path in files {
@@ -335,21 +354,6 @@ pub fn check(root: &Path) -> io::Result<Vec<Hit>> {
         }
     }
     Ok(hits)
-}
-
-/// Adds the `.rs` files under `dir` to `files`, as `/`-separated paths relative to `root`.
-fn collect(root: &Path, dir: &Path, files: &mut Vec<String>) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect(root, &path, files)?;
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let relative = path.strip_prefix(root).expect("under the root");
-            let parts: Vec<_> = relative.iter().map(|part| part.to_string_lossy()).collect();
-            files.push(parts.join("/"));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -574,9 +578,7 @@ mod tests {
 
     #[test]
     fn check_reads_every_crate_but_the_owners() {
-        let root =
-            std::env::temp_dir().join(format!("mora-xtask-target-names-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = paths::scratch("target-names");
         for (file, text) in [
             (
                 "crates/mora-cli/src/main.rs",
@@ -603,7 +605,7 @@ mod tests {
 
     #[test]
     fn allowed_files_exist() {
-        let root = crate::paths::root();
+        let root = paths::root();
         for (path, reason) in ALLOW {
             assert!(root.join(path).is_file(), "{path}");
             assert!(!reason.is_empty(), "{path}");
@@ -612,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_workspace_has_no_hits() {
-        let hits = check(&crate::paths::root()).unwrap();
+        let hits = check(&paths::root()).unwrap();
         assert!(hits.is_empty(), "{hits:?}");
     }
 }

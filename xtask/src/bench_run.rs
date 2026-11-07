@@ -7,11 +7,11 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cargo_metadata::{Metadata, MetadataCommand};
+use cargo_metadata::Metadata;
 
-use crate::bench_compare::{
-    BASELINE, Comparison, Options, Target, clear_new, collect, split_by_base, targets,
-};
+use crate::bench_compare::{self, BASELINE, BenchTarget, Comparison, Options};
+use crate::paths::error_at;
+use crate::{metadata_command, tools};
 
 /// Runs the comparison and returns each benchmark's result. `target_dir` is
 /// the working tree's cargo target directory.
@@ -21,7 +21,7 @@ pub fn run(
     metadata: &Metadata,
     options: &Options,
 ) -> Result<Vec<Comparison>, String> {
-    let targets = targets(metadata);
+    let targets = bench_compare::targets(metadata);
     if targets.is_empty() {
         return Err("the workspace has no bench targets".to_owned());
     }
@@ -30,25 +30,23 @@ pub fn run(
     let base_target = work.join("base-target");
     let home = work.join("criterion");
     if home.exists() {
-        fs::remove_dir_all(&home).map_err(|err| format!("{}: {err}", home.display()))?;
+        fs::remove_dir_all(&home).map_err(error_at(&home))?;
     }
-    fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
+    fs::create_dir_all(&work).map_err(error_at(&work))?;
     add_worktree(root, &checkout, &options.base)?;
     let result = (|| {
-        let base = MetadataCommand::new()
-            .manifest_path(checkout.join("Cargo.toml"))
-            .no_deps()
+        let base = metadata_command(&checkout)
             .exec()
             .map_err(|err| format!("cargo metadata on {}: {err}", options.base))?;
-        let base_targets = crate::bench_compare::targets(&base);
-        let (_, added) = split_by_base(&base_targets, &targets);
+        let base_targets = bench_compare::targets(&base);
+        let (_, added) = bench_compare::split_by_base(&base_targets, &targets);
         for target in added {
             println!(
                 "bench-compare: {} has no {}/{}; its results are new",
                 options.base, target.package, target.name
             );
         }
-        let (_, removed) = split_by_base(&targets, &base_targets);
+        let (_, removed) = bench_compare::split_by_base(&targets, &base_targets);
         for target in removed {
             println!(
                 "bench-compare: the working tree has no {}/{}; its results are removed",
@@ -62,13 +60,13 @@ pub fn run(
             bench(&checkout, &base_target, &home, target, "--save-baseline")?;
         }
         if home.exists() {
-            clear_new(&home)?;
+            bench_compare::clear_new(&home)?;
         }
         for target in &targets {
             println!("bench-compare: {} on the working tree", target.name);
             bench(root, target_dir, &home, target, "--baseline-lenient")?;
         }
-        collect(&home)
+        bench_compare::collect(&home)
     })();
     remove_worktree(root, &checkout);
     result
@@ -121,11 +119,10 @@ fn bench(
     dir: &Path,
     target_dir: &Path,
     home: &Path,
-    target: &Target,
+    target: &BenchTarget,
     baseline_flag: &str,
 ) -> Result<(), String> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
+    let status = Command::new(tools::cargo())
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target_dir)
         // Criterion names results by group and function only, so each

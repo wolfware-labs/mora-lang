@@ -15,7 +15,9 @@ mod runtime;
 mod spec_examples;
 mod sysroot;
 mod target_names;
+mod tools;
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use cargo_metadata::MetadataCommand;
@@ -29,15 +31,15 @@ const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | 
 /// which `main` prints after the command's name.
 type CommandResult = Result<ExitCode, String>;
 
-/// `cargo metadata --no-deps` for the workspace that contains this crate.
-fn metadata_command() -> MetadataCommand {
+/// `cargo metadata --no-deps` for the workspace at `root`.
+fn metadata_command(root: &Path) -> MetadataCommand {
     let mut command = MetadataCommand::new();
-    command.manifest_path(root().join("Cargo.toml")).no_deps();
+    command.manifest_path(root.join("Cargo.toml")).no_deps();
     command
 }
 
 fn run_layers() -> CommandResult {
-    let metadata = metadata_command()
+    let metadata = metadata_command(&root())
         .exec()
         .map_err(|err| format!("cargo metadata failed: {err}"))?;
     let violations = layers::check(&metadata);
@@ -136,10 +138,7 @@ fn run_runtime(args: &[&str]) -> CommandResult {
 fn run_sysroot() -> CommandResult {
     let root = root();
     let archives = sysroot::archives(std::env::consts::ARCH, std::env::consts::OS)?;
-    // Cargo resolves a relative target directory against the root.
-    let out = root
-        .join(std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into()))
-        .join("sysroot");
+    let out = paths::target_dir(&root).join("sysroot");
     match sysroot::install(&archives, &root.join("LICENSES"), &out)? {
         sysroot::Installed::UpToDate => println!("sysroot: {} is up to date", out.display()),
         sysroot::Installed::Fresh(lld) => {
@@ -196,7 +195,7 @@ fn run_bench_compare(args: &[&str]) -> CommandResult {
             return Ok(ExitCode::from(2));
         }
     };
-    let metadata = metadata_command()
+    let metadata = metadata_command(&root())
         .exec()
         .map_err(|err| format!("cargo metadata failed: {err}"))?;
     let target_dir = metadata.target_directory.as_std_path();
