@@ -1,5 +1,5 @@
-// A literal takes the type its target asks for when it fits, and does not
-// fit is MR0010 (§3.5).
+// A literal takes the type its target asks for; a literal that does not
+// fit that type is MR0010 (§3.5).
 let a: byte = 255;
 let b: byte = 256; //~ ERROR MR0010
 let c: sbyte = -128;
