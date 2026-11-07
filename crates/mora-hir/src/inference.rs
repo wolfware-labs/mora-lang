@@ -901,6 +901,32 @@ mod tests {
     }
 
     #[test]
+    fn an_integer_only_operator_in_literals_for_a_float_is_mr0204() {
+        for (text, count) in [
+            ("let a: float = ~1;\n", 1),
+            ("let b: double = 1 & 2;\n", 1),
+            ("let c: float = 1 +% 2;\n", 1),
+            ("let d: double = (1 | 2) * 3;\n", 1),
+            ("let e: float = ~1 ^ 2;\n", 2),
+        ] {
+            assert_eq!(reported(text), vec!["MR0204"; count], "{text}");
+            let fixed = apply_fixes(text);
+            assert_eq!(fixed.remaining, Vec::<String>::new(), "{text}");
+        }
+        assert_eq!(
+            note("let b: double = 1 & 2;\n"),
+            "`&` is defined only on integer types"
+        );
+        assert_eq!(
+            note("let a: float = ~1;\n"),
+            "`~` is defined only on integer types"
+        );
+        // On an integer type, and without such an operator, it folds.
+        let fine = "let a: int = ~1 & 3;\nlet b: float = 1.5 * 2;\nlet c: double = -(1 + 2);\n";
+        assert_eq!(reported(fine), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
         assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);

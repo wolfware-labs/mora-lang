@@ -138,6 +138,43 @@ fn real(value: Value) -> Option<f64> {
     }
 }
 
+/// Whether every leaf of `expr` is an unsuffixed literal and every operator
+/// one of an arithmetic or bitwise operation, the wrapping ones included:
+/// what takes a target type like one literal (§3.5).
+pub(crate) fn literal_only(exprs: &Arena<Expr>, expr: ExprId) -> bool {
+    use BinaryOp as B;
+    match &exprs[expr] {
+        Expr::Literal(Literal::Int(text)) => {
+            matches!(int_value(text), Some((_, IntSuffix::None)))
+        }
+        Expr::Literal(Literal::Real(text)) => {
+            matches!(real_value(text), Some((_, RealSuffix::None)))
+        }
+        Expr::Unary {
+            op: UnaryOp::Plus | UnaryOp::Neg | UnaryOp::BitNot,
+            expr,
+        } => literal_only(exprs, *expr),
+        Expr::Binary { op, lhs, rhs } => {
+            matches!(
+                op,
+                B::Add
+                    | B::Sub
+                    | B::Mul
+                    | B::Div
+                    | B::Rem
+                    | B::BitAnd
+                    | B::BitOr
+                    | B::BitXor
+                    | B::WrappingAdd
+                    | B::WrappingSub
+                    | B::WrappingMul
+            ) && literal_only(exprs, *lhs)
+                && literal_only(exprs, *rhs)
+        }
+        _ => false,
+    }
+}
+
 /// Calls `f` with every expression of the literal operation `expr`.
 pub(crate) fn parts(exprs: &Arena<Expr>, expr: ExprId, f: &mut impl FnMut(ExprId)) {
     f(expr);

@@ -164,3 +164,22 @@ error[MR0010]: the value of `(18446744073709551615 * 18446744073709551615 * 1844
    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ an integer in it is too large to compute
    |
    = note: use smaller values
+
+error[MR0204]: `~` is not defined for `float`
+  --> tests/ui/types/literals.mr:52:22
+   |
+52 | let notBits: float = ~1; //~ ERROR MR0204
+   |                      ^^ the operand is `float`
+   |
+   = note: `~` is defined only on integer types
+
+error[MR0204]: `&` is not defined for `double` and `double`
+  --> tests/ui/types/literals.mr:53:22
+   |
+53 | let notAnd: double = 1 & 2; //~ ERROR MR0204
+   |                      -^^^-
+   |                      |   |
+   |                      |   this is `double`
+   |                      this is `double`
+   |
+   = note: `&` is defined only on integer types

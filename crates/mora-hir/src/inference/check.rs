@@ -375,6 +375,12 @@ impl Check<'_> {
         if !matches!(body.exprs[expr], Expr::Binary { .. } | Expr::Unary { .. }) {
             return None;
         }
+        if numeric::is_floating_point(target)
+            && constant::literal_only(&body.exprs, expr)
+            && let Some(ty) = self.integer_only_on_real(expr, target)
+        {
+            return Some(ty);
+        }
         let value = constant::value(&body.exprs, expr)?;
         let fits = match value {
             constant::Value::Int(value) => numeric::holds(target, value),
@@ -404,6 +410,48 @@ impl Check<'_> {
             self.exprs[arena_index(part)] = Some(ty.clone());
         });
         Some(ty)
+    }
+
+    /// An operation made only of literals for the floating-point type
+    /// `target`: its literals take that type, so an operator defined only
+    /// on integers in it is not defined there (§7.12), and the operation is
+    /// not folded. `None` when it has no such operator.
+    fn integer_only_on_real(&mut self, expr: ExprId, target: Primitive) -> Option<Ty> {
+        let exprs = &self.body.exprs;
+        let ty = Ty::Primitive(target);
+        let mut wrong = Vec::new();
+        constant::parts(exprs, expr, &mut |part| match &exprs[part] {
+            Expr::Unary {
+                op: op @ UnaryOp::BitNot,
+                expr: operand,
+            } => wrong.push(TypeError::Unary {
+                expr: part,
+                op: *op,
+                operand: *operand,
+                ty: ty.clone(),
+            }),
+            Expr::Binary { op, lhs, rhs } if numeric::is_integer_only(*op) => {
+                wrong.push(TypeError::Binary {
+                    expr: part,
+                    op: *op,
+                    lhs: *lhs,
+                    rhs: *rhs,
+                    lhs_ty: ty.clone(),
+                    rhs_ty: ty.clone(),
+                });
+            }
+            _ => {}
+        });
+        if wrong.is_empty() {
+            return None;
+        }
+        self.errors.append(&mut wrong);
+        constant::parts(exprs, expr, &mut |part| {
+            self.exprs[arena_index(part)] = Some(ty.clone());
+        });
+        // The operation has no value, so nothing else is reported about it.
+        self.exprs[arena_index(expr)] = Some(Ty::Error);
+        Some(Ty::Error)
     }
 
     fn expr_kind(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
