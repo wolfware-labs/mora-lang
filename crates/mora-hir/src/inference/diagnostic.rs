@@ -459,3 +459,118 @@ fn unary(
         _ => diagnostic.with_note(format!("`{sym}` is defined only on numeric types")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_db::{TestDb, app, file_named};
+    use crate::{BodyOwner, Stmt, body, body_source_map};
+
+    /// The initializer of each local of the top-level statements of
+    /// `text`, with what is needed to make a fix for it.
+    fn with_inits(text: &str, f: impl FnOnce(&Source<'_>, Vec<ExprId>)) {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let inits = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Local { init, .. } => *init,
+                _ => None,
+            })
+            .collect();
+        let source = Source {
+            db: &db,
+            file,
+            body,
+            map,
+        };
+        f(&source, inits);
+    }
+
+    #[test]
+    fn each_kind_of_expression_binds_at_its_level() {
+        use Precedence as P;
+        let cases = [
+            ("y = 1", P::AssignOrLambda),
+            ("() => 1", P::AssignOrLambda),
+            ("c ? 1 : 2", P::Conditional),
+            ("a ?? b", P::Coalesce),
+            ("c || c", P::Or),
+            ("c && c", P::And),
+            ("a | b", P::BitOr),
+            ("a ^ b", P::BitXor),
+            ("a & b", P::BitAnd),
+            ("a != b", P::Equality),
+            ("a <= b", P::Relational),
+            ("a is int", P::Relational),
+            ("a as int", P::Relational),
+            ("a >>> b", P::Shift),
+            ("a -% b", P::Additive),
+            ("a *% b", P::Multiplicative),
+            ("p with { X = 1 }", P::With),
+            ("a..b", P::Range),
+            ("-a", P::Unary),
+            ("(long)a", P::Unary),
+            ("await a", P::Unary),
+            ("a", P::Primary),
+            ("f(a)", P::Primary),
+        ];
+        let text: String = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (expr, _))| format!("let v{index} = {expr};\n"))
+            .collect();
+        with_inits(&text, |source, inits| {
+            let levels: Vec<_> = inits
+                .iter()
+                .map(|&init| precedence(&source.body.exprs[init]))
+                .collect();
+            let expected: Vec<_> = cases.iter().map(|&(_, level)| level).collect();
+            assert!(levels == expected, "{:?}", cases.map(|(expr, _)| expr));
+        });
+        // The levels are ordered loosest first, as §7.1 lists them.
+        let order = [
+            P::AssignOrLambda,
+            P::Conditional,
+            P::Coalesce,
+            P::Or,
+            P::And,
+            P::BitOr,
+            P::BitXor,
+            P::BitAnd,
+            P::Equality,
+            P::Relational,
+            P::Shift,
+            P::Additive,
+            P::Multiplicative,
+            P::With,
+            P::Range,
+            P::Unary,
+            P::Primary,
+        ];
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn wrap_adds_parentheses_only_below_the_level_it_needs() {
+        with_inits("let a = 1;\nlet s = a + a;\n", |source, inits| {
+            let sum = inits[1];
+            let texts = |min| -> Vec<String> {
+                source
+                    .wrap(sum, min, "<", ">")
+                    .into_iter()
+                    .map(|edit| edit.replacement)
+                    .collect()
+            };
+            // At its own level, `a + a` needs no parentheses.
+            assert_eq!(texts(Precedence::Additive), ["<", ">"]);
+            assert_eq!(texts(Precedence::Shift), ["<", ">"]);
+            // Below the level it needs, it gets them.
+            assert_eq!(texts(Precedence::Multiplicative), ["<(", ")>"]);
+        });
+    }
+}
