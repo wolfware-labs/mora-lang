@@ -593,7 +593,7 @@ mod tests {
                     F(a: Money, b: Money) {\n    let c: int = a + b;\n    let d = -a;\n    \
                     let e = a << 1;\n    let f = 1 << a;\n    var g = a;\n    g++;\n    \
                     g += b;\n    let h = !a;\n    let i = ~a;\n    let j = a == b;\n    \
-                    let k = a < b;\n}\n";
+                    let k = a < b;\n    let m = 1 + a;\n}\n";
         assert_eq!(reported(text), Vec::<String>::new());
         // Comparing a struct with a number is still not defined.
         let mixed = text.replace("let k = a < b;", "let k = a == 1;");
