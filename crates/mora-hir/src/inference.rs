@@ -491,8 +491,11 @@ mod tests {
 
     #[test]
     fn only_a_synchronous_local_function_checks_what_it_returns() {
-        let text = "F() {\n    G(): int => \"s\";\n    async H(): int => \"s\";\n}\n";
-        assert_eq!(reported(text), ["MR0203"]);
+        assert_eq!(reported("F() {\n    G(): int => \"s\";\n}\n"), ["MR0203"]);
+        assert_eq!(
+            reported("F() {\n    async H(): int => \"s\";\n}\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
