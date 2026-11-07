@@ -98,6 +98,13 @@ mod tests {
     }
 
     #[test]
+    fn the_target_directory_follows_cargo_target_dir() {
+        let root = Path::new("repo");
+        let dir = env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into());
+        assert_eq!(target_dir(root), root.join(dir));
+    }
+
+    #[test]
     fn files_skip_build_directories_but_not_modules_named_target() {
         let dir = scratch("files-with-extension");
         for file in ["a.rs", "src/target/mod.rs", "target/debug/b.rs", "c.txt"] {

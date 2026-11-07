@@ -593,23 +593,7 @@ mod tests {
     fn rust_std_supplies_the_musl_sysroot() {
         let dir = scratch("rust-std");
         let target = "x86_64-unknown-linux-musl";
-        let top = format!("rust-std-{RUST_VERSION}-{target}");
-        let contained = dir.join("src").join(&top).join(format!(
-            "rust-std-{target}/lib/rustlib/{target}/lib/self-contained"
-        ));
-        fs::create_dir_all(&contained).unwrap();
-        fs::write(contained.join("crt1.o"), "crt1").unwrap();
-        fs::write(contained.join("libc.a"), "libc").unwrap();
-        let tarball = dir.join(format!("{top}.tar.gz"));
-        let status = Command::new(tar())
-            .arg("-czf")
-            .arg(&tarball)
-            .arg("-C")
-            .arg(dir.join("src"))
-            .arg(&top)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let tarball = pack_rust_std(&dir, target, &dir);
 
         let out = dir.join("out");
         let root = unpack(&tarball, &out.join("work")).unwrap();
@@ -708,17 +692,39 @@ mod tests {
         let dir = scratch("flat");
         fs::write(dir.join("only.txt"), "flat").unwrap();
         let tarball = dir.join("flat.tar.gz");
+        pack(&tarball, &dir, "only.txt");
+        let error = unpack(&tarball, &dir.join("work")).unwrap_err();
+        assert!(error.contains("does not hold one directory"), "{error}");
+    }
+
+    /// Packs `entry`, relative to `dir`, into the gzipped tarball `tarball`.
+    fn pack(tarball: &Path, dir: &Path, entry: &str) {
         let status = Command::new(tar())
             .arg("-czf")
-            .arg(&tarball)
+            .arg(tarball)
             .arg("-C")
-            .arg(&dir)
-            .arg("only.txt")
+            .arg(dir)
+            .arg(entry)
             .status()
             .unwrap();
         assert!(status.success());
-        let error = unpack(&tarball, &dir.join("work")).unwrap_err();
-        assert!(error.contains("does not hold one directory"), "{error}");
+    }
+
+    /// Packs a `rust-std` for `target` whose self-contained directory holds
+    /// `crt1.o` ("crt1") and `libc.a` ("libc"), built under `dir`, into
+    /// `into` with its release name, and returns the tarball's path.
+    fn pack_rust_std(dir: &Path, target: &str, into: &Path) -> PathBuf {
+        let top = format!("rust-std-{RUST_VERSION}-{target}");
+        let contained = dir.join("src").join(&top).join(format!(
+            "rust-std-{target}/lib/rustlib/{target}/lib/self-contained"
+        ));
+        fs::create_dir_all(&contained).unwrap();
+        fs::write(contained.join("crt1.o"), "crt1").unwrap();
+        fs::write(contained.join("libc.a"), "libc").unwrap();
+        fs::create_dir_all(into).unwrap();
+        let tarball = into.join(format!("{top}.tar.gz"));
+        pack(&tarball, &dir.join("src"), &top);
+        tarball
     }
 
     /// Writes `files` under `dir`, creating their directories.
@@ -838,6 +844,26 @@ mod tests {
         let error = install(&[], &licenses, &out).unwrap_err();
         assert!(error.contains("cannot run"), "{error}");
         assert!(!out.join("stamp").exists());
+    }
+
+    #[test]
+    fn a_musl_archive_installs_its_self_contained_files() {
+        let dir = scratch("musl");
+        let licenses = licenses(&dir);
+        let out = dir.join("out");
+        let tarball = pack_rust_std(&dir, "x86_64-unknown-linux-musl", &out.join("downloads"));
+        let archive = Archive {
+            file: tarball.file_name().unwrap().to_string_lossy().into_owned(),
+            url: String::new(),
+            sha256: sha256(&tarball).unwrap(),
+        };
+        // A rust-std archive brings no `ld.lld`, so the check after it fails.
+        let error = install(&[archive], &licenses, &out).unwrap_err();
+        assert!(error.contains("cannot run"), "{error}");
+        assert_eq!(
+            fs::read_to_string(out.join("sysroot/x86_64-linux/crt1.o")).unwrap(),
+            "crt1"
+        );
     }
 
     /// Runs `f` again while running the fake `ld.lld` fails with "Text file

@@ -497,6 +497,23 @@ A file that is not UTF-8 is error `MR0001`.
 
     const PAGE: &str = include_str!("../fixtures/error-codes/unregistered/docs/errors/MR0001.md");
 
+    #[test]
+    fn pages_are_the_files_in_the_pages_directory() {
+        let root = paths::scratch("read-pages");
+        assert_eq!(read_pages(&root).unwrap(), Vec::<(String, String)>::new());
+        let pages = root.join(PAGES);
+        fs::create_dir_all(pages.join("dir.md")).unwrap();
+        fs::write(pages.join("MR0002.md"), "two").unwrap();
+        fs::write(pages.join("MR0001.md"), "one").unwrap();
+        assert_eq!(
+            read_pages(&root).unwrap(),
+            [
+                ("MR0001.md".to_owned(), "one".to_owned()),
+                ("MR0002.md".to_owned(), "two".to_owned()),
+            ]
+        );
+    }
+
     fn repo(spec: &str, pages: &[(&str, &str)], uses: &[(u16, &str)]) -> Repo {
         Repo {
             spec: spec.into(),
