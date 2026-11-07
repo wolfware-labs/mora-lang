@@ -29,3 +29,9 @@ Tuples(t: (byte, byte)) {
     let d = t == 1; //~ ERROR MR0204
     let e = t == (1, 2, 3); //~ ERROR MR0204
 }
+
+// Each operand of `&&` and `||` must be a `bool`, whatever the other is.
+Logical(n: int) {
+    let a = Console.ReadLine() && n; //~ ERROR MR0204
+    let b = 1 || 2; //~ ERROR MR0204 //~ ERROR MR0204
+}

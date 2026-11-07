@@ -151,3 +151,27 @@ error[MR0204]: `==` is not defined for `(byte, byte)` and `(int, int, int)`
    |             |    |
    |             |    this is `(int, int, int)`
    |             this is `(byte, byte)`
+
+error[MR0204]: `&&` takes `bool` operands, and this one is `int`
+  --> tests/ui/types/operators.mr:35:35
+   |
+35 |     let a = Console.ReadLine() && n; //~ ERROR MR0204
+   |                                   ^ this is `int`
+   |
+   = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+
+error[MR0204]: `||` takes `bool` operands, and this one is `int`
+  --> tests/ui/types/operators.mr:36:13
+   |
+36 |     let b = 1 || 2; //~ ERROR MR0204 //~ ERROR MR0204
+   |             ^ this is `int`
+   |
+   = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`
+
+error[MR0204]: `||` takes `bool` operands, and this one is `int`
+  --> tests/ui/types/operators.mr:36:18
+   |
+36 |     let b = 1 || 2; //~ ERROR MR0204 //~ ERROR MR0204
+   |                  ^ this is `int`
+   |
+   = note: `&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`

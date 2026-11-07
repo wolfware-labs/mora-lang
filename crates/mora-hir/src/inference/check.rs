@@ -845,20 +845,18 @@ impl Check<'_> {
         match op {
             // `&&` and `||` are defined on two `bool` values (§7.12).
             BinaryOp::And | BinaryOp::Or => {
-                let (l, r) = (self.infer(lhs), self.infer(rhs));
-                if let (Some(l), Some(r)) = (l, r)
-                    && is_known(&l)
-                    && is_known(&r)
-                    && (l != BOOL || r != BOOL)
-                {
-                    self.errors.push(TypeError::Binary {
-                        expr,
-                        op,
-                        lhs,
-                        rhs,
-                        lhs_ty: l,
-                        rhs_ty: r,
-                    });
+                for operand in [lhs, rhs] {
+                    if let Some(ty) = self.infer(operand)
+                        && is_known(&ty)
+                        && ty != BOOL
+                    {
+                        self.errors.push(TypeError::Logical {
+                            expr,
+                            op,
+                            operand,
+                            ty,
+                        });
+                    }
                 }
                 return Some(BOOL);
             }

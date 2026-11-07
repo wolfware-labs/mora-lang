@@ -83,6 +83,15 @@ pub(crate) enum TypeError {
         lhs_ty: Ty,
         rhs_ty: Ty,
     },
+    /// The operand `operand` of `&&` or `||` in `expr` is of type `ty`, not
+    /// `bool` (`MR0204`). No type can declare these operators (§6.9), so
+    /// each operand is checked on its own.
+    Logical {
+        expr: ExprId,
+        op: BinaryOp,
+        operand: ExprId,
+        ty: Ty,
+    },
     /// The prefix or postfix operator of `expr` is not defined for its
     /// operand, of type `ty` (`MR0204`); `++` and `--` are the prefix forms.
     Unary {
@@ -627,14 +636,30 @@ mod tests {
     fn logical_operators_take_bool_operands() {
         let text = "let n = 1;\nlet a = n && true;\nlet b = true || n;\nlet c = 1 && 2;\n\
                     let d: bool = n > 0 && n < 9;\n";
-        assert_eq!(reported(text), ["MR0204"; 3]);
+        // `1 && 2` has two operands that are not `bool`.
+        assert_eq!(reported(text), ["MR0204"; 4]);
         assert_eq!(
             note("let n = 1;\nlet a = n || true;\n"),
-            "`||` takes two `bool` values; compare a number explicitly, as in `x != 0`"
+            "`&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`"
+        );
+        // An operand of unknown type does not hide the other one.
+        let text = "let e: Unknwn = 1;\nlet a = e && 1;\nlet b = Console.A() || \"s\";\n";
+        let reported = diagnostics_of(text);
+        let shown: Vec<_> = reported
+            .iter()
+            .map(|d| (d.code.to_string(), text[d.primary.span.range].to_owned()))
+            .collect();
+        let shown: Vec<_> = shown
+            .iter()
+            .map(|(c, t)| (c.as_str(), t.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("MR0127", "Unknwn"), ("MR0204", "1"), ("MR0204", "\"s\"")]
         );
         assert_eq!(
-            reported("let e: Unknwn = 1;\nlet a = e && 1;\n"),
-            ["MR0127"]
+            reported[1].message,
+            "`&&` takes `bool` operands, and this one is `int`"
         );
     }
 
