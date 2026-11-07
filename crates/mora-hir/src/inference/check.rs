@@ -848,9 +848,23 @@ impl Check<'_> {
     /// A binary operation, or the operation of a compound assignment.
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Option<Ty> {
         match op {
+            // `&&` and `||` are defined on two `bool` values (§7.12).
             BinaryOp::And | BinaryOp::Or => {
-                self.condition(lhs);
-                self.condition(rhs);
+                let (l, r) = (self.infer(lhs), self.infer(rhs));
+                if let (Some(l), Some(r)) = (l, r)
+                    && is_known(&l)
+                    && is_known(&r)
+                    && (l != BOOL || r != BOOL)
+                {
+                    self.errors.push(TypeError::Binary {
+                        expr,
+                        op,
+                        lhs,
+                        rhs,
+                        lhs_ty: l,
+                        rhs_ty: r,
+                    });
+                }
                 return Some(BOOL);
             }
             // Option operators come with options (§7.5).

@@ -9,7 +9,7 @@ Check(n: int, s: string): long {
     let pick = n ? 1 : 2; //~ ERROR MR0203
     let mixed = n > 0 ? 1 : "one"; //~ ERROR MR0203
     let wide = n > 0 ? n : 2L;
-    let both = n > 0 && s; //~ ERROR MR0203
+    let both = n > 0 && s; //~ ERROR MR0204
     return 1.5; //~ ERROR MR0203
 }
 

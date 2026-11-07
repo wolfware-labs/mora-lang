@@ -296,6 +296,11 @@ fn binary(
     )
     .with_secondary(Label::new(source.span(lhs_expr), format!("this is `{l}`")))
     .with_secondary(Label::new(source.span(rhs_expr), format!("this is `{r}`")));
+    if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        return diagnostic.with_note(format!(
+            "`{sym}` takes two `bool` values; compare a number explicitly, as in `x != 0`"
+        ));
+    }
     if let (Some(a), Some(b)) = (numeric::as_numeric(lhs), numeric::as_numeric(rhs)) {
         return match numeric::promote(a, b) {
             // Defined only on integers.

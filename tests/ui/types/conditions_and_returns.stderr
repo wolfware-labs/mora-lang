@@ -64,13 +64,16 @@ error[MR0203]: mismatched types: expected `int`, found `string`
    |
    = note: the branches of `c ? a : b` must have one type that the other converts to
 
-error[MR0203]: mismatched types: expected `bool`, found `string`
-  --> tests/ui/types/conditions_and_returns.mr:12:25
+error[MR0204]: `&&` is not defined for `bool` and `string`
+  --> tests/ui/types/conditions_and_returns.mr:12:16
    |
-12 |     let both = n > 0 && s; //~ ERROR MR0203
-   |                         ^ this is `string`
+12 |     let both = n > 0 && s; //~ ERROR MR0204
+   |                -----^^^^-
+   |                |        |
+   |                |        this is `string`
+   |                this is `bool`
    |
-   = note: a condition must be a `bool`
+   = note: `&&` takes two `bool` values; compare a number explicitly, as in `x != 0`
 
 error[MR0203]: mismatched types: expected `long`, found `double`
   --> tests/ui/types/conditions_and_returns.mr:13:12

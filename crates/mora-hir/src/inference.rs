@@ -620,6 +620,21 @@ mod tests {
     }
 
     #[test]
+    fn logical_operators_take_bool_operands() {
+        let text = "let n = 1;\nlet a = n && true;\nlet b = true || n;\nlet c = 1 && 2;\n\
+                    let d: bool = n > 0 && n < 9;\n";
+        assert_eq!(reported(text), ["MR0204"; 3]);
+        assert_eq!(
+            note("let n = 1;\nlet a = n || true;\n"),
+            "`||` takes two `bool` values; compare a number explicitly, as in `x != 0`"
+        );
+        assert_eq!(
+            reported("let e: Unknwn = 1;\nlet a = e && 1;\n"),
+            ["MR0127"]
+        );
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";
