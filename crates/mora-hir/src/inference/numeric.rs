@@ -4,6 +4,7 @@
 //! until the checker can look `IFrom` up (M3.6), this table stands in for
 //! those implementations (D-135).
 
+use crate::bodies::BinaryOp;
 use crate::ty::{Primitive, Ty};
 
 /// Whether `ty` is a numeric type: an integer type, `float` or `double`.
@@ -27,6 +28,20 @@ pub(crate) fn is_floating_point(ty: Primitive) -> bool {
 /// Whether `ty` is an integer type.
 pub(crate) fn is_integer(ty: Primitive) -> bool {
     is_numeric(ty) && !is_floating_point(ty)
+}
+
+/// Whether `op` is defined only on two integer operands of one promoted
+/// type: `&`, `|`, `^` and the wrapping operators (§7.12).
+pub(crate) fn is_integer_only(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::WrappingAdd
+            | BinaryOp::WrappingSub
+            | BinaryOp::WrappingMul
+    )
 }
 
 /// Whether a value of `from` converts implicitly to `to` (§5.10): the
@@ -286,5 +301,9 @@ mod tests {
         assert!(!is_signed(NUInt));
         assert_eq!(bits(NInt), 64);
         assert_eq!(bits(UShort), 16);
+        assert!(is_integer_only(BinaryOp::WrappingMul));
+        assert!(is_integer_only(BinaryOp::BitXor));
+        assert!(!is_integer_only(BinaryOp::Rem));
+        assert!(!is_integer_only(BinaryOp::Shl));
     }
 }

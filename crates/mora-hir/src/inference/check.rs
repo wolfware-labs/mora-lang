@@ -853,12 +853,7 @@ impl Check<'_> {
                         && is_known(&ty)
                         && ty != BOOL
                     {
-                        self.errors.push(TypeError::Logical {
-                            expr,
-                            op,
-                            operand,
-                            ty,
-                        });
+                        self.errors.push(TypeError::Logical { op, operand, ty });
                     }
                 }
                 return Some(BOOL);
@@ -1029,7 +1024,7 @@ fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
         let ty = numeric::promote(a, b)?;
         return match op {
             B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => Some(BOOL),
-            B::BitAnd | B::BitOr | B::BitXor | B::WrappingAdd | B::WrappingSub | B::WrappingMul => {
+            _ if numeric::is_integer_only(op) => {
                 numeric::is_integer(ty).then_some(Ty::Primitive(ty))
             }
             _ => Some(Ty::Primitive(ty)),

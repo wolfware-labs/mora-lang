@@ -83,11 +83,10 @@ pub(crate) enum TypeError {
         lhs_ty: Ty,
         rhs_ty: Ty,
     },
-    /// The operand `operand` of `&&` or `||` in `expr` is of type `ty`, not
+    /// The operand `operand` of `op`, `&&` or `||`, is of type `ty`, not
     /// `bool` (`MR0204`). No type can declare these operators (§6.9), so
     /// each operand is checked on its own.
     Logical {
-        expr: ExprId,
         op: BinaryOp,
         operand: ExprId,
         ty: Ty,
@@ -647,16 +646,9 @@ mod tests {
         let reported = diagnostics_of(text);
         let shown: Vec<_> = reported
             .iter()
-            .map(|d| (d.code.to_string(), text[d.primary.span.range].to_owned()))
+            .map(|d| format!("{} {}", d.code, &text[d.primary.span.range]))
             .collect();
-        let shown: Vec<_> = shown
-            .iter()
-            .map(|(c, t)| (c.as_str(), t.as_str()))
-            .collect();
-        assert_eq!(
-            shown,
-            [("MR0127", "Unknwn"), ("MR0204", "1"), ("MR0204", "\"s\"")]
-        );
+        assert_eq!(shown, ["MR0127 Unknwn", "MR0204 1", "MR0204 \"s\""]);
         assert_eq!(
             reported[1].message,
             "`&&` takes `bool` operands, and this one is `int`"
@@ -738,26 +730,24 @@ mod tests {
                 &edit.replacement,
             );
         }
-        // Every line a fix changed now type-checks.
-        let fixed_lines: Vec<_> = edits
+        // Every line a fix changed now type-checks. A cast adds no line, so
+        // a line has one number in both texts.
+        let line_of =
+            |index: &mora_span::LineIndex, offset| index.line_col(offset).map(|at| at.line);
+        let before = mora_span::LineIndex::new(&text);
+        let fixed_lines: std::collections::BTreeSet<_> = edits
             .iter()
-            .map(|edit| {
-                text[..usize::from(edit.span.range.start())]
-                    .matches('\n')
-                    .count()
-            })
+            .map(|edit| line_of(&before, edit.span.range.start()))
             .collect();
+        let after = mora_span::LineIndex::new(&fixed);
+        let lines: Vec<_> = fixed.lines().collect();
         let remaining: Vec<_> = diagnostics_of(&fixed)
             .iter()
-            .map(|d| {
-                fixed[..usize::from(d.primary.span.range.start())]
-                    .matches('\n')
-                    .count()
-            })
+            .map(|d| line_of(&after, d.primary.span.range.start()))
             .filter(|line| fixed_lines.contains(line))
-            .map(|line| fixed.lines().nth(line).unwrap_or_default().to_owned())
+            .map(|line| line.map_or("?", |line| lines[line as usize]))
             .collect();
-        assert_eq!(remaining, Vec::<String>::new());
+        assert_eq!(remaining, Vec::<&str>::new());
     }
 
     #[test]

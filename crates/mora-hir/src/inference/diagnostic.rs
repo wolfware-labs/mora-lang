@@ -97,22 +97,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             lhs_ty,
             rhs_ty,
         } => binary(source, *expr, *op, (*lhs, lhs_ty), (*rhs, rhs_ty)),
-        TypeError::Logical {
-            op, operand, ty, ..
-        } => {
-            let t = source.name(ty);
-            Diagnostic::error(
-                codes::MR0204,
-                format!(
-                    "`{}` takes `bool` operands, and this one is `{t}`",
-                    op.text()
-                ),
-                Label::new(source.span(*operand), format!("this is `{t}`")),
-            )
-            .with_note(
-                "`&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`",
-            )
-        }
+        TypeError::Logical { op, operand, ty } => logical(source, *op, *operand, ty),
         TypeError::Unary {
             expr,
             op,
@@ -126,6 +111,20 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             to,
         } => cast(source, *expr, *operand, from, to),
     }
+}
+
+/// `MR0204`: an operand of `&&` or `||` that is not a `bool`.
+fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty) -> Diagnostic {
+    let t = source.name(operand);
+    Diagnostic::error(
+        codes::MR0204,
+        format!(
+            "`{}` takes `bool` operands, and this one is `{t}`",
+            op.text()
+        ),
+        Label::new(source.span(operand_expr), format!("this is `{t}`")),
+    )
+    .with_note("`&&` and `||` combine `bool` values; compare a number explicitly, as in `x != 0`")
 }
 
 /// `MR0203`: a value whose type does not convert to the expected one.
@@ -333,16 +332,8 @@ fn binary(
                 let diagnostic = diagnostic.with_note(note);
                 // A cast cannot make an operator defined only on integers
                 // work on a `float` or a `double`.
-                let integers_only = matches!(
-                    op,
-                    BinaryOp::BitAnd
-                        | BinaryOp::BitOr
-                        | BinaryOp::BitXor
-                        | BinaryOp::WrappingAdd
-                        | BinaryOp::WrappingSub
-                        | BinaryOp::WrappingMul
-                );
-                if integers_only && (numeric::is_floating_point(a) || numeric::is_floating_point(b))
+                if numeric::is_integer_only(op)
+                    && (numeric::is_floating_point(a) || numeric::is_floating_point(b))
                 {
                     return diagnostic;
                 }
