@@ -133,3 +133,21 @@ error[MR0204]: `<` is not defined for `(byte, byte)` and `(byte, byte)`
    |             |   |
    |             |   this is `(byte, byte)`
    |             this is `(byte, byte)`
+
+error[MR0204]: `==` is not defined for `(byte, byte)` and `int`
+  --> tests/ui/types/operators.mr:29:13
+   |
+29 |     let d = t == 1; //~ ERROR MR0204
+   |             -^^^^-
+   |             |    |
+   |             |    this is `int`
+   |             this is `(byte, byte)`
+
+error[MR0204]: `==` is not defined for `(byte, byte)` and `(int, int, int)`
+  --> tests/ui/types/operators.mr:30:13
+   |
+30 |     let e = t == (1, 2, 3); //~ ERROR MR0204
+   |             -^^^^---------
+   |             |    |
+   |             |    this is `(int, int, int)`
+   |             this is `(byte, byte)`

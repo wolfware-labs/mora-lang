@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn tuples_of_different_types_compare_to_an_unknown_result() {
-        let text = "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\nlet b = t != 1;\n\
+        let text = "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\nlet b = t != (1L, 2);\n\
                     let c = t == t;\nlet d: (Left: byte, Right: byte) = t;\nlet e = t == d;\n";
         assert_eq!(
             local_types(text),
@@ -616,7 +616,11 @@ mod tests {
             ]
         );
         assert_eq!(reported(text), Vec::<String>::new());
-        assert_eq!(reported("let t = (1, 2);\nlet a = t < t;\n"), ["MR0204"]);
+        // A tuple compared with something that is not a tuple of its length
+        // is not defined.
+        let wrong = "let t = (1, 2);\nlet a = t < t;\nlet b = t == 1;\nlet c = 1 != t;\n\
+                     let d = t == (1, 2, 3);\n";
+        assert_eq!(reported(wrong), ["MR0204"; 4]);
     }
 
     #[test]

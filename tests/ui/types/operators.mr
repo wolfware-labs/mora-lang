@@ -26,4 +26,6 @@ Tuples(t: (byte, byte)) {
     let a = t == (1, 2);
     let b: bool = t == t;
     let c = t < t; //~ ERROR MR0204
+    let d = t == 1; //~ ERROR MR0204
+    let e = t == (1, 2, 3); //~ ERROR MR0204
 }
