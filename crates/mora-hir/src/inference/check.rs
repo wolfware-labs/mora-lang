@@ -143,7 +143,8 @@ impl Check<'_> {
     fn function_body(&mut self, root: ExprId, ret: Option<Ty>) {
         let outer = std::mem::replace(&mut self.ret, ret);
         match &self.ret {
-            // A block has no value of its own to check.
+            // A block body gives no type, so checking it only walks its
+            // statements, whose `return`s check against `ret`.
             Some(ret) if *ret != Ty::UNIT => {
                 let ret = ret.clone();
                 self.check(root, &ret);
@@ -584,28 +585,21 @@ impl Check<'_> {
     }
 
     /// A tuple: an expected tuple type of the same length gives each element
-    /// its expected type.
+    /// its expected type. A tuple never takes a hint, which only a literal
+    /// operand does (`takes_hint`).
     fn tuple(&mut self, elems: &[(Option<String>, ExprId)], expect: Expect<'_>) -> Option<Ty> {
-        let expected = match expect {
-            Expect::Target(Ty::Tuple(expected)) | Expect::Hint(Ty::Tuple(expected))
-                if expected.len() == elems.len() =>
-            {
-                Some(expected)
-            }
-            _ => None,
-        };
-        if let (Expect::Target(_), Some(expected)) = (expect, expected) {
+        if let Expect::Target(Ty::Tuple(expected)) = expect
+            && expected.len() == elems.len()
+        {
             for (&(_, elem), expected) in elems.iter().zip(expected) {
                 self.check(elem, &expected.ty);
             }
             return Some(Ty::Tuple(expected.clone()));
         }
-        // Empty without an expected tuple, else as long as `elems`.
-        let mut hints = expected.into_iter().flatten().map(|expected| &expected.ty);
         let mut types = Vec::with_capacity(elems.len());
         let mut known = true;
         for (name, elem) in elems {
-            match self.expr(*elem, hint(hints.next())) {
+            match self.infer(*elem) {
                 Some(ty) => types.push(TupleElem {
                     name: name.clone(),
                     ty,
@@ -739,7 +733,7 @@ impl Check<'_> {
         match op {
             UnaryOp::Not => {
                 let found = self.infer(operand);
-                if is_struct(found.as_ref()) {
+                if found.as_ref().is_some_and(is_struct) {
                     return None;
                 }
                 if let Some(found) = found.filter(|found| is_known(found) && *found != BOOL) {
@@ -759,7 +753,7 @@ impl Check<'_> {
             UnaryOp::PreIncrement | UnaryOp::PreDecrement => self.step(expr, op, operand),
             UnaryOp::Plus | UnaryOp::Neg | UnaryOp::BitNot => {
                 let found = self.infer(operand)?;
-                if is_struct(Some(&found)) {
+                if is_struct(&found) {
                     return None;
                 }
                 let result = match numeric::as_numeric(&found) {
@@ -772,7 +766,7 @@ impl Check<'_> {
                     None if !is_known(&found) => return None,
                     None => None,
                 };
-                self.operated(expr, op, (operand, found), result)
+                self.operated(expr, op, operand, found, result)
             }
         }
     }
@@ -781,10 +775,10 @@ impl Check<'_> {
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
         let found = self.infer(operand)?;
         let result = numeric::as_numeric(&found);
-        if result.is_none() && (!is_known(&found) || is_struct(Some(&found))) {
+        if result.is_none() && (!is_known(&found) || is_struct(&found)) {
             return None;
         }
-        self.operated(expr, op, (operand, found), result)
+        self.operated(expr, op, operand, found, result)
     }
 
     /// The type of a unary operation on `operand`, of type `ty`, or its
@@ -793,7 +787,8 @@ impl Check<'_> {
         &mut self,
         expr: ExprId,
         op: UnaryOp,
-        (operand, ty): (ExprId, Ty),
+        operand: ExprId,
+        ty: Ty,
         result: Option<Primitive>,
     ) -> Option<Ty> {
         match result {
@@ -876,7 +871,7 @@ impl Check<'_> {
             BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr => {
                 let value = self.infer(lhs);
                 let count = self.expr(rhs, Expect::Target(&INT));
-                if is_struct(value.as_ref()) || is_struct(count.as_ref()) {
+                if value.as_ref().is_some_and(is_struct) || count.as_ref().is_some_and(is_struct) {
                     return None;
                 }
                 self.coerce(rhs, count.as_ref(), &INT, Context::Value);
@@ -885,14 +880,13 @@ impl Check<'_> {
                     Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
                     None if !is_known(&value) => None,
                     None => {
-                        let rhs_ty = self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error);
                         self.errors.push(TypeError::Binary {
                             expr,
                             op,
                             lhs,
                             rhs,
                             lhs_ty: value,
-                            rhs_ty,
+                            rhs_ty: count.unwrap_or(Ty::Error),
                         });
                         Some(Ty::Error)
                     }
@@ -913,7 +907,7 @@ impl Check<'_> {
         }
         // A struct may declare its arithmetic, bitwise and shift operators
         // (§6.9), which this milestone does not look up.
-        if !comparison && (is_struct(Some(&l)) || is_struct(Some(&r))) {
+        if !comparison && (is_struct(&l) || is_struct(&r)) {
             return None;
         }
         // Comparing tuples of different element types is for the rules of
@@ -1012,8 +1006,8 @@ impl Check<'_> {
 }
 
 /// Whether `ty` is a struct, which may declare operators (§6.9).
-fn is_struct(ty: Option<&Ty>) -> bool {
-    matches!(ty, Some(Ty::Struct(_)))
+fn is_struct(ty: &Ty) -> bool {
+    matches!(ty, Ty::Struct(_))
 }
 
 /// Whether unary `-` on `literal` makes a negative literal: an integer
