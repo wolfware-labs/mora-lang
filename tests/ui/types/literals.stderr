@@ -1,3 +1,15 @@
+error[MR0010]: the literal is too large for a `double`
+  --> tests/ui/types/literals.mr:31:21
+   |
+31 | let huge: double = -1e400; //~ ERROR MR0010
+   |                     ^^^^^
+
+error[MR0010]: the literal is too large for a `double`
+  --> tests/ui/types/literals.mr:32:21
+   |
+32 | let huger: double = 1e400 + 1.0; //~ ERROR MR0010
+   |                     ^^^^^
+
 error[MR0010]: the literal `256` does not fit in `byte`
  --> tests/ui/types/literals.mr:4:15
   |

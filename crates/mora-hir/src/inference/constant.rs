@@ -28,8 +28,9 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
             (value, IntSuffix::None) => Some(Value::Int(value.into())),
             _ => None,
         },
+        // A real too large for a `double` is reported by the lexer.
         Expr::Literal(Literal::Real(text)) => match real_value(text)? {
-            (value, RealSuffix::None) => Some(Value::Real(value)),
+            (value, RealSuffix::None) if value.is_finite() => Some(Value::Real(value)),
             _ => None,
         },
         Expr::Unary { op, expr } => {

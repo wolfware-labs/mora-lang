@@ -27,3 +27,6 @@ let x: byte = 200 + 100; //~ ERROR MR0010
 let y: long = 9223372036854775807 * 2; //~ ERROR MR0010
 let z: float = 1e38 * 10.0; //~ ERROR MR0010
 let big: long = -(-(9223372036854775808 * 9223372036854775808) * 2); //~ ERROR MR0010
+// The lexer reports a real too large for a `double`, once.
+let huge: double = -1e400; //~ ERROR MR0010
+let huger: double = 1e400 + 1.0; //~ ERROR MR0010
