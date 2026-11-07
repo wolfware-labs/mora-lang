@@ -272,6 +272,38 @@ mod tests {
     }
 
     #[test]
+    fn only_literals_and_arithmetic_or_bitwise_operators_are_literal_only() {
+        let mut exprs = Arena::new();
+        let int = exprs.alloc(Expr::Literal(Literal::Int("1".to_owned())));
+        let real = exprs.alloc(Expr::Literal(Literal::Real("1.5".to_owned())));
+        let suffixed = exprs.alloc(Expr::Literal(Literal::Int("1u".to_owned())));
+        let float = exprs.alloc(Expr::Literal(Literal::Real("1.5f".to_owned())));
+        let other = exprs.alloc(Expr::This);
+        let mut binary = |op, lhs, rhs| exprs.alloc(Expr::Binary { op, lhs, rhs });
+        let bits = binary(BinaryOp::BitAnd, int, real);
+        let wrapping = binary(BinaryOp::WrappingAdd, int, int);
+        let left_other = binary(BinaryOp::Add, other, int);
+        let right_other = binary(BinaryOp::Add, int, other);
+        let shift = binary(BinaryOp::Shl, int, int);
+        let mut unary = |op, expr| exprs.alloc(Expr::Unary { op, expr });
+        let not = unary(UnaryOp::BitNot, int);
+        let logical = unary(UnaryOp::Not, int);
+        let only = |expr| literal_only(&exprs, expr);
+        assert!(only(int) && only(real) && only(bits) && only(wrapping) && only(not));
+        for expr in [
+            suffixed,
+            float,
+            other,
+            left_other,
+            right_other,
+            shift,
+            logical,
+        ] {
+            assert!(!only(expr));
+        }
+    }
+
+    #[test]
     fn unary_operators_apply_to_the_value() {
         let mut exprs = Arena::new();
         let mut literal = |literal| exprs.alloc(Expr::Literal(literal));
