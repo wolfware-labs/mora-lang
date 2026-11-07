@@ -286,12 +286,25 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
         "the literal"
     };
     if real {
+        // An integer too large to compute is a different cause from a real
+        // that becomes an infinity.
+        let (label, note) = if constant::value(exprs, expr) == Some(constant::Value::OverflowReal) {
+            (
+                "an integer in it is too large to compute".to_owned(),
+                "use smaller values",
+            )
+        } else {
+            (
+                format!("this would be infinity as a `{keyword}`"),
+                "write it as a `double`, or use a smaller value",
+            )
+        };
         return Diagnostic::error(
             codes::MR0010,
             format!("{what} `{text}` is too large for a `{keyword}`"),
-            Label::new(span, format!("this would be infinity as a `{keyword}`")),
+            Label::new(span, label),
         )
-        .with_note("write it as a `double`, or use a smaller value");
+        .with_note(note);
     }
     match numeric::integer_range(ty) {
         Some((min, max)) => Diagnostic::error(

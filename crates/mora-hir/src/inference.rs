@@ -843,6 +843,36 @@ mod tests {
     }
 
     #[test]
+    fn an_integer_too_large_to_compute_in_a_real_is_named_as_such() {
+        let huge = "(18446744073709551615 * 18446744073709551615 * 18446744073709551615)";
+        let label = |text: &str| {
+            let reported = diagnostics_of(text);
+            assert_eq!(codes(&reported), ["MR0010"], "{text}");
+            reported[0].primary.message.clone().unwrap_or_default()
+        };
+        assert_eq!(
+            label(&format!("let a: double = {huge} * 1.5;\n")),
+            "an integer in it is too large to compute"
+        );
+        assert_eq!(
+            label(&format!("let b: double = -({huge} * 1.5) * 2.0;\n")),
+            "an integer in it is too large to compute"
+        );
+        assert_eq!(
+            label("let c: double = 1e308 * 10.0;\n"),
+            "this would be infinity as a `double`"
+        );
+        assert_eq!(
+            label(&format!("let d: double = {huge} * 1.5 + 1e308 * 10.0;\n")),
+            "this would be infinity as a `double`"
+        );
+        assert_eq!(
+            reported(&format!("let e: long = {huge} * 1.5;\n")),
+            ["MR0204"]
+        );
+    }
+
+    #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
         assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);

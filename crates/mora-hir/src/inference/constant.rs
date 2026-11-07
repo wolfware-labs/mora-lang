@@ -19,6 +19,9 @@ pub(crate) enum Value {
     /// A real whose computation gave an infinity at some step, which fits
     /// no type (§3.5).
     Infinity,
+    /// A real computed from an integer too large to compute, which fits no
+    /// type, and is kept apart from [`Value::Infinity`] for its message.
+    OverflowReal,
 }
 
 /// The value of `expr` when every leaf of it is an unsuffixed literal
@@ -47,7 +50,7 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
                     Some(v.checked_neg().map_or(Value::Overflow, Value::Int))
                 }
                 (UnaryOp::Neg, Value::Real(v)) => Some(Value::Real(-v)),
-                (UnaryOp::Neg, Value::Infinity) => Some(Value::Infinity),
+                (UnaryOp::Neg, Value::Infinity | Value::OverflowReal) => Some(value),
                 (UnaryOp::BitNot, Value::Int(v)) => Some(Value::Int(!v)),
                 _ => None,
             }
@@ -104,10 +107,17 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
             // An operand too large to compute makes the result so too;
             // `&`, `|` and `^` are not defined on a real at all.
             _ => {
-                let is_real = |value| matches!(value, Value::Real(_) | Value::Infinity);
+                let is_real = |value| {
+                    matches!(
+                        value,
+                        Value::Real(_) | Value::Infinity | Value::OverflowReal
+                    )
+                };
                 let real = is_real(a) || is_real(b);
+                let infinity = a == Value::Infinity || b == Value::Infinity;
                 match op {
-                    B::Add | B::Sub | B::Mul | B::Div | B::Rem if real => Some(Value::Infinity),
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem if infinity => Some(Value::Infinity),
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem if real => Some(Value::OverflowReal),
                     B::Add | B::Sub | B::Mul | B::Div | B::Rem => Some(Value::Overflow),
                     B::BitAnd | B::BitOr | B::BitXor if !real => Some(Value::Overflow),
                     _ => None,
@@ -124,7 +134,7 @@ fn real(value: Value) -> Option<f64> {
     match value {
         Value::Int(value) => Some(value as f64),
         Value::Real(value) => Some(value),
-        Value::Overflow | Value::Infinity => None,
+        Value::Overflow | Value::Infinity | Value::OverflowReal => None,
     }
 }
 
@@ -207,7 +217,19 @@ mod tests {
         assert_eq!(of(BinaryOp::Mul, Real(1e308), Real(10.0)), Some(Infinity));
         assert_eq!(of(BinaryOp::Sub, Infinity, Infinity), Some(Infinity));
         assert_eq!(of(BinaryOp::Mul, Infinity, Real(0.0)), Some(Infinity));
-        assert_eq!(of(BinaryOp::Add, Overflow, Real(1.5)), Some(Infinity));
+        assert_eq!(
+            of(BinaryOp::Add, Overflow, Real(1.5)),
+            Some(Value::OverflowReal)
+        );
+        assert_eq!(
+            of(BinaryOp::Mul, Value::OverflowReal, Real(2.0)),
+            Some(Value::OverflowReal)
+        );
+        assert_eq!(
+            of(BinaryOp::Sub, Value::OverflowReal, Infinity),
+            Some(Infinity)
+        );
+        assert_eq!(of(BinaryOp::BitOr, Value::OverflowReal, Int(1)), None);
         assert_eq!(of(BinaryOp::BitAnd, Infinity, Int(1)), None);
         assert!(matches!(of(BinaryOp::Div, Real(0.0), Real(0.0)), Some(Real(v)) if v.is_nan()));
     }

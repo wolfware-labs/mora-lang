@@ -156,3 +156,11 @@ error[MR0010]: the value of `(1e308 * 10.0) * 0.0` is too large for a `double`
    |                    ^^^^^^^^^^^^^^^^^^^^ this would be infinity as a `double`
    |
    = note: write it as a `double`, or use a smaller value
+
+error[MR0010]: the value of `(18446744073709551615 * 18446744073709551615 * 18446744073709551615) * 1.5` is too large for a `double`
+  --> tests/ui/types/literals.mr:49:25
+   |
+49 | let mixedHuge: double = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) * 1.5; //~ ERROR MR0010
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ an integer in it is too large to compute
+   |
+   = note: use smaller values

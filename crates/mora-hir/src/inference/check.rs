@@ -384,9 +384,13 @@ impl Check<'_> {
                 Primitive::Double => true,
                 _ => return None,
             },
-            constant::Value::Infinity if numeric::is_floating_point(target) => false,
+            constant::Value::Infinity | constant::Value::OverflowReal
+                if numeric::is_floating_point(target) =>
+            {
+                false
+            }
             // A real for an integer type follows the usual rules.
-            constant::Value::Infinity => return None,
+            constant::Value::Infinity | constant::Value::OverflowReal => return None,
             constant::Value::Overflow => false,
         };
         if !fits {

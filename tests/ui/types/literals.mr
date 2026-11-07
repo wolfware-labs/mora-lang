@@ -45,3 +45,5 @@ let remainder: long = (-(9223372036854775808 * 9223372036854775808) * 2) % -1;
 let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
 // An infinity at any step does not fit, even if a later step is finite.
 let gone: double = (1e308 * 10.0) * 0.0; //~ ERROR MR0010
+// An integer too large to compute inside a real is named as such.
+let mixedHuge: double = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) * 1.5; //~ ERROR MR0010
