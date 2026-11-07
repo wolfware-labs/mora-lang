@@ -5,7 +5,6 @@
 use la_arena::Arena;
 use mora_syntax::lexer::number::{IntSuffix, RealSuffix, int_value, real_value};
 
-use super::numeric;
 use crate::bodies::{BinaryOp, Expr, ExprId, Literal, UnaryOp};
 
 /// The value of a literal operation.
@@ -139,32 +138,6 @@ fn real(value: Value) -> Option<f64> {
     }
 }
 
-/// Whether every leaf of `expr` is an unsuffixed literal and every operator
-/// one of an arithmetic or bitwise operation, the wrapping ones included:
-/// what takes a target type like one literal (§3.5).
-pub(crate) fn literal_only(exprs: &Arena<Expr>, expr: ExprId) -> bool {
-    use BinaryOp as B;
-    match &exprs[expr] {
-        Expr::Literal(Literal::Int(text)) => {
-            matches!(int_value(text), Some((_, IntSuffix::None)))
-        }
-        Expr::Literal(Literal::Real(text)) => {
-            matches!(real_value(text), Some((_, RealSuffix::None)))
-        }
-        Expr::Unary {
-            op: UnaryOp::Plus | UnaryOp::Neg | UnaryOp::BitNot,
-            expr,
-        } => literal_only(exprs, *expr),
-        Expr::Binary { op, lhs, rhs } => {
-            (matches!(op, B::Add | B::Sub | B::Mul | B::Div | B::Rem)
-                || numeric::is_integer_only(*op))
-                && literal_only(exprs, *lhs)
-                && literal_only(exprs, *rhs)
-        }
-        _ => false,
-    }
-}
-
 /// Calls `f` with every expression of the literal operation `expr`.
 pub(crate) fn parts(exprs: &Arena<Expr>, expr: ExprId, f: &mut impl FnMut(ExprId)) {
     f(expr);
@@ -259,38 +232,6 @@ mod tests {
         assert_eq!(of(BinaryOp::BitOr, Value::OverflowReal, Int(1)), None);
         assert_eq!(of(BinaryOp::BitAnd, Infinity, Int(1)), None);
         assert!(matches!(of(BinaryOp::Div, Real(0.0), Real(0.0)), Some(Real(v)) if v.is_nan()));
-    }
-
-    #[test]
-    fn only_literals_and_arithmetic_or_bitwise_operators_are_literal_only() {
-        let mut exprs = Arena::new();
-        let int = exprs.alloc(Expr::Literal(Literal::Int("1".to_owned())));
-        let real = exprs.alloc(Expr::Literal(Literal::Real("1.5".to_owned())));
-        let suffixed = exprs.alloc(Expr::Literal(Literal::Int("1u".to_owned())));
-        let float = exprs.alloc(Expr::Literal(Literal::Real("1.5f".to_owned())));
-        let other = exprs.alloc(Expr::This);
-        let mut binary = |op, lhs, rhs| exprs.alloc(Expr::Binary { op, lhs, rhs });
-        let bits = binary(BinaryOp::BitAnd, int, real);
-        let wrapping = binary(BinaryOp::WrappingAdd, int, int);
-        let left_other = binary(BinaryOp::Add, other, int);
-        let right_other = binary(BinaryOp::Add, int, other);
-        let shift = binary(BinaryOp::Shl, int, int);
-        let mut unary = |op, expr| exprs.alloc(Expr::Unary { op, expr });
-        let not = unary(UnaryOp::BitNot, int);
-        let logical = unary(UnaryOp::Not, int);
-        let only = |expr| literal_only(&exprs, expr);
-        assert!(only(int) && only(real) && only(bits) && only(wrapping) && only(not));
-        for expr in [
-            suffixed,
-            float,
-            other,
-            left_other,
-            right_other,
-            shift,
-            logical,
-        ] {
-            assert!(!only(expr));
-        }
     }
 
     #[test]

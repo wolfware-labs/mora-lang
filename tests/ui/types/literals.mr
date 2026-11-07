@@ -47,7 +47,8 @@ let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 1844
 let gone: double = (1e308 * 10.0) * 0.0; //~ ERROR MR0010
 // An integer too large to compute inside a real is named as such.
 let mixedHuge: double = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) * 1.5; //~ ERROR MR0010
-// An operator defined only on integers does not apply to literals that
-// take a floating-point type.
-let notBits: float = ~1; //~ ERROR MR0204
-let notAnd: double = 1 & 2; //~ ERROR MR0204
+// Integer operators on literals fold as integers before the conversion,
+// and a wrapping operator follows §7.12.
+let notBits: float = ~1;
+let bits: double = (1 | 2) * 3;
+let wrapped: double = 1 +% 2;

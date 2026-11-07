@@ -381,12 +381,6 @@ impl Check<'_> {
         if !matches!(body.exprs[expr], Expr::Binary { .. } | Expr::Unary { .. }) {
             return None;
         }
-        if numeric::is_floating_point(target)
-            && constant::literal_only(&body.exprs, expr)
-            && let Some(ty) = self.integer_only_on_real(expr, target)
-        {
-            return Some(ty);
-        }
         let value = constant::value(&body.exprs, expr)?;
         // The exact value converted to `target`, `None` when it does not fit.
         let real = |value: f64| match target {
@@ -418,8 +412,17 @@ impl Check<'_> {
             // A real for an integer type follows the usual rules.
             constant::Value::Infinity | constant::Value::OverflowReal => return None,
         };
+        // `-` before a literal belongs to it (§3.5): only an operation has a
+        // value of its own.
+        let negated_literal = matches!(
+            &body.exprs[expr],
+            Expr::Unary { op: UnaryOp::Neg, expr: operand }
+                if matches!(body.exprs[*operand], Expr::Literal(_))
+        );
         if let Some(value) = fitting {
-            self.constants.insert(expr, value);
+            if !negated_literal {
+                self.constants.insert(expr, value);
+            }
         } else {
             self.errors.push(TypeError::Literal {
                 expr,
@@ -427,57 +430,10 @@ impl Check<'_> {
             });
         }
         let ty = Ty::Primitive(target);
-        self.type_parts(expr, &ty);
-        Some(ty)
-    }
-
-    /// Gives every expression of the literal operation `expr` the type
-    /// `ty`, which its literals take.
-    fn type_parts(&mut self, expr: ExprId, ty: &Ty) {
-        let body = self.body;
         constant::parts(&body.exprs, expr, &mut |part| {
             self.exprs[arena_index(part)] = Some(ty.clone());
         });
-    }
-
-    /// An operation made only of literals for the floating-point type
-    /// `target`: its literals take that type, so an operator defined only
-    /// on integers in it is not defined there (§7.12), and the operation is
-    /// not folded. `None` when it has no such operator.
-    fn integer_only_on_real(&mut self, expr: ExprId, target: Primitive) -> Option<Ty> {
-        let exprs = &self.body.exprs;
-        let ty = Ty::Primitive(target);
-        let mut wrong = Vec::new();
-        constant::parts(exprs, expr, &mut |part| match &exprs[part] {
-            Expr::Unary {
-                op: op @ UnaryOp::BitNot,
-                expr: operand,
-            } => wrong.push(TypeError::Unary {
-                expr: part,
-                op: *op,
-                operand: *operand,
-                ty: ty.clone(),
-            }),
-            Expr::Binary { op, lhs, rhs } if numeric::is_integer_only(*op) => {
-                wrong.push(TypeError::Binary {
-                    expr: part,
-                    op: *op,
-                    lhs: *lhs,
-                    rhs: *rhs,
-                    lhs_ty: ty.clone(),
-                    rhs_ty: ty.clone(),
-                });
-            }
-            _ => {}
-        });
-        if wrong.is_empty() {
-            return None;
-        }
-        self.errors.append(&mut wrong);
-        self.type_parts(expr, &ty);
-        // The operation has no value, so nothing else is reported about it.
-        self.exprs[arena_index(expr)] = Some(Ty::Error);
-        Some(Ty::Error)
+        Some(ty)
     }
 
     fn expr_kind(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {

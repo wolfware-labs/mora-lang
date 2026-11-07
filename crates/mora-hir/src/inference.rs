@@ -934,29 +934,47 @@ mod tests {
     }
 
     #[test]
-    fn an_integer_only_operator_in_literals_for_a_float_is_mr0204() {
-        for (text, count) in [
-            ("let a: float = ~1;\n", 1),
-            ("let b: double = 1 & 2;\n", 1),
-            ("let c: float = 1 +% 2;\n", 1),
-            ("let d: double = (1 | 2) * 3;\n", 1),
-            ("let e: float = ~1 ^ 2;\n", 2),
-        ] {
-            assert_eq!(reported(text), vec!["MR0204"; count], "{text}");
-            let fixed = apply_fixes(text);
-            assert_eq!(fixed.remaining, Vec::<String>::new(), "{text}");
-        }
+    fn integer_operators_on_literals_fold_as_integers_for_a_float() {
+        let db = TestDb::new();
+        let text = "let a: float = ~1;\nlet b: double = 1 & 2;\nlet c: double = (1 | 2) * 3;\n\
+                    let d: float = ~1 ^ 2;\nlet e: double = 1 +% 2;\nlet f: double = -0;\n\
+                    let g: double = -0.0;\nlet h: int = -1;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        assert_eq!(diagnostics(&db, project), &[]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let inits: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Local { init, .. } => *init,
+                _ => None,
+            })
+            .collect();
+        let values: Vec<_> = inits.iter().map(|&init| inference.constant(init)).collect();
+        let real = |value: f64| Some(Constant::Real(value.to_bits()));
         assert_eq!(
-            note("let b: double = 1 & 2;\n"),
-            "`&` is defined only on integer types"
+            values,
+            [
+                real(-2.0),
+                real(0.0),
+                real(9.0),
+                real(-4.0),
+                // `+%` is not an operator of §3.5, so the operation follows
+                // §7.12; a negated literal is a literal, not an operation.
+                None,
+                None,
+                None,
+                None,
+            ]
         );
         assert_eq!(
-            note("let a: float = ~1;\n"),
-            "`~` is defined only on integer types"
+            inference.expr(inits[4]),
+            Some(&Ty::Primitive(Primitive::Int))
         );
-        // On an integer type, and without such an operator, it folds.
-        let fine = "let a: int = ~1 & 3;\nlet b: float = 1.5 * 2;\nlet c: double = -(1 + 2);\n";
-        assert_eq!(reported(fine), Vec::<String>::new());
+        let dumped = hir_dump(&db, project, file);
+        assert!(dumped.contains("let f#5: double = -0;"), "{dumped}");
     }
 
     #[test]
