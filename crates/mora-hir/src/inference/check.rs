@@ -769,11 +769,13 @@ impl Check<'_> {
         }
         match op {
             UnaryOp::Not => {
-                let found = self.infer(operand);
-                if found.as_ref().is_some_and(is_struct) {
+                // An operand of unknown type, or a struct, which may declare
+                // `!` (§6.9), leaves the result unknown.
+                let found = self.infer(operand).filter(is_known)?;
+                if is_struct(&found) {
                     return None;
                 }
-                if let Some(found) = found.filter(|found| is_known(found) && *found != BOOL) {
+                if found != BOOL {
                     self.errors.push(TypeError::Unary {
                         expr,
                         op,
@@ -881,16 +883,20 @@ impl Check<'_> {
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Option<Ty> {
         match op {
             // `&&` and `||` are defined on two `bool` values (§7.12).
+            // Each operand is checked on its own, and an operand of unknown
+            // type leaves the result unknown.
             BinaryOp::And | BinaryOp::Or => {
+                let mut known = true;
                 for operand in [lhs, rhs] {
-                    if let Some(ty) = self.infer(operand)
-                        && is_known(&ty)
-                        && ty != BOOL
-                    {
-                        self.errors.push(TypeError::Logical { op, operand, ty });
+                    match self.infer(operand).filter(is_known) {
+                        Some(ty) if ty != BOOL => {
+                            self.errors.push(TypeError::Logical { op, operand, ty });
+                        }
+                        Some(_) => {}
+                        None => known = false,
                     }
                 }
-                return Some(BOOL);
+                return known.then_some(BOOL);
             }
             // Option operators come with options (§7.5).
             BinaryOp::Coalesce => {
@@ -928,12 +934,13 @@ impl Check<'_> {
             op,
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
         );
-        let otherwise = comparison.then_some(BOOL);
+        // An operand of unknown type leaves the result unknown, a comparison's
+        // too, so that nothing is reported because of it.
         let (Some(l), Some(r)) = self.operands(lhs, rhs) else {
-            return otherwise;
+            return None;
         };
         if !is_known(&l) || !is_known(&r) {
-            return otherwise;
+            return None;
         }
         // A struct may declare its arithmetic, bitwise and shift operators
         // (§6.9), which this milestone does not look up.
@@ -961,7 +968,7 @@ impl Check<'_> {
                     lhs_ty: l,
                     rhs_ty: r,
                 });
-                Some(otherwise.unwrap_or(Ty::Error))
+                Some(if comparison { BOOL } else { Ty::Error })
             }
         }
     }

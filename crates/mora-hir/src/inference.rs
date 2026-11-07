@@ -1043,6 +1043,28 @@ mod tests {
     }
 
     #[test]
+    fn an_operand_of_unknown_type_leaves_the_result_unknown() {
+        let text = "let a: int = !Missing;\nlet b: int = Missing && true;\n\
+                    let c: int = true || Missing;\nlet d: int = Missing == 1;\n\
+                    let e: int = 1 < Missing;\nlet f: int = !Console.A();\n\
+                    let g: int = Console.A() != 1;\nlet h: int = Console.A() || true;\n";
+        assert_eq!(reported(text), ["MR0127"; 5]);
+        assert_eq!(
+            local_types(
+                "let f = !Console.A();\nlet g = Console.A() == 1;\nlet h = true && Console.A();\n"
+            ),
+            ["f: ?", "g: ?", "h: ?"]
+        );
+        // With known operands, the result is a `bool` even after an error.
+        let known = "let a: int = !true;\nlet b: int = 1 == 1;\nlet c: int = \"a\" < 1;\n\
+                     let d: int = 1 && true;\n";
+        assert_eq!(
+            reported(known),
+            ["MR0203", "MR0203", "MR0204", "MR0203", "MR0204", "MR0203"]
+        );
+    }
+
+    #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
         assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);

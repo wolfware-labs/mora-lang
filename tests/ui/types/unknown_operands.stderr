@@ -1,0 +1,29 @@
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/types/unknown_operands.mr:4:15
+  |
+4 | let a: int = !Missing; //~ ERROR MR0127
+  |               ^^^^^^^ not found
+
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/types/unknown_operands.mr:5:14
+  |
+5 | let b: int = Missing && true; //~ ERROR MR0127
+  |              ^^^^^^^ not found
+
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/types/unknown_operands.mr:6:22
+  |
+6 | let c: int = true || Missing; //~ ERROR MR0127
+  |                      ^^^^^^^ not found
+
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/types/unknown_operands.mr:7:14
+  |
+7 | let d: int = Missing == 1; //~ ERROR MR0127
+  |              ^^^^^^^ not found
+
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/types/unknown_operands.mr:8:18
+  |
+8 | let e: int = 1 < Missing; //~ ERROR MR0127
+  |                  ^^^^^^^ not found
