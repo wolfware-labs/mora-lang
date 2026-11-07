@@ -93,3 +93,11 @@ error[MR0010]: the value of `1e38 * 10.0` is too large for a `float`
    |                ^^^^^^^^^^^ this would be infinity as a `float`
    |
    = note: write it as a `double`, or use a smaller value
+
+error[MR0010]: the value of `-(-(9223372036854775808 * 9223372036854775808) * 2)` does not fit in `long`
+  --> tests/ui/types/literals.mr:29:17
+   |
+29 | let big: long = -(-(9223372036854775808 * 9223372036854775808) * 2); //~ ERROR MR0010
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ out of range
+   |
+   = note: `long` holds values from -9223372036854775808 to 9223372036854775807

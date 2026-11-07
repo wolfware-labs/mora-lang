@@ -548,6 +548,13 @@ mod tests {
     }
 
     #[test]
+    fn negating_the_smallest_value_too_large_to_compute_is_mr0010() {
+        // `-(2^63 * 2^63) * 2` is `-2^127`, whose negation overflows.
+        let text = "let x: long = -(-(9223372036854775808 * 9223372036854775808) * 2);\n";
+        assert_eq!(reported(text), ["MR0010"]);
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

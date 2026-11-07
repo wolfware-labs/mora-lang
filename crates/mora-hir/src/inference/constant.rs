@@ -36,7 +36,10 @@ pub(crate) fn value(exprs: &Arena<Expr>, expr: ExprId) -> Option<Value> {
             let value = value(exprs, *expr)?;
             match (op, value) {
                 (UnaryOp::Plus, _) | (_, Value::Overflow) => Some(value),
-                (UnaryOp::Neg, Value::Int(v)) => Some(Value::Int(-v)),
+                // `-i128::MIN` is too large to compute.
+                (UnaryOp::Neg, Value::Int(v)) => {
+                    Some(v.checked_neg().map_or(Value::Overflow, Value::Int))
+                }
                 (UnaryOp::Neg, Value::Real(v)) => Some(Value::Real(-v)),
                 (UnaryOp::BitNot, Value::Int(v)) => Some(Value::Int(!v)),
                 _ => None,
