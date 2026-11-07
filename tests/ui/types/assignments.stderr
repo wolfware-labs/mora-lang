@@ -86,7 +86,7 @@ error[MR0204]: `&=` is not defined for `float` and `long`
    |     |    this is `long`
    |     this is `float`
    |
-   = note: `float` and `long` have no common type that holds every value of both
+   = note: `&=` is defined only on integer types
 
 error[MR0204]: `|` is not defined for `long` and `float`
   --> tests/ui/types/assignments.mr:46:13
@@ -97,4 +97,4 @@ error[MR0204]: `|` is not defined for `long` and `float`
    |             |   this is `float`
    |             this is `long`
    |
-   = note: `long` and `float` have no common type that holds every value of both
+   = note: `|` is defined only on integer types

@@ -814,6 +814,35 @@ mod tests {
     }
 
     #[test]
+    fn an_integer_only_operator_on_a_float_says_so() {
+        let huge = "(18446744073709551615 * 18446744073709551615 * 18446744073709551615)";
+        for (text, sym) in [
+            (
+                "let p = 1L;\nlet x: float = 1;\nlet a = p & x;\n".to_owned(),
+                "&",
+            ),
+            (
+                "let l = 1L;\nlet f: float = 1;\nlet a = l | f;\n".to_owned(),
+                "|",
+            ),
+            ("var g: float = 1;\nlet l = 1L;\ng &= l;\n".to_owned(), "&="),
+            (format!("let a: long = 1.5 & {huge};\n"), "&"),
+            (
+                "let y = 1.5;\nlet z: nint = 1;\nlet a = y & z;\n".to_owned(),
+                "&",
+            ),
+            ("let y = 1.5;\nlet a = y ^ y;\n".to_owned(), "^"),
+        ] {
+            assert_eq!(
+                note(&text),
+                format!("`{sym}` is defined only on integer types"),
+                "{text}"
+            );
+            assert!(diagnostics_of(&text)[0].fixes.is_empty(), "{text}");
+        }
+    }
+
+    #[test]
     fn a_real_divided_by_an_integer_zero_is_folded() {
         assert_eq!(reported("let a: double = 1.5 / 0;\n"), ["MR0010"]);
         assert_eq!(reported("let b: double = 1.5 / 0.0;\n"), ["MR0010"]);
