@@ -774,6 +774,19 @@ mod tests {
     }
 
     #[test]
+    fn a_bitwise_operator_on_a_real_and_a_huge_integer_is_not_folded() {
+        let huge = "(18446744073709551615 * 18446744073709551615 * 18446744073709551615)";
+        assert_eq!(
+            reported(&format!("let a: long = 1.5 & {huge};\n")),
+            ["MR0204"]
+        );
+        assert_eq!(
+            reported(&format!("let b: long = {huge} | 1;\n")),
+            ["MR0010"]
+        );
+    }
+
+    #[test]
     fn literal_operands_take_the_other_operand_type() {
         let text = "let x: float = 1.5;\nlet y = x * 1e39;\nlet z = x * -0.5;\nlet w = 0.5 * x;\n\
                     let n = -1u;\nlet c = 1 ?? 2;\nlet u: ushort = 65535;\n";

@@ -42,3 +42,4 @@ let max: float = 9223372036854775808 * 9223372036854775808 - 1 + 922337203685477
 // A real divided by zero is an infinity, whether the zero is a real or not.
 let infinite: double = 1.5 / 0; //~ ERROR MR0010
 let remainder: long = (-(9223372036854775808 * 9223372036854775808) * 2) % -1;
+let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204

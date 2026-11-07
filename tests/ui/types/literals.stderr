@@ -137,3 +137,14 @@ error[MR0010]: the value of `1.5 / 0` is too large for a `double`
    |                        ^^^^^^^ this would be infinity as a `double`
    |
    = note: write it as a `double`, or use a smaller value
+
+error[MR0204]: `&` is not defined for `double` and `ulong`
+  --> tests/ui/types/literals.mr:45:24
+   |
+45 | let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+   |                        ---^^^^------------------------------------------------------------------^
+   |                        |      |
+   |                        |      this is `ulong`
+   |                        this is `double`
+   |
+   = note: `double` and `ulong` have no common type that holds every value of both

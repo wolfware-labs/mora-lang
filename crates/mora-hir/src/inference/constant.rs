@@ -91,12 +91,16 @@ fn binary(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
                 };
                 Some(Value::Real(value))
             }
-            // An operand too large to compute makes the result so too.
-            _ => matches!(
-                op,
-                B::Add | B::Sub | B::Mul | B::Div | B::Rem | B::BitAnd | B::BitOr | B::BitXor
-            )
-            .then_some(Value::Overflow),
+            // An operand too large to compute makes the result so too;
+            // `&`, `|` and `^` are not defined on a real at all.
+            _ => {
+                let real = matches!(a, Value::Real(_)) || matches!(b, Value::Real(_));
+                match op {
+                    B::Add | B::Sub | B::Mul | B::Div | B::Rem => Some(Value::Overflow),
+                    B::BitAnd | B::BitOr | B::BitXor if !real => Some(Value::Overflow),
+                    _ => None,
+                }
+            }
         },
     }
 }
@@ -176,6 +180,8 @@ mod tests {
         use Value::{Int, Overflow, Real};
         assert_eq!(of(BinaryOp::Mul, Overflow, Real(1.5)), Some(Overflow));
         assert_eq!(of(BinaryOp::BitOr, Int(1), Overflow), Some(Overflow));
+        assert_eq!(of(BinaryOp::BitAnd, Real(1.5), Overflow), None);
+        assert_eq!(of(BinaryOp::BitXor, Overflow, Real(1.5)), None);
         assert_eq!(of(BinaryOp::Shl, Overflow, Int(1)), None);
         assert_eq!(of(BinaryOp::Div, Overflow, Int(0)), None);
         assert_eq!(of(BinaryOp::Rem, Overflow, Int(0)), None);
