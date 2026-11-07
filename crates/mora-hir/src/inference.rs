@@ -49,8 +49,8 @@ pub struct Inference {
 
 /// The value of an operation made only of literals that takes its target
 /// type (§3.5): the exact result, converted to that type. It is the
-/// operation's value: code generation uses it and does not evaluate the
-/// operators in the target type, which could give another result.
+/// operation's value, to be used as is: evaluating the operators in the
+/// target type could give another result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Constant {
     /// A value of an integer type.
@@ -58,16 +58,6 @@ pub enum Constant {
     /// A value of `float` or `double`, as the bits of the `double` that
     /// holds it, exactly for a `float` too.
     Real(u64),
-}
-
-impl Constant {
-    /// The value of a [`Constant::Real`] as a number.
-    pub fn real(self) -> Option<f64> {
-        match self {
-            Constant::Real(bits) => Some(f64::from_bits(bits)),
-            Constant::Int(_) => None,
-        }
-    }
 }
 
 impl std::fmt::Display for Constant {
@@ -1007,8 +997,6 @@ mod tests {
                 None,
             ]
         );
-        assert_eq!(Constant::Int(3).real(), None);
-        assert_eq!(Constant::Real(0.5f64.to_bits()).real(), Some(0.5));
         assert_eq!(Constant::Real(0.5f64.to_bits()).to_string(), "0.5");
         let dumped = hir_dump(&db, project, file);
         assert!(

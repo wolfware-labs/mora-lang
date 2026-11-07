@@ -5,6 +5,7 @@
 use la_arena::Arena;
 use mora_syntax::lexer::number::{IntSuffix, RealSuffix, int_value, real_value};
 
+use super::numeric;
 use crate::bodies::{BinaryOp, Expr, ExprId, Literal, UnaryOp};
 
 /// The value of a literal operation.
@@ -155,20 +156,9 @@ pub(crate) fn literal_only(exprs: &Arena<Expr>, expr: ExprId) -> bool {
             expr,
         } => literal_only(exprs, *expr),
         Expr::Binary { op, lhs, rhs } => {
-            matches!(
-                op,
-                B::Add
-                    | B::Sub
-                    | B::Mul
-                    | B::Div
-                    | B::Rem
-                    | B::BitAnd
-                    | B::BitOr
-                    | B::BitXor
-                    | B::WrappingAdd
-                    | B::WrappingSub
-                    | B::WrappingMul
-            ) && literal_only(exprs, *lhs)
+            (matches!(op, B::Add | B::Sub | B::Mul | B::Div | B::Rem)
+                || numeric::is_integer_only(*op))
+                && literal_only(exprs, *lhs)
                 && literal_only(exprs, *rhs)
         }
         _ => false,

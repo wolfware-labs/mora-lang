@@ -322,12 +322,19 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
         )
         .with_note(match ty {
             // The range of every target, not only of this one.
-            Primitive::NInt | Primitive::NUInt => format!(
-                "a literal of type `{keyword}` must be from {min} to {max}, the range of `{}`, \
-                 so that it is valid on every target; cast a `{}` for a larger value",
-                if ty == Primitive::NInt { "int" } else { "uint" },
-                if ty == Primitive::NInt { "long" } else { "ulong" },
-            ),
+            Primitive::NInt | Primitive::NUInt => {
+                let (portable, wide) = if ty == Primitive::NInt {
+                    (Primitive::Int, Primitive::Long)
+                } else {
+                    (Primitive::UInt, Primitive::ULong)
+                };
+                format!(
+                    "a literal of type `{keyword}` must be from {min} to {max}, the range of \
+                     `{}`, so that it is valid on every target; cast a `{}` for a larger value",
+                    portable.keyword(),
+                    wide.keyword(),
+                )
+            }
             _ => format!("`{keyword}` holds values from {min} to {max}"),
         }),
         None => Diagnostic::error(

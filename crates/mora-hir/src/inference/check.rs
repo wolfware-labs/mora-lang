@@ -1,11 +1,11 @@
 //! The walk over a body that gives each expression and local its type.
 
+use std::collections::HashMap;
+
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
-
-use std::collections::HashMap;
 
 use super::{Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same};
 use crate::arena::arena_index;
@@ -427,10 +427,17 @@ impl Check<'_> {
             });
         }
         let ty = Ty::Primitive(target);
+        self.type_parts(expr, &ty);
+        Some(ty)
+    }
+
+    /// Gives every expression of the literal operation `expr` the type
+    /// `ty`, which its literals take.
+    fn type_parts(&mut self, expr: ExprId, ty: &Ty) {
+        let body = self.body;
         constant::parts(&body.exprs, expr, &mut |part| {
             self.exprs[arena_index(part)] = Some(ty.clone());
         });
-        Some(ty)
     }
 
     /// An operation made only of literals for the floating-point type
@@ -467,9 +474,7 @@ impl Check<'_> {
             return None;
         }
         self.errors.append(&mut wrong);
-        constant::parts(exprs, expr, &mut |part| {
-            self.exprs[arena_index(part)] = Some(ty.clone());
-        });
+        self.type_parts(expr, &ty);
         // The operation has no value, so nothing else is reported about it.
         self.exprs[arena_index(expr)] = Some(Ty::Error);
         Some(Ty::Error)
