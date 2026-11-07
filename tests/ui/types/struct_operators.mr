@@ -1,0 +1,19 @@
+// A struct may declare its operators (§6.9), which this milestone does not
+// look up: an operation on a struct has no known type and is not an error.
+public struct Money {
+    public Cents: int;
+
+    public static operator +(a: Money, b: Money): Money => a;
+
+    public static operator -(a: Money): Money => a;
+}
+
+Spend(a: Money, b: Money) {
+    let total = a + b;
+    let back = -a;
+    var running = a;
+    running += b;
+    running++;
+    let same = a == b;
+    let wrong = a == 1; //~ ERROR MR0204
+}

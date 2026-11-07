@@ -1,0 +1,15 @@
+// expect: 1.5
+// expect: 2.5
+// expect: 0.25
+// expect: 1.5
+// expect: 0.1
+let x: float = 1.5;
+let y: float = x + 1;
+let z: double = 0.25;
+let w: float = 3;
+let tenth: float = 0.1;
+Console.WriteLine(x);
+Console.WriteLine(y);
+Console.WriteLine(z);
+Console.WriteLine(w / 2);
+Console.WriteLine(tenth);

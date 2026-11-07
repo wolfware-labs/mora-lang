@@ -1,0 +1,54 @@
+// A literal takes the type its target asks for; a literal that does not
+// fit that type is MR0010 (§3.5).
+let a: byte = 255;
+let b: byte = 256; //~ ERROR MR0010
+let c: sbyte = -128;
+let d: sbyte = -129; //~ ERROR MR0010
+let e: ushort = -1; //~ ERROR MR0010
+let f: float = 1.5;
+let g: float = 1e39; //~ ERROR MR0010
+let h: float = 16777216;
+let k: float = 16777217; //~ ERROR MR0010
+let m = 4294967296u; //~ ERROR MR0010
+let n = 9223372036854775808L; //~ ERROR MR0010
+let o = -18446744073709551615; //~ ERROR MR0010
+let p: long = 3_000_000_000;
+let q = 18446744073709551615;
+let r: double = 1;
+let s: (byte, float) = (1, 2.5);
+let t: (byte, byte) = (1, 300); //~ ERROR MR0010
+
+// An operation made only of unsuffixed literals takes its target type like
+// one literal, with its value computed exactly.
+let u: float = 1.5 * 2.0;
+let v: byte = 1 + 2;
+let w: sbyte = -(64 * 2);
+let x: byte = 200 + 100; //~ ERROR MR0010
+let y: long = 9223372036854775807 * 2; //~ ERROR MR0010
+let z: float = 1e38 * 10.0; //~ ERROR MR0010
+let big: long = -(-(9223372036854775808 * 9223372036854775808) * 2); //~ ERROR MR0010
+// The lexer reports a real too large for a `double`, once.
+let huge: double = -1e400; //~ ERROR MR0010
+let huger: double = 1e400 + 1.0; //~ ERROR MR0010
+// Not a number fits; only infinity is too large.
+let nan: double = 0.0 / 0.0;
+let nanf: float = 0.0 / 0.0;
+// Only `-`, `+` and `~` fold a value too large to compute, and a
+// division by zero is never folded.
+let notFolded: bool = !(18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+let byZero: ulong = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) / 0;
+// 2^127 - 1 is not exact as a `float`.
+let max: float = 9223372036854775808 * 9223372036854775808 - 1 + 9223372036854775808 * 9223372036854775808; //~ ERROR MR0010
+// A real divided by zero is an infinity, whether the zero is a real or not.
+let infinite: double = 1.5 / 0; //~ ERROR MR0010
+let remainder: long = (-(9223372036854775808 * 9223372036854775808) * 2) % -1;
+let bitsOfReal: long = 1.5 & (18446744073709551615 * 18446744073709551615 * 18446744073709551615); //~ ERROR MR0204
+// An infinity at any step does not fit, even if a later step is finite.
+let gone: double = (1e308 * 10.0) * 0.0; //~ ERROR MR0010
+// An integer too large to compute inside a real is named as such.
+let mixedHuge: double = (18446744073709551615 * 18446744073709551615 * 18446744073709551615) * 1.5; //~ ERROR MR0010
+// Integer operators on literals fold as integers before the conversion,
+// and a wrapping operator follows §7.12.
+let notBits: float = ~1;
+let bits: double = (1 | 2) * 3;
+let wrapped: double = 1 +% 2;

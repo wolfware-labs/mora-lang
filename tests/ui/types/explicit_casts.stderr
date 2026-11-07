@@ -1,0 +1,65 @@
+error[MR0204]: cannot cast `bool` to `int`
+  --> tests/ui/types/explicit_casts.mr:11:14
+   |
+11 |     let b1 = (int)flag; //~ ERROR MR0204
+   |              ^^^^^----
+   |              |    |
+   |              |    this is `bool`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another
+
+error[MR0204]: cannot cast `byte` to `bool`
+  --> tests/ui/types/explicit_casts.mr:12:14
+   |
+12 |     let b2 = (bool)b; //~ ERROR MR0204
+   |              ^^^^^^-
+   |              |     |
+   |              |     this is `byte`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another
+
+error[MR0204]: cannot cast `char` to `int`
+  --> tests/ui/types/explicit_casts.mr:13:14
+   |
+13 |     let b3 = (int)c; //~ ERROR MR0204
+   |              ^^^^^-
+   |              |    |
+   |              |    this is `char`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function
+
+error[MR0204]: cannot cast `long` to `char`
+  --> tests/ui/types/explicit_casts.mr:14:14
+   |
+14 |     let b4 = (char)l; //~ ERROR MR0204
+   |              ^^^^^^-
+   |              |     |
+   |              |     this is `long`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function
+
+error[MR0204]: cannot cast `double` to `string`
+  --> tests/ui/types/explicit_casts.mr:15:14
+   |
+15 |     let b5 = (string)x; //~ ERROR MR0204
+   |              ^^^^^^^^-
+   |              |       |
+   |              |       this is `double`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another
+
+error[MR0204]: cannot cast `string` to `long`
+  --> tests/ui/types/explicit_casts.mr:16:14
+   |
+16 |     let b6 = (long)s; //~ ERROR MR0204
+   |              ^^^^^^-
+   |              |     |
+   |              |     this is `string`
+   |              not a numeric conversion
+   |
+   = note: a cast `(T)x` converts only from one numeric type to another

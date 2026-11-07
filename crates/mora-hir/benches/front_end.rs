@@ -3,7 +3,8 @@
 //! - `cold/*` time one query layer that has not run yet. Setup runs the
 //!   layers below it, so each time is that layer's own: `item_tree` and
 //!   `bodies` exclude parsing, `signatures` excludes the def map, and
-//!   `body_resolution` excludes lowering the bodies. `cold/diagnostics`
+//!   `body_resolution` excludes lowering the bodies, and `infer` excludes
+//!   resolving them. `cold/diagnostics`
 //!   starts from a fresh database and is the whole front end.
 //! - `edit/*` change one file of a checked project and check it again.
 //!
@@ -19,7 +20,8 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mora_hir::{
-    ItemId, body, body_owners, body_resolution, def_map, diagnostics, item_tree, parse, signature,
+    ItemId, body, body_owners, body_resolution, def_map, diagnostics, infer, item_tree, parse,
+    signature,
 };
 use mora_span::{FileId, Project, ProjectKind, SourceFile};
 use salsa::Setter;
@@ -182,6 +184,21 @@ fn bodies_lowered() -> Generated {
     g
 }
 
+/// Resolves every body and lowers every signature, for the inference
+/// benchmark.
+fn bodies_resolved() -> Generated {
+    let g = bodies_lowered();
+    for item in items(&g) {
+        black_box(signature(&g.db, item));
+    }
+    for &file in &g.files {
+        for owner in body_owners(&g.db, file) {
+            black_box(body_resolution(&g.db, g.project, file, owner));
+        }
+    }
+    g
+}
+
 /// Every item of every file, for the signature benchmark.
 fn items(g: &Generated) -> Vec<ItemId> {
     g.files
@@ -275,6 +292,20 @@ fn cold(c: &mut Criterion) {
                 for &file in &g.files {
                     for owner in body_owners(&g.db, file) {
                         black_box(body_resolution(&g.db, g.project, file, owner).paths.len());
+                    }
+                }
+                g
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("infer", |b| {
+        b.iter_batched(
+            bodies_resolved,
+            |g| {
+                for &file in &g.files {
+                    for owner in body_owners(&g.db, file) {
+                        black_box(infer(&g.db, g.project, file, owner));
                     }
                 }
                 g

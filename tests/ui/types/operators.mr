@@ -1,0 +1,44 @@
+// Operators on operands they are not defined for (§7.12).
+Operators(n: int, x: double, flag: bool, c: char, s: string) {
+    let a = x & x; //~ ERROR MR0204
+    let b = x +% 1.0; //~ ERROR MR0204
+    let d = ~x; //~ ERROR MR0204
+    let e = x << 1; //~ ERROR MR0204
+    let f = !n; //~ ERROR MR0204
+    let g = s + n; //~ ERROR MR0204
+    let h = flag < flag; //~ ERROR MR0204
+    let k = flag + flag; //~ ERROR MR0204
+    let m = n == flag; //~ ERROR MR0204
+    let o = -s; //~ ERROR MR0204
+    var p = flag;
+    p++; //~ ERROR MR0204
+    let q = s * 2; //~ ERROR MR0204
+    let ok1: bool = flag & !flag;
+    let ok2: string = s + s;
+    let ok3: bool = c < 'z' && s != "a" && s < "b";
+    let ok4: bool = n == 1 || flag == true;
+    let ok5: int = n << 1L; //~ ERROR MR0203
+}
+
+// Tuples of different element types compare to an unknown result, which
+// the rules of tuples decide later.
+Tuples(t: (byte, byte)) {
+    let a = t == (1, 2);
+    let b: bool = t == t;
+    let c = t < t; //~ ERROR MR0204
+    let d = t == 1; //~ ERROR MR0204
+    let e = t == (1, 2, 3); //~ ERROR MR0204
+}
+
+// Each operand of `&&` and `||` must be a `bool`, whatever the other is.
+Logical(n: int) {
+    let a = Console.ReadLine() && n; //~ ERROR MR0204
+    let b = 1 || 2; //~ ERROR MR0204 //~ ERROR MR0204
+}
+
+// Tuples of tuples compare by shape at every level.
+Nested(t: ((int, int), int)) {
+    let a = t == ((1L, 2), 3);
+    let b = t == (1, 3); //~ ERROR MR0204
+    let c = t != ((1, 2), (3, 4)); //~ ERROR MR0204
+}

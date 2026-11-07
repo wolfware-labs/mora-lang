@@ -1,0 +1,73 @@
+error[MR0203]: mismatched types: expected `nint`, found `int`
+ --> tests/ui/types/native_integers.mr:4:19
+  |
+4 |     let a: nint = i; //~ ERROR MR0203
+  |                   ^ this is `int`
+  |
+  = note: `int` converts to `nint` only through an explicit cast, because not every value of `int` is a value of `nint`
+help: convert it explicitly with `(nint)`
+  |
+4 |     let a: nint = (nint)i; //~ ERROR MR0203
+  |                   ++++++
+
+error[MR0203]: mismatched types: expected `long`, found `nint`
+ --> tests/ui/types/native_integers.mr:5:19
+  |
+5 |     let c: long = n; //~ ERROR MR0203
+  |                   ^ this is `nint`
+  |
+  = note: `nint` converts to `long` only through an explicit cast, because not every value of `nint` is a value of `long`
+help: convert it explicitly with `(long)`
+  |
+5 |     let c: long = (long)n; //~ ERROR MR0203
+  |                   ++++++
+
+error[MR0203]: mismatched types: expected `nuint`, found `byte`
+ --> tests/ui/types/native_integers.mr:6:20
+  |
+6 |     let d: nuint = b; //~ ERROR MR0203
+  |                    ^ this is `byte`
+  |
+  = note: `byte` converts to `nuint` only through an explicit cast, because not every value of `byte` is a value of `nuint`
+help: convert it explicitly with `(nuint)`
+  |
+6 |     let d: nuint = (nuint)b; //~ ERROR MR0203
+  |                    +++++++
+
+error[MR0204]: `+` is not defined for `nint` and `int`
+ --> tests/ui/types/native_integers.mr:7:13
+  |
+7 |     let e = n + i; //~ ERROR MR0204
+  |             -^^^-
+  |             |   |
+  |             |   this is `int`
+  |             this is `nint`
+  |
+  = note: `nint` and `nuint` mix with other integer types only through an explicit cast
+help: convert it explicitly with `(nint)`
+  |
+7 |     let e = n + (nint)i; //~ ERROR MR0204
+  |                 ++++++
+
+error[MR0204]: `+` is not defined for `nint` and `nuint`
+ --> tests/ui/types/native_integers.mr:8:13
+  |
+8 |     let f = n + nu; //~ ERROR MR0204
+  |             -^^^--
+  |             |   |
+  |             |   this is `nuint`
+  |             this is `nint`
+  |
+  = note: `nint` and `nuint` mix with other integer types only through an explicit cast
+help: convert it explicitly with `(nint)`
+  |
+8 |     let f = n + (nint)nu; //~ ERROR MR0204
+  |                 ++++++
+
+error[MR0010]: the literal `3000000000` does not fit in `nint`
+  --> tests/ui/types/native_integers.mr:15:17
+   |
+15 | let big: nint = 3000000000; //~ ERROR MR0010
+   |                 ^^^^^^^^^^ out of range
+   |
+   = note: a literal of type `nint` must be from -2147483648 to 2147483647, the range of `int`, so that it is valid on every target; cast a `long` for a larger value

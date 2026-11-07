@@ -1,0 +1,26 @@
+// expect: 510
+// expect: 4294967296
+// expect: 3.5
+// expect: 3.5
+// expect: 0.75
+// expect: -3000000000
+// expect: 1020
+let small: byte = 255;
+let sum = small + small;
+let count = 1;
+let big: uint = 4294967295;
+let wide = count + big;
+let x: float = 1.5;
+let literal = 2 + x;
+let mixed = count * 2 + x;
+let half = x * 0.5;
+let u: uint = 3000000000;
+let negated = -u;
+let shifted = small << 2;
+Console.WriteLine(sum);
+Console.WriteLine(wide);
+Console.WriteLine(literal);
+Console.WriteLine(mixed);
+Console.WriteLine(half);
+Console.WriteLine(negated);
+Console.WriteLine(shifted);

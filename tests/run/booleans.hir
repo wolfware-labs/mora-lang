@@ -1,7 +1,7 @@
 top-level {
-    let a#0 = 3 < 4;
-    let b#1 = a#0 && (2 > 5);
-    let c#2 = (!b#1) || false;
+    let a#0: bool = 3 < 4;
+    let b#1: bool = a#0 && (2 > 5);
+    let c#2: bool = (!b#1) || false;
     Console{external}.WriteLine{external}(a#0);
     Console{external}.WriteLine{external}(b#1);
     Console{external}.WriteLine{external}(c#2);

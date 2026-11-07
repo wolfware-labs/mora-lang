@@ -1,0 +1,8 @@
+// An operand of unknown type, here a name that is not found, makes the
+// result of `!`, `&&`, `||` and the comparisons unknown too, so it is the
+// only error reported.
+let a: int = !Missing; //~ ERROR MR0127
+let b: int = Missing && true; //~ ERROR MR0127
+let c: int = true || Missing; //~ ERROR MR0127
+let d: int = Missing == 1; //~ ERROR MR0127
+let e: int = 1 < Missing; //~ ERROR MR0127

@@ -16,14 +16,16 @@
 //! [`signature()`] gives an item's types with their names looked up, and
 //! [`body`] the HIR of one piece of code (a function, an initializer, the
 //! top-level statements, a member's code), with [`body_resolution`] saying
-//! what each of its names refers to.
+//! what each of its names refers to, and [`infer`] the types of its
+//! expressions and locals.
 //! [`diagnostics`] reports what is wrong with a project's folders, the paths
-//! of its `using` directives, signatures and bodies, the member names of its
-//! types and its entry point.
+//! of its `using` directives, signatures and bodies, the types in its
+//! bodies, the member names of its types and its entry point.
 
 mod arena;
 mod bodies;
 mod defs;
+mod inference;
 mod items;
 mod name;
 mod report;
@@ -46,6 +48,7 @@ pub use bodies::{
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
+pub use inference::{Constant, Inference, infer};
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
     ValueMember, Visibility, item_source_map, item_tree, parse,

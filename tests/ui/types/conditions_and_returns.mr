@@ -1,0 +1,20 @@
+// Conditions are `bool`, and a function's values have its return type.
+Check(n: int, s: string): long {
+    if (n) { //~ ERROR MR0203
+        return n;
+    }
+    while (s) {} //~ ERROR MR0203
+    for (var i = 0; i; i++) {} //~ ERROR MR0203
+    do {} while (n & 1); //~ ERROR MR0203
+    let pick = n ? 1 : 2; //~ ERROR MR0203
+    let mixed = n > 0 ? 1 : "one"; //~ ERROR MR0203
+    let wide = n > 0 ? n : 2L;
+    let both = n > 0 && s; //~ ERROR MR0204
+    return 1.5; //~ ERROR MR0203
+}
+
+Name(n: int): string => n; //~ ERROR MR0203
+
+Count(): byte => 300; //~ ERROR MR0010
+
+Defaults(a: int = "zero", b: byte = 1) {} //~ ERROR MR0203

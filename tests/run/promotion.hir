@@ -1,0 +1,21 @@
+top-level {
+    let small#0: byte = 255;
+    let sum#1: int = small#0 + small#0;
+    let count#2: int = 1;
+    let big#3: uint = 4294967295;
+    let wide#4: long = count#2 + big#3;
+    let x#5: float = 1.5;
+    let literal#6: float = 2 + x#5;
+    let mixed#7: double = (count#2 * 2) + x#5;
+    let half#8: float = x#5 * 0.5;
+    let u#9: uint = 3000000000;
+    let negated#10: long = -u#9;
+    let shifted#11: int = small#0 << 2;
+    Console{external}.WriteLine{external}(sum#1);
+    Console{external}.WriteLine{external}(wide#4);
+    Console{external}.WriteLine{external}(literal#6);
+    Console{external}.WriteLine{external}(mixed#7);
+    Console{external}.WriteLine{external}(half#8);
+    Console{external}.WriteLine{external}(negated#10);
+    Console{external}.WriteLine{external}(shifted#11);
+}
