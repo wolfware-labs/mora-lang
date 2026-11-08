@@ -807,7 +807,9 @@ impl Printer<'_> {
                 format!("{kind} {name}")
             }
             Target::Value(value) => {
-                let member = &item_data(self.db, value.ty).values[value.index];
+                let Some(member) = value.member(self.db) else {
+                    return "error".to_owned();
+                };
                 let kind = match member.kind {
                     ValueKind::Field => "field",
                     ValueKind::Getter => "getter",

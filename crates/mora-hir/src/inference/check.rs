@@ -18,7 +18,7 @@ use crate::bodies::{
     LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
 };
 use crate::defs::ItemId;
-use crate::resolve::{Resolved, item_data};
+use crate::resolve::Resolved;
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
@@ -202,12 +202,13 @@ impl Check<'_> {
         self.coerce(expr, found.as_ref(), &BOOL, Context::Condition);
     }
 
-    /// Reports `expr` when its type `found` does not convert to `expected`.
+    /// Reports `expr` when `context` does not accept its type `found` where
+    /// it expects `expected` (`Context::accepts`).
     fn coerce(&mut self, expr: ExprId, found: Option<&Ty>, expected: &Ty, context: Context) {
         if let Some(found) = found
             && is_known(found)
             && is_known(expected)
-            && !converts(found, expected)
+            && !context.accepts(found, expected)
         {
             self.errors.push(TypeError::Mismatch {
                 expr,
@@ -587,7 +588,7 @@ impl Check<'_> {
             },
             Target::Item(_) => None,
             Target::Value(value) => {
-                let member = item_data(self.db, value.ty).values.get(value.index)?;
+                let member = value.member(self.db)?;
                 self.struct_field(value.ty, &member.name)
             }
         }

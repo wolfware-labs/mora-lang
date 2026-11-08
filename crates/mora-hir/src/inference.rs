@@ -236,6 +236,18 @@ pub(crate) enum Context {
     Branch(ExprId),
 }
 
+impl Context {
+    /// Whether a value of type `found` stands where it expects `expected`:
+    /// a `ref` argument has exactly its parameter's type (§10.3), and any
+    /// other value converts to the expected type (§5.10).
+    fn accepts(self, found: &Ty, expected: &Ty) -> bool {
+        match self {
+            Context::Ref => same(found, expected),
+            Context::Value | Context::Condition | Context::Branch(_) => converts(found, expected),
+        }
+    }
+}
+
 /// Checks the body of `owner` and gives the types of its expressions and
 /// locals.
 #[salsa::tracked(returns(ref))]

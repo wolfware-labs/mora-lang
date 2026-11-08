@@ -179,6 +179,11 @@ pub struct ScopeData {
 }
 
 impl Body {
+    /// Whether `expr` is an expression the parser recovered from.
+    pub(crate) fn is_missing(&self, expr: ExprId) -> bool {
+        matches!(self.exprs[expr], Expr::Missing)
+    }
+
     /// The locals in scope at `scope`, innermost first.
     pub fn locals_in_scope(&self, scope: ScopeId) -> impl Iterator<Item = LocalId> + '_ {
         std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)

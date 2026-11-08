@@ -47,6 +47,17 @@ struct Parameter<'a> {
     ty: Cow<'a, Ty>,
 }
 
+impl Parameter<'_> {
+    /// What expects its argument's type: a `ref` argument has exactly the
+    /// parameter's type (§10.3), any other converts to it.
+    fn context(&self) -> Context {
+        match self.mode {
+            Some(ParamMode::Ref) => Context::Ref,
+            Some(ParamMode::In | ParamMode::Move) | None => Context::Value,
+        }
+    }
+}
+
 /// What a callee is.
 enum Callees<'a> {
     /// Something whose calls a later milestone checks.
@@ -123,10 +134,7 @@ impl<'a> Check<'a> {
         // The parser reported an argument list it recovered from: its
         // arguments are not checked, and the call keeps the type that all
         // of its candidates return.
-        if args
-            .iter()
-            .any(|arg| matches!(self.body.exprs[arg.expr], Expr::Missing))
-        {
+        if args.iter().any(|arg| self.body.is_missing(arg.expr)) {
             self.args(args);
             return common_return(candidates.iter());
         }
@@ -166,10 +174,7 @@ impl<'a> Check<'a> {
         let mut named = Vec::new();
         let mut ok = true;
         // A missing argument is the parser's to report.
-        for arg in args
-            .iter()
-            .filter(|arg| !matches!(self.body.exprs[arg.expr], Expr::Missing))
-        {
+        for arg in args.iter().filter(|arg| !self.body.is_missing(arg.expr)) {
             let problem = match &arg.name {
                 None if !named.is_empty() => Some(NamedProblem::AfterNamed),
                 None => None,
@@ -399,8 +404,7 @@ impl<'a> Check<'a> {
             if !mode_fits(parameter.mode, arg.mode) {
                 // `ref` makes the call right only before a place of exactly
                 // the parameter's type (§10.3).
-                let fixable =
-                    self.is_place(arg.expr) && fits(argument, &parameter.ty, Some(ParamMode::Ref));
+                let fixable = self.is_place(arg.expr) && fits(argument, parameter);
                 self.errors.push(TypeError::Mode {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),
@@ -440,8 +444,7 @@ impl<'a> Check<'a> {
                     .zip(params)
                     .all(|((arg, argument), &param)| {
                         let parameter = &candidate.params[param];
-                        mode_fits(parameter.mode, arg.mode)
-                            && fits(argument, &parameter.ty, parameter.mode)
+                        mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
                     })
                     .then_some((index, params.as_slice()))
             })
@@ -523,23 +526,11 @@ impl<'a> Check<'a> {
     /// type now, and any other argument was inferred already. A `ref`
     /// argument has exactly the parameter's type (§10.3).
     fn argument(&mut self, expr: ExprId, argument: &Argument, parameter: &Parameter<'_>) {
-        let ty = &parameter.ty;
         match argument {
-            Argument::Literal(_) => self.check(expr, ty),
-            Argument::Typed(Some(found))
-                if parameter.mode == Some(ParamMode::Ref)
-                    && is_known(found)
-                    && is_known(ty)
-                    && !same(found, ty) =>
-            {
-                self.errors.push(TypeError::Mismatch {
-                    expr,
-                    expected: Ty::clone(ty),
-                    found: found.clone(),
-                    context: Context::Ref,
-                });
+            Argument::Literal(_) => self.check(expr, &parameter.ty),
+            Argument::Typed(found) => {
+                self.coerce(expr, found.as_ref(), &parameter.ty, parameter.context());
             }
-            Argument::Typed(found) => self.coerce(expr, found.as_ref(), ty, Context::Value),
         }
     }
 
@@ -556,8 +547,7 @@ impl<'a> Check<'a> {
             } => true,
             Expr::Path(_) => self.resolution.paths.get(&expr).is_some_and(|resolution| {
                 matches!(&resolution.target, Target::Value(value)
-                    if item_data(self.db, value.ty).values.get(value.index)
-                        .is_some_and(|member| member.kind == ValueKind::Field))
+                    if value.member(self.db).is_some_and(|member| member.kind == ValueKind::Field))
             }),
             _ => false,
         }
@@ -656,20 +646,19 @@ fn mode_fits(needs: Option<ParamMode>, given: Option<ArgMode>) -> bool {
     }
 }
 
-/// Whether an argument fits a parameter of type `ty`: it converts to it
-/// (§5.10), it is a literal whose value the type holds (§3.5), or its type
-/// or the parameter's is not known yet.
-fn fits(argument: &Argument, ty: &Ty, mode: Option<ParamMode>) -> bool {
+/// Whether an argument fits `parameter`: its type is exactly the
+/// parameter's for `ref` and converts to it otherwise (`Context::accepts`),
+/// it is a literal whose value the type holds (§3.5), or its type or the
+/// parameter's is not known yet.
+fn fits(argument: &Argument, parameter: &Parameter<'_>) -> bool {
+    let ty = &parameter.ty;
     if !is_known(ty) || argument.is_unknown() {
         return true;
     }
     match argument {
-        // A `ref` argument is the caller's place itself, so it has exactly
-        // the parameter's type (§10.3).
-        Argument::Typed(found) if mode == Some(ParamMode::Ref) => {
-            found.as_ref().is_some_and(|found| same(found, ty))
-        }
-        Argument::Typed(found) => found.as_ref().is_some_and(|found| converts(found, ty)),
+        Argument::Typed(found) => found
+            .as_ref()
+            .is_some_and(|found| parameter.context().accepts(found, ty)),
         Argument::Literal(value) => literal_fits(*value, ty),
     }
 }
