@@ -1726,4 +1726,15 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn ranking_does_not_depend_on_declaration_order() {
+        let text = "E(x: short): string => \"\";\nE(x: byte): int => 1;\nlet e = E(1);\n\
+                    H(x: int): int => 1;\nH(x: long): string => \"\";\n\
+                    let h: int = H(18446744073709551615 * 18446744073709551615);\n";
+        assert_eq!(local_types(text), ["e: int", "h: int"]);
+        // The value too large to compute is still reported once the
+        // overload is chosen.
+        assert_eq!(reported(text), ["MR0010"]);
+    }
 }
