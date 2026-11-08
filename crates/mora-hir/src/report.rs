@@ -468,7 +468,13 @@ fn ambiguous(db: &dyn Db, name: &str, span: Span, candidates: &[Resolved]) -> Di
     diagnostic
 }
 
-fn not_visible(db: &dyn Db, scope: Scope, name: &str, span: Span, item: ItemId) -> Diagnostic {
+pub(crate) fn not_visible(
+    db: &dyn Db,
+    scope: Scope,
+    name: &str,
+    span: Span,
+    item: ItemId,
+) -> Diagnostic {
     let declared_in = file_namespace(db, item.project, item.file).unwrap_or_default();
     let used_in = file_namespace(db, scope.project, scope.file).unwrap_or_default();
     let same_project = item.project == scope.project;

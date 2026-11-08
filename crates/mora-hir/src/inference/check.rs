@@ -16,9 +16,10 @@ use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
     LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
+    body_scope,
 };
 use crate::defs::ItemId;
-use crate::resolve::Resolved;
+use crate::resolve::{Resolved, Scope};
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
@@ -63,6 +64,7 @@ pub(super) fn infer_body(
         constants: HashMap::new(),
         errors: Vec::new(),
         ret: None,
+        scope: body_scope(project, file, owner),
     };
     check.locals = body
         .locals
@@ -143,6 +145,9 @@ struct Check<'a> {
     errors: Vec<TypeError>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
+    /// Where the body's names are looked up from, which decides what is
+    /// visible from it.
+    scope: Scope,
 }
 
 impl Check<'_> {

@@ -27,7 +27,7 @@ use mora_span::{Db, Project, SourceFile};
 use crate::arena::arena_index;
 use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, UnaryOp};
 use crate::defs::ItemId;
-use crate::resolve::item_data;
+use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
 pub(crate) use diagnostic::{Source, type_error};
@@ -189,6 +189,13 @@ pub(crate) enum TypeError {
     /// The callee `expr` has the type `ty`, which is not a function type
     /// (`MR0208`).
     NotCallable { expr: ExprId, ty: Ty },
+    /// The callee `expr` names methods of a value, none of which is visible
+    /// from `from`; `item` is the first (`MR0129`).
+    NotVisible {
+        expr: ExprId,
+        item: ItemId,
+        from: Scope,
+    },
 }
 
 /// What is wrong with an argument's name (`MR0207`).
@@ -1833,5 +1840,39 @@ mod tests {
         let text = "T(x: int): (a: int, b: int) => (1, 2);\nT(x: string): (int, int) => (1, 2);\n\
                     let t = T(Console.ReadLine());\n";
         assert_eq!(local_types(text), ["t: (a: int, b: int)"]);
+    }
+
+    #[test]
+    fn a_method_must_be_visible_from_the_call() {
+        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
+                     Folder(): int => 2;\n    public Open(): int => 3;\n    \
+                     Peek(other: S): int => other.Secret();\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a: string = s.Secret();\n    \
+                       let b: string = s.Folder();\n    let c: string = s.Open();\n}\n";
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let found = diagnostics(&db, project);
+        assert_eq!(codes(found), ["MR0129", "MR0129", "MR0203"]);
+        assert_eq!(
+            found[0].message,
+            "`Secret` is private to the type that declares it"
+        );
+        assert_eq!(&program[found[0].primary.span.range], "Secret");
+        // Inside its type, a private method is visible.
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", store)]);
+        assert_eq!(codes(diagnostics(&db, project)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ref_is_offered_only_for_known_types() {
+        let text = "Bump(ref x: int?) {}\nTake(ref x: int) {}\nvar n: int? = 1;\nBump(n);\n\
+                    var u = Console.ReadLine();\nTake(u);\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0205", "MR0205"]);
+        assert!(found.iter().all(|d| d.fixes.is_empty()), "{found:#?}");
     }
 }

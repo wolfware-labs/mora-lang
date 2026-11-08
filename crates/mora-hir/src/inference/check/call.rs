@@ -14,7 +14,7 @@ use crate::inference::{
     Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
 };
 use crate::items::{ItemKind, ValueKind, item_tree};
-use crate::resolve::{Resolved, item_data};
+use crate::resolve::{Resolved, is_visible, item_data};
 use crate::signature::signature;
 use crate::ty::{ParamMode, Signature, Ty};
 
@@ -64,6 +64,9 @@ enum Callees<'a> {
     Unknown,
     /// A value of a known type that is not a function (`MR0208`).
     NotCallable(Ty),
+    /// Methods of the name, none of them visible from the call: the first
+    /// (`MR0129`).
+    Hidden(ItemId),
     /// Functions, one of which the call calls.
     Functions(Vec<Candidate<'a>>),
 }
@@ -120,6 +123,15 @@ impl<'a> Check<'a> {
             Callees::NotCallable(ty) => {
                 self.errors
                     .push(TypeError::NotCallable { expr: callee, ty });
+                self.unchecked_call(args);
+                return Some(Ty::Error);
+            }
+            Callees::Hidden(item) => {
+                self.errors.push(TypeError::NotVisible {
+                    expr: callee,
+                    item,
+                    from: self.scope,
+                });
                 self.unchecked_call(args);
                 return Some(Ty::Error);
             }
@@ -272,24 +284,32 @@ impl<'a> Check<'a> {
             return Callees::Unknown;
         };
         let tree = item_tree(self.db, ty.file);
-        let methods: Vec<_> = item_data(self.db, *ty)
+        let named: Vec<_> = item_data(self.db, *ty)
             .members
             .iter()
             .filter(|&&member| {
                 let data = tree.item(member);
                 data.kind == ItemKind::Function && data.name == name && !data.is_static
             })
-            .filter_map(|&member| {
-                self.item_candidate(ItemId {
-                    project: ty.project,
-                    file: ty.file,
-                    item: member,
-                })
+            .map(|&member| ItemId {
+                project: ty.project,
+                file: ty.file,
+                item: member,
             })
             .collect();
-        if methods.is_empty() {
+        let Some(&first) = named.first() else {
             let field = self.field(receiver, name);
             return self.not_callable(field);
+        };
+        // Only the methods visible from the call are candidates, as name
+        // resolution sees only visible declarations (§4.5).
+        let methods: Vec<_> = named
+            .into_iter()
+            .filter(|&method| is_visible(self.db, method, self.scope))
+            .filter_map(|method| self.item_candidate(method))
+            .collect();
+        if methods.is_empty() {
+            return Callees::Hidden(first);
         }
         Callees::Functions(methods)
     }
@@ -403,8 +423,10 @@ impl<'a> Check<'a> {
             let parameter = &candidate.params[param];
             if !mode_fits(parameter.mode, arg.mode) {
                 // `ref` makes the call right only before a place of exactly
-                // the parameter's type (§10.3).
-                let fixable = self.is_place(arg.expr) && fits(argument, parameter);
+                // the parameter's type (§10.3), which must be known.
+                let exact = matches!(argument, Argument::Typed(Some(found))
+                    if is_known(found) && is_known(&parameter.ty) && same(found, &parameter.ty));
+                let fixable = exact && self.is_place(arg.expr);
                 self.errors.push(TypeError::Mode {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),

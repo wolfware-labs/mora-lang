@@ -180,6 +180,9 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         } => call::ambiguous(source, *expr, name, candidates),
         TypeError::NamedArgument { arg, problem } => call::named(source, *arg, problem),
         TypeError::NotCallable { expr, ty } => call::not_callable(source, *expr, ty),
+        TypeError::NotVisible { expr, item, from } => {
+            call::not_visible(source, *expr, *item, *from)
+        }
     }
 }
 

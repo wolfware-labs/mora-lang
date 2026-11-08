@@ -8,6 +8,7 @@ use crate::bodies::{ArgMode, ExprId};
 use crate::defs::ItemId;
 use crate::inference::NamedProblem;
 use crate::report::item_name_span;
+use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Ty};
 
 /// `MR0205`: a call of one declaration with an argument too many, or
@@ -190,6 +191,30 @@ pub(super) fn named(source: &Source<'_>, arg: ExprId, problem: &NamedProblem) ->
     };
     Diagnostic::error(codes::MR0207, message, Label::new(span, label)).with_note(
         "arguments come by position first; after the first named one, every argument is named, each name once",
+    )
+}
+
+/// `MR0129`: a method of a value that is not visible from the call, as
+/// name resolution reports a declaration that is not visible.
+pub(super) fn not_visible(
+    source: &Source<'_>,
+    expr: ExprId,
+    item: ItemId,
+    from: Scope,
+) -> Diagnostic {
+    let name = &item_data(source.db, item).name;
+    let span = source
+        .map
+        .member_names
+        .get(&expr)
+        .copied()
+        .unwrap_or_else(|| source.map.expr(expr));
+    crate::report::not_visible(
+        source.db,
+        from,
+        name,
+        Span::new(source.file.id(source.db), span),
+        item,
     )
 }
 
