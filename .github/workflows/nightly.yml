@@ -40,9 +40,12 @@ jobs:
               cp "$file" "fuzz/seeds/$dir-$(basename "$file")"
             done
           done
+      # cargo-fuzz builds for the target its own binary was built for. The
+      # prebuilt one installed above is a musl build, and the address
+      # sanitizer does not work with musl's static libc, so name the target.
       - name: fuzz
         working-directory: fuzz
-        run: cargo +"$FUZZ_TOOLCHAIN" fuzz run parse corpus/parse seeds -- -max_total_time=600
+        run: cargo +"$FUZZ_TOOLCHAIN" fuzz run --target x86_64-unknown-linux-gnu parse corpus/parse seeds -- -max_total_time=600
       - name: Keep the failing input
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
