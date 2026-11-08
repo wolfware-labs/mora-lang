@@ -221,6 +221,12 @@ fn mismatch(
         Ty::Primitive(ty) => Some(*ty),
         _ => None,
     };
+    if context == Context::Ref {
+        return diagnostic.with_note(
+            "a `ref` argument is the caller's place itself, which the function reads and writes, \
+             so it has exactly the parameter's type",
+        );
+    }
     if let Context::Branch(other) = context {
         return diagnostic
             .with_secondary(Label::new(source.span(other), format!("this is `{e}`")))

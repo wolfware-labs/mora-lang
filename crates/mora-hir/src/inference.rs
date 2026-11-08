@@ -230,6 +230,8 @@ pub(crate) enum Context {
     Value,
     /// A condition, which expects `bool`.
     Condition,
+    /// A `ref` argument, which has exactly its parameter's type (§10.3).
+    Ref,
     /// The other branch of `c ? a : b`, which gives the expected type.
     Branch(ExprId),
 }
@@ -1748,5 +1750,76 @@ mod tests {
         let text = "O(x: int, y: int): int => 1;\nO(x: string, y: int): int => 2;\n\
                     let a = O(Console.A(), 1);\n";
         assert_eq!(called_overload(text), None);
+    }
+
+    #[test]
+    fn an_unknown_parameter_type_leaves_overloads_unresolved() {
+        let text = "F(x: long): int => 1;\nF(x: int?): string => \"\";\nvar n = 1;\n\
+                    let s: string = F(n);\nG(x: int): int => 1;\nG(x: List<int>): int => 2;\n\
+                    let g = G(1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text), ["n: int", "s: string", "g: int"]);
+    }
+
+    #[test]
+    fn a_ref_argument_has_exactly_its_parameter_type() {
+        let text = "Bump(ref x: long) {}\nvar n = 1;\nBump(ref n);\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0203"]);
+        assert!(found[0].fixes.is_empty());
+        assert_eq!(
+            found[0].note.as_deref(),
+            Some(
+                "a `ref` argument is the caller's place itself, which the function reads and \
+                 writes, so it has exactly the parameter's type"
+            )
+        );
+        // Without `ref`, the marker and the type are both wrong, and `ref`
+        // alone would not fix it, so it is not offered.
+        let missing = diagnostics_of("Bump(ref x: long) {}\nvar n = 1;\nBump(n);\n");
+        assert_eq!(codes(&missing), ["MR0205", "MR0203"]);
+        assert!(missing[0].fixes.is_empty());
+        let overloads = "R(ref x: long): int => 1;\nR(ref x: int): string => \"\";\n\
+                         Read(x: long): int => 1;\nvar n = 1;\nlet r = R(ref n);\n\
+                         let i = Read(in n);\n";
+        assert_eq!(local_types(overloads)[1..], ["r: string", "i: int"]);
+        assert_eq!(reported(overloads), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_constant_or_a_function_is_not_a_place() {
+        let text = "Bump(ref x: int) {}\nconst Max: int = 1;\nTwice(): int => 2;\n\
+                    Bump(Max);\nBump(Twice);\nstruct P {\n    X: int;\n    M() {\n        Bump(X);\n    }\n}\n";
+        let fixes: Vec<_> = diagnostics_of(text).iter().map(|d| d.fixes.len()).collect();
+        assert_eq!(fixes, [0, 0, 1]);
+    }
+
+    #[test]
+    fn a_recovered_argument_list_keeps_an_agreed_type() {
+        let text = "F(a: int, b: int): int => a;\nO(x: int): int => 1;\nO(x: string): string => \"\";\n\
+                    let a = F(,1);\nlet o = O(,1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text), ["a: int", "o: ?"]);
+        // The order of named arguments and what is called are checked still.
+        assert_eq!(reported("F(a: int, b: int) {}\nF(b: 1, 2,\n"), ["MR0207"]);
+        assert_eq!(
+            reported("F(a: int, b: int) {}\nF(a: 1,\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(reported("let n = 1;\nn(,1);\n"), ["MR0208"]);
+        // An unclosed list after a missing argument ends with only that one.
+        let dumped = {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", "F(a: int) {}\nF(1,\n")]);
+            hir_dump(&db, project, file_named(&db, project, "src/Program.mr"))
+        };
+        assert!(dumped.contains("(1, <missing>);"), "{dumped}");
+    }
+
+    #[test]
+    fn return_types_agree_whatever_their_element_names() {
+        let text = "T(x: int): (a: int, b: int) => (1, 2);\nT(x: string): (int, int) => (1, 2);\n\
+                    let t = T(Console.ReadLine());\n";
+        assert_eq!(local_types(text), ["t: (a: int, b: int)"]);
     }
 }

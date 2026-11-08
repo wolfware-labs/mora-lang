@@ -559,7 +559,10 @@ impl Lower {
                 let mut args = self.args(list.iter().flat_map(|list| list.args()));
                 // A list the parser recovered from without its `)` ends with
                 // a missing argument, so that no check counts its arguments.
-                if list.is_none_or(|list| list.r_paren_token().is_none()) {
+                let ends_missing = args
+                    .last()
+                    .is_some_and(|arg| matches!(self.body.exprs[arg.expr], Expr::Missing));
+                if list.is_none_or(|list| list.r_paren_token().is_none()) && !ends_missing {
                     let end = TextRange::empty(range.end());
                     args.push(Arg {
                         name: None,

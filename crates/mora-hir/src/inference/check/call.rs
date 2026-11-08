@@ -11,9 +11,9 @@ use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target
 use crate::defs::ItemId;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, ty_name,
+    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::{ItemKind, item_tree};
+use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
 use crate::ty::{ParamMode, Signature, Ty};
@@ -101,15 +101,8 @@ impl<'a> Check<'a> {
     /// A call: the function it calls, the arguments checked against its
     /// parameters, and its return type.
     pub(super) fn call(&mut self, expr: ExprId, callee: ExprId, args: &[Arg]) -> Option<Ty> {
-        // The parser reported an argument list it recovered from.
-        if args
-            .iter()
-            .any(|arg| matches!(self.body.exprs[arg.expr], Expr::Missing))
-        {
-            self.infer(callee);
-            return self.unchecked_call(args);
-        }
-        // The order of named arguments is a rule of every call.
+        // The order of named arguments is a rule of every call, and so is
+        // calling only what can be called.
         let ordered = self.named_arguments_in_order(args);
         let candidates = match self.callees(callee) {
             Callees::Unknown => return self.unchecked_call(args),
@@ -126,6 +119,16 @@ impl<'a> Check<'a> {
             || candidates.iter().any(|candidate| candidate.unchecked)
         {
             return self.unchecked_call(args);
+        }
+        // The parser reported an argument list it recovered from: its
+        // arguments are not checked, and the call keeps the type that all
+        // of its candidates return.
+        if args
+            .iter()
+            .any(|arg| matches!(self.body.exprs[arg.expr], Expr::Missing))
+        {
+            self.args(args);
+            return common_return(candidates.iter());
         }
         let arguments: Vec<Argument> = args
             .iter()
@@ -162,7 +165,11 @@ impl<'a> Check<'a> {
     fn named_arguments_in_order(&mut self, args: &[Arg]) -> bool {
         let mut named = Vec::new();
         let mut ok = true;
-        for arg in args {
+        // A missing argument is the parser's to report.
+        for arg in args
+            .iter()
+            .filter(|arg| !matches!(self.body.exprs[arg.expr], Expr::Missing))
+        {
             let problem = match &arg.name {
                 None if !named.is_empty() => Some(NamedProblem::AfterNamed),
                 None => None,
@@ -390,31 +397,20 @@ impl<'a> Check<'a> {
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(&params) {
             let parameter = &candidate.params[param];
             if !mode_fits(parameter.mode, arg.mode) {
-                // `ref` makes the call right only before a place whose type
-                // fits the parameter.
-                let place = matches!(
-                    self.body.exprs[arg.expr],
-                    Expr::Local(_)
-                        | Expr::Path(_)
-                        | Expr::Member {
-                            optional: false,
-                            ..
-                        }
-                        | Expr::Index {
-                            optional: false,
-                            ..
-                        }
-                );
+                // `ref` makes the call right only before a place of exactly
+                // the parameter's type (§10.3).
+                let fixable =
+                    self.is_place(arg.expr) && fits(argument, &parameter.ty, Some(ParamMode::Ref));
                 self.errors.push(TypeError::Mode {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),
                     param: parameter.name.to_owned(),
                     needs: parameter.mode.unwrap_or(ParamMode::In),
                     given: arg.mode,
-                    fixable: place && fits(argument, &parameter.ty),
+                    fixable,
                 });
             }
-            self.argument(arg.expr, argument, &parameter.ty);
+            self.argument(arg.expr, argument, parameter);
         }
         self.calls.insert(expr, candidate.origin);
         Some(Ty::clone(&candidate.ret))
@@ -444,7 +440,8 @@ impl<'a> Check<'a> {
                     .zip(params)
                     .all(|((arg, argument), &param)| {
                         let parameter = &candidate.params[param];
-                        mode_fits(parameter.mode, arg.mode) && fits(argument, &parameter.ty)
+                        mode_fits(parameter.mode, arg.mode)
+                            && fits(argument, &parameter.ty, parameter.mode)
                     })
                     .then_some((index, params.as_slice()))
             })
@@ -481,16 +478,18 @@ impl<'a> Check<'a> {
             });
             return None;
         }
-        // An argument of a type not known yet may be what decides between
-        // the overloads it fits, so they are not ranked; the call keeps a
-        // type only when they all return it (D-137).
-        if applicable.len() > 1 && arguments.iter().any(Argument::is_unknown) {
-            self.infer_literals(args, arguments);
-            let first = &candidates[applicable[0].0].ret;
-            return applicable
+        // An argument or a parameter of a type not known yet may be what
+        // decides between the overloads, so they are not ranked; the call
+        // keeps a type only when they all return it (D-137).
+        let unknown_parameter = applicable.iter().any(|&(index, params)| {
+            params
                 .iter()
-                .all(|&(index, _)| candidates[index].ret == *first)
-                .then(|| Ty::clone(first));
+                .any(|&param| !is_known(&candidates[index].params[param].ty))
+        });
+        if applicable.len() > 1 && (unknown_parameter || arguments.iter().any(Argument::is_unknown))
+        {
+            self.infer_literals(args, arguments);
+            return common_return(applicable.iter().map(|&(index, _)| &candidates[index]));
         }
         let beats = |&(a, a_params): &(usize, &[usize]), &(b, b_params): &(usize, &[usize])| {
             better(
@@ -514,18 +513,53 @@ impl<'a> Check<'a> {
         };
         let candidate = &candidates[index];
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {
-            self.argument(arg.expr, argument, &candidate.params[param].ty);
+            self.argument(arg.expr, argument, &candidate.params[param]);
         }
         self.calls.insert(expr, candidate.origin);
         Some(Ty::clone(&candidate.ret))
     }
 
     /// Checks an argument against its parameter's type: a literal takes the
-    /// type now, and any other argument was inferred already.
-    fn argument(&mut self, expr: ExprId, argument: &Argument, ty: &Ty) {
+    /// type now, and any other argument was inferred already. A `ref`
+    /// argument has exactly the parameter's type (§10.3).
+    fn argument(&mut self, expr: ExprId, argument: &Argument, parameter: &Parameter<'_>) {
+        let ty = &parameter.ty;
         match argument {
             Argument::Literal(_) => self.check(expr, ty),
+            Argument::Typed(Some(found))
+                if parameter.mode == Some(ParamMode::Ref)
+                    && is_known(found)
+                    && is_known(ty)
+                    && !same(found, ty) =>
+            {
+                self.errors.push(TypeError::Mismatch {
+                    expr,
+                    expected: Ty::clone(ty),
+                    found: found.clone(),
+                    context: Context::Ref,
+                });
+            }
             Argument::Typed(found) => self.coerce(expr, found.as_ref(), ty, Context::Value),
+        }
+    }
+
+    /// Whether `expr` is a place `ref` can pass: a local, a field, or an
+    /// element. A path that names a constant or a function is not one.
+    fn is_place(&self, expr: ExprId) -> bool {
+        match &self.body.exprs[expr] {
+            Expr::Local(_)
+            | Expr::Member {
+                optional: false, ..
+            }
+            | Expr::Index {
+                optional: false, ..
+            } => true,
+            Expr::Path(_) => self.resolution.paths.get(&expr).is_some_and(|resolution| {
+                matches!(&resolution.target, Target::Value(value)
+                    if item_data(self.db, value.ty).values.get(value.index)
+                        .is_some_and(|member| member.kind == ValueKind::Field))
+            }),
+            _ => false,
         }
     }
 
@@ -552,6 +586,17 @@ impl<'a> Check<'a> {
         };
         format!("{}({}){ret}", candidate.name, params.join(", "))
     }
+}
+
+/// The type that every one of `candidates` returns, `None` when they do
+/// not agree, the names of tuple elements aside.
+fn common_return<'c, 'a: 'c>(
+    mut candidates: impl Iterator<Item = &'c Candidate<'a>>,
+) -> Option<Ty> {
+    let first = candidates.next()?;
+    candidates
+        .all(|candidate| same(&candidate.ret, &first.ret))
+        .then(|| Ty::clone(&first.ret))
 }
 
 /// `MR0207` for the named argument `arg`, whose parameter a positional
@@ -614,11 +659,16 @@ fn mode_fits(needs: Option<ParamMode>, given: Option<ArgMode>) -> bool {
 /// Whether an argument fits a parameter of type `ty`: it converts to it
 /// (§5.10), it is a literal whose value the type holds (§3.5), or its type
 /// or the parameter's is not known yet.
-fn fits(argument: &Argument, ty: &Ty) -> bool {
+fn fits(argument: &Argument, ty: &Ty, mode: Option<ParamMode>) -> bool {
     if !is_known(ty) || argument.is_unknown() {
         return true;
     }
     match argument {
+        // A `ref` argument is the caller's place itself, so it has exactly
+        // the parameter's type (§10.3).
+        Argument::Typed(found) if mode == Some(ParamMode::Ref) => {
+            found.as_ref().is_some_and(|found| same(found, ty))
+        }
         Argument::Typed(found) => found.as_ref().is_some_and(|found| converts(found, ty)),
         Argument::Literal(value) => literal_fits(*value, ty),
     }
