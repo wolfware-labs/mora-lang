@@ -11,7 +11,7 @@ use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target
 use crate::defs::ItemId;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
+    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, ty_name,
 };
 use crate::items::{ItemKind, item_tree};
 use crate::resolve::{Resolved, item_data};
@@ -679,16 +679,16 @@ fn better(
 }
 
 /// Whether an argument's conversion to `pa` is better (`Greater`) than to
-/// `pb`, or worse (§6.9). A conversion to the argument's natural type is
-/// the identity and is the best. For a literal, which takes any numeric
-/// type that holds its value (§3.5), a conversion of its natural type under
-/// §5.10 comes next, and taking a type only as a literal last. Otherwise a
-/// conversion to `pa` is better when `pa` converts to `pb` and not back.
+/// `pb`, or worse (§6.9). A literal takes any numeric type that holds its
+/// value (§3.5), and a conversion of its natural type under §5.10 ranks
+/// above taking a type only as a literal. Within a rank, a conversion to
+/// `pa` is better when `pa` converts to `pb` and not back. That gives the
+/// identity first too: the natural type converts to every type its rank
+/// holds, and none of them converts back.
 fn compare(argument: &Argument, pa: &Ty, pb: &Ty) -> Ordering {
     let rank = |ty: &Ty| match argument.natural() {
-        Some(natural) if same(&natural, ty) => 0,
-        Some(natural) if converts(&natural, ty) => 1,
-        _ => 2,
+        Some(natural) if converts(&natural, ty) => 0,
+        _ => 1,
     };
     match rank(pb).cmp(&rank(pa)) {
         Ordering::Equal => match (converts(pa, pb), converts(pb, pa)) {

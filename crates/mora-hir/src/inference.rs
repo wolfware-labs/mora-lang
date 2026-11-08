@@ -1737,4 +1737,45 @@ mod tests {
         // overload is chosen.
         assert_eq!(reported(text), ["MR0010"]);
     }
+
+    #[test]
+    fn overloads_that_tie_are_ambiguous() {
+        // Neither takes a default, and each fits one argument better.
+        let text = "S(x: byte) {}\nS(x: sbyte) {}\nS(1);\n\
+                    Q(x: byte, y: short) {}\nQ(x: short, y: byte) {}\nQ(1, 1);\n";
+        assert_eq!(reported(text), ["MR0206", "MR0206"]);
+    }
+
+    #[test]
+    fn the_one_applicable_overload_is_called_whatever_the_other_arguments() {
+        let db = TestDb::new();
+        let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: byte): string => \"\";\n\
+                    let a = O(Console.A(), 300);\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        // No overload takes `300` as its `byte`, whatever the argument of
+        // unknown type is, so the call is MR0205.
+        assert_eq!(codes(diagnostics(&db, project)), ["MR0205"]);
+        let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: string): string => \"\";\n\
+                    let a = O(Console.A(), 1);\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let call = body
+            .exprs
+            .iter()
+            .find(|(_, expr)| {
+                matches!(expr, Expr::Call { callee, .. }
+                if matches!(body.exprs[*callee], Expr::Path(_)))
+            })
+            .map(|(id, _)| id)
+            .unwrap();
+        let int = item_tree(&db, file)
+            .items()
+            .find(|(_, item)| item.name == "O")
+            .map(|(idx, _)| Scope::file(project, file).item(idx))
+            .unwrap();
+        assert_eq!(inference.callee(call), Some(Callee::Item(int)));
+        assert_eq!(local_types(text), ["a: int"]);
+    }
 }
