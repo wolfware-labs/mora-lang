@@ -311,7 +311,7 @@ Done when:
 
 Spec: [§5.10](docs/design/mora.md#510-conversions), [§7](docs/design/mora.md#7-expressions-and-statements), [§14.5](docs/design/mora.md#145-name-resolution-and-types). Crates: `mora-hir`, `mora-check`. Blocked by: M1.8.
 
-Bidirectional checking of literals (target typing of §3.5), numeric conversions and promotions of §5.10 and §7.12, operators, calls with overload resolution and named and optional arguments, `let`/`var` locals and `MR0182`, `if`, `while`, `do`, `for`, `break`, `continue`, `return`, and definite assignment (`MR0181`).
+Bidirectional checking of literals (target typing of §3.5), numeric conversions and promotions of §5.10 and §7.12, operators, calls with overload resolution and named and optional arguments, `let`/`var` locals and `MR0182`, `if`, `while`, `do`, `for`, `break` and `continue` (`MR0183`), `return` and functions that can end without a value (`MR0184`), and definite assignment (`MR0181`).
 
 Done when:
 

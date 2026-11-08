@@ -1176,6 +1176,16 @@ A local always starts with `let` or `var`. An explicit type goes after the name 
 
 Reassigning a `let` local is error `MR0182`. Lint `prefer-let` (warn by default) flags a `var` that is never reassigned.
 
+A local declared without a value is definitely assigned at a point when every path that reaches the point assigns it; the body of a `while`, `for` or `foreach` may run no times, so what it assigns counts after the loop only on the paths that leave it by `break`, while a `do` body runs at least once. A `let` declared without a value is `MR0182` when it is assigned where it may be assigned already: after an assignment on some path, or in a loop that an earlier run assigned it in. A lambda or a local function sees the locals assigned where it is declared: reading one that is not definitely assigned there is `MR0181`, and assigning a `let` local declared outside it is `MR0182`, because it may run more than once (D-138).
+
+```mora
+let total: int;
+if (ready) { total = 1; } else { total = 2; }
+let shown = total;      // assigned on both paths
+let limit: int;
+while (ready) { limit = 3; }   // MR0182: an earlier run may have assigned it
+```
+
 A local is in scope from its declaration to the end of the block that declares it; a local function is in scope in its own body too, so it can call itself. A parameter is in scope in its function's body. A local, a parameter of a lambda or local function, or a binding of a pattern MUST NOT take the name of a local or parameter that is in scope where it is declared (`MR0180`, D-131). This covers a second declaration in the same block, an inner block, a lambda inside the function, and two bindings of one pattern. Blocks side by side may use one name, because the first one's local is out of scope when the second declares its own:
 
 ```mora
@@ -1190,7 +1200,9 @@ let total = 4;       // MR0180: `total` is in scope
 
 ### 7.11 Statements
 
-`if`/`else`, `while`, `do`/`while`, `for`, `foreach`, `break`, `continue`, `return`, blocks, local functions, expression statements (calls, assignments, increments, `await`) and `match`. The condition of `if`, `while`, `do`/`while` and `for`, like that of `c ? a : b`, is a `bool`, and there is no implicit conversion to `bool` (`MR0203`). The two branches of `c ? a : b` take the type expected of it, or else have one type that the other converts to. `foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
+`if`/`else`, `while`, `do`/`while`, `for`, `foreach`, `break`, `continue`, `return`, blocks, local functions, expression statements (calls, assignments, increments, `await`) and `match`. The condition of `if`, `while`, `do`/`while` and `for`, like that of `c ? a : b`, is a `bool`, and there is no implicit conversion to `bool` (`MR0203`). The two branches of `c ? a : b` take the type expected of it, or else have one type that the other converts to. **Control flow.** `break` and `continue` act on the innermost `while`, `do`, `for` or `foreach` around them; outside any loop they are error `MR0183`, and a lambda or a local function does not see the loops around it. A function that returns a value, one whose return type is not `()`, ends every path through its block body in `return` with a value, a call of `panic`, `Unreachable` or `Todo` (§11.4), a loop whose condition is the literal `true` and that no `break` leaves, or a `match` whose every arm ends the path. A path that reaches the end of the body, or `return;` without a value, is error `MR0184`. Code that no path reaches reports nothing about assignment (D-138).
+
+`foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
 
 ### 7.12 Arithmetic
 
@@ -3337,6 +3349,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-135 | Until the compiler can look up `IFrom` implementations (M3.6), the checker carries the numeric rows of §5.10 as a built-in table that stands in for those of `Std`; the conversions are the same | user | 5.10 |
 | D-136 | A call of a function with one declaration reports a wrong-typed argument as `MR0203` and a missing or extra argument as `MR0205` naming its signature; overloads get `MR0205` and `MR0206` listing the candidates; a positional argument after a named one and a repeated name are `MR0207` in every call, and an unknown name and a name for a parameter given by position are `MR0207` too, with overloads only when every overload fails that way for a name given by position; an argument whose marker does not suit its parameter's mode makes the function not applicable, `MR0205` with a fix for one declaration; a `ref` argument has exactly its parameter's type; calling a value of a known non-function type is `MR0208`; only visible methods are candidates, and a call of a value's method none of whose overloads is visible is `MR0129` | user | 6.9, 10.3 |
 | D-137 | Until type arguments are inferred (M3.8) and `params` arguments are expanded, a call that a generic, `params` or `async` overload could take is not checked, nor a call of a static method through a value; an argument or a parameter of a type not known yet fits, and a call it leaves more than one overload for is not resolved or reported, with a type only when they all return it; a literal ranks its natural type first, then that type's §5.10 conversions, then the types it takes only as a literal | user | 6.9 |
+| D-138 | Control flow is checked per body: until the standard library is loaded, `panic`, `Unreachable` and `Todo` are recognised by name as ending a path; a loop ends a path only when its condition is the literal `true` and no `break` leaves it; a `match` whose every arm ends the path ends it, and whether its arms cover every value is checked with exhaustiveness (M3.4); `MR0184` covers functions and local functions, and the block bodies of getters, operators and indexers wait for their return types (M2.1) and top-level statements for theirs (M3.7); unreachable code reports nothing about assignment; a lambda or a local function is checked where it is declared, sees the locals assigned there and may not assign a `let` around it | user | 7.10, 7.11 |
 
 ## 24. Open questions
 
