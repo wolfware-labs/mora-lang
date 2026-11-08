@@ -19,13 +19,9 @@ exclude_globs = [
 # mutant back for review instead of hiding a new one with the same name.
 exclude_re = [
     # Lexer arithmetic that lands on the same result: index 0 of an
-    # identifier is always an identifier character, number errors always
-    # start at offset 0, and the raw-string indent scan only gains or loses
-    # blank lines.
+    # identifier is always an identifier character, and number errors always
+    # start at offset 0.
     '^crates/mora-syntax/src/lexer/mod\.rs:481:35: replace > with >= in Lexer<.a>::code_token$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:907:60: replace \+ with \* in Lexer<.a>::check_raw$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:908:26: replace < with <= in Lexer<.a>::check_raw$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:908:57: replace \+ with \* in Lexer<.a>::check_raw$',
     '^crates/mora-syntax/src/lexer/number\.rs:247:37: replace \+ with \* in separators$',
     # Popping the last event and leaving a tombstone build the same tree.
     '^crates/mora-syntax/src/parser/mod\.rs:230:21: replace \+ with - in Marker::abandon$',

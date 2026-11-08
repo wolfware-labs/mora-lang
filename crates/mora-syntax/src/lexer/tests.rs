@@ -254,6 +254,14 @@ fn characters() {
     assert_eq!(tokens("'\n"), [(K::Char, "'"), (K::Newline, "\n")]);
     // A lone carriage return does not end the line (§3.1).
     assert_eq!(errors("'a\rb'"), [(codes::MR0015, "'a\rb'")]);
+    // A quote on the next line does not close the literal.
+    for text in ["'ab\n'", "'ab\r\n'"] {
+        assert_eq!(
+            errors(text),
+            [(codes::MR0012, "'a"), (codes::MR0012, "'")],
+            "{text:?}"
+        );
+    }
 }
 
 #[test]
@@ -654,6 +662,12 @@ fn raw_string_lines_after_a_hole_are_checked() {
 #[test]
 fn raw_string_opening_line_may_end_in_whitespace() {
     assert!(errors("x = `   \n  a\n  `").is_empty());
+}
+
+#[test]
+fn raw_string_line_errors_after_a_whitespace_opening_line_point_at_the_line() {
+    assert_eq!(errors("`   \n  a\n b\n  `"), [(codes::MR0016, " ")]);
+    assert_eq!(errors("`   \n  a\nb\n  `"), [(codes::MR0016, "b")]);
 }
 
 #[test]
