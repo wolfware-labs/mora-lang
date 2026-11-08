@@ -40,8 +40,8 @@ pub(super) fn mode(
     arg: ExprId,
     signature: &str,
     param: &str,
-    needs: ParamMode,
-    given: Option<ArgMode>,
+    (needs, given): (ParamMode, Option<ArgMode>),
+    fixable: bool,
 ) -> Diagnostic {
     let span = source.span(arg);
     let file = source.file.id(source.db);
@@ -57,10 +57,13 @@ pub(super) fn mode(
         (ParamMode::Ref, None) => (
             format!("the argument for `ref {param}` in `{signature}` must be marked `ref`"),
             "pass it as `ref`".to_owned(),
-            Some(Fix::new(
-                "mark it `ref`",
-                vec![TextEdit::insert(file, span.range.start(), "ref ")],
-            )),
+            // Only a place of a fitting type becomes right with `ref`.
+            fixable.then(|| {
+                Fix::new(
+                    "mark it `ref`",
+                    vec![TextEdit::insert(file, span.range.start(), "ref ")],
+                )
+            }),
         ),
         (ParamMode::Ref, Some(given)) => (
             format!(

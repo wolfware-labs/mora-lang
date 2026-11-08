@@ -159,13 +159,15 @@ pub(crate) enum TypeError {
     },
     /// The argument `arg` of a call of one declaration, `signature`, is
     /// written with the marker `given` where its parameter `param` has the
-    /// mode `needs` (`MR0205`).
+    /// mode `needs` (`MR0205`); `fixable` when writing `ref` before it
+    /// would fix the call, because it is a place of a fitting type.
     Mode {
         arg: ExprId,
         signature: String,
         param: String,
         needs: ParamMode,
         given: Option<ArgMode>,
+        fixable: bool,
     },
     /// No overload named `name` is applicable to the call `expr`; each
     /// candidate with its signature (`MR0205`).
@@ -1531,13 +1533,12 @@ mod tests {
     fn a_marker_fix_keeps_a_comment_and_needs_an_argument() {
         let fixed = apply_fixes("Read(x: int) {}\nvar n = 1;\nRead(move /* n */ n);\n");
         assert!(fixed.text.contains("Read(/* n */ n);"), "{}", fixed.text);
-        // The parser reports the missing argument; the marker gets no fix.
-        let reported = diagnostics_of("Read(x: int) {}\nRead(move );\n");
-        let marker = reported
-            .iter()
-            .find(|d| d.code == mora_diag::codes::MR0205)
-            .unwrap();
-        assert!(marker.fixes.is_empty(), "{marker:#?}");
+        // The parser reports the missing argument, so the call is not
+        // checked and its marker reports nothing more.
+        assert_eq!(
+            reported("Read(x: int) {}\nRead(move );\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -1616,5 +1617,113 @@ mod tests {
         );
         assert_eq!(reported(&text), Vec::<String>::new());
         assert_eq!(reported(&format!("{decls}var n = 1;\nM(n);\n")), ["MR0205"]);
+    }
+
+    #[test]
+    fn review_unknown_argument_leaves_overloads_unresolved() {
+        let decls = "O(x: int, y: int): int => 1;\nO(x: long, y: string): string => \"\";\n\
+                     P(x: int): int => 1;\nP(x: long): int => 2;\n";
+        let text = format!(
+            "{decls}let s: string = O(1, Console.ReadLine());\nlet t = O(1, Console.ReadLine());\n\
+             let u = P(Console.ReadLine());\n"
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let types = local_types(&text);
+        assert_eq!(types[1..], ["t: ?", "u: int"]);
+    }
+
+    #[test]
+    fn review_a_literal_prefers_its_natural_type() {
+        let text = "A(x: int): int => 1;\nA(x: uint): string => \"\";\n\
+                    B(x: long): int => 1;\nB(x: float): string => \"\";\n\
+                    C(x: byte): string => \"\";\nC(x: int): int => 1;\n\
+                    D(x: float): string => \"\";\nD(x: double): int => 1;\n\
+                    E(x: byte): int => 1;\nE(x: short): string => \"\";\n\
+                    let a = A(1);\nlet b = B(1);\nlet c = C(1);\nlet d = D(0.1);\nlet e = E(1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            local_types(text),
+            ["a: int", "b: int", "c: int", "d: int", "e: int"]
+        );
+    }
+
+    #[test]
+    fn review_an_async_callee_is_not_checked() {
+        let text = "async Later(ref x: int): int => 1;\nvar n = 1;\nlet a = Later(n);\n\
+                    let b = Later(\"s\", 2);\nF() {\n    async G(x: int): int => x;\n    G(\"s\");\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text)[1..], ["a: ?", "b: ?"]);
+    }
+
+    #[test]
+    fn review_named_argument_order_is_checked_for_every_call() {
+        for text in [
+            "Console.WriteLine(a: 1, 2);\n",
+            "Id<T>(x: T): T => x;\nlet a = Id(x: 1, 2);\n",
+        ] {
+            assert_eq!(reported(text), ["MR0207"], "{text}");
+        }
+        assert_eq!(reported("let n = 1;\nn(a: 1, 2);\n"), ["MR0208", "MR0207"]);
+    }
+
+    #[test]
+    fn review_a_recovered_argument_list_is_not_checked() {
+        for call in ["F(,1);\n", "F(1,,2);\n", "F(;\n", "F(1\n"] {
+            let db = TestDb::new();
+            let project = app(
+                &db,
+                &[("src/Program.mr", &format!("F(a: int, b: int) {{}}\n{call}"))],
+            );
+            assert_eq!(
+                codes(diagnostics(&db, project)),
+                Vec::<String>::new(),
+                "{call}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_ref_is_offered_only_for_a_place_of_a_fitting_type() {
+        let text = "Bump(ref x: int) {}\nstruct P {\n    X: int;\n}\nvar n = 1;\n\
+                    Bump(\"s\");\nBump(n + 1);\nBump(n);\n";
+        let fixes: Vec<_> = diagnostics_of(text)
+            .iter()
+            .filter(|d| d.code.to_string() == "MR0205")
+            .map(|d| d.fixes.len())
+            .collect();
+        assert_eq!(fixes, [0, 0, 1]);
+        assert_eq!(
+            reported("Bump(ref x: int) {}\nBump(ref 1);\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn review_a_name_every_overload_takes_by_position_is_mr0207() {
+        let text = "O(x: int) {}\nO(x: string) {}\nO(1, x: 2);\nO(y: 1);\n";
+        assert_eq!(reported(text), ["MR0207", "MR0205"]);
+    }
+
+    #[test]
+    fn review_a_callee_has_its_own_type() {
+        let types = expr_types("const Max: int = 1;\nMax();\n");
+        assert!(types.contains(&"Max: int".to_owned()), "{types:?}");
+    }
+
+    #[test]
+    fn review_a_signature_says_whether_it_is_generic() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", "Id<T>(x: T): T => x;\nF(x: int) {}\n")],
+        );
+        for (name, generic) in [("Id", true), ("F", false)] {
+            let signature = crate::test_db::signature_of(&db, project, "src/Program.mr", name);
+            assert_eq!(
+                crate::test_db::function(signature).is_generic,
+                generic,
+                "{name}"
+            );
+        }
     }
 }

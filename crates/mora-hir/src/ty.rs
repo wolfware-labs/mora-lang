@@ -143,6 +143,8 @@ pub struct FnSignature {
     pub ret: Ty,
     /// Whether the function is `async` (§12).
     pub is_async: bool,
+    /// Whether the function declares type parameters of its own (§8.1).
+    pub is_generic: bool,
 }
 
 /// A parameter of a function.

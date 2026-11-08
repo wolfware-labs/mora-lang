@@ -1,6 +1,8 @@
 //! Calls: which function a call calls, and its arguments checked against
 //! that function's parameters (§6.9, §10.3).
 
+use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::Check;
@@ -9,50 +11,50 @@ use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target
 use crate::defs::ItemId;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, ty_name,
+    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::{ItemKind, item_tree, signature_refs};
+use crate::items::{ItemKind, item_tree};
 use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
 use crate::ty::{ParamMode, Signature, Ty};
 
-/// A function a call may call.
-struct Candidate {
+/// A function a call may call, borrowed from its signature.
+struct Candidate<'a> {
     /// What it is.
     origin: Callee,
     /// Its name.
-    name: String,
+    name: &'a str,
     /// Its parameters, in order.
-    params: Vec<Parameter>,
-    /// What a call of it gives, `None` when that is unknown, as for an
-    /// `async` function.
-    ret: Option<Ty>,
-    /// Whether its calls are not checked yet: a generic function, whose
-    /// type arguments are inferred later (M3.8), or one with a `params`
-    /// parameter.
+    params: Vec<Parameter<'a>>,
+    /// What a call of it gives.
+    ret: Cow<'a, Ty>,
+    /// Whether its calls are not checked yet (D-137): a generic function,
+    /// whose type arguments are inferred later (M3.8), one with a `params`
+    /// parameter, or an `async` one, which takes every argument by `move`
+    /// and gives a future (§10.3, §12).
     unchecked: bool,
 }
 
 /// A parameter of a [`Candidate`].
-struct Parameter {
+struct Parameter<'a> {
     /// Its name.
-    name: String,
+    name: &'a str,
     /// Its mode, `None` when it is not known, as for a local function.
     mode: Option<ParamMode>,
     /// Whether it has a default value.
     has_default: bool,
     /// Its type.
-    ty: Ty,
+    ty: Cow<'a, Ty>,
 }
 
 /// What a callee is.
-enum Callees {
+enum Callees<'a> {
     /// Something whose calls a later milestone checks.
     Unknown,
     /// A value of a known type that is not a function (`MR0208`).
     NotCallable(Ty),
     /// Functions, one of which the call calls.
-    Functions(Vec<Candidate>),
+    Functions(Vec<Candidate<'a>>),
 }
 
 /// The type of an argument before a function is chosen.
@@ -66,10 +68,28 @@ enum Argument {
 }
 
 impl Argument {
-    /// Whether its type is not known yet, so that it fits any parameter
-    /// and ranks no overload above another (D-137).
+    /// Whether its type is not known yet, so that it fits any parameter,
+    /// and a call it leaves more than one overload for is not resolved
+    /// (D-137).
     fn is_unknown(&self) -> bool {
         matches!(self, Argument::Typed(ty) if !ty.as_ref().is_some_and(is_known))
+    }
+
+    /// The type it has without a target, which a conversion to is the
+    /// identity (§6.9): its own type, or a literal's of §3.5, the first of
+    /// `int`, `long` and `ulong` that holds an integer and `double` for a
+    /// real. `None` for a value too large to compute.
+    fn natural(&self) -> Option<Cow<'_, Ty>> {
+        match self {
+            Argument::Typed(ty) => ty.as_ref().map(Cow::Borrowed),
+            Argument::Literal(Value::Int(value)) => {
+                numeric::default_integer(*value).map(|ty| Cow::Owned(Ty::Primitive(ty)))
+            }
+            Argument::Literal(Value::Real(_)) => {
+                Some(Cow::Owned(Ty::Primitive(crate::ty::Primitive::Double)))
+            }
+            Argument::Literal(Value::Overflow | Value::Infinity | Value::OverflowReal) => None,
+        }
     }
 }
 
@@ -85,10 +105,20 @@ enum Unbound {
     Missing(usize),
 }
 
-impl Check<'_> {
+impl<'a> Check<'a> {
     /// A call: the function it calls, the arguments checked against its
     /// parameters, and its return type.
     pub(super) fn call(&mut self, expr: ExprId, callee: ExprId, args: &[Arg]) -> Option<Ty> {
+        // The parser reported an argument list it recovered from.
+        if args
+            .iter()
+            .any(|arg| matches!(self.body.exprs[arg.expr], Expr::Missing))
+        {
+            self.infer(callee);
+            return self.unchecked_call(args);
+        }
+        // The order of named arguments is a rule of every call.
+        let ordered = self.named_arguments_in_order(args);
         let candidates = match self.callees(callee) {
             Callees::Unknown => return self.unchecked_call(args),
             Callees::NotCallable(ty) => {
@@ -99,10 +129,10 @@ impl Check<'_> {
             }
             Callees::Functions(candidates) => candidates,
         };
-        if candidates.is_empty() || candidates.iter().any(|candidate| candidate.unchecked) {
-            return self.unchecked_call(args);
-        }
-        if !self.named_arguments_in_order(args) {
+        if !ordered
+            || candidates.is_empty()
+            || candidates.iter().any(|candidate| candidate.unchecked)
+        {
             return self.unchecked_call(args);
         }
         let arguments: Vec<Argument> = args
@@ -163,19 +193,22 @@ impl Check<'_> {
         ok
     }
 
-    /// What the callee of a call is.
-    fn callees(&mut self, callee: ExprId) -> Callees {
+    /// What the callee of a call is. The callee's own type is recorded, as
+    /// for any expression.
+    fn callees(&mut self, callee: ExprId) -> Callees<'a> {
         let body = self.body;
         match &body.exprs[callee] {
             // A path names what it calls; a member of a value is an
             // `Expr::Member`.
-            Expr::Path(_) => self
-                .resolution
-                .paths
-                .get(&callee)
-                .map_or(Callees::Unknown, |resolution| {
-                    self.resolved(&resolution.target)
-                }),
+            Expr::Path(_) => {
+                self.infer(callee);
+                self.resolution
+                    .paths
+                    .get(&callee)
+                    .map_or(Callees::Unknown, |resolution| {
+                        self.resolved(&resolution.target)
+                    })
+            }
             Expr::Member {
                 receiver,
                 name,
@@ -184,12 +217,14 @@ impl Check<'_> {
             } => {
                 let receiver = self.infer(*receiver);
                 if let Some(resolution) = self.resolution.paths.get(&callee) {
+                    self.exprs[arena_index(callee)] = self.target(&resolution.target);
                     return self.resolved(&resolution.target);
                 }
                 // `x?.M()` gives an option (§7.5).
                 if *optional {
                     return Callees::Unknown;
                 }
+                self.exprs[arena_index(callee)] = self.field(receiver.as_ref(), name);
                 self.methods(receiver.as_ref(), name)
             }
             Expr::Local(local) if body.locals[*local].kind == LocalKind::Function => self
@@ -205,7 +240,7 @@ impl Check<'_> {
     }
 
     /// What a callee that name resolution resolved to `target` is.
-    fn resolved(&self, target: &Target) -> Callees {
+    fn resolved(&self, target: &Target) -> Callees<'a> {
         match target {
             Target::Item(Resolved::Functions(items)) => self.functions(items),
             _ => self.not_callable(self.target(target)),
@@ -214,7 +249,7 @@ impl Check<'_> {
 
     /// `MR0208` for a callee of a known type, which is not a function type,
     /// since those are not known yet.
-    fn not_callable(&self, ty: Option<Ty>) -> Callees {
+    fn not_callable(&self, ty: Option<Ty>) -> Callees<'a> {
         match ty {
             Some(ty) if is_known(&ty) => Callees::NotCallable(ty),
             _ => Callees::Unknown,
@@ -222,7 +257,7 @@ impl Check<'_> {
     }
 
     /// The candidates of a call to `items`, a function or overloads.
-    fn functions(&self, items: &[ItemId]) -> Callees {
+    fn functions(&self, items: &[ItemId]) -> Callees<'a> {
         Callees::Functions(
             items
                 .iter()
@@ -235,7 +270,7 @@ impl Check<'_> {
     /// when it is a struct; a generic struct's type is not `Ty::Struct`. A
     /// call through a value of any other type, or of a static method, is
     /// not checked yet (D-137).
-    fn methods(&self, receiver: Option<&Ty>, name: &str) -> Callees {
+    fn methods(&self, receiver: Option<&Ty>, name: &str) -> Callees<'a> {
         let Some(Ty::Struct(ty)) = receiver else {
             return Callees::Unknown;
         };
@@ -263,33 +298,33 @@ impl Check<'_> {
     }
 
     /// A function or method as a candidate.
-    fn item_candidate(&self, item: ItemId) -> Option<Candidate> {
-        let Signature::Function(function) = signature(self.db, item) else {
+    fn item_candidate(&self, item: ItemId) -> Option<Candidate<'a>> {
+        let db = self.db;
+        let Signature::Function(function) = signature(db, item) else {
             return None;
         };
-        let generic = !signature_refs(self.db, item.file)[arena_index(item.item)]
-            .type_params
-            .is_empty();
         Some(Candidate {
             origin: Callee::Item(item),
-            name: item_data(self.db, item).name.clone(),
+            name: &item_data(db, item).name,
             params: function
                 .params
                 .iter()
                 .map(|param| Parameter {
-                    name: param.name.clone(),
+                    name: &param.name,
                     mode: Some(param.mode),
                     has_default: param.has_default,
-                    ty: param.ty.clone(),
+                    ty: Cow::Borrowed(&param.ty),
                 })
                 .collect(),
-            ret: (!function.is_async).then(|| function.ret.clone()),
-            unchecked: generic || function.params.iter().any(|param| param.is_params),
+            ret: Cow::Borrowed(&function.ret),
+            unchecked: function.is_generic
+                || function.is_async
+                || function.params.iter().any(|param| param.is_params),
         })
     }
 
     /// The local function `local` as a candidate.
-    fn local_function(&mut self, local: LocalId) -> Option<Candidate> {
+    fn local_function(&mut self, local: LocalId) -> Option<Candidate<'a>> {
         let body = self.body;
         let functions = self.local_functions.get_or_insert_with(|| {
             body.stmts
@@ -314,20 +349,20 @@ impl Check<'_> {
         let ret = function.ret.map_or(Ty::UNIT, |ty| self.written(ty));
         Some(Candidate {
             origin: Callee::Local(local),
-            name: body.locals[local].name.clone(),
+            name: &body.locals[local].name,
             params: function
                 .params
                 .iter()
                 .map(|&param| Parameter {
-                    name: body.locals[param].name.clone(),
+                    name: &body.locals[param].name,
                     // Local functions do not record their parameters' modes.
                     mode: None,
                     has_default: function.defaults.iter().any(|&(at, _)| at == param),
-                    ty: self.locals[arena_index(param)].clone().unwrap_or(Ty::Error),
+                    ty: Cow::Owned(self.locals[arena_index(param)].clone().unwrap_or(Ty::Error)),
                 })
                 .collect(),
-            ret: (!function.is_async).then_some(ret),
-            unchecked: generic,
+            ret: Cow::Owned(ret),
+            unchecked: generic || function.is_async,
         })
     }
 
@@ -336,7 +371,7 @@ impl Check<'_> {
     fn call_one(
         &mut self,
         expr: ExprId,
-        candidate: &Candidate,
+        candidate: &Candidate<'_>,
         args: &[Arg],
         arguments: &[Argument],
     ) -> Option<Ty> {
@@ -354,13 +389,13 @@ impl Check<'_> {
                     Unbound::Missing(param) => TypeError::Arity {
                         expr,
                         signature: self.signature_text(candidate),
-                        missing: Some(candidate.params[param].name.clone()),
+                        missing: Some(candidate.params[param].name.to_owned()),
                     },
                     Unbound::UnknownName(arg) => TypeError::NamedArgument {
                         arg: args[arg].expr,
                         problem: NamedProblem::Unknown {
                             name: name(arg),
-                            function: candidate.name.clone(),
+                            function: candidate.name.to_owned(),
                         },
                     },
                     Unbound::AlreadyGiven(arg) => TypeError::NamedArgument {
@@ -368,48 +403,69 @@ impl Check<'_> {
                         problem: NamedProblem::AlreadyGiven { name: name(arg) },
                     },
                 });
-                return candidate.ret.clone();
+                return Some(candidate.ret.clone().into_owned());
             }
         };
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(&params) {
             let parameter = &candidate.params[param];
             if !mode_fits(parameter.mode, arg.mode) {
+                // `ref` makes the call right only before a place whose type
+                // fits the parameter.
+                let place = matches!(
+                    self.body.exprs[arg.expr],
+                    Expr::Local(_)
+                        | Expr::Path(_)
+                        | Expr::Member {
+                            optional: false,
+                            ..
+                        }
+                        | Expr::Index {
+                            optional: false,
+                            ..
+                        }
+                );
                 self.errors.push(TypeError::Mode {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),
-                    param: parameter.name.clone(),
+                    param: parameter.name.to_owned(),
                     needs: parameter.mode.unwrap_or(ParamMode::In),
                     given: arg.mode,
+                    fixable: place && fits(argument, &parameter.ty),
                 });
             }
             self.argument(arg.expr, argument, &parameter.ty);
         }
         self.calls.insert(expr, candidate.origin);
-        candidate.ret.clone()
+        Some(candidate.ret.clone().into_owned())
     }
 
     /// A call of overloads: the best applicable one is called (§6.9).
     fn call_overloads(
         &mut self,
         expr: ExprId,
-        candidates: &[Candidate],
+        candidates: &[Candidate<'_>],
         args: &[Arg],
         arguments: &[Argument],
     ) -> Option<Ty> {
-        // Each applicable candidate, with the parameter of each argument.
-        let applicable: Vec<(usize, Vec<usize>)> = candidates
+        let bindings: Vec<_> = candidates
             .iter()
+            .map(|candidate| bind(candidate, args))
+            .collect();
+        // Each applicable candidate, with the parameter of each argument.
+        let applicable: Vec<(usize, &[usize])> = candidates
+            .iter()
+            .zip(&bindings)
             .enumerate()
-            .filter_map(|(index, candidate)| {
-                let params = bind(candidate, args).ok()?;
+            .filter_map(|(index, (candidate, binding))| {
+                let params = binding.as_ref().ok()?;
                 args.iter()
                     .zip(arguments)
-                    .zip(&params)
+                    .zip(params)
                     .all(|((arg, argument), &param)| {
                         let parameter = &candidate.params[param];
                         mode_fits(parameter.mode, arg.mode) && fits(argument, &parameter.ty)
                     })
-                    .then_some((index, params))
+                    .then_some((index, params.as_slice()))
             })
             .collect();
         // Overloads are declarations, never local functions.
@@ -423,44 +479,69 @@ impl Check<'_> {
         };
         if applicable.is_empty() {
             self.infer_literals(args, arguments);
-            let all = listed(self, &mut (0..candidates.len()));
-            self.errors.push(TypeError::NoOverload {
-                expr,
-                name: candidates[0].name.clone(),
-                candidates: all,
+            // A name that every overload's parameters take by position too
+            // is the one problem of the call (D-136).
+            let given = match bindings.first() {
+                Some(Err(Unbound::AlreadyGiven(arg))) => Some(*arg),
+                _ => None,
+            }
+            .filter(|&arg| {
+                bindings.iter().all(
+                    |binding| matches!(binding, Err(Unbound::AlreadyGiven(other)) if *other == arg),
+                )
+            });
+            self.errors.push(match given {
+                Some(arg) => TypeError::NamedArgument {
+                    arg: args[arg].expr,
+                    problem: NamedProblem::AlreadyGiven {
+                        name: args[arg].name.clone().unwrap_or_default(),
+                    },
+                },
+                None => TypeError::NoOverload {
+                    expr,
+                    name: candidates[0].name.to_owned(),
+                    candidates: listed(self, &mut (0..candidates.len())),
+                },
             });
             return None;
         }
-        let beats = |(a, a_params): &(usize, Vec<usize>), (b, b_params): &(usize, Vec<usize>)| {
+        // An argument of a type not known yet may be what decides between
+        // the overloads it fits, so they are not ranked; the call keeps a
+        // type only when they all return it (D-137).
+        if applicable.len() > 1 && arguments.iter().any(Argument::is_unknown) {
+            self.infer_literals(args, arguments);
+            let first = &candidates[applicable[0].0].ret;
+            return applicable
+                .iter()
+                .all(|&(index, _)| candidates[index].ret == *first)
+                .then(|| first.clone().into_owned());
+        }
+        let beats = |&(a, a_params): &(usize, &[usize]), &(b, b_params): &(usize, &[usize])| {
             better(
-                (&candidates[*a], a_params),
-                (&candidates[*b], b_params),
+                (&candidates[a], a_params),
+                (&candidates[b], b_params),
                 arguments,
             )
         };
         let best = applicable
             .iter()
             .find(|a| applicable.iter().all(|b| a.0 == b.0 || beats(a, b)));
-        let Some((index, params)) = best else {
+        let Some(&(index, params)) = best else {
             self.infer_literals(args, arguments);
-            // An argument of unknown type may be what makes the call
-            // ambiguous, so it is not reported.
-            if !arguments.iter().any(Argument::is_unknown) {
-                let tied = listed(self, &mut applicable.iter().map(|(index, ..)| *index));
-                self.errors.push(TypeError::Ambiguous {
-                    expr,
-                    name: candidates[0].name.clone(),
-                    candidates: tied,
-                });
-            }
+            let tied = listed(self, &mut applicable.iter().map(|&(index, _)| index));
+            self.errors.push(TypeError::Ambiguous {
+                expr,
+                name: candidates[0].name.to_owned(),
+                candidates: tied,
+            });
             return None;
         };
-        let candidate = &candidates[*index];
+        let candidate = &candidates[index];
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {
             self.argument(arg.expr, argument, &candidate.params[param].ty);
         }
         self.calls.insert(expr, candidate.origin);
-        candidate.ret.clone()
+        Some(candidate.ret.clone().into_owned())
     }
 
     /// Checks an argument against its parameter's type: a literal takes the
@@ -473,7 +554,7 @@ impl Check<'_> {
     }
 
     /// A candidate as code declares it, as `Add(a: int, b: int = ...): int`.
-    fn signature_text(&self, candidate: &Candidate) -> String {
+    fn signature_text(&self, candidate: &Candidate<'_>) -> String {
         let params: Vec<_> = candidate
             .params
             .iter()
@@ -488,11 +569,10 @@ impl Check<'_> {
                 format!("{mode}{}: {ty}{default}", param.name)
             })
             .collect();
-        let ret = match &candidate.ret {
-            Some(ret) if *ret != Ty::UNIT => {
-                format!(": {}", ty_name(self.db, ret))
-            }
-            _ => String::new(),
+        let ret = if *candidate.ret == Ty::UNIT {
+            String::new()
+        } else {
+            format!(": {}", ty_name(self.db, &candidate.ret))
         };
         format!("{}({}){ret}", candidate.name, params.join(", "))
     }
@@ -500,7 +580,7 @@ impl Check<'_> {
 
 /// Which parameter of `candidate` each argument goes to: by position, then
 /// by name, with omitted parameters taking their defaults (§6.9).
-fn bind(candidate: &Candidate, args: &[Arg]) -> Result<Vec<usize>, Unbound> {
+fn bind(candidate: &Candidate<'_>, args: &[Arg]) -> Result<Vec<usize>, Unbound> {
     let mut given = vec![false; candidate.params.len()];
     let mut params = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
@@ -574,33 +654,50 @@ fn literal_fits(value: Value, ty: &Ty) -> bool {
 
 /// Whether the applicable candidate `a` is better than `b` (§6.9): no
 /// argument converts worse to it and one converts better, or, when neither
-/// is better that way, it needs no default and the other does. With the
-/// conversions of §5.10, a conversion to `Pa` is better than one to `Pb`
-/// exactly when `Pa` converts to `Pb` and not back: the identity is that
-/// case too. An argument of unknown type ranks neither above the other.
+/// is better that way, it needs no default and the other does.
 fn better(
-    (a, a_params): (&Candidate, &[usize]),
-    (b, b_params): (&Candidate, &[usize]),
+    (a, a_params): (&Candidate<'_>, &[usize]),
+    (b, b_params): (&Candidate<'_>, &[usize]),
     arguments: &[Argument],
 ) -> bool {
     let mut some_better = false;
     for (index, argument) in arguments.iter().enumerate() {
-        if argument.is_unknown() {
-            continue;
-        }
         let pa = &a.params[a_params[index]].ty;
         let pb = &b.params[b_params[index]].ty;
-        match (converts(pa, pb), converts(pb, pa)) {
-            (false, true) => return false,
-            (true, false) => some_better = true,
-            _ => {}
+        match compare(argument, pa, pb) {
+            Ordering::Less => return false,
+            Ordering::Greater => some_better = true,
+            Ordering::Equal => {}
         }
     }
     if some_better {
         return true;
     }
-    let defaults = |candidate: &Candidate, params: &[usize]| candidate.params.len() > params.len();
+    let defaults =
+        |candidate: &Candidate<'_>, params: &[usize]| candidate.params.len() > params.len();
     !defaults(a, a_params) && defaults(b, b_params)
+}
+
+/// Whether an argument's conversion to `pa` is better (`Greater`) than to
+/// `pb`, or worse (§6.9). A conversion to the argument's natural type is
+/// the identity and is the best. For a literal, which takes any numeric
+/// type that holds its value (§3.5), a conversion of its natural type under
+/// §5.10 comes next, and taking a type only as a literal last. Otherwise a
+/// conversion to `pa` is better when `pa` converts to `pb` and not back.
+fn compare(argument: &Argument, pa: &Ty, pb: &Ty) -> Ordering {
+    let rank = |ty: &Ty| match argument.natural() {
+        Some(natural) if same(&natural, ty) => 0,
+        Some(natural) if converts(&natural, ty) => 1,
+        _ => 2,
+    };
+    match rank(pb).cmp(&rank(pa)) {
+        Ordering::Equal => match (converts(pa, pb), converts(pb, pa)) {
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            _ => Ordering::Equal,
+        },
+        order => order,
+    }
 }
 
 #[cfg(test)]

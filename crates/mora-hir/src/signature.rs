@@ -104,6 +104,7 @@ fn item_signature(
                 .collect(),
             ret: ret.as_ref().map_or(Ty::UNIT, |ret| lower.ty(ret)),
             is_async: *is_async,
+            is_generic: !refs[arena_index(item)].type_params.is_empty(),
         }),
         SignatureRefKind::Struct(fields) => {
             let owner = lower.member;

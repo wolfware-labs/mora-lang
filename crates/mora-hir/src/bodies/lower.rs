@@ -555,7 +555,18 @@ impl Lower {
             }
             ast::Expr::CallExpr(it) => {
                 let callee = self.expr(it.callee(), range);
-                let args = self.args(it.arg_list().iter().flat_map(|list| list.args()));
+                let list = it.arg_list();
+                let mut args = self.args(list.iter().flat_map(|list| list.args()));
+                // A list the parser recovered from without its `)` ends with
+                // a missing argument, so that no check counts its arguments.
+                if list.is_none_or(|list| list.r_paren_token().is_none()) {
+                    let end = TextRange::empty(range.end());
+                    args.push(Arg {
+                        name: None,
+                        mode: None,
+                        expr: self.alloc_expr(Expr::Missing, end),
+                    });
+                }
                 Expr::Call { callee, args }
             }
             ast::Expr::IndexExpr(it) => {
