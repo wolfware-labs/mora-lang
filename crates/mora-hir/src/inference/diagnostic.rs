@@ -167,7 +167,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             needs,
             given,
             fixable,
-        } => call::mode(source, *arg, signature, param, (*needs, *given), *fixable),
+        } => call::mode(source, *arg, signature, param, *needs, *given, *fixable),
         TypeError::NoOverload {
             expr,
             name,

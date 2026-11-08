@@ -56,6 +56,17 @@ impl Value {
             Value::Int(_) | Value::Overflow | Value::Infinity | Value::OverflowReal => None,
         }
     }
+
+    /// The type the value has without a target (§3.5): the first of `int`,
+    /// `long` and `ulong` that holds an integer, and `double` for a real.
+    /// `None` for a value too large to compute.
+    pub(crate) fn natural(self) -> Option<Primitive> {
+        match self {
+            Value::Int(value) => numeric::default_integer(value),
+            Value::Real(_) => Some(Primitive::Double),
+            Value::Overflow | Value::Infinity | Value::OverflowReal => None,
+        }
+    }
 }
 
 /// The value of `expr` when every leaf of it is an unsuffixed literal
@@ -192,6 +203,16 @@ mod tests {
     /// The value of a binary operation on two values.
     fn of(op: BinaryOp, a: Value, b: Value) -> Option<Value> {
         binary(op, a, b)
+    }
+
+    #[test]
+    fn a_value_without_a_target_has_its_natural_type() {
+        assert_eq!(Value::Int(1).natural(), Some(Primitive::Int));
+        assert_eq!(Value::Int(1 << 40).natural(), Some(Primitive::Long));
+        assert_eq!(Value::Real(0.5).natural(), Some(Primitive::Double));
+        for value in [Value::Overflow, Value::Infinity, Value::OverflowReal] {
+            assert_eq!(value.natural(), None, "{value:?}");
+        }
     }
 
     #[test]

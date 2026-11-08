@@ -34,13 +34,15 @@ pub(super) fn arity(
 }
 
 /// `MR0205`: an argument whose marker does not suit its parameter's mode
-/// (§10.3), with the fix that writes the marker it needs.
+/// (§10.3), with the fix that writes the marker it needs; a missing `ref`
+/// gets it only when `fixable`.
 pub(super) fn mode(
     source: &Source<'_>,
     arg: ExprId,
     signature: &str,
     param: &str,
-    (needs, given): (ParamMode, Option<ArgMode>),
+    needs: ParamMode,
+    given: Option<ArgMode>,
     fixable: bool,
 ) -> Diagnostic {
     let span = source.span(arg);

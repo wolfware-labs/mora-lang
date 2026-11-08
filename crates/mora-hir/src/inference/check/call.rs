@@ -76,19 +76,11 @@ impl Argument {
     }
 
     /// The type it has without a target, which a conversion to is the
-    /// identity (§6.9): its own type, or a literal's of §3.5, the first of
-    /// `int`, `long` and `ulong` that holds an integer and `double` for a
-    /// real. `None` for a value too large to compute.
+    /// identity (§6.9): its own type, or a literal's (`Value::natural`).
     fn natural(&self) -> Option<Cow<'_, Ty>> {
         match self {
             Argument::Typed(ty) => ty.as_ref().map(Cow::Borrowed),
-            Argument::Literal(Value::Int(value)) => {
-                numeric::default_integer(*value).map(|ty| Cow::Owned(Ty::Primitive(ty)))
-            }
-            Argument::Literal(Value::Real(_)) => {
-                Some(Cow::Owned(Ty::Primitive(crate::ty::Primitive::Double)))
-            }
-            Argument::Literal(Value::Overflow | Value::Infinity | Value::OverflowReal) => None,
+            Argument::Literal(value) => value.natural().map(|ty| Cow::Owned(Ty::Primitive(ty))),
         }
     }
 }
@@ -196,46 +188,39 @@ impl<'a> Check<'a> {
     /// What the callee of a call is. The callee's own type is recorded, as
     /// for any expression.
     fn callees(&mut self, callee: ExprId) -> Callees<'a> {
+        let ty = self.infer(callee);
         let body = self.body;
         match &body.exprs[callee] {
             // A path names what it calls; a member of a value is an
             // `Expr::Member`.
-            Expr::Path(_) => {
-                self.infer(callee);
-                self.resolution
-                    .paths
-                    .get(&callee)
-                    .map_or(Callees::Unknown, |resolution| {
-                        self.resolved(&resolution.target)
-                    })
-            }
+            Expr::Path(_) => self
+                .resolution
+                .paths
+                .get(&callee)
+                .map_or(Callees::Unknown, |resolution| {
+                    self.resolved(&resolution.target)
+                }),
             Expr::Member {
                 receiver,
                 name,
                 optional,
                 ..
             } => {
-                let receiver = self.infer(*receiver);
                 if let Some(resolution) = self.resolution.paths.get(&callee) {
-                    self.exprs[arena_index(callee)] = self.target(&resolution.target);
                     return self.resolved(&resolution.target);
                 }
                 // `x?.M()` gives an option (§7.5).
                 if *optional {
                     return Callees::Unknown;
                 }
-                self.exprs[arena_index(callee)] = self.field(receiver.as_ref(), name);
-                self.methods(receiver.as_ref(), name)
+                self.methods(self.exprs[arena_index(*receiver)].as_ref(), name)
             }
             Expr::Local(local) if body.locals[*local].kind == LocalKind::Function => self
                 .local_function(*local)
                 .map_or(Callees::Unknown, |candidate| {
                     Callees::Functions(vec![candidate])
                 }),
-            _ => {
-                let ty = self.infer(callee);
-                self.not_callable(ty)
-            }
+            _ => self.not_callable(ty),
         }
     }
 
@@ -379,7 +364,6 @@ impl<'a> Check<'a> {
             Ok(params) => params,
             Err(unbound) => {
                 self.infer_literals(args, arguments);
-                let name = |arg: usize| args[arg].name.clone().unwrap_or_default();
                 self.errors.push(match unbound {
                     Unbound::TooMany(first) => TypeError::Arity {
                         expr: args[first].expr,
@@ -394,16 +378,13 @@ impl<'a> Check<'a> {
                     Unbound::UnknownName(arg) => TypeError::NamedArgument {
                         arg: args[arg].expr,
                         problem: NamedProblem::Unknown {
-                            name: name(arg),
+                            name: args[arg].name.clone().unwrap_or_default(),
                             function: candidate.name.to_owned(),
                         },
                     },
-                    Unbound::AlreadyGiven(arg) => TypeError::NamedArgument {
-                        arg: args[arg].expr,
-                        problem: NamedProblem::AlreadyGiven { name: name(arg) },
-                    },
+                    Unbound::AlreadyGiven(arg) => already_given(args, arg),
                 });
-                return Some(candidate.ret.clone().into_owned());
+                return Some(Ty::clone(&candidate.ret));
             }
         };
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(&params) {
@@ -436,7 +417,7 @@ impl<'a> Check<'a> {
             self.argument(arg.expr, argument, &parameter.ty);
         }
         self.calls.insert(expr, candidate.origin);
-        Some(candidate.ret.clone().into_owned())
+        Some(Ty::clone(&candidate.ret))
     }
 
     /// A call of overloads: the best applicable one is called (§6.9).
@@ -491,12 +472,7 @@ impl<'a> Check<'a> {
                 )
             });
             self.errors.push(match given {
-                Some(arg) => TypeError::NamedArgument {
-                    arg: args[arg].expr,
-                    problem: NamedProblem::AlreadyGiven {
-                        name: args[arg].name.clone().unwrap_or_default(),
-                    },
-                },
+                Some(arg) => already_given(args, arg),
                 None => TypeError::NoOverload {
                     expr,
                     name: candidates[0].name.to_owned(),
@@ -514,7 +490,7 @@ impl<'a> Check<'a> {
             return applicable
                 .iter()
                 .all(|&(index, _)| candidates[index].ret == *first)
-                .then(|| first.clone().into_owned());
+                .then(|| Ty::clone(first));
         }
         let beats = |&(a, a_params): &(usize, &[usize]), &(b, b_params): &(usize, &[usize])| {
             better(
@@ -541,7 +517,7 @@ impl<'a> Check<'a> {
             self.argument(arg.expr, argument, &candidate.params[param].ty);
         }
         self.calls.insert(expr, candidate.origin);
-        Some(candidate.ret.clone().into_owned())
+        Some(Ty::clone(&candidate.ret))
     }
 
     /// Checks an argument against its parameter's type: a literal takes the
@@ -575,6 +551,17 @@ impl<'a> Check<'a> {
             format!(": {}", ty_name(self.db, &candidate.ret))
         };
         format!("{}({}){ret}", candidate.name, params.join(", "))
+    }
+}
+
+/// `MR0207` for the named argument `arg`, whose parameter a positional
+/// argument already gives.
+fn already_given(args: &[Arg], arg: usize) -> TypeError {
+    TypeError::NamedArgument {
+        arg: args[arg].expr,
+        problem: NamedProblem::AlreadyGiven {
+            name: args[arg].name.clone().unwrap_or_default(),
+        },
     }
 }
 
@@ -686,8 +673,9 @@ fn better(
 /// identity first too: the natural type converts to every type its rank
 /// holds, and none of them converts back.
 fn compare(argument: &Argument, pa: &Ty, pb: &Ty) -> Ordering {
-    let rank = |ty: &Ty| match argument.natural() {
-        Some(natural) if converts(&natural, ty) => 0,
+    let natural = argument.natural();
+    let rank = |ty: &Ty| match &natural {
+        Some(natural) if converts(natural, ty) => 0,
         _ => 1,
     };
     match rank(pb).cmp(&rank(pa)) {

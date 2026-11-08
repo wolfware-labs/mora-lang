@@ -1487,10 +1487,10 @@ mod tests {
         assert_eq!(reported[1].secondary.len(), 2);
     }
 
-    #[test]
-    fn the_chosen_overload_is_recorded() {
+    /// Which declaration of `O`, counted from 0, the call of `O` in the
+    /// top-level statements of `text` calls, `None` when it is unresolved.
+    fn called_overload(text: &str) -> Option<usize> {
         let db = TestDb::new();
-        let text = "O(x: int): int => 1;\nO(x: string): string => \"\";\nlet a = O(\"s\");\n";
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
         let body = body(&db, file, BodyOwner::TopLevel);
@@ -1498,16 +1498,25 @@ mod tests {
         let call = body
             .exprs
             .iter()
-            .find(|(_, expr)| matches!(expr, Expr::Call { .. }))
+            .find(|(_, expr)| {
+                matches!(expr, Expr::Call { callee, .. }
+                if matches!(&body.exprs[*callee], Expr::Path(path) if path.segments == ["O"]))
+            })
             .map(|(id, _)| id)
             .unwrap();
-        let string = item_tree(&db, file)
+        let Some(Callee::Item(called)) = inference.callee(call) else {
+            return None;
+        };
+        item_tree(&db, file)
             .items()
             .filter(|(_, item)| item.name == "O")
-            .nth(1)
-            .map(|(idx, _)| Scope::file(project, file).item(idx))
-            .unwrap();
-        assert_eq!(inference.callee(call), Some(Callee::Item(string)));
+            .position(|(idx, _)| Scope::file(project, file).item(idx) == called)
+    }
+
+    #[test]
+    fn the_chosen_overload_is_recorded() {
+        let text = "O(x: int): int => 1;\nO(x: string): string => \"\";\nlet a = O(\"s\");\n";
+        assert_eq!(called_overload(text), Some(1));
     }
 
     #[test]
@@ -1620,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn review_unknown_argument_leaves_overloads_unresolved() {
+    fn unknown_argument_leaves_overloads_unresolved() {
         let decls = "O(x: int, y: int): int => 1;\nO(x: long, y: string): string => \"\";\n\
                      P(x: int): int => 1;\nP(x: long): int => 2;\n";
         let text = format!(
@@ -1633,7 +1642,7 @@ mod tests {
     }
 
     #[test]
-    fn review_a_literal_prefers_its_natural_type() {
+    fn a_literal_prefers_its_natural_type() {
         let text = "A(x: int): int => 1;\nA(x: uint): string => \"\";\n\
                     B(x: long): int => 1;\nB(x: float): string => \"\";\n\
                     C(x: byte): string => \"\";\nC(x: int): int => 1;\n\
@@ -1648,7 +1657,7 @@ mod tests {
     }
 
     #[test]
-    fn review_an_async_callee_is_not_checked() {
+    fn an_async_callee_is_not_checked() {
         let text = "async Later(ref x: int): int => 1;\nvar n = 1;\nlet a = Later(n);\n\
                     let b = Later(\"s\", 2);\nF() {\n    async G(x: int): int => x;\n    G(\"s\");\n}\n";
         assert_eq!(reported(text), Vec::<String>::new());
@@ -1656,7 +1665,7 @@ mod tests {
     }
 
     #[test]
-    fn review_named_argument_order_is_checked_for_every_call() {
+    fn named_argument_order_is_checked_for_every_call() {
         for text in [
             "Console.WriteLine(a: 1, 2);\n",
             "Id<T>(x: T): T => x;\nlet a = Id(x: 1, 2);\n",
@@ -1667,15 +1676,10 @@ mod tests {
     }
 
     #[test]
-    fn review_a_recovered_argument_list_is_not_checked() {
+    fn a_recovered_argument_list_is_not_checked() {
         for call in ["F(,1);\n", "F(1,,2);\n", "F(;\n", "F(1\n"] {
-            let db = TestDb::new();
-            let project = app(
-                &db,
-                &[("src/Program.mr", &format!("F(a: int, b: int) {{}}\n{call}"))],
-            );
             assert_eq!(
-                codes(diagnostics(&db, project)),
+                reported(&format!("F(a: int, b: int) {{}}\n{call}")),
                 Vec::<String>::new(),
                 "{call}"
             );
@@ -1683,7 +1687,7 @@ mod tests {
     }
 
     #[test]
-    fn review_ref_is_offered_only_for_a_place_of_a_fitting_type() {
+    fn ref_is_offered_only_for_a_place_of_a_fitting_type() {
         let text = "Bump(ref x: int) {}\nstruct P {\n    X: int;\n}\nvar n = 1;\n\
                     Bump(\"s\");\nBump(n + 1);\nBump(n);\n";
         let fixes: Vec<_> = diagnostics_of(text)
@@ -1699,32 +1703,15 @@ mod tests {
     }
 
     #[test]
-    fn review_a_name_every_overload_takes_by_position_is_mr0207() {
+    fn a_name_every_overload_takes_by_position_is_mr0207() {
         let text = "O(x: int) {}\nO(x: string) {}\nO(1, x: 2);\nO(y: 1);\n";
         assert_eq!(reported(text), ["MR0207", "MR0205"]);
     }
 
     #[test]
-    fn review_a_callee_has_its_own_type() {
+    fn a_callee_has_its_own_type() {
         let types = expr_types("const Max: int = 1;\nMax();\n");
         assert!(types.contains(&"Max: int".to_owned()), "{types:?}");
-    }
-
-    #[test]
-    fn review_a_signature_says_whether_it_is_generic() {
-        let db = TestDb::new();
-        let project = app(
-            &db,
-            &[("src/Program.mr", "Id<T>(x: T): T => x;\nF(x: int) {}\n")],
-        );
-        for (name, generic) in [("Id", true), ("F", false)] {
-            let signature = crate::test_db::signature_of(&db, project, "src/Program.mr", name);
-            assert_eq!(
-                crate::test_db::function(signature).is_generic,
-                generic,
-                "{name}"
-            );
-        }
     }
 
     #[test]
@@ -1748,34 +1735,18 @@ mod tests {
 
     #[test]
     fn the_one_applicable_overload_is_called_whatever_the_other_arguments() {
-        let db = TestDb::new();
         let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: byte): string => \"\";\n\
                     let a = O(Console.A(), 300);\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
         // No overload takes `300` as its `byte`, whatever the argument of
         // unknown type is, so the call is MR0205.
-        assert_eq!(codes(diagnostics(&db, project)), ["MR0205"]);
+        assert_eq!(reported(text), ["MR0205"]);
         let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: string): string => \"\";\n\
                     let a = O(Console.A(), 1);\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
-        let body = body(&db, file, BodyOwner::TopLevel);
-        let inference = infer(&db, project, file, BodyOwner::TopLevel);
-        let call = body
-            .exprs
-            .iter()
-            .find(|(_, expr)| {
-                matches!(expr, Expr::Call { callee, .. }
-                if matches!(body.exprs[*callee], Expr::Path(_)))
-            })
-            .map(|(id, _)| id)
-            .unwrap();
-        let int = item_tree(&db, file)
-            .items()
-            .find(|(_, item)| item.name == "O")
-            .map(|(idx, _)| Scope::file(project, file).item(idx))
-            .unwrap();
-        assert_eq!(inference.callee(call), Some(Callee::Item(int)));
+        assert_eq!(called_overload(text), Some(0));
         assert_eq!(local_types(text), ["a: int"]);
+        // Two applicable overloads leave the call unresolved.
+        let text = "O(x: int, y: int): int => 1;\nO(x: string, y: int): int => 2;\n\
+                    let a = O(Console.A(), 1);\n";
+        assert_eq!(called_overload(text), None);
     }
 }

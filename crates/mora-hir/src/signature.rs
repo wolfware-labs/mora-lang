@@ -356,18 +356,19 @@ mod tests {
     }
 
     #[test]
-    fn function_signatures_keep_names_modes_defaults_and_async() {
+    fn function_signatures_keep_names_modes_defaults_async_and_generics() {
         let db = TestDb::new();
         let project = app(
             &db,
             &[(
                 "src/Program.mr",
                 "async F(a: int, in b: int, ref c: int, move d: int, params e: int, f: int = 1) {}\n\
-             G(): string => \"\";\n",
+             G(): string => \"\";\nId<T>(x: T): T => x;\n",
             )],
         );
         let f = function(signature_of(&db, project, "src/Program.mr", "F"));
         assert!(f.is_async);
+        assert!(!f.is_generic);
         assert_eq!(f.ret, Ty::UNIT);
         let shape: Vec<_> = f
             .params
@@ -388,6 +389,7 @@ mod tests {
         let g = function(signature_of(&db, project, "src/Program.mr", "G"));
         assert!(!g.is_async);
         assert_eq!(g.ret, Ty::String);
+        assert!(function(signature_of(&db, project, "src/Program.mr", "Id")).is_generic);
     }
 
     #[test]
