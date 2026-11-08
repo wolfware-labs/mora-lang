@@ -1,0 +1,51 @@
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/calls/arguments.mr:9:17
+  |
+9 | let d: string = Area(3); //~ ERROR MR0203
+  |                 ^^^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+9 | let d: string = $"{Area(3)}"; //~ ERROR MR0203
+  |                 +++       ++
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+  --> tests/ui/calls/arguments.mr:10:6
+   |
+10 | Area("3"); //~ ERROR MR0203
+   |      ^^^ this is `string`
+
+error[MR0010]: the literal `256` does not fit in `byte`
+  --> tests/ui/calls/arguments.mr:12:6
+   |
+12 | Fill(256); //~ ERROR MR0010
+   |      ^^^ out of range
+   |
+   = note: `byte` holds values from 0 to 255
+
+error[MR0205]: missing an argument for `width` in this call of `Area(width: int, height: int = ...): int`
+  --> tests/ui/calls/arguments.mr:13:1
+   |
+13 | Area(); //~ ERROR MR0205
+   | ^^^^^^ `width` has no default value
+   |
+   = note: every parameter without a default value takes an argument
+
+error[MR0205]: too many arguments in this call of `Area(width: int, height: int = ...): int`
+  --> tests/ui/calls/arguments.mr:14:12
+   |
+14 | Area(1, 2, 3); //~ ERROR MR0205
+   |            ^ no parameter takes this argument
+
+error[MR0203]: mismatched types: expected `int`, found `long`
+  --> tests/ui/calls/arguments.mr:18:18
+   |
+18 |     let t: int = Twice(4); //~ ERROR MR0203
+   |                  ^^^^^^^^ this is `long`
+   |
+   = note: `long` converts to `int` only through an explicit cast, because not every value of `long` is a value of `int`
+help: convert it explicitly with `(int)`
+   |
+18 |     let t: int = (int)Twice(4); //~ ERROR MR0203
+   |                  +++++

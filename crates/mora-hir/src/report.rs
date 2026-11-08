@@ -468,7 +468,13 @@ fn ambiguous(db: &dyn Db, name: &str, span: Span, candidates: &[Resolved]) -> Di
     diagnostic
 }
 
-fn not_visible(db: &dyn Db, scope: Scope, name: &str, span: Span, item: ItemId) -> Diagnostic {
+pub(crate) fn not_visible(
+    db: &dyn Db,
+    scope: Scope,
+    name: &str,
+    span: Span,
+    item: ItemId,
+) -> Diagnostic {
     let declared_in = file_namespace(db, item.project, item.file).unwrap_or_default();
     let used_in = file_namespace(db, scope.project, scope.file).unwrap_or_default();
     let same_project = item.project == scope.project;
@@ -516,7 +522,7 @@ fn widen(db: &dyn Db, item: ItemId, keyword: &str) -> TextEdit {
     }
 }
 
-fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
+pub(crate) fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
     Span::new(
         item.file.id(db),
         item_source_map(db, item.file).item(item.item).name,

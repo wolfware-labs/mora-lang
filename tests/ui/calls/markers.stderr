@@ -1,0 +1,50 @@
+error[MR0205]: the argument for `ref x` in `Bump(ref x: int)` must be marked `ref`
+ --> tests/ui/calls/markers.mr:8:6
+  |
+8 | Bump(n); //~ ERROR MR0205
+  |      ^ pass it as `ref`
+  |
+  = note: `ref` before an argument passes the place itself; it is written exactly for a `ref` parameter, and `in` or `move` only for a parameter of that mode
+help: mark it `ref`
+  |
+8 | Bump(ref n); //~ ERROR MR0205
+  |      +++
+
+error[MR0205]: the argument for `ref x` in `Bump(ref x: int)` is marked `in`, not `ref`
+ --> tests/ui/calls/markers.mr:9:9
+  |
+9 | Bump(in n); //~ ERROR MR0205
+  |         ^ pass it as `ref`
+  |
+  = note: `ref` before an argument passes the place itself; it is written exactly for a `ref` parameter, and `in` or `move` only for a parameter of that mode
+help: mark it `ref`
+  |
+9 - Bump(in n); //~ ERROR MR0205
+9 + Bump(ref n); //~ ERROR MR0205
+  |
+
+error[MR0205]: the parameter `x` of `Read(x: int)` does not take an argument marked `ref`
+  --> tests/ui/calls/markers.mr:12:10
+   |
+12 | Read(ref n); //~ ERROR MR0205
+   |          ^ remove `ref`
+   |
+   = note: `ref` before an argument passes the place itself; it is written exactly for a `ref` parameter, and `in` or `move` only for a parameter of that mode
+help: remove `ref`
+   |
+12 - Read(ref n); //~ ERROR MR0205
+12 + Read(n); //~ ERROR MR0205
+   |
+
+error[MR0205]: the parameter `x` of `Take(move x: int)` does not take an argument marked `in`
+  --> tests/ui/calls/markers.mr:15:9
+   |
+15 | Take(in n); //~ ERROR MR0205
+   |         ^ remove `in`
+   |
+   = note: `ref` before an argument passes the place itself; it is written exactly for a `ref` parameter, and `in` or `move` only for a parameter of that mode
+help: remove `in`
+   |
+15 - Take(in n); //~ ERROR MR0205
+15 + Take(n); //~ ERROR MR0205
+   |

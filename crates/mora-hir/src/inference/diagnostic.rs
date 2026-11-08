@@ -1,4 +1,7 @@
-//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`.
+//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`, and
+//! those of calls, `MR0205` to `MR0208`, in [`call`].
+
+mod call;
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
@@ -152,6 +155,34 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             from,
             to,
         } => cast(source, *expr, *operand, from, to),
+        TypeError::Arity {
+            expr,
+            signature,
+            missing,
+        } => call::arity(source, *expr, signature, missing.as_deref()),
+        TypeError::Mode {
+            arg,
+            signature,
+            param,
+            needs,
+            given,
+            fixable,
+        } => call::mode(source, *arg, signature, param, *needs, *given, *fixable),
+        TypeError::NoOverload {
+            expr,
+            name,
+            candidates,
+        } => call::no_overload(source, *expr, name, candidates),
+        TypeError::Ambiguous {
+            expr,
+            name,
+            candidates,
+        } => call::ambiguous(source, *expr, name, candidates),
+        TypeError::NamedArgument { arg, problem } => call::named(source, *arg, problem),
+        TypeError::NotCallable { expr, ty } => call::not_callable(source, *expr, ty),
+        TypeError::NotVisible { expr, item, from } => {
+            call::not_visible(source, *expr, *item, *from)
+        }
     }
 }
 
@@ -193,6 +224,12 @@ fn mismatch(
         Ty::Primitive(ty) => Some(*ty),
         _ => None,
     };
+    if context == Context::Ref {
+        return diagnostic.with_note(
+            "a `ref` argument is the caller's place itself, which the function reads and writes, \
+             so it has exactly the parameter's type",
+        );
+    }
     if let Context::Branch(other) = context {
         return diagnostic
             .with_secondary(Label::new(source.span(other), format!("this is `{e}`")))

@@ -316,6 +316,7 @@ Bidirectional checking of literals (target typing of §3.5), numeric conversions
 Done when:
 
 - UI tests for each numeric conversion row of §5.10, the explicit numeric cast, the rule that nothing converts implicitly between `bool` and integers, between `char` and integers or to `string`, and each error code above.
+- UI tests for overload resolution, named and optional arguments, argument markers and each of `MR0205` to `MR0208`.
 - Run tests for integer promotion and float target typing (`let x: float = 1.5;`).
 
 ### M1.10 MIR and lowering from HIR

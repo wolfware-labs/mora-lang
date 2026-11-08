@@ -1,0 +1,19 @@
+// A call of one declaration checks each argument against its parameter
+// (§6.9): a wrong type is MR0203, a missing or extra argument MR0205.
+Area(width: int, height: int = 1): int => width * height;
+Fill(level: byte) {}
+
+let a: int = Area(3, 4);
+let b: int = Area(3);
+let c: long = Area(width: 2, height: 5);
+let d: string = Area(3); //~ ERROR MR0203
+Area("3"); //~ ERROR MR0203
+Fill(255);
+Fill(256); //~ ERROR MR0010
+Area(); //~ ERROR MR0205
+Area(1, 2, 3); //~ ERROR MR0205
+
+F() {
+    Twice(x: int): long => x * 2;
+    let t: int = Twice(4); //~ ERROR MR0203
+}

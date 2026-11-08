@@ -179,6 +179,11 @@ pub struct ScopeData {
 }
 
 impl Body {
+    /// Whether `expr` is an expression the parser recovered from.
+    pub(crate) fn is_missing(&self, expr: ExprId) -> bool {
+        matches!(self.exprs[expr], Expr::Missing)
+    }
+
     /// The locals in scope at `scope`, innermost first.
     pub fn locals_in_scope(&self, scope: ScopeId) -> impl Iterator<Item = LocalId> + '_ {
         std::iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
@@ -355,6 +360,17 @@ pub enum ArgMode {
     Ref,
     In,
     Move,
+}
+
+impl ArgMode {
+    /// The marker as it is written.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ArgMode::Ref => "ref",
+            ArgMode::In => "in",
+            ArgMode::Move => "move",
+        }
+    }
 }
 
 /// An arm of a `match`.
@@ -625,6 +641,9 @@ pub struct BodySourceMap {
     pub path_segments: HashMap<ExprId, Vec<TextRange>>,
     /// The name of each [`Expr::Member`].
     pub member_names: HashMap<ExprId, TextRange>,
+    /// The marker of each argument written with one, by the argument's
+    /// expression.
+    pub markers: HashMap<ExprId, TextRange>,
     /// The name of each unresolved capture, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
@@ -1078,6 +1097,7 @@ mod tests {
 union Shape { Circle(r: float), Rect(w: float, h: float) }
 Use(a: int): int => a;
 Use(a: string): int => 0;
+Use(ref a: int, in b: int, move c: string?): int => 0;
 Id<T>(x: T): T => x;
 G(o: Shape, p: P, xs: int[], n: int, s: string?, flag: bool) {
     var i = 0;
@@ -1139,6 +1159,8 @@ G(o: Shape, p: P, xs: int[], n: int, s: string?, flag: bool) {
             r#"fn UsersApi.Use(a#0) => a#0;
 
 fn UsersApi.Use(a#0) => 0;
+
+fn UsersApi.Use(a#0, b#1, c#2) => 0;
 
 fn UsersApi.Id(x#0) => x#0;
 

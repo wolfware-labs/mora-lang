@@ -1,0 +1,230 @@
+//! The diagnostics of calls: `MR0205` to `MR0208`.
+
+use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
+use mora_span::{Span, TextRange, to_text_size};
+
+use super::Source;
+use crate::bodies::{ArgMode, ExprId};
+use crate::defs::ItemId;
+use crate::inference::NamedProblem;
+use crate::report::item_name_span;
+use crate::resolve::{Scope, item_data};
+use crate::ty::{ParamMode, Ty};
+
+/// `MR0205`: a call of one declaration with an argument too many, or
+/// without one for a parameter that has no default.
+pub(super) fn arity(
+    source: &Source<'_>,
+    expr: ExprId,
+    signature: &str,
+    missing: Option<&str>,
+) -> Diagnostic {
+    match missing {
+        Some(param) => Diagnostic::error(
+            codes::MR0205,
+            format!("missing an argument for `{param}` in this call of `{signature}`"),
+            Label::new(source.span(expr), format!("`{param}` has no default value")),
+        )
+        .with_note("every parameter without a default value takes an argument"),
+        None => Diagnostic::error(
+            codes::MR0205,
+            format!("too many arguments in this call of `{signature}`"),
+            Label::new(source.span(expr), "no parameter takes this argument"),
+        ),
+    }
+}
+
+/// `MR0205`: an argument whose marker does not suit its parameter's mode
+/// (§10.3), with the fix that writes the marker it needs; a missing `ref`
+/// gets it only when `fixable`.
+pub(super) fn mode(
+    source: &Source<'_>,
+    arg: ExprId,
+    signature: &str,
+    param: &str,
+    needs: ParamMode,
+    given: Option<ArgMode>,
+    fixable: bool,
+) -> Diagnostic {
+    let span = source.span(arg);
+    let file = source.file.id(source.db);
+    // Where the marker written before the argument is; a missing argument
+    // takes the whole span, marker included, and gets no fix.
+    let marker = source
+        .map
+        .markers
+        .get(&arg)
+        .copied()
+        .filter(|marker| marker.end() <= span.range.start());
+    let (message, label, fix) = match (needs, given) {
+        (ParamMode::Ref, None) => (
+            format!("the argument for `ref {param}` in `{signature}` must be marked `ref`"),
+            "pass it as `ref`".to_owned(),
+            // Only a place of a fitting type becomes right with `ref`.
+            fixable.then(|| {
+                Fix::new(
+                    "mark it `ref`",
+                    vec![TextEdit::insert(file, span.range.start(), "ref ")],
+                )
+            }),
+        ),
+        (ParamMode::Ref, Some(given)) => (
+            format!(
+                "the argument for `ref {param}` in `{signature}` is marked `{}`, not `ref`",
+                given.keyword()
+            ),
+            "pass it as `ref`".to_owned(),
+            marker.map(|marker| {
+                Fix::new(
+                    "mark it `ref`",
+                    vec![TextEdit::replace(Span::new(file, marker), "ref")],
+                )
+            }),
+        ),
+        (_, given) => {
+            let word = given.map_or("", ArgMode::keyword);
+            (
+                format!(
+                    "the parameter `{param}` of `{signature}` does not take an argument marked `{word}`"
+                ),
+                format!("remove `{word}`"),
+                // The marker and the space after it; a comment after it stays.
+                marker.map(|marker| {
+                    let after = TextRange::new(marker.end(), span.range.start());
+                    let space = source
+                        .file
+                        .text(source.db)
+                        .get(std::ops::Range::<usize>::from(after))
+                        .map_or(0, |between| between.len() - between.trim_start().len());
+                    let range = TextRange::new(marker.start(), marker.end() + to_text_size(space));
+                    Fix::new(
+                        format!("remove `{word}`"),
+                        vec![TextEdit::replace(Span::new(file, range), "")],
+                    )
+                }),
+            )
+        }
+    };
+    let diagnostic = Diagnostic::error(codes::MR0205, message, Label::new(span, label))
+        .with_note("`ref` before an argument passes the place itself; it is written exactly for a `ref` parameter, and `in` or `move` only for a parameter of that mode");
+    match fix {
+        Some(fix) => diagnostic.with_fix(fix),
+        None => diagnostic,
+    }
+}
+
+/// The candidates of a call, each as a label at its declaration.
+fn with_candidates(
+    source: &Source<'_>,
+    mut diagnostic: Diagnostic,
+    candidates: &[(ItemId, String)],
+) -> Diagnostic {
+    for (item, signature) in candidates {
+        let span = item_name_span(source.db, *item);
+        diagnostic = diagnostic.with_secondary(Label::new(span, format!("`{signature}`")));
+    }
+    diagnostic
+}
+
+/// `MR0205`: no overload takes the arguments of a call.
+pub(super) fn no_overload(
+    source: &Source<'_>,
+    expr: ExprId,
+    name: &str,
+    candidates: &[(ItemId, String)],
+) -> Diagnostic {
+    let diagnostic = Diagnostic::error(
+        codes::MR0205,
+        format!("no overload of `{name}` takes these arguments"),
+        Label::new(
+            source.span(expr),
+            format!("none of the {} overloads fits", candidates.len()),
+        ),
+    )
+    .with_note(
+        "an overload fits when every argument goes to a parameter, by position or by name, \
+         converts to its type and has the marker its mode needs",
+    );
+    with_candidates(source, diagnostic, candidates)
+}
+
+/// `MR0206`: more than one overload fits a call equally well.
+pub(super) fn ambiguous(
+    source: &Source<'_>,
+    expr: ExprId,
+    name: &str,
+    candidates: &[(ItemId, String)],
+) -> Diagnostic {
+    let diagnostic = Diagnostic::error(
+        codes::MR0206,
+        format!("the call of `{name}` is ambiguous"),
+        Label::new(
+            source.span(expr),
+            format!("{} overloads fit equally well", candidates.len()),
+        ),
+    )
+    .with_note("convert an argument explicitly, as with a cast `(T)x`, to choose one");
+    with_candidates(source, diagnostic, candidates)
+}
+
+/// `MR0207`: a named argument that names no parameter or one already
+/// given, a name given twice, or a positional argument after a named one.
+pub(super) fn named(source: &Source<'_>, arg: ExprId, problem: &NamedProblem) -> Diagnostic {
+    let span = source.span(arg);
+    let (message, label) = match problem {
+        NamedProblem::AfterNamed => (
+            "a positional argument after a named one".to_owned(),
+            "name this argument too, or move it before the named ones",
+        ),
+        NamedProblem::Duplicate { name } => (
+            format!("the argument `{name}` is named twice"),
+            "named again here",
+        ),
+        NamedProblem::Unknown { name, function } => (
+            format!("`{function}` has no parameter named `{name}`"),
+            "no parameter of this name",
+        ),
+        NamedProblem::AlreadyGiven { name } => (
+            format!("the parameter `{name}` is given by position and by name"),
+            "given by name here",
+        ),
+    };
+    Diagnostic::error(codes::MR0207, message, Label::new(span, label)).with_note(
+        "arguments come by position first; after the first named one, every argument is named, each name once",
+    )
+}
+
+/// `MR0129`: a method of a value that is not visible from the call, as
+/// name resolution reports a declaration that is not visible.
+pub(super) fn not_visible(
+    source: &Source<'_>,
+    expr: ExprId,
+    item: ItemId,
+    from: Scope,
+) -> Diagnostic {
+    let name = &item_data(source.db, item).name;
+    let span = source
+        .map
+        .member_names
+        .get(&expr)
+        .copied()
+        .unwrap_or_else(|| source.map.expr(expr));
+    crate::report::not_visible(
+        source.db,
+        from,
+        name,
+        Span::new(source.file.id(source.db), span),
+        item,
+    )
+}
+
+/// `MR0208`: a call of a value whose type is not a function type.
+pub(super) fn not_callable(source: &Source<'_>, expr: ExprId, ty: &Ty) -> Diagnostic {
+    let t = source.name(ty);
+    Diagnostic::error(
+        codes::MR0208,
+        format!("cannot call a value of type `{t}`"),
+        Label::new(source.span(expr), format!("this is `{t}`, not a function")),
+    )
+    .with_note("only a function, a method or a value of a function type can be called")
+}

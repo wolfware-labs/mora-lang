@@ -17,7 +17,7 @@ use std::fmt::Write;
 use mora_span::{Db, Project, SourceFile};
 
 use super::{
-    Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId,
+    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId,
     InterpPart, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId,
     body, body_owners, body_resolution,
 };
@@ -647,11 +647,8 @@ impl Printer<'_> {
             if let Some(name) = &arg.name {
                 let _ = write!(self.out, "{name}: ");
             }
-            match arg.mode {
-                Some(ArgMode::Ref) => self.out.push_str("ref "),
-                Some(ArgMode::In) => self.out.push_str("in "),
-                Some(ArgMode::Move) => self.out.push_str("move "),
-                None => {}
+            if let Some(mode) = arg.mode {
+                let _ = write!(self.out, "{} ", mode.keyword());
             }
             self.expr(arg.expr);
         }
@@ -810,7 +807,9 @@ impl Printer<'_> {
                 format!("{kind} {name}")
             }
             Target::Value(value) => {
-                let member = &item_data(self.db, value.ty).values[value.index];
+                let Some(member) = value.member(self.db) else {
+                    return "error".to_owned();
+                };
                 let kind = match member.kind {
                     ValueKind::Field => "field",
                     ValueKind::Getter => "getter",

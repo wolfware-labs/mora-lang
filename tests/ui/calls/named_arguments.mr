@@ -1,0 +1,9 @@
+// Named arguments follow the positional ones, each name once (§6.9).
+Greet(name: string, greeting: string = "Hello"): string => greeting;
+
+let a = Greet("Ada", greeting: "Hi");
+let b = Greet(greeting: "Hi", name: "Ada");
+let c = Greet(greeting: "Hi", "Ada"); //~ ERROR MR0207
+let d = Greet(name: "Ada", name: "Bo"); //~ ERROR MR0207
+let e = Greet("Ada", salutation: "Hi"); //~ ERROR MR0207
+let f = Greet("Ada", name: "Bo"); //~ ERROR MR0207

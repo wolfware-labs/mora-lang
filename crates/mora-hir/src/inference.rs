@@ -25,9 +25,10 @@ use std::collections::HashMap;
 use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
-use crate::bodies::{BinaryOp, BodyOwner, ExprId, LocalId, UnaryOp};
-use crate::resolve::item_data;
-use crate::ty::{Primitive, Ty};
+use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, UnaryOp};
+use crate::defs::ItemId;
+use crate::resolve::{Scope, item_data};
+use crate::ty::{ParamMode, Primitive, Ty};
 
 pub(crate) use diagnostic::{Source, type_error};
 
@@ -40,6 +41,8 @@ pub struct Inference {
     exprs: Vec<Option<Ty>>,
     /// The type of each local, indexed like [`crate::Body::locals`].
     locals: Vec<Option<Ty>>,
+    /// The function each call that is checked calls.
+    calls: HashMap<ExprId, Callee>,
     /// The value of each operation made only of literals that took a target
     /// type and fits it.
     constants: HashMap<ExprId, Constant>,
@@ -70,6 +73,12 @@ impl std::fmt::Display for Constant {
 }
 
 impl Inference {
+    /// What the call `call` calls, when the call is checked: the overload
+    /// that overload resolution chose, or the one function of its name.
+    pub fn callee(&self, call: ExprId) -> Option<Callee> {
+        self.calls.get(&call).copied()
+    }
+
     /// The value of `expr` when it is an operation made only of literals
     /// that took its target type (§3.5): what the operation evaluates to.
     pub fn constant(&self, expr: ExprId) -> Option<Constant> {
@@ -140,6 +149,85 @@ pub(crate) enum TypeError {
         from: Ty,
         to: Ty,
     },
+    /// A call of one declaration, `signature`, with an argument too many,
+    /// `expr`, or without an argument for the parameter `missing`, the call
+    /// `expr` (`MR0205`).
+    Arity {
+        expr: ExprId,
+        signature: String,
+        missing: Option<String>,
+    },
+    /// The argument `arg` of a call of one declaration, `signature`, is
+    /// written with the marker `given` where its parameter `param` has the
+    /// mode `needs` (`MR0205`); `fixable` when writing `ref` before it
+    /// would fix the call, because it is a place of a fitting type.
+    Mode {
+        arg: ExprId,
+        signature: String,
+        param: String,
+        needs: ParamMode,
+        given: Option<ArgMode>,
+        fixable: bool,
+    },
+    /// No overload named `name` is applicable to the call `expr`; each
+    /// candidate with its signature (`MR0205`).
+    NoOverload {
+        expr: ExprId,
+        name: String,
+        candidates: Vec<(ItemId, String)>,
+    },
+    /// Of the overloads named `name` applicable to the call `expr`, none is
+    /// better than the others; each of them with its signature (`MR0206`).
+    Ambiguous {
+        expr: ExprId,
+        name: String,
+        candidates: Vec<(ItemId, String)>,
+    },
+    /// The named argument `arg`, or the positional one after a named one,
+    /// is wrong (`MR0207`).
+    NamedArgument { arg: ExprId, problem: NamedProblem },
+    /// The callee `expr` has the type `ty`, which is not a function type
+    /// (`MR0208`).
+    NotCallable { expr: ExprId, ty: Ty },
+    /// The callee `expr` names methods of a value, none of which is visible
+    /// from `from`; `item` is the first (`MR0129`).
+    NotVisible {
+        expr: ExprId,
+        item: ItemId,
+        from: Scope,
+    },
+}
+
+/// What is wrong with an argument's name (`MR0207`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NamedProblem {
+    /// A positional argument after a named one.
+    AfterNamed,
+    /// A name given twice.
+    Duplicate { name: String },
+    /// A name the function `function` has no parameter for.
+    Unknown { name: String, function: String },
+    /// A name for a parameter given by position too.
+    AlreadyGiven { name: String },
+}
+
+/// What a checked call calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Callee {
+    /// A function or a method, by its declaration.
+    Item(ItemId),
+    /// A local function of the body.
+    Local(LocalId),
+}
+
+impl Callee {
+    /// The declaration of a [`Callee::Item`].
+    pub fn item(self) -> Option<ItemId> {
+        match self {
+            Callee::Item(item) => Some(item),
+            Callee::Local(_) => None,
+        }
+    }
 }
 
 /// What expects the type of a [`TypeError::Mismatch`].
@@ -149,8 +237,22 @@ pub(crate) enum Context {
     Value,
     /// A condition, which expects `bool`.
     Condition,
+    /// A `ref` argument, which has exactly its parameter's type (§10.3).
+    Ref,
     /// The other branch of `c ? a : b`, which gives the expected type.
     Branch(ExprId),
+}
+
+impl Context {
+    /// Whether a value of type `found` stands where it expects `expected`:
+    /// a `ref` argument has exactly its parameter's type (§10.3), and any
+    /// other value converts to the expected type (§5.10).
+    fn accepts(self, found: &Ty, expected: &Ty) -> bool {
+        match self {
+            Context::Ref => same(found, expected),
+            Context::Value | Context::Condition | Context::Branch(_) => converts(found, expected),
+        }
+    }
 }
 
 /// Checks the body of `owner` and gives the types of its expressions and
@@ -1298,5 +1400,479 @@ mod tests {
         );
         assert_eq!(super::ty_name(&db, &Ty::Tuple(vec![int])), "(int,)");
         assert_eq!(super::ty_name(&db, &Ty::Error), "_");
+    }
+
+    #[test]
+    fn a_call_has_the_return_type_of_what_it_calls() {
+        let text = "Add(a: int, b: int): long => a + b;\nstruct P {\n    X: int;\n    \
+                    Get(): int => X;\n    static Make(): string => \"\";\n}\n\
+                    class C {\n    static Make(n: int): string => \"\";\n}\n\
+                    static Origin: P = new P { X = 1 };\nasync Later(): int => 1;\n\
+                    Id<T>(x: T): T => x;\nSum(params xs: int[]): int => 0;\n\
+                    let s = Add(1, 2);\nlet p = Origin;\nlet g = p.Get();\nlet h = Origin.Get();\n\
+                    let c = C.Make(1);\nlet l = Later();\nlet i = Id(1);\nlet m = Sum(1, 2);\n\
+                    let w = p.Make();\nlet o = Console.ReadLine();\n";
+        assert_eq!(
+            local_types(text),
+            [
+                "s: long",
+                "p: P",
+                "g: int",
+                "h: int",
+                "c: string",
+                // Async, generic, `params`, static through a value, and the
+                // standard library are not checked yet.
+                "l: ?",
+                "i: ?",
+                "m: ?",
+                "w: ?",
+                "o: ?",
+            ]
+        );
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn arguments_are_checked_against_the_one_declaration() {
+        let decls = "F(a: int, b: int = 2): int => a;\nB(x: byte) {}\n\
+                     struct P {\n    X: int;\n    Set(v: int) {}\n}\n\
+                     Local() {\n    G(x: byte): long => x;\n    let y: int = G(1);\n}\n";
+        assert_eq!(reported(decls), ["MR0203"]);
+        for (call, expected) in [
+            ("let x = F(1);\nlet y = F(b: 3, a: 1);\nB(1);\n", vec![]),
+            ("F(\"s\");\n", vec!["MR0203"]),
+            ("B(300);\n", vec!["MR0010"]),
+            ("F();\n", vec!["MR0205"]),
+            ("F(1, 2, 3);\n", vec!["MR0205"]),
+            ("F(c: 1);\n", vec!["MR0207"]),
+            ("F(1, a: 2);\n", vec!["MR0207"]),
+            ("F(a: 1, 2);\n", vec!["MR0207"]),
+            ("F(a: 1, a: 2);\n", vec!["MR0207"]),
+            ("F(p: 1, q: 2);\n", vec!["MR0207"]),
+            ("UseP(p: P) {\n    p.Set(\"s\");\n}\n", vec!["MR0203"]),
+        ] {
+            let mut expected = expected;
+            expected.insert(0, "MR0203");
+            assert_eq!(reported(&format!("{decls}{call}")), expected, "{call}");
+        }
+        let messages =
+            messages(&diagnostics_of(&format!("{decls}F();\nF(1, 2, 3);\nF(c: 1);\n"))[1..]);
+        assert_eq!(
+            messages,
+            [
+                "missing an argument for `a` in this call of `F(a: int, b: int = ...): int`",
+                "too many arguments in this call of `F(a: int, b: int = ...): int`",
+                "`F` has no parameter named `c`",
+            ]
+        );
+    }
+
+    #[test]
+    fn overload_resolution_picks_the_best_applicable_overload() {
+        let decls = "O(x: int): int => 1;\nO(x: string): string => \"\";\n\
+                     P(x: int): int => 1;\nP(x: long): string => \"\";\n\
+                     Q(x: int, y: long) {}\nQ(x: long, y: int) {}\n\
+                     D(x: int): int => 1;\nD(x: int, y: int = 0): string => \"\";\n";
+        let text = format!(
+            "{decls}let a = O(1);\nlet b = O(\"s\");\nlet c = P(1);\nlet d = P(1L);\n\
+             let e = D(1);\nlet f = D(1, 2);\nlet u = O(Console.A());\n"
+        );
+        assert_eq!(
+            local_types(&text),
+            [
+                "a: int",
+                "b: string",
+                "c: int",
+                "d: string",
+                "e: int",
+                "f: string",
+                "u: ?"
+            ]
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let n = "let n = 1;\n";
+        for (call, code) in [
+            ("O(true);\n", "MR0205"),
+            ("Q(1, 1);\n", "MR0206"),
+            ("Q(n, n);\n", "MR0206"),
+        ] {
+            assert_eq!(reported(&format!("{decls}{n}{call}")), [code], "{call}");
+        }
+        let reported = diagnostics_of(&format!("{decls}O(true);\nQ(1, 1);\n"));
+        assert_eq!(
+            reported[0].message,
+            "no overload of `O` takes these arguments"
+        );
+        assert_eq!(reported[0].secondary.len(), 2);
+        assert_eq!(reported[1].message, "the call of `Q` is ambiguous");
+        assert_eq!(reported[1].secondary.len(), 2);
+    }
+
+    /// Which declaration of `O`, counted from 0, the call of `O` in the
+    /// top-level statements of `text` calls, `None` when it is unresolved.
+    fn called_overload(text: &str) -> Option<usize> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let call = body
+            .exprs
+            .iter()
+            .find(|(_, expr)| {
+                matches!(expr, Expr::Call { callee, .. }
+                if matches!(&body.exprs[*callee], Expr::Path(path) if path.segments == ["O"]))
+            })
+            .map(|(id, _)| id)
+            .unwrap();
+        let Some(Callee::Item(called)) = inference.callee(call) else {
+            return None;
+        };
+        item_tree(&db, file)
+            .items()
+            .filter(|(_, item)| item.name == "O")
+            .position(|(idx, _)| Scope::file(project, file).item(idx) == called)
+    }
+
+    #[test]
+    fn the_chosen_overload_is_recorded() {
+        let text = "O(x: int): int => 1;\nO(x: string): string => \"\";\nlet a = O(\"s\");\n";
+        assert_eq!(called_overload(text), Some(1));
+    }
+
+    #[test]
+    fn an_argument_marker_must_suit_the_parameter_mode() {
+        let text = "Bump(ref x: int) {}\nRead(x: int) {}\nTake(move x: int) {}\n\
+                    var n = 1;\nBump(n);\nBump(in n);\nRead(ref n);\nRead(move n);\n\
+                    Take(n);\nTake(move n);\nRead(in n);\n";
+        assert_eq!(reported(text), ["MR0205"; 4]);
+        let fixed = apply_fixes(text);
+        assert_eq!(fixed.edits, 4);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        let expected = "Bump(ref n);\nBump(ref n);\nRead(n);\nRead(n);\n";
+        assert!(fixed.text.contains(expected), "{}", fixed.text);
+        // A local function's modes are not recorded, so its markers are not
+        // checked.
+        assert_eq!(
+            reported("F() {\n    G(x: int) {}\n    var n = 1;\n    G(ref n);\n}\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_marker_fix_keeps_a_comment_and_needs_an_argument() {
+        let fixed = apply_fixes("Read(x: int) {}\nvar n = 1;\nRead(move /* n */ n);\n");
+        assert!(fixed.text.contains("Read(/* n */ n);"), "{}", fixed.text);
+        // The parser reports the missing argument, so the call is not
+        // checked and its marker reports nothing more.
+        assert_eq!(
+            reported("Read(x: int) {}\nRead(move );\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn calling_a_value_that_is_not_a_function_is_mr0208() {
+        let text = "struct P {\n    X: int;\n}\nstatic Origin: P = new P { X = 1 };\n\
+                    const Max: int = 1;\nlet n = 1;\nn();\nlet p = Origin;\np.X();\n\
+                    Origin.X();\nMax();\n(1, 2)();\n";
+        assert_eq!(reported(text), ["MR0208"; 5]);
+        assert_eq!(
+            messages(&diagnostics_of("let n = 1;\nn(2);\n")),
+            ["cannot call a value of type `int`"]
+        );
+        // Calls of unknown things, and arguments inside them, still work.
+        let unknown = "let f = (x: int) => x;\nf(1);\nlet s: string = Console.ReadLine(!1);\n";
+        assert_eq!(reported(unknown), ["MR0204"]);
+    }
+
+    #[test]
+    fn a_failed_call_still_types_its_literal_arguments() {
+        let types = expr_types("F(a: int): int => a;\nF(1, 2);\n");
+        assert!(types.contains(&"2: int".to_owned()), "{types:?}");
+    }
+
+    #[test]
+    fn named_argument_messages_say_what_is_wrong() {
+        let text = "Greet(name: string, greeting: string = \"Hi\") {}\n\
+                    Greet(name: \"Ada\", name: \"Bo\");\nGreet(\"Ada\", name: \"Bo\");\n\
+                    Greet(greeting: \"Hi\", \"Ada\");\n";
+        assert_eq!(
+            messages(&diagnostics_of(text)),
+            [
+                "the argument `name` is named twice",
+                "the parameter `name` is given by position and by name",
+                "a positional argument after a named one",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_function_default_value_is_its_own() {
+        let text = "F() {\n    G(x: int, y: int = 1): int => x;\n    let z: string = G(1);\n}\n";
+        assert_eq!(reported(text), ["MR0203"]);
+    }
+
+    #[test]
+    fn signatures_in_messages_show_modes_and_return_types() {
+        let text = "Bump(ref x: int) {}\nTake(move x: int): int => x;\nRead(x: int) {}\n\
+                    var n = 1;\nBump(n);\nTake(in n);\nRead();\n";
+        assert_eq!(
+            messages(&diagnostics_of(text)),
+            [
+                "the argument for `ref x` in `Bump(ref x: int)` must be marked `ref`",
+                "the parameter `x` of `Take(move x: int): int` does not take an argument marked `in`",
+                "missing an argument for `x` in this call of `Read(x: int)`",
+            ]
+        );
+    }
+
+    #[test]
+    fn overloads_with_unknown_or_marked_arguments() {
+        let decls = "O(x: int): int => 1;\nO(x: string): string => \"\";\n\
+                     P(x: int): int => 1;\nP(x: long): string => \"\";\n\
+                     R(x: double): int => 1;\nR(x: string): string => \"\";\n\
+                     M(ref x: int): int => 1;\nM(x: string): string => \"\";\n\
+                     struct S {\n    X: int;\n    Get(): int => X;\n}\n\
+                     static Origin: S = new S { X = 1 };\n";
+        let text = format!(
+            "{decls}let g: int? = 1;\nlet a = O(g);\nlet b = P(Console.A());\nlet c = R(1.5);\n\
+             var n = 1;\nlet d = M(ref n);\nlet s = Origin;\nlet e = s?.Get();\n"
+        );
+        assert_eq!(
+            local_types(&text),
+            [
+                "g: _", "a: ?", "b: ?", "c: int", "n: int", "d: int", "s: S", "e: ?"
+            ]
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        assert_eq!(reported(&format!("{decls}var n = 1;\nM(n);\n")), ["MR0205"]);
+    }
+
+    #[test]
+    fn unknown_argument_leaves_overloads_unresolved() {
+        let decls = "O(x: int, y: int): int => 1;\nO(x: long, y: string): string => \"\";\n\
+                     P(x: int): int => 1;\nP(x: long): int => 2;\n";
+        let text = format!(
+            "{decls}let s: string = O(1, Console.ReadLine());\nlet t = O(1, Console.ReadLine());\n\
+             let u = P(Console.ReadLine());\n"
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let types = local_types(&text);
+        assert_eq!(types[1..], ["t: ?", "u: int"]);
+    }
+
+    #[test]
+    fn a_literal_prefers_its_natural_type() {
+        let text = "A(x: int): int => 1;\nA(x: uint): string => \"\";\n\
+                    B(x: long): int => 1;\nB(x: float): string => \"\";\n\
+                    C(x: byte): string => \"\";\nC(x: int): int => 1;\n\
+                    D(x: float): string => \"\";\nD(x: double): int => 1;\n\
+                    E(x: byte): int => 1;\nE(x: short): string => \"\";\n\
+                    let a = A(1);\nlet b = B(1);\nlet c = C(1);\nlet d = D(0.1);\nlet e = E(1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            local_types(text),
+            ["a: int", "b: int", "c: int", "d: int", "e: int"]
+        );
+    }
+
+    #[test]
+    fn an_async_callee_is_not_checked() {
+        let text = "async Later(ref x: int): int => 1;\nvar n = 1;\nlet a = Later(n);\n\
+                    let b = Later(\"s\", 2);\nF() {\n    async G(x: int): int => x;\n    G(\"s\");\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text)[1..], ["a: ?", "b: ?"]);
+    }
+
+    #[test]
+    fn named_argument_order_is_checked_for_every_call() {
+        for text in [
+            "Console.WriteLine(a: 1, 2);\n",
+            "Id<T>(x: T): T => x;\nlet a = Id(x: 1, 2);\n",
+        ] {
+            assert_eq!(reported(text), ["MR0207"], "{text}");
+        }
+        assert_eq!(reported("let n = 1;\nn(a: 1, 2);\n"), ["MR0208", "MR0207"]);
+    }
+
+    #[test]
+    fn a_recovered_argument_list_is_not_checked() {
+        for call in ["F(,1);\n", "F(1,,2);\n", "F(;\n", "F(1\n"] {
+            assert_eq!(
+                reported(&format!("F(a: int, b: int) {{}}\n{call}")),
+                Vec::<String>::new(),
+                "{call}"
+            );
+        }
+    }
+
+    #[test]
+    fn ref_is_offered_only_for_a_place_of_a_fitting_type() {
+        let text = "Bump(ref x: int) {}\nstruct P {\n    X: int;\n}\nvar n = 1;\n\
+                    Bump(\"s\");\nBump(n + 1);\nBump(n);\n";
+        let fixes: Vec<_> = diagnostics_of(text)
+            .iter()
+            .filter(|d| d.code.to_string() == "MR0205")
+            .map(|d| d.fixes.len())
+            .collect();
+        assert_eq!(fixes, [0, 0, 1]);
+        assert_eq!(
+            reported("Bump(ref x: int) {}\nBump(ref 1);\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_name_every_overload_takes_by_position_is_mr0207() {
+        let text = "O(x: int) {}\nO(x: string) {}\nO(1, x: 2);\nO(y: 1);\n";
+        assert_eq!(reported(text), ["MR0207", "MR0205"]);
+    }
+
+    #[test]
+    fn a_callee_has_its_own_type() {
+        let types = expr_types("const Max: int = 1;\nMax();\n");
+        assert!(types.contains(&"Max: int".to_owned()), "{types:?}");
+    }
+
+    #[test]
+    fn ranking_does_not_depend_on_declaration_order() {
+        let text = "E(x: short): string => \"\";\nE(x: byte): int => 1;\nlet e = E(1);\n\
+                    H(x: int): int => 1;\nH(x: long): string => \"\";\n\
+                    let h: int = H(18446744073709551615 * 18446744073709551615);\n";
+        assert_eq!(local_types(text), ["e: int", "h: int"]);
+        // The value too large to compute is still reported once the
+        // overload is chosen.
+        assert_eq!(reported(text), ["MR0010"]);
+    }
+
+    #[test]
+    fn overloads_that_tie_are_ambiguous() {
+        // Neither takes a default, and each fits one argument better.
+        let text = "S(x: byte) {}\nS(x: sbyte) {}\nS(1);\n\
+                    Q(x: byte, y: short) {}\nQ(x: short, y: byte) {}\nQ(1, 1);\n";
+        assert_eq!(reported(text), ["MR0206", "MR0206"]);
+    }
+
+    #[test]
+    fn the_one_applicable_overload_is_called_whatever_the_other_arguments() {
+        let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: byte): string => \"\";\n\
+                    let a = O(Console.A(), 300);\n";
+        // No overload takes `300` as its `byte`, whatever the argument of
+        // unknown type is, so the call is MR0205.
+        assert_eq!(reported(text), ["MR0205"]);
+        let text = "O(x: int, y: byte): int => 1;\nO(x: string, y: string): string => \"\";\n\
+                    let a = O(Console.A(), 1);\n";
+        assert_eq!(called_overload(text), Some(0));
+        assert_eq!(local_types(text), ["a: int"]);
+        // Two applicable overloads leave the call unresolved.
+        let text = "O(x: int, y: int): int => 1;\nO(x: string, y: int): int => 2;\n\
+                    let a = O(Console.A(), 1);\n";
+        assert_eq!(called_overload(text), None);
+    }
+
+    #[test]
+    fn an_unknown_parameter_type_leaves_overloads_unresolved() {
+        let text = "F(x: long): int => 1;\nF(x: int?): string => \"\";\nvar n = 1;\n\
+                    let s: string = F(n);\nG(x: int): int => 1;\nG(x: List<int>): int => 2;\n\
+                    let g = G(1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text), ["n: int", "s: string", "g: int"]);
+    }
+
+    #[test]
+    fn a_ref_argument_has_exactly_its_parameter_type() {
+        let text = "Bump(ref x: long) {}\nvar n = 1;\nBump(ref n);\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0203"]);
+        assert!(found[0].fixes.is_empty());
+        assert_eq!(
+            found[0].note.as_deref(),
+            Some(
+                "a `ref` argument is the caller's place itself, which the function reads and \
+                 writes, so it has exactly the parameter's type"
+            )
+        );
+        // Without `ref`, the marker and the type are both wrong, and `ref`
+        // alone would not fix it, so it is not offered.
+        let missing = diagnostics_of("Bump(ref x: long) {}\nvar n = 1;\nBump(n);\n");
+        assert_eq!(codes(&missing), ["MR0205", "MR0203"]);
+        assert!(missing[0].fixes.is_empty());
+        let overloads = "R(ref x: long): int => 1;\nR(ref x: int): string => \"\";\n\
+                         Read(x: long): int => 1;\nvar n = 1;\nlet r = R(ref n);\n\
+                         let i = Read(in n);\n";
+        assert_eq!(local_types(overloads)[1..], ["r: string", "i: int"]);
+        assert_eq!(reported(overloads), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_constant_or_a_function_is_not_a_place() {
+        let text = "Bump(ref x: int) {}\nconst Max: int = 1;\nTwice(): int => 2;\n\
+                    Bump(Max);\nBump(Twice);\nstruct P {\n    X: int;\n    M() {\n        Bump(X);\n    }\n}\n";
+        let fixes: Vec<_> = diagnostics_of(text).iter().map(|d| d.fixes.len()).collect();
+        assert_eq!(fixes, [0, 0, 1]);
+    }
+
+    #[test]
+    fn a_recovered_argument_list_keeps_an_agreed_type() {
+        let text = "F(a: int, b: int): int => a;\nO(x: int): int => 1;\nO(x: string): string => \"\";\n\
+                    let a = F(,1);\nlet o = O(,1);\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(local_types(text), ["a: int", "o: ?"]);
+        // The order of named arguments and what is called are checked still.
+        assert_eq!(reported("F(a: int, b: int) {}\nF(b: 1, 2,\n"), ["MR0207"]);
+        assert_eq!(
+            reported("F(a: int, b: int) {}\nF(a: 1,\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(reported("let n = 1;\nn(,1);\n"), ["MR0208"]);
+        // An unclosed list after a missing argument ends with only that one.
+        let dumped = {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", "F(a: int) {}\nF(1,\n")]);
+            hir_dump(&db, project, file_named(&db, project, "src/Program.mr"))
+        };
+        assert!(dumped.contains("(1, <missing>);"), "{dumped}");
+    }
+
+    #[test]
+    fn return_types_agree_whatever_their_element_names() {
+        let text = "T(x: int): (a: int, b: int) => (1, 2);\nT(x: string): (int, int) => (1, 2);\n\
+                    let t = T(Console.ReadLine());\n";
+        assert_eq!(local_types(text), ["t: (a: int, b: int)"]);
+    }
+
+    #[test]
+    fn a_method_must_be_visible_from_the_call() {
+        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
+                     Folder(): int => 2;\n    public Open(): int => 3;\n    \
+                     Peek(other: S): int => other.Secret();\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a: string = s.Secret();\n    \
+                       let b: string = s.Folder();\n    let c: string = s.Open();\n}\n";
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let found = diagnostics(&db, project);
+        assert_eq!(codes(found), ["MR0129", "MR0129", "MR0203"]);
+        assert_eq!(
+            found[0].message,
+            "`Secret` is private to the type that declares it"
+        );
+        assert_eq!(&program[found[0].primary.span.range], "Secret");
+        // Inside its type, a private method is visible.
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", store)]);
+        assert_eq!(codes(diagnostics(&db, project)), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ref_is_offered_only_for_known_types() {
+        let text = "Bump(ref x: int?) {}\nTake(ref x: int) {}\nvar n: int? = 1;\nBump(n);\n\
+                    var u = Console.ReadLine();\nTake(u);\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0205", "MR0205"]);
+        assert!(found.iter().all(|d| d.fixes.is_empty()), "{found:#?}");
     }
 }

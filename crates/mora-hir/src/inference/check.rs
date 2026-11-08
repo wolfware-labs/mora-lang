@@ -1,5 +1,7 @@
 //! The walk over a body that gives each expression and local its type.
 
+mod call;
+
 use std::collections::HashMap;
 
 use mora_span::{Db, Project, SourceFile};
@@ -7,14 +9,17 @@ use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
 
-use super::{Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same};
+use super::{
+    Callee, Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same,
+};
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
     LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
+    body_scope,
 };
 use crate::defs::ItemId;
-use crate::resolve::{Resolved, item_data};
+use crate::resolve::{Resolved, Scope};
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
@@ -54,9 +59,12 @@ pub(super) fn infer_body(
         resolution,
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
+        calls: HashMap::new(),
+        local_functions: None,
         constants: HashMap::new(),
         errors: Vec::new(),
         ret: None,
+        scope: body_scope(project, file, owner),
     };
     check.locals = body
         .locals
@@ -107,6 +115,7 @@ pub(super) fn infer_body(
     Inference {
         exprs: check.exprs,
         locals: check.locals,
+        calls: check.calls,
         constants: check.constants,
         errors: check.errors,
     }
@@ -125,12 +134,20 @@ struct Check<'a> {
     exprs: Vec<Option<Ty>>,
     /// The type of each local so far.
     locals: Vec<Option<Ty>>,
+    /// The function each checked call calls, so far.
+    calls: HashMap<ExprId, Callee>,
+    /// The statement of each local function, found on the first call of
+    /// one.
+    local_functions: Option<HashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
     constants: HashMap<ExprId, Constant>,
     /// The errors so far.
     errors: Vec<TypeError>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
+    /// Where the body's names are looked up from, which decides what is
+    /// visible from it.
+    scope: Scope,
 }
 
 impl Check<'_> {
@@ -190,12 +207,13 @@ impl Check<'_> {
         self.coerce(expr, found.as_ref(), &BOOL, Context::Condition);
     }
 
-    /// Reports `expr` when its type `found` does not convert to `expected`.
+    /// Reports `expr` when `context` does not accept its type `found` where
+    /// it expects `expected` (`Context::accepts`).
     fn coerce(&mut self, expr: ExprId, found: Option<&Ty>, expected: &Ty, context: Context) {
         if let Some(found) = found
             && is_known(found)
             && is_known(expected)
-            && !converts(found, expected)
+            && !context.accepts(found, expected)
         {
             self.errors.push(TypeError::Mismatch {
                 expr,
@@ -382,36 +400,19 @@ impl Check<'_> {
             return None;
         }
         let value = constant::value(&body.exprs, expr)?;
+        // A real for an integer type follows the usual rules.
+        if !numeric::is_floating_point(target)
+            && matches!(
+                value,
+                constant::Value::Real(_)
+                    | constant::Value::Infinity
+                    | constant::Value::OverflowReal
+            )
+        {
+            return None;
+        }
         // The exact value converted to `target`, `None` when it does not fit.
-        let real = |value: f64| match target {
-            // The nearest `float`, which a `double` holds exactly.
-            Primitive::Float => Constant::Real(f64::from(value as f32).to_bits()),
-            _ => Constant::Real(value.to_bits()),
-        };
-        let fitting = match value {
-            constant::Value::Int(value) if numeric::holds(target, value) => {
-                if numeric::is_floating_point(target) {
-                    // `holds` says the value is exact in `target`.
-                    Some(real(value as f64))
-                } else {
-                    Some(Constant::Int(value))
-                }
-            }
-            constant::Value::Int(_) | constant::Value::Overflow => None,
-            // A real is never infinite here: an infinity is its own value.
-            constant::Value::Real(value) => match target {
-                Primitive::Float => (!too_large_for_float(value)).then(|| real(value)),
-                Primitive::Double => Some(real(value)),
-                _ => return None,
-            },
-            constant::Value::Infinity | constant::Value::OverflowReal
-                if numeric::is_floating_point(target) =>
-            {
-                None
-            }
-            // A real for an integer type follows the usual rules.
-            constant::Value::Infinity | constant::Value::OverflowReal => return None,
-        };
+        let fitting = value.of_type(target);
         // `-` before a literal belongs to it (§3.5): only an operation has a
         // value of its own.
         let negated_literal = matches!(
@@ -490,11 +491,7 @@ impl Check<'_> {
                 }
                 self.field(receiver.as_ref(), name)
             }
-            Expr::Call { callee, args } => {
-                self.infer(*callee);
-                self.args(args);
-                None
-            }
+            Expr::Call { callee, args } => self.call(expr, *callee, args),
             Expr::Index { base, args, .. } => {
                 self.infer(*base);
                 self.args(args);
@@ -596,7 +593,7 @@ impl Check<'_> {
             },
             Target::Item(_) => None,
             Target::Value(value) => {
-                let member = item_data(self.db, value.ty).values.get(value.index)?;
+                let member = value.member(self.db)?;
                 self.struct_field(value.ty, &member.name)
             }
         }

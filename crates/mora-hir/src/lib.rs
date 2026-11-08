@@ -48,7 +48,7 @@ pub use bodies::{
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
-pub use inference::{Constant, Inference, infer};
+pub use inference::{Callee, Constant, Inference, infer};
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
     ValueMember, Visibility, item_source_map, item_tree, parse,

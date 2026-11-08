@@ -6,7 +6,7 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, body};
 use crate::defs::ItemId;
-use crate::items::{ItemKind, Visibility, item_tree, signature_refs};
+use crate::items::{ItemKind, ValueMember, Visibility, item_tree, signature_refs};
 use crate::resolve::{
     ExprTarget, ResolveErrorKind, Resolved, Scope, effective_visibility, item_data,
     resolve_expr_path, resolve_static_member,
@@ -55,6 +55,13 @@ pub struct ValueRef {
     pub ty: ItemId,
     /// Its position among the type's value members.
     pub index: usize,
+}
+
+impl ValueRef {
+    /// The value member it refers to.
+    pub(crate) fn member(self, db: &dyn Db) -> Option<&ValueMember> {
+        item_data(db, self.ty).values.get(self.index)
+    }
 }
 
 /// A name of a body that does not resolve.

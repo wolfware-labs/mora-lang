@@ -555,7 +555,22 @@ impl Lower {
             }
             ast::Expr::CallExpr(it) => {
                 let callee = self.expr(it.callee(), range);
-                let args = self.args(it.arg_list().iter().flat_map(|list| list.args()));
+                let list = it.arg_list();
+                let mut args = self.args(list.iter().flat_map(|list| list.args()));
+                // A list the parser recovered from without its `)` ends with
+                // a missing argument, so that no check counts its arguments.
+                if list.is_none_or(|list| list.r_paren_token().is_none())
+                    && !args
+                        .last()
+                        .is_some_and(|arg| self.body.is_missing(arg.expr))
+                {
+                    let end = TextRange::empty(range.end());
+                    args.push(Arg {
+                        name: None,
+                        mode: None,
+                        expr: self.alloc_expr(Expr::Missing, end),
+                    });
+                }
                 Expr::Call { callee, args }
             }
             ast::Expr::IndexExpr(it) => {
@@ -753,17 +768,22 @@ impl Lower {
 
     pub(super) fn args<'a>(&mut self, args: impl Iterator<Item = ast::Arg<'a>>) -> Vec<Arg> {
         args.map(|arg| {
-            let mode = arg.mode().and_then(|mode| match mode.kind() {
+            let marker = arg.mode();
+            let mode = marker.as_ref().and_then(|mode| match mode.kind() {
                 SyntaxKind::RefKw => Some(ArgMode::Ref),
                 SyntaxKind::InKw => Some(ArgMode::In),
                 SyntaxKind::MoveKw => Some(ArgMode::Move),
                 _ => None,
             });
             let range = arg.syntax().text_range();
+            let expr = self.expr(arg.expr(), range);
+            if let Some(marker) = marker {
+                self.map.markers.insert(expr, marker.text_range());
+            }
             Arg {
                 name: name_ref_of(arg.name()),
                 mode,
-                expr: self.expr(arg.expr(), range),
+                expr,
             }
         })
         .collect()
