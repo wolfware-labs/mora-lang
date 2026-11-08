@@ -357,6 +357,17 @@ pub enum ArgMode {
     Move,
 }
 
+impl ArgMode {
+    /// The marker as it is written.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            ArgMode::Ref => "ref",
+            ArgMode::In => "in",
+            ArgMode::Move => "move",
+        }
+    }
+}
+
 /// An arm of a `match`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchArm {
@@ -625,6 +636,9 @@ pub struct BodySourceMap {
     pub path_segments: HashMap<ExprId, Vec<TextRange>>,
     /// The name of each [`Expr::Member`].
     pub member_names: HashMap<ExprId, TextRange>,
+    /// The marker of each argument written with one, by the argument's
+    /// expression.
+    pub markers: HashMap<ExprId, TextRange>,
     /// The name of each unresolved capture, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by

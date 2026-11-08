@@ -1,13 +1,13 @@
 //! The walk over a body that gives each expression and local its type.
 
+mod call;
+
 use std::collections::HashMap;
 
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
-
-mod call;
 
 use super::{
     Callee, Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same,
@@ -394,36 +394,19 @@ impl Check<'_> {
             return None;
         }
         let value = constant::value(&body.exprs, expr)?;
+        // A real for an integer type follows the usual rules.
+        if !numeric::is_floating_point(target)
+            && matches!(
+                value,
+                constant::Value::Real(_)
+                    | constant::Value::Infinity
+                    | constant::Value::OverflowReal
+            )
+        {
+            return None;
+        }
         // The exact value converted to `target`, `None` when it does not fit.
-        let real = |value: f64| match target {
-            // The nearest `float`, which a `double` holds exactly.
-            Primitive::Float => Constant::Real(f64::from(value as f32).to_bits()),
-            _ => Constant::Real(value.to_bits()),
-        };
-        let fitting = match value {
-            constant::Value::Int(value) if numeric::holds(target, value) => {
-                if numeric::is_floating_point(target) {
-                    // `holds` says the value is exact in `target`.
-                    Some(real(value as f64))
-                } else {
-                    Some(Constant::Int(value))
-                }
-            }
-            constant::Value::Int(_) | constant::Value::Overflow => None,
-            // A real is never infinite here: an infinity is its own value.
-            constant::Value::Real(value) => match target {
-                Primitive::Float => (!too_large_for_float(value)).then(|| real(value)),
-                Primitive::Double => Some(real(value)),
-                _ => return None,
-            },
-            constant::Value::Infinity | constant::Value::OverflowReal
-                if numeric::is_floating_point(target) =>
-            {
-                None
-            }
-            // A real for an integer type follows the usual rules.
-            constant::Value::Infinity | constant::Value::OverflowReal => return None,
-        };
+        let fitting = value.of_type(target);
         // `-` before a literal belongs to it (§3.5): only an operation has a
         // value of its own.
         let negated_literal = matches!(

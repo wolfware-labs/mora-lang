@@ -1,9 +1,10 @@
-//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`.
+//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`, and
+//! those of calls, `MR0205` to `MR0208`, in [`call`].
+
+mod call;
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
-
-mod call;
 
 use super::{Context, TypeError, constant, numeric, ty_name};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};

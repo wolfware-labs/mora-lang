@@ -1,7 +1,7 @@
 //! The diagnostics of calls: `MR0205` to `MR0208`.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Span, TextRange, TextSize};
+use mora_span::{Span, TextRange, to_text_size};
 
 use super::Source;
 use crate::bodies::{ArgMode, ExprId};
@@ -9,15 +9,6 @@ use crate::defs::ItemId;
 use crate::inference::NamedProblem;
 use crate::report::item_name_span;
 use crate::ty::{ParamMode, Ty};
-
-/// The keyword of a parameter mode or an argument marker.
-fn keyword(mode: ArgMode) -> &'static str {
-    match mode {
-        ArgMode::Ref => "ref",
-        ArgMode::In => "in",
-        ArgMode::Move => "move",
-    }
-}
 
 /// `MR0205`: a call of one declaration with an argument too many, or
 /// without one for a parameter that has no default.
@@ -54,17 +45,14 @@ pub(super) fn mode(
 ) -> Diagnostic {
     let span = source.span(arg);
     let file = source.file.id(source.db);
-    // The marker written before the argument, and where it is.
-    let marker = given.and_then(|given| {
-        let text = source.file.text(source.db);
-        let start = usize::from(span.range.start());
-        let before = text.get(..start)?.trim_end();
-        let word = keyword(given);
-        before.ends_with(word).then(|| {
-            let from = TextSize::try_from(before.len() - word.len()).unwrap_or_default();
-            (word, TextRange::new(from, span.range.start()))
-        })
-    });
+    // Where the marker written before the argument is; a missing argument
+    // takes the whole span, marker included, and gets no fix.
+    let marker = source
+        .map
+        .markers
+        .get(&arg)
+        .copied()
+        .filter(|marker| marker.end() <= span.range.start());
     let (message, label, fix) = match (needs, given) {
         (ParamMode::Ref, None) => (
             format!("the argument for `ref {param}` in `{signature}` must be marked `ref`"),
@@ -77,25 +65,32 @@ pub(super) fn mode(
         (ParamMode::Ref, Some(given)) => (
             format!(
                 "the argument for `ref {param}` in `{signature}` is marked `{}`, not `ref`",
-                keyword(given)
+                given.keyword()
             ),
             "pass it as `ref`".to_owned(),
-            marker.map(|(word, range)| {
-                let at = TextRange::at(range.start(), TextSize::of(word));
+            marker.map(|marker| {
                 Fix::new(
                     "mark it `ref`",
-                    vec![TextEdit::replace(Span::new(file, at), "ref")],
+                    vec![TextEdit::replace(Span::new(file, marker), "ref")],
                 )
             }),
         ),
         (_, given) => {
-            let word = given.map_or("", keyword);
+            let word = given.map_or("", ArgMode::keyword);
             (
                 format!(
                     "the parameter `{param}` of `{signature}` does not take an argument marked `{word}`"
                 ),
                 format!("remove `{word}`"),
-                marker.map(|(word, range)| {
+                // The marker and the space after it; a comment after it stays.
+                marker.map(|marker| {
+                    let after = TextRange::new(marker.end(), span.range.start());
+                    let space = source
+                        .file
+                        .text(source.db)
+                        .get(std::ops::Range::<usize>::from(after))
+                        .map_or(0, |between| between.len() - between.trim_start().len());
+                    let range = TextRange::new(marker.start(), marker.end() + to_text_size(space));
                     Fix::new(
                         format!("remove `{word}`"),
                         vec![TextEdit::replace(Span::new(file, range), "")],

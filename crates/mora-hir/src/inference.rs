@@ -1528,6 +1528,19 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_fix_keeps_a_comment_and_needs_an_argument() {
+        let fixed = apply_fixes("Read(x: int) {}\nvar n = 1;\nRead(move /* n */ n);\n");
+        assert!(fixed.text.contains("Read(/* n */ n);"), "{}", fixed.text);
+        // The parser reports the missing argument; the marker gets no fix.
+        let reported = diagnostics_of("Read(x: int) {}\nRead(move );\n");
+        let marker = reported
+            .iter()
+            .find(|d| d.code == mora_diag::codes::MR0205)
+            .unwrap();
+        assert!(marker.fixes.is_empty(), "{marker:#?}");
+    }
+
+    #[test]
     fn calling_a_value_that_is_not_a_function_is_mr0208() {
         let text = "struct P {\n    X: int;\n}\nstatic Origin: P = new P { X = 1 };\n\
                     const Max: int = 1;\nlet n = 1;\nn();\nlet p = Origin;\np.X();\n\

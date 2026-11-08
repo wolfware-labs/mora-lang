@@ -8,12 +8,13 @@ use crate::arena::arena_index;
 use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
 use crate::defs::ItemId;
 use crate::inference::constant::{self, Value};
-use crate::inference::{Callee, Context, NamedProblem, TypeError, converts, is_known, numeric};
-use crate::items::{ItemKind, signature_refs};
+use crate::inference::{
+    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, ty_name,
+};
+use crate::items::{ItemKind, item_tree, signature_refs};
 use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
-use crate::ty::{ParamMode, Primitive, Signature, Ty};
-use mora_syntax::lexer::number::too_large_for_float;
+use crate::ty::{ParamMode, Signature, Ty};
 
 /// A function a call may call.
 struct Candidate {
@@ -168,15 +169,13 @@ impl Check<'_> {
         match &body.exprs[callee] {
             // A path names what it calls; a member of a value is an
             // `Expr::Member`.
-            Expr::Path(_) => {
-                self.resolution
-                    .paths
-                    .get(&callee)
-                    .map_or(Callees::Unknown, |resolution| match &resolution.target {
-                        Target::Item(Resolved::Functions(items)) => self.functions(items),
-                        target => self.not_callable(self.target(target)),
-                    })
-            }
+            Expr::Path(_) => self
+                .resolution
+                .paths
+                .get(&callee)
+                .map_or(Callees::Unknown, |resolution| {
+                    self.resolved(&resolution.target)
+                }),
             Expr::Member {
                 receiver,
                 name,
@@ -185,10 +184,7 @@ impl Check<'_> {
             } => {
                 let receiver = self.infer(*receiver);
                 if let Some(resolution) = self.resolution.paths.get(&callee) {
-                    return match &resolution.target {
-                        Target::Item(Resolved::Functions(items)) => self.functions(items),
-                        _ => self.not_callable(self.target(&resolution.target)),
-                    };
+                    return self.resolved(&resolution.target);
                 }
                 // `x?.M()` gives an option (§7.5).
                 if *optional {
@@ -205,6 +201,14 @@ impl Check<'_> {
                 let ty = self.infer(callee);
                 self.not_callable(ty)
             }
+        }
+    }
+
+    /// What a callee that name resolution resolved to `target` is.
+    fn resolved(&self, target: &Target) -> Callees {
+        match target {
+            Target::Item(Resolved::Functions(items)) => self.functions(items),
+            _ => self.not_callable(self.target(target)),
         }
     }
 
@@ -235,7 +239,7 @@ impl Check<'_> {
         let Some(Ty::Struct(ty)) = receiver else {
             return Callees::Unknown;
         };
-        let tree = crate::items::item_tree(self.db, ty.file);
+        let tree = item_tree(self.db, ty.file);
         let methods: Vec<_> = item_data(self.db, *ty)
             .members
             .iter()
@@ -336,7 +340,6 @@ impl Check<'_> {
         args: &[Arg],
         arguments: &[Argument],
     ) -> Option<Ty> {
-        let signature = self.signature_text(candidate);
         let params = match bind(candidate, args) {
             Ok(params) => params,
             Err(unbound) => {
@@ -345,12 +348,12 @@ impl Check<'_> {
                 self.errors.push(match unbound {
                     Unbound::TooMany(first) => TypeError::Arity {
                         expr: args[first].expr,
-                        signature,
+                        signature: self.signature_text(candidate),
                         missing: None,
                     },
                     Unbound::Missing(param) => TypeError::Arity {
                         expr,
-                        signature,
+                        signature: self.signature_text(candidate),
                         missing: Some(candidate.params[param].name.clone()),
                     },
                     Unbound::UnknownName(arg) => TypeError::NamedArgument {
@@ -373,7 +376,7 @@ impl Check<'_> {
             if !mode_fits(parameter.mode, arg.mode) {
                 self.errors.push(TypeError::Mode {
                     arg: arg.expr,
-                    signature: signature.clone(),
+                    signature: self.signature_text(candidate),
                     param: parameter.name.clone(),
                     needs: parameter.mode.unwrap_or(ParamMode::In),
                     given: arg.mode,
@@ -481,13 +484,13 @@ impl Check<'_> {
                     _ => "",
                 };
                 let default = if param.has_default { " = ..." } else { "" };
-                let ty = crate::inference::ty_name(self.db, &param.ty);
+                let ty = ty_name(self.db, &param.ty);
                 format!("{mode}{}: {ty}{default}", param.name)
             })
             .collect();
         let ret = match &candidate.ret {
             Some(ret) if *ret != Ty::UNIT => {
-                format!(": {}", crate::inference::ty_name(self.db, ret))
+                format!(": {}", ty_name(self.db, ret))
             }
             _ => String::new(),
         };
@@ -563,12 +566,7 @@ fn literal_fits(value: Value, ty: &Ty) -> bool {
         return false;
     };
     match value {
-        Value::Int(value) => numeric::holds(target, value),
-        Value::Real(value) => match target {
-            Primitive::Float => !too_large_for_float(value),
-            Primitive::Double => true,
-            _ => false,
-        },
+        Value::Int(_) | Value::Real(_) => value.of_type(target).is_some(),
         // Too large to compute: MR0010 says so once the call is chosen.
         Value::Overflow | Value::Infinity | Value::OverflowReal => true,
     }
@@ -608,6 +606,7 @@ fn better(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ty::Primitive;
 
     #[test]
     fn markers_suit_their_modes() {

@@ -3,9 +3,13 @@
 //! evaluation (§14.6): it reads literals and arithmetic, nothing else.
 
 use la_arena::Arena;
-use mora_syntax::lexer::number::{IntSuffix, RealSuffix, int_value, real_value};
+use mora_syntax::lexer::number::{
+    IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
+};
 
+use super::{Constant, numeric};
 use crate::bodies::{BinaryOp, Expr, ExprId, Literal, UnaryOp};
+use crate::ty::Primitive;
 
 /// The value of a literal operation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,6 +26,36 @@ pub(crate) enum Value {
     /// A real computed from an integer too large to compute, which fits no
     /// type, and is kept apart from [`Value::Infinity`] for its message.
     OverflowReal,
+}
+
+impl Value {
+    /// The value as the numeric type `target` holds it, `None` when it does
+    /// not fit: an integer the type holds exactly, or a real for a
+    /// floating-point type with room for it (§3.5).
+    pub(crate) fn of_type(self, target: Primitive) -> Option<Constant> {
+        // The nearest `float`, which a `double` holds exactly.
+        let real = |value: f64| match target {
+            Primitive::Float => Constant::Real(f64::from(value as f32).to_bits()),
+            _ => Constant::Real(value.to_bits()),
+        };
+        match self {
+            Value::Int(value) if numeric::holds(target, value) => {
+                if numeric::is_floating_point(target) {
+                    // `holds` says the value is exact in `target`.
+                    Some(real(value as f64))
+                } else {
+                    Some(Constant::Int(value))
+                }
+            }
+            // A real is never infinite here: an infinity is its own value.
+            Value::Real(value) => match target {
+                Primitive::Float => (!too_large_for_float(value)).then(|| real(value)),
+                Primitive::Double => Some(real(value)),
+                _ => None,
+            },
+            Value::Int(_) | Value::Overflow | Value::Infinity | Value::OverflowReal => None,
+        }
+    }
 }
 
 /// The value of `expr` when every leaf of it is an unsuffixed literal

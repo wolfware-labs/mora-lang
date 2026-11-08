@@ -753,17 +753,22 @@ impl Lower {
 
     pub(super) fn args<'a>(&mut self, args: impl Iterator<Item = ast::Arg<'a>>) -> Vec<Arg> {
         args.map(|arg| {
-            let mode = arg.mode().and_then(|mode| match mode.kind() {
+            let marker = arg.mode();
+            let mode = marker.as_ref().and_then(|mode| match mode.kind() {
                 SyntaxKind::RefKw => Some(ArgMode::Ref),
                 SyntaxKind::InKw => Some(ArgMode::In),
                 SyntaxKind::MoveKw => Some(ArgMode::Move),
                 _ => None,
             });
             let range = arg.syntax().text_range();
+            let expr = self.expr(arg.expr(), range);
+            if let Some(marker) = marker {
+                self.map.markers.insert(expr, marker.text_range());
+            }
             Arg {
                 name: name_ref_of(arg.name()),
                 mode,
-                expr: self.expr(arg.expr(), range),
+                expr,
             }
         })
         .collect()
