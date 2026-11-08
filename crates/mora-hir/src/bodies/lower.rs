@@ -260,7 +260,12 @@ impl Lower {
             ast::Stmt::AttributedStmt(it) => return self.opt_stmt(it.stmt()),
             _ => self.scoped(|this| this.scoped_stmt(stmt)),
         };
-        self.alloc_stmt(lowered)
+        let jump = matches!(lowered, Stmt::Break | Stmt::Continue | Stmt::Return(_));
+        let id = self.alloc_stmt(lowered);
+        if jump {
+            self.map.jumps.insert(id, stmt.syntax().text_range());
+        }
+        id
     }
 
     /// A statement that declares nothing after itself.

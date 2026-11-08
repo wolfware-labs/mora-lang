@@ -1,0 +1,31 @@
+error[MR0181]: `one` is used before it is assigned
+  --> tests/ui/flow/definite_assignment.mr:16:9
+   |
+12 | var one: int;
+   |     --- declared here without a value
+...
+16 | let b = one; //~ ERROR MR0181
+   |         ^^^ `one` may not be assigned here
+   |
+   = note: a local declared without a value must be assigned on every path before it is read; a closure sees the locals assigned where it is declared
+
+error[MR0181]: `looped` is used before it is assigned
+  --> tests/ui/flow/definite_assignment.mr:22:9
+   |
+18 | var looped: int;
+   |     ------ declared here without a value
+...
+22 | let c = looped; //~ ERROR MR0181
+   |         ^^^^^^ `looped` may not be assigned here
+   |
+   = note: a local declared without a value must be assigned on every path before it is read; a closure sees the locals assigned where it is declared
+
+error[MR0181]: `early` is used before it is assigned
+  --> tests/ui/flow/definite_assignment.mr:31:18
+   |
+30 | var early: int;
+   |     ----- declared here without a value
+31 | let read = () => early; //~ ERROR MR0181
+   |                  ^^^^^ the closure reads `early`, which is not assigned where it is declared
+   |
+   = note: a local declared without a value must be assigned on every path before it is read; a closure sees the locals assigned where it is declared

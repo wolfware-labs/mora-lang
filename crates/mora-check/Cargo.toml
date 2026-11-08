@@ -10,3 +10,9 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+mora-diag.workspace = true
+mora-hir.workspace = true
+mora-span.workspace = true
+salsa.workspace = true

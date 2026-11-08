@@ -1,0 +1,23 @@
+error[MR0184]: `Sign` can reach its end without returning a value
+ --> tests/ui/flow/returns.mr:6:1
+  |
+6 | } //~ ERROR MR0184
+  | ^ the end is reachable
+  |
+  = note: `Sign` returns a value, so every path through it ends in `return` with a value, a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends
+
+error[MR0184]: `return` without a value in `Nothing`
+  --> tests/ui/flow/returns.mr:17:5
+   |
+17 |     return; //~ ERROR MR0184
+   |     ^^^^^^^ returns no value
+   |
+   = note: `Nothing` returns a value, so every path through it ends in `return` with a value, a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends
+
+error[MR0184]: `Inner` can reach its end without returning a value
+  --> tests/ui/flow/returns.mr:39:5
+   |
+39 |     } //~ ERROR MR0184
+   |     ^ the end is reachable
+   |
+   = note: `Inner` returns a value, so every path through it ends in `return` with a value, a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends

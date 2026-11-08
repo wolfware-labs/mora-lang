@@ -1,0 +1,15 @@
+// `break` and `continue` act on the loop around them (§7.11).
+let ready = true;
+break; //~ ERROR MR0183
+continue; //~ ERROR MR0183
+while (ready) {
+    if (ready) {
+        continue;
+    }
+    break;
+}
+while (ready) {
+    let leave = () => {
+        break; //~ ERROR MR0183
+    };
+}

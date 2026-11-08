@@ -12,6 +12,7 @@ publish = false
 workspace = true
 
 [dependencies]
+mora-check.workspace = true
 mora-diag.workspace = true
 mora-hir.workspace = true
 mora-span.workspace = true

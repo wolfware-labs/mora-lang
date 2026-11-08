@@ -648,6 +648,12 @@ dependencies = [
 [[package]]
 name = "mora-check"
 version = "0.0.0"
+dependencies = [
+ "mora-diag",
+ "mora-hir",
+ "mora-span",
+ "salsa",
+]
 
 [[package]]
 name = "mora-cli"
@@ -762,6 +768,7 @@ dependencies = [
 name = "mora-testkit"
 version = "0.0.0"
 dependencies = [
+ "mora-check",
  "mora-diag",
  "mora-hir",
  "mora-span",

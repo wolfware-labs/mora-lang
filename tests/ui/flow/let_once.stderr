@@ -1,0 +1,78 @@
+error[MR0182]: `fixed` is declared with `let`, so it cannot be assigned again
+ --> tests/ui/flow/let_once.mr:4:1
+  |
+3 | let fixed = 1;
+  |     ----- declared with `let` here
+4 | fixed = 2; //~ ERROR MR0182
+  | ^^^^^ assigned again here
+  |
+  = note: a `let` local is assigned exactly once, and a closure may run more than once; declare a local that changes with `var`
+help: declare it with `var`
+  |
+3 - let fixed = 1;
+3 + var fixed = 1;
+  |
+
+error[MR0182]: `later` is declared with `let` and may be assigned already
+ --> tests/ui/flow/let_once.mr:8:1
+  |
+6 | let later: int;
+  |     ----- declared with `let` here
+7 | later = 1;
+8 | later = 2; //~ ERROR MR0182
+  | ^^^^^ assigned again here
+  |
+  = note: a `let` local is assigned exactly once, and a closure may run more than once; declare a local that changes with `var`
+help: declare it with `var`
+  |
+6 - let later: int;
+6 + var later: int;
+  |
+
+error[MR0182]: `maybe` is declared with `let` and may be assigned already
+  --> tests/ui/flow/let_once.mr:14:1
+   |
+10 | let maybe: int;
+   |     ----- declared with `let` here
+...
+14 | maybe = 2; //~ ERROR MR0182
+   | ^^^^^ assigned again here
+   |
+   = note: a `let` local is assigned exactly once, and a closure may run more than once; declare a local that changes with `var`
+help: declare it with `var`
+   |
+10 - let maybe: int;
+10 + var maybe: int;
+   |
+
+error[MR0182]: `each` is declared with `let` and may be assigned already
+  --> tests/ui/flow/let_once.mr:18:5
+   |
+16 | let each: int;
+   |     ---- declared with `let` here
+17 | while (ready) {
+18 |     each = 1; //~ ERROR MR0182
+   |     ^^^^ assigned again here
+   |
+   = note: a `let` local is assigned exactly once, and a closure may run more than once; declare a local that changes with `var`
+help: declare it with `var`
+   |
+16 - let each: int;
+16 + var each: int;
+   |
+
+error[MR0182]: `captured` is declared with `let` and cannot be assigned in a closure
+  --> tests/ui/flow/let_once.mr:23:5
+   |
+21 | let captured = 1;
+   |     -------- declared with `let` here
+22 | let change = () => {
+23 |     captured = 2; //~ ERROR MR0182
+   |     ^^^^^^^^ assigned again here
+   |
+   = note: a `let` local is assigned exactly once, and a closure may run more than once; declare a local that changes with `var`
+help: declare it with `var`
+   |
+21 - let captured = 1;
+21 + var captured = 1;
+   |

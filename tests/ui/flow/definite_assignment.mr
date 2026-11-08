@@ -1,0 +1,32 @@
+// A local declared without a value is read only once every path assigns
+// it (§7.10).
+let ready = true;
+let both: int;
+if (ready) {
+    both = 1;
+} else {
+    both = 2;
+}
+let a = both;
+
+var one: int;
+if (ready) {
+    one = 1;
+}
+let b = one; //~ ERROR MR0181
+
+var looped: int;
+while (ready) {
+    looped = 1;
+}
+let c = looped; //~ ERROR MR0181
+
+var once: int;
+do {
+    once = 1;
+} while (ready);
+let d = once;
+
+var early: int;
+let read = () => early; //~ ERROR MR0181
+early = 1;

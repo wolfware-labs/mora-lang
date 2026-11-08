@@ -644,6 +644,8 @@ pub struct BodySourceMap {
     /// The marker of each argument written with one, by the argument's
     /// expression.
     pub markers: HashMap<ExprId, TextRange>,
+    /// Each `break`, `continue` and `return` statement.
+    pub jumps: HashMap<StmtId, TextRange>,
     /// The name of each unresolved capture, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
