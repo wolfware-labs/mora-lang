@@ -130,7 +130,7 @@ registry! {
     MR0203 = 203: "mismatched types: a value of type `S` where `T` is expected and `T` does not implement `IFrom<S>`",
     MR0204 = 204: "an operator is not defined for the types of its operands",
     MR0205 = 205: "no function of the called name takes these arguments",
-    MR0206 = 206: "a call that more than one overload fits equally well",
+    MR0206 = 206: "a call for which more than one overload fits equally well",
     MR0207 = 207: "a named argument that names no parameter, names one twice, or comes before a positional one",
     MR0208 = 208: "a call of a value that is not a function",
     MR0220 = 220: "polymorphic recursion without bound",
