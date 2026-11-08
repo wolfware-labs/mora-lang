@@ -47,14 +47,6 @@ exclude_re = [
     '^crates/mora-testkit/src/compiler\.rs:119:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     # Width of a separator line; any width reads the same.
     '^crates/mora-testkit/src/diff\.rs:32:87: replace \+ with \* in diff$',
-    # Codegen paths that produce the same text: the widened ranges only add
-    # nodes, which carry no token kind; equal fields merge to themselves; and
-    # `show` already brackets a nested sequence or alternative.
-    '^xtask/src/codegen\.rs:584:32: replace \+ with \* in place$',
-    '^xtask/src/codegen\.rs:590:40: replace \+ with \* in place$',
-    '^xtask/src/codegen\.rs:609:31: replace match guard \*existing == field with false in dedupe$',
-    '^xtask/src/codegen\.rs:663:9: delete match arm Rule::Seq\(_\) \| Rule::Alt\(_\) in show$',
-    '^xtask/src/codegen\.rs:674:21: delete match arm Rule::Alt\(_\) in show$',
     # `ALLOW` is empty, so the comparison never runs.
     '^xtask/src/target_names\.rs:325:62: replace == with != in check$',
 
