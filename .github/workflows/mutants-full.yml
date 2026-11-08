@@ -37,10 +37,13 @@ jobs:
         with:
           tool: cargo-mutants
       # Same rules as the pull request job in ci.yml: status 3 means some
-      # mutants only timed out, which counts as caught.
+      # mutants only timed out, which counts as caught, and each test
+      # process may allocate 2 GiB, so an endless loop that allocates aborts
+      # its tests instead of taking the runner down.
       - name: Mutate the workspace
         env:
           SHARD: ${{ matrix.shard }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
         run: |
           status=0
           cargo mutants --in-place --no-shuffle \

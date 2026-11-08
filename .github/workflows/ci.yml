@@ -307,9 +307,13 @@ jobs:
       # Exit status 3 means some mutants only timed out: they made the
       # tests hang, which a test run would also notice, so they count as
       # caught. Status 2 (a mutant survived) and the others fail the job.
+      # Each test process may allocate 2 GiB: a mutant that turns a loop that
+      # allocates into an endless one then aborts its tests, which counts as
+      # caught, instead of filling the runner's memory until the runner dies.
       - name: Mutate the changed lines
         env:
           SHARD: ${{ matrix.shard }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
         run: |
           status=0
           cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle \
