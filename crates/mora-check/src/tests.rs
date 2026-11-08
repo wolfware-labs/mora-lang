@@ -480,3 +480,21 @@ fn broken_code_is_walked_without_panicking() {
         let _ = diagnostics_of(&text[..cut]);
     }
 }
+
+#[test]
+fn patterns_defaults_and_qualified_calls() {
+    for (text, expected) in [
+        (
+            "Main() {\n    var x: int;\n    G(a: int = x) {}\n}\n",
+            vec!["MR0181"],
+        ),
+        ("let n = 1;\nlet t = n is int k && k > 0;\n", vec![]),
+        (
+            "union U { A(v: int), B }\nlet o = U.B;\nvar x: int;\nlet t = o is U.A(< x);\n",
+            vec!["MR0181"],
+        ),
+        ("H() {}\nF(): int {\n    App.H();\n}\n", vec!["MR0184"]),
+    ] {
+        assert_eq!(reported(text), expected, "{text}");
+    }
+}
