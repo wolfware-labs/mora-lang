@@ -646,6 +646,12 @@ pub struct BodySourceMap {
     pub markers: HashMap<ExprId, TextRange>,
     /// Each `break`, `continue` and `return` statement.
     pub jumps: HashMap<StmtId, TextRange>,
+    /// The `let` written right before the name of a local, which the fix
+    /// of `MR0182` turns into `var`.
+    pub lets: HashMap<LocalId, TextRange>,
+    /// The closing brace of each function and local function body written
+    /// as a block, by the block's expression.
+    pub ends: HashMap<ExprId, TextRange>,
     /// The name of each unresolved capture, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
@@ -1383,6 +1389,41 @@ get extension#0.Empty(items#0) => items#0[0];
             .unwrap()
             .0;
         assert_eq!(&text[map.expr(sum)], "1 + 2");
+    }
+
+    #[test]
+    fn source_maps_keep_jumps_lets_and_closing_braces() {
+        let db = TestDb::new();
+        let text = "while (true) {\n    break;\n}\nlet a = 1;\nvar b = 2;\nlet (c, d) = (1, 2);\n\
+                    foreach (let e in [1]) {\n    continue;\n}\nif (1 is let f) {}\n\
+                    if (1 is int g) {}\nF(): int {\n    G(): int => 1;\n    return 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let text = file.text(&db);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let mut jumps: Vec<_> = map.jumps.values().map(|&range| &text[range]).collect();
+        jumps.sort_unstable();
+        assert_eq!(jumps, ["break;", "continue;"]);
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let mut lets: Vec<_> = map
+            .lets
+            .iter()
+            .map(|(&local, &range)| (body.locals[local].name.as_str(), &text[range]))
+            .collect();
+        lets.sort_unstable();
+        assert_eq!(lets, [("a", "let"), ("e", "let"), ("f", "let")]);
+        // Only a function body written as a block keeps its closing brace.
+        assert!(map.ends.is_empty());
+        let owner = body_owners(&db, file)
+            .into_iter()
+            .find(|&owner| owner != BodyOwner::TopLevel)
+            .unwrap();
+        let function = body_source_map(&db, file, owner);
+        let end = mora_span::TextSize::of(text.trim_end()) - mora_span::TextSize::of('}');
+        let ends: Vec<_> = function.ends.values().map(|range| range.start()).collect();
+        assert_eq!(ends, [end]);
+        let jumps: Vec<_> = function.jumps.values().map(|&range| &text[range]).collect();
+        assert_eq!(jumps, ["return 1;"]);
     }
 
     #[test]

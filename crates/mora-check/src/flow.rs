@@ -8,11 +8,11 @@
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
-    Arg, Body, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId, InterpPart, ItemId, Literal,
-    LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, Signature, Stmt, StmtId, Target, Ty,
-    UnaryOp, body_resolution, item_tree, signature,
+    Arg, BinaryOp, Body, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId, InterpPart,
+    ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, Signature, Stmt, StmtId,
+    Target, Ty, UnaryOp, arena_index, body_resolution, item_tree, signature,
 };
-use mora_span::{Db, Project, SourceFile, Span, TextRange, TextSize};
+use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
 /// The names of the standard library's functions of the never type (§11.4),
 /// which a path ends at. Until the standard library is loaded they are
@@ -24,22 +24,28 @@ const DIVERGING: [&str; 3] = ["panic", "Unreachable", "Todo"];
 struct Locals(Vec<u64>);
 
 impl Locals {
-    fn new(len: usize, full: bool) -> Self {
-        Locals(vec![if full { u64::MAX } else { 0 }; len.div_ceil(64)])
+    /// No local of a body with `len` locals.
+    fn empty(len: usize) -> Self {
+        Locals(vec![0; len.div_ceil(64)])
+    }
+
+    /// Every local of a body with `len` locals.
+    fn full(len: usize) -> Self {
+        Locals(vec![u64::MAX; len.div_ceil(64)])
     }
 
     fn contains(&self, local: LocalId) -> bool {
-        let index = local_index(local);
+        let index = arena_index(local);
         self.0[index / 64] & (1 << (index % 64)) != 0
     }
 
     fn insert(&mut self, local: LocalId) {
-        let index = local_index(local);
+        let index = arena_index(local);
         self.0[index / 64] |= 1 << (index % 64);
     }
 
     fn remove(&mut self, local: LocalId) {
-        let index = local_index(local);
+        let index = arena_index(local);
         self.0[index / 64] &= !(1 << (index % 64));
     }
 
@@ -54,11 +60,6 @@ impl Locals {
             *word |= other;
         }
     }
-}
-
-/// The position of `local` in its body's arena.
-fn local_index(local: LocalId) -> usize {
-    u32::from(local.into_raw()) as usize
 }
 
 /// What holds on one path through a body.
@@ -78,8 +79,8 @@ impl State {
     fn unreachable(len: usize) -> Self {
         State {
             reachable: false,
-            assigned: Locals::new(len, true),
-            maybe: Locals::new(len, false),
+            assigned: Locals::full(len),
+            maybe: Locals::empty(len),
         }
     }
 
@@ -97,6 +98,23 @@ impl State {
     }
 }
 
+/// A statement that leaves the innermost loop.
+#[derive(Clone, Copy)]
+enum Jump {
+    Break,
+    Continue,
+}
+
+impl Jump {
+    /// The keyword that writes it.
+    fn keyword(self) -> &'static str {
+        match self {
+            Jump::Break => "break",
+            Jump::Continue => "continue",
+        }
+    }
+}
+
 /// A loop that `break` and `continue` leave.
 struct Loop {
     /// Where the paths that `break` out of it meet.
@@ -105,8 +123,9 @@ struct Loop {
     continues: State,
 }
 
-/// The function a part of the body returns from.
-#[derive(Clone)]
+/// The function a part of the body returns from. The default is one that
+/// returns no value, such as a lambda.
+#[derive(Clone, Default)]
 struct Function {
     /// Its name, for messages.
     name: String,
@@ -131,16 +150,12 @@ pub(crate) fn check(
     let len = body.locals.len();
     // A local is assigned where it is declared, unless it is declared
     // without a value: `let x;` and `var x: T;`.
-    let mut unassigned = Locals::new(len, false);
+    let mut unassigned = Locals::empty(len);
+    let mut assigned = Locals::full(len);
     for (_, stmt) in body.stmts.iter() {
         if let Stmt::Local { local, init: None } = stmt {
             unassigned.insert(*local);
-        }
-    }
-    let mut assigned = Locals::new(len, true);
-    for (local, _) in body.locals.iter() {
-        if unassigned.contains(local) {
-            assigned.remove(local);
+            assigned.remove(*local);
         }
     }
     let mut flow = Flow {
@@ -151,7 +166,7 @@ pub(crate) fn check(
         resolution: body_resolution(db, project, file, owner),
         state: State {
             reachable: true,
-            maybe: Locals::new(len, false),
+            maybe: Locals::empty(len),
             assigned,
         },
         unassigned,
@@ -159,7 +174,7 @@ pub(crate) fn check(
         closure: 0,
         loops: Vec::new(),
         function: function(db, project, file, owner),
-        reported: Locals::new(len, false),
+        reported: Locals::empty(len),
         out,
     };
     for &(_, default) in &body.defaults {
@@ -176,10 +191,7 @@ pub(crate) fn check(
 /// with their kinds of member, are not checked yet (D-138).
 fn function(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Function {
     let BodyOwner::Item(item) = owner else {
-        return Function {
-            name: String::new(),
-            returns_value: false,
-        };
+        return Function::default();
     };
     let id = ItemId {
         project,
@@ -206,7 +218,7 @@ fn returns_value(ret: &Ty) -> bool {
 struct Flow<'a> {
     /// The database the names are read from.
     db: &'a dyn Db,
-    /// The file of the body, whose text gives the fixes.
+    /// The file of the body, which the spans name.
     file: SourceFile,
     /// The body.
     body: &'a Body,
@@ -256,16 +268,10 @@ impl Flow<'_> {
 
     /// `MR0184` at the end of the block `root`.
     fn end_without_value(&mut self, root: ExprId) {
-        let range = self.map.expr(root);
-        let text = self.file.text(self.db);
         // A block the parser recovered from has no closing brace to point at.
-        if !text
-            .get(std::ops::Range::<usize>::from(range))
-            .is_some_and(|text| text.ends_with('}'))
-        {
+        let Some(&brace) = self.map.ends.get(&root) else {
             return;
-        }
-        let brace = TextRange::new(range.end() - TextSize::of('}'), range.end());
+        };
         let name = &self.function.name;
         self.out.push(
             Diagnostic::error(
@@ -289,7 +295,7 @@ impl Flow<'_> {
             Stmt::Missing => {}
             Stmt::Expr(expr) => self.expr(*expr),
             Stmt::Local { local, init } => {
-                self.depth[local_index(*local)] = self.closure;
+                self.depth[arena_index(*local)] = self.closure;
                 match init {
                     Some(init) => self.expr(*init),
                     // Each run of the declaration, as in a loop, starts a
@@ -306,16 +312,9 @@ impl Flow<'_> {
                 self.pat(*pat);
             }
             Stmt::Function(function) => {
-                let ret = function.ret.map_or(Ty::UNIT, |ty| {
-                    self.resolution
-                        .types
-                        .get(u32::from(ty.into_raw()) as usize)
-                        .cloned()
-                        .unwrap_or(Ty::Error)
-                });
                 let inner = Function {
                     name: body.locals[function.local].name.clone(),
-                    returns_value: returns_value(&ret),
+                    returns_value: returns_value(&self.resolution.return_type(function)),
                 };
                 for &(_, default) in &function.defaults {
                     self.expr(default);
@@ -364,9 +363,7 @@ impl Flow<'_> {
                 body: loop_body,
             } => {
                 self.block(init);
-                let mut exprs: Vec<_> = condition.iter().copied().collect();
-                exprs.extend(update);
-                self.enter_loop(&exprs, &[*loop_body]);
+                self.enter_loop(condition.iter().chain(update), &[*loop_body]);
                 let exit = match condition {
                     Some(condition) => {
                         self.expr(*condition);
@@ -397,21 +394,8 @@ impl Flow<'_> {
                 self.stmt(*loop_body);
                 self.leave_loop(exit);
             }
-            Stmt::Break | Stmt::Continue => {
-                let is_break = matches!(body.stmts[stmt], Stmt::Break);
-                match self.loops.last_mut() {
-                    Some(target) => {
-                        let at = if is_break {
-                            &mut target.breaks
-                        } else {
-                            &mut target.continues
-                        };
-                        at.join(&self.state);
-                    }
-                    None => self.outside_loop(stmt, is_break),
-                }
-                self.state = self.unreachable();
-            }
+            Stmt::Break => self.jump(stmt, Jump::Break),
+            Stmt::Continue => self.jump(stmt, Jump::Continue),
             Stmt::Return(value) => {
                 match value {
                     Some(value) => self.expr(*value),
@@ -425,6 +409,21 @@ impl Flow<'_> {
             Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
         }
+    }
+
+    /// `break` or `continue` at `stmt`: the path goes to the innermost loop.
+    fn jump(&mut self, stmt: StmtId, jump: Jump) {
+        match self.loops.last_mut() {
+            Some(target) => {
+                let at = match jump {
+                    Jump::Break => &mut target.breaks,
+                    Jump::Continue => &mut target.continues,
+                };
+                at.join(&self.state);
+            }
+            None => self.outside_loop(stmt, jump),
+        }
+        self.state = self.unreachable();
     }
 
     /// A loop that nothing has left yet.
@@ -444,8 +443,8 @@ impl Flow<'_> {
 
     /// Before a loop's first iteration: a local it assigns may be assigned
     /// already when an iteration after the first assigns it.
-    fn enter_loop(&mut self, exprs: &[ExprId], stmts: &[StmtId]) {
-        let mut assigned = Locals::new(self.body.locals.len(), false);
+    fn enter_loop<'e>(&mut self, exprs: impl IntoIterator<Item = &'e ExprId>, stmts: &[StmtId]) {
+        let mut assigned = Locals::empty(self.body.locals.len());
         let mut collect = Assigned {
             body: self.body,
             out: &mut assigned,
@@ -496,7 +495,7 @@ impl Flow<'_> {
         let body = self.body;
         match &body.pats[pat] {
             Pat::Missing | Pat::Discard | Pat::Slice(None) => {}
-            Pat::Bind(local) => self.depth[local_index(*local)] = self.closure,
+            Pat::Bind(local) => self.depth[arena_index(*local)] = self.closure,
             Pat::Constant(expr) | Pat::Relational { value: expr, .. } => self.expr(*expr),
             Pat::Type { binding, .. } => {
                 if let Some(binding) = binding {
@@ -546,7 +545,7 @@ impl Flow<'_> {
         let around = std::mem::replace(&mut self.function, function);
         self.closure += 1;
         for &param in params {
-            self.depth[local_index(param)] = self.closure;
+            self.depth[arena_index(param)] = self.closure;
         }
         self.function_body(root);
         self.closure -= 1;
@@ -624,10 +623,7 @@ impl Flow<'_> {
             | Expr::As { expr: operand, .. } => self.expr(*operand),
             Expr::Binary { op, lhs, rhs } => {
                 self.expr(*lhs);
-                if matches!(
-                    op,
-                    mora_hir::BinaryOp::And | mora_hir::BinaryOp::Or | mora_hir::BinaryOp::Coalesce
-                ) {
+                if matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce) {
                     // The right operand may not run.
                     let before = self.state.clone();
                     self.expr(*rhs);
@@ -676,11 +672,7 @@ impl Flow<'_> {
                 for &(_, default) in &lambda.defaults {
                     self.expr(default);
                 }
-                let function = Function {
-                    name: String::new(),
-                    returns_value: false,
-                };
-                self.closure(&lambda.params, lambda.body, function);
+                self.closure(&lambda.params, lambda.body, Function::default());
             }
             Expr::New { args, inits, .. } => {
                 for arg in args.iter().flatten() {
@@ -723,7 +715,7 @@ impl Flow<'_> {
         // Reported once; the rest of the path treats it as assigned.
         self.state.assigned.insert(local);
         let name = &self.body.locals[local].name;
-        let in_closure = self.depth[local_index(local)] < self.closure;
+        let in_closure = self.depth[arena_index(local)] < self.closure;
         let label = if in_closure {
             format!("the closure reads `{name}`, which is not assigned where it is declared")
         } else {
@@ -753,7 +745,7 @@ impl Flow<'_> {
             return;
         };
         let data = &self.body.locals[local];
-        let in_closure = self.depth[local_index(local)] < self.closure;
+        let in_closure = self.depth[arena_index(local)] < self.closure;
         let twice = data.kind == LocalKind::Let
             && (in_closure || !self.unassigned.contains(local) || self.state.maybe.contains(local));
         if twice && self.state.reachable {
@@ -788,12 +780,7 @@ impl Flow<'_> {
              declare a local that changes with `var`",
         );
         // The `let` before the name, when it is written there.
-        let text = self.file.text(self.db);
-        let before = text
-            .get(..usize::from(declared.start()))
-            .unwrap_or_default();
-        if let Some(start) = before.trim_end().strip_suffix("let").map(str::len) {
-            let at = TextRange::at(TextSize::from(start as u32), TextSize::of("let"));
+        if let Some(&at) = self.map.lets.get(&local) {
             diagnostic = diagnostic.with_fix(Fix::new(
                 "declare it with `var`",
                 vec![TextEdit::replace(self.span(at), "var")],
@@ -802,11 +789,15 @@ impl Flow<'_> {
         self.out.push(diagnostic);
     }
 
-    /// `MR0183` for `break` or `continue` outside a loop.
-    fn outside_loop(&mut self, stmt: StmtId, is_break: bool) {
+    /// Where the `break`, `continue` or `return` statement `stmt` is.
+    fn jump_span(&self, stmt: StmtId) -> Span {
         // Lowering records the range of every jump.
-        let range = self.map.jumps.get(&stmt).copied().unwrap_or_default();
-        let word = if is_break { "break" } else { "continue" };
+        self.span(self.map.jumps.get(&stmt).copied().unwrap_or_default())
+    }
+
+    /// `MR0183` for `break` or `continue` outside a loop.
+    fn outside_loop(&mut self, stmt: StmtId, jump: Jump) {
+        let word = jump.keyword();
         let note = if self.closure > 0 {
             "a lambda or a local function does not see the loops around it, so its `break` and `continue` have no loop to leave"
         } else {
@@ -816,7 +807,7 @@ impl Flow<'_> {
             Diagnostic::error(
                 codes::MR0183,
                 format!("`{word}` outside a loop"),
-                Label::new(self.span(range), "no loop to leave"),
+                Label::new(self.jump_span(stmt), "no loop to leave"),
             )
             .with_note(note),
         );
@@ -824,14 +815,12 @@ impl Flow<'_> {
 
     /// `MR0184` for `return;` in a function that returns a value.
     fn return_without_value(&mut self, stmt: StmtId) {
-        // Lowering records the range of every jump.
-        let range = self.map.jumps.get(&stmt).copied().unwrap_or_default();
         let name = &self.function.name;
         self.out.push(
             Diagnostic::error(
                 codes::MR0184,
                 format!("`return` without a value in `{name}`"),
-                Label::new(self.span(range), "returns no value"),
+                Label::new(self.jump_span(stmt), "returns no value"),
             )
             .with_note(note_mr0184(name)),
         );

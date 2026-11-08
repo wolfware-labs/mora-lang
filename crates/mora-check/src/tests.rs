@@ -40,13 +40,6 @@ fn reported(text: &str) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn a_local_is_read_only_once_assigned() {
-    let text = "let c = true;\nlet a: int;\nif (c) {\n    a = 1;\n} else {\n    a = 2;\n}\n\
-                let b = a;\nvar d: int;\nif (c) {\n    d = 1;\n}\nlet e = d;\n";
-    assert_eq!(reported(text), ["MR0181"]);
-}
-
 /// `text` with the edits of every fix its diagnostics offer applied.
 fn fixed(text: &str) -> String {
     let mut edits: Vec<_> = diagnostics_of(text)
@@ -70,6 +63,13 @@ fn messages(text: &str) -> Vec<String> {
         .iter()
         .map(|d| d.message.clone())
         .collect()
+}
+
+#[test]
+fn a_local_is_read_only_once_assigned() {
+    let text = "let c = true;\nlet a: int;\nif (c) {\n    a = 1;\n} else {\n    a = 2;\n}\n\
+                let b = a;\nvar d: int;\nif (c) {\n    d = 1;\n}\nlet e = d;\n";
+    assert_eq!(reported(text), ["MR0181"]);
 }
 
 #[test]
@@ -164,6 +164,17 @@ fn a_let_is_assigned_exactly_once() {
     let found = diagnostics_of("let p = (1, 2);\nlet (x, y) = p;\nx = 1;\n");
     assert_eq!(found.len(), 1);
     assert!(found[0].fixes.is_empty());
+    // Nor has the binding of a type pattern, whose type may end in `let`.
+    let text = "struct Bullet {\n    Y: int;\n}\nlet o = new Bullet { Y = 1 };\n\
+                if (o is Bullet b) {\n    b = o;\n}\n";
+    let found = diagnostics_of(text);
+    assert_eq!(reported(text), ["MR0182"]);
+    assert!(found[0].fixes.is_empty());
+    // A `foreach` or binding pattern `let` before the name is fixed.
+    assert_eq!(
+        fixed("foreach (let k in [1]) {\n    k = 2;\n}\nif (1 is let m) {\n    m = 2;\n}\n"),
+        "foreach (var k in [1]) {\n    k = 2;\n}\nif (1 is var m) {\n    m = 2;\n}\n"
+    );
 }
 
 #[test]
@@ -465,8 +476,13 @@ fn rarer_statements_and_owners_are_walked() {
     ] {
         assert_eq!(reported(text), expected, "{text}");
     }
-    // A function body the parser recovered from has no end to point at.
+    // A function body the parser recovered from has no end to point at,
+    // even when its last statement ends with a brace.
     assert_eq!(reported("F(): int {\n"), Vec::<String>::new());
+    assert_eq!(
+        reported("F(): int {\n    if (true) {}\n"),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

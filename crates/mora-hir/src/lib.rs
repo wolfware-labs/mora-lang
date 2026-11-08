@@ -38,6 +38,7 @@ mod type_ref;
 #[cfg(test)]
 mod test_db;
 
+pub use arena::arena_index;
 pub use bodies::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
     CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,

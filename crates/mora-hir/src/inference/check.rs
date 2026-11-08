@@ -69,7 +69,7 @@ pub(super) fn infer_body(
     check.locals = body
         .locals
         .iter()
-        .map(|(_, local)| local.ty.map(|ty| check.written(ty)))
+        .map(|(_, local)| local.ty.map(|ty| check.resolution.written(ty)))
         .collect();
     // What the body's root is checked against: an initializer's type, or a
     // function's return type.
@@ -101,7 +101,7 @@ pub(super) fn infer_body(
             if body.kind == BodyKind::Initializer
                 && let [ty] = body.signature_types[..]
             {
-                expected = Some(check.written(ty));
+                expected = Some(check.resolution.written(ty));
             }
         }
     }
@@ -151,15 +151,6 @@ struct Check<'a> {
 }
 
 impl Check<'_> {
-    /// The type written at `ty`, with its names looked up.
-    fn written(&self, ty: TypeId) -> Ty {
-        self.resolution
-            .types
-            .get(arena_index(ty))
-            .cloned()
-            .unwrap_or(Ty::Error)
-    }
-
     /// The body of a function, a local function or a lambda, whose
     /// `return` statements check against `ret`. An expression body is the
     /// value returned, unless the function returns `()`.
@@ -251,8 +242,7 @@ impl Check<'_> {
             }
             Stmt::Function(function) => {
                 self.defaults(&function.defaults);
-                let ret = (!function.is_async)
-                    .then(|| function.ret.map_or(Ty::UNIT, |ty| self.written(ty)));
+                let ret = (!function.is_async).then(|| self.resolution.return_type(function));
                 if let Some(root) = function.body {
                     self.function_body(root, ret);
                 }
@@ -989,7 +979,7 @@ impl Check<'_> {
 
     /// `(T)x`: a cast converts between numeric types (§5.10).
     fn cast(&mut self, expr: ExprId, ty: TypeId, operand: ExprId) -> Option<Ty> {
-        let to = self.written(ty);
+        let to = self.resolution.written(ty);
         if let Some(from) = self.infer(operand)
             && is_known(&from)
             && is_known(&to)

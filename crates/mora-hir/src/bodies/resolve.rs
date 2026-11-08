@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use mora_span::{Db, Project, SourceFile};
 
-use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, body};
+use super::{BodyOwner, CaptureTarget, Expr, ExprId, LocalFunction, ScopeId, TypeId, body};
+use crate::arena::arena_index;
 use crate::defs::ItemId;
 use crate::items::{ItemKind, ValueMember, Visibility, item_tree, signature_refs};
 use crate::resolve::{
@@ -55,6 +56,22 @@ pub struct ValueRef {
     pub ty: ItemId,
     /// Its position among the type's value members.
     pub index: usize,
+}
+
+impl BodyResolution {
+    /// The type written at `ty`, with its names looked up.
+    pub fn written(&self, ty: TypeId) -> Ty {
+        self.types
+            .get(arena_index(ty))
+            .cloned()
+            .unwrap_or(Ty::Error)
+    }
+
+    /// The return type of the local function `function`: `()` when none is
+    /// written.
+    pub fn return_type(&self, function: &LocalFunction) -> Ty {
+        function.ret.map_or(Ty::UNIT, |ty| self.written(ty))
+    }
 }
 
 impl ValueRef {

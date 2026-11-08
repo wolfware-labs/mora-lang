@@ -217,7 +217,11 @@ impl Lower {
         expr: Option<ast::ExprBody>,
     ) -> Option<ExprId> {
         if let Some(block) = block {
-            return Some(self.block_expr(&block));
+            let id = self.block_expr(&block);
+            if let Some(brace) = block.r_brace_token() {
+                self.map.ends.insert(id, brace.text_range());
+            }
+            return Some(id);
         }
         let expr = expr?;
         Some(self.expr(expr.expr(), expr.syntax().text_range()))
@@ -325,9 +329,8 @@ impl Lower {
             }
             ast::Stmt::ForeachStmt(it) => {
                 let iterable = self.expr(it.iterable(), range);
-                let kind = binding_kind(it.kw());
                 let pat = match it.designation() {
-                    Some(designation) => self.designation(&designation, kind),
+                    Some(designation) => self.keyword_designation(it.kw(), &designation),
                     None => self.alloc_pat(Pat::Missing),
                 };
                 let body = self.opt_stmt(it.body());
@@ -372,7 +375,8 @@ impl Lower {
         let Some(decl) = decl else {
             return self.alloc_stmt(Stmt::Missing);
         };
-        let kind = binding_kind(decl.kw());
+        let kw = decl.kw();
+        let kind = binding_kind(kw);
         let declarator = decl.variable_declarator();
         let ty = self.opt_ty(declarator.as_ref().and_then(|it| it.ty()));
         let init = declarator.as_ref().and_then(|it| it.init()).map(|init| {
@@ -380,6 +384,9 @@ impl Lower {
             self.scoped(|this| this.expr(Some(init), range))
         });
         let local = self.declare(declarator.and_then(|it| it.name()), kind, ty);
+        if let Some(local) = local {
+            self.record_let(kw, local);
+        }
         match local {
             Some(local) => self.alloc_stmt(Stmt::Local { local, init }),
             None => match init {
@@ -853,9 +860,8 @@ impl Lower {
                 Pat::Type { ty, binding }
             }
             ast::Pattern::BindingPattern(it) => {
-                let kind = binding_kind(it.kw());
                 return match it.designation() {
-                    Some(designation) => self.designation(&designation, kind),
+                    Some(designation) => self.keyword_designation(it.kw(), &designation),
                     None => self.alloc_pat(Pat::Missing),
                 };
             }
@@ -922,6 +928,27 @@ impl Lower {
                 )
             })
             .collect()
+    }
+
+    /// A designation after `let` or `var` (`kw`): a single name keeps
+    /// where its `let` is.
+    fn keyword_designation(
+        &mut self,
+        kw: Option<SyntaxToken>,
+        designation: &ast::Designation,
+    ) -> PatId {
+        let pat = self.designation(designation, binding_kind(kw));
+        if let Pat::Bind(local) = self.body.pats[pat] {
+            self.record_let(kw, local);
+        }
+        pat
+    }
+
+    /// Records `kw` as the `let` of `local` when it is one.
+    fn record_let(&mut self, kw: Option<SyntaxToken>, local: LocalId) {
+        if let Some(kw) = kw.filter(|kw| kw.kind() == SyntaxKind::LetKw) {
+            self.map.lets.insert(local, kw.text_range());
+        }
     }
 
     fn designation(&mut self, designation: &ast::Designation, kind: LocalKind) -> PatId {
