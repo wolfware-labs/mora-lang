@@ -434,16 +434,6 @@ fn newline_len(text: &str) -> Option<usize> {
     }
 }
 
-/// The length of the line at the start of `text`, without its newline. A
-/// lone carriage return does not end a line (§3.1).
-fn line_len(text: &str) -> usize {
-    match text.find('\n') {
-        Some(end) if text[..end].ends_with('\r') => end - 1,
-        Some(end) => end,
-        None => text.len(),
-    }
-}
-
 /// The number of times `c` repeats at the start of `text`.
 fn run(text: &str, c: u8) -> usize {
     text.bytes().take_while(|&b| b == c).count()
@@ -719,8 +709,9 @@ impl<'a> Lexer<'a> {
             return;
         }
         // More than one character: take the rest up to a quote on this line.
-        let line_end = i + line_len(&rest[i..]);
-        match rest[i..line_end].find('\'') {
+        // `lines` ends a line at `\n` or `\r\n`, never at a lone `\r` (§3.1).
+        let line = rest[i..].lines().next().unwrap_or_default();
+        match line.find('\'') {
             Some(close) => {
                 let len = i + close + 1;
                 self.error(
