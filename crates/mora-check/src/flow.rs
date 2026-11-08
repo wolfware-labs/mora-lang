@@ -804,9 +804,8 @@ impl Flow<'_> {
 
     /// `MR0183` for `break` or `continue` outside a loop.
     fn outside_loop(&mut self, stmt: StmtId, is_break: bool) {
-        let Some(&range) = self.map.jumps.get(&stmt) else {
-            return;
-        };
+        // Lowering records the range of every jump.
+        let range = self.map.jumps.get(&stmt).copied().unwrap_or_default();
         let word = if is_break { "break" } else { "continue" };
         let note = if self.closure > 0 {
             "a lambda or a local function does not see the loops around it, so its `break` and `continue` have no loop to leave"
@@ -825,9 +824,8 @@ impl Flow<'_> {
 
     /// `MR0184` for `return;` in a function that returns a value.
     fn return_without_value(&mut self, stmt: StmtId) {
-        let Some(&range) = self.map.jumps.get(&stmt) else {
-            return;
-        };
+        // Lowering records the range of every jump.
+        let range = self.map.jumps.get(&stmt).copied().unwrap_or_default();
         let name = &self.function.name;
         self.out.push(
             Diagnostic::error(

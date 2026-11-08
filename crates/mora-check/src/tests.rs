@@ -318,3 +318,165 @@ fn every_kind_of_expression_is_walked_for_reads() {
     // The first read reports; the rest of the path counts it as assigned.
     assert_eq!(reported(text), ["MR0181"]);
 }
+
+#[test]
+fn every_expression_reads_what_it_holds() {
+    let decls = "F(n: int) {}\nstruct P {\n    Y: int;\n}\nlet c = true;\nlet p = new P { Y = 1 };\nlet a = [1];\n";
+    for form in [
+        "(x, 1)",
+        "[x]",
+        "$\"{x}\"",
+        "$\"{1,x}\"",
+        "x.Y",
+        "a[x]",
+        "-x",
+        "x + 1",
+        "c && x > 0",
+        "x?",
+        "await x",
+        "(int)x",
+        "x as int",
+        "x is int",
+        "x..2",
+        "p with { Y = x }",
+        "new P(x)",
+        "new P { Y = x }",
+        "new int[x]",
+        "c ? x : 1",
+        "F(x)",
+        "match (x) { _ => 1 }",
+        "match (1) { _ when x > 0 => 1, _ => 2 }",
+        "match (1) { < x => 1, _ => 2 }",
+        "() => x",
+        "(y: int = x) => y",
+        "1 is P { Y: x }",
+        "1 is [x]",
+    ] {
+        let text = format!("{decls}var x: int;\nlet r = {form};\n");
+        assert_eq!(reported(&text), ["MR0181"], "{form}");
+    }
+    // A compound assignment reads its place first, and so does `++`.
+    assert_eq!(reported("var x: int;\nx += 1;\n"), ["MR0181"]);
+    assert_eq!(reported("var x: int;\nx++;\n"), ["MR0181"]);
+    assert_eq!(
+        reported("var x: int;\nx = 1;\nx += 1;\n"),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn an_assignment_anywhere_in_a_loop_counts_for_later_runs() {
+    let decls = "F(n: int) {}\nstruct P {\n    Y: int;\n}\nlet c = true;\nlet p = new P { Y = 1 };\nvar arr = [1];\n";
+    for form in [
+        "let t = -(x = 1);",
+        "let t = (x = 1)?;",
+        "let t = await (x = 1);",
+        "let t = (int)(x = 1);",
+        "let t = (x = 1) as int;",
+        "let t = (x = 1).Y;",
+        "let t = new int[x = 1];",
+        "let t = (x = 1) is int;",
+        "let t = $\"{(x = 1)}\";",
+        "let t = $\"{1,(x = 1)}\";",
+        "let t = [x = 1];",
+        "F(x = 1);",
+        "let t = arr[x = 1];",
+        "let t = 1 + (x = 1);",
+        "let t = (x = 1)..2;",
+        "let t = match (x = 1) { _ => 1 };",
+        "let t = match (1) { _ when (x = 1) > 0 => 1, _ => 2 };",
+        "let t = p with { Y = (x = 1) };",
+        "let t = c ? (x = 1) : 2;",
+        "let t = new P(x = 1);",
+        "let t = new P { Y = (x = 1) };",
+        "arr[x = 1] = 2;",
+        "x++;",
+        "--x;",
+        "if (c) {} else { x = 1; }",
+        "while (c) { x = 1; }",
+        "do { x = 1; } while (c);",
+        "for (var i = (x = 1); c; x = 2) {}",
+        "foreach (let k in [x = 1]) {}",
+        "match (1) { _ when (x = 1) > 0 => {} _ => {} }",
+        "unsafe { x = 1; }",
+        "return (x = 1);",
+        "let (u, v) = (x = 1, 2);",
+        "if ((x = 1) > 0) {}",
+    ] {
+        let text = format!("{decls}let x: int;\nwhile (c) {{\n    {form}\n}}\n");
+        let found = reported(&text);
+        assert!(found.contains(&"MR0182".to_owned()), "{form}: {found:?}");
+    }
+    // A closure's assignment is its own.
+    let text = format!(
+        "{decls}var x: int;\nwhile (c) {{\n    let f = () => {{\n        x = 1;\n    }};\n}}\n"
+    );
+    assert_eq!(reported(&text), Vec::<String>::new());
+}
+
+#[test]
+fn notes_say_where_a_closure_or_a_function_stands() {
+    let note = |text: &str| diagnostics_of(text)[0].note.clone().unwrap_or_default();
+    let label = |text: &str| {
+        diagnostics_of(text)[0]
+            .primary
+            .message
+            .clone()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        label("var x: int;\nlet f = () => x;\n"),
+        "the closure reads `x`, which is not assigned where it is declared"
+    );
+    assert_eq!(
+        label("var x: int;\nlet y = x;\n"),
+        "`x` may not be assigned here"
+    );
+    assert_eq!(
+        note("while (true) {\n    let f = () => {\n        break;\n    };\n}\n"),
+        "a lambda or a local function does not see the loops around it, so its `break` and `continue` have no loop to leave"
+    );
+    assert_eq!(
+        note("break;\n"),
+        "`break` and `continue` act on the innermost `while`, `do`, `for` or `foreach` around them"
+    );
+    assert_eq!(
+        note("F(): int {\n}\n"),
+        "`F` returns a value, so every path through it ends in `return` with a value, a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends"
+    );
+}
+
+#[test]
+fn rarer_statements_and_owners_are_walked() {
+    for (text, expected) in [
+        ("var x: int;\nunsafe {\n    x = 1;\n}\nlet y = x;\n", vec![]),
+        (
+            "let n = 1;\nvar x: int;\nmatch (n) {}\nlet y = x;\n",
+            vec!["MR0181"],
+        ),
+        ("F(): int {\n    match (1) {}\n}\n", vec!["MR0184"]),
+        (
+            "class C {\n    C(a: int) : this(a, a) {}\n    C(a: int, b: int) {}\n}\n",
+            vec![],
+        ),
+        ("F(a: int = 1): int {\n}\n", vec!["MR0184"]),
+        ("G(): int {\n    Std.Debug.panic();\n}\n", vec!["MR0184"]),
+        ("let (a, b) = (1, 2);\nlet c = a + b;\n", vec![]),
+    ] {
+        assert_eq!(reported(text), expected, "{text}");
+    }
+    // A function body the parser recovered from has no end to point at.
+    assert_eq!(reported("F(): int {\n"), Vec::<String>::new());
+}
+
+#[test]
+fn broken_code_is_walked_without_panicking() {
+    let text = "F(n: int): int {\n    var x: int;\n    let y: int;\n    while (n > 0) {\n        \
+                if (n is P { Y: let k } or [_, ..]) { x = k; } else { continue; }\n        \
+                y = 1;\n        break;\n    }\n    match (n) { 1 when x > 0 => { return x; } _ => {} }\n    \
+                let f = (a: int = 1) => a + x;\n    for (var i = 0; i < n; i++) { x += i; }\n    \
+                foreach (let (u, v) in [(1, 2)]) { y = u; }\n    unsafe { x = await n; }\n    return x;\n}\n";
+    for (cut, _) in text.char_indices() {
+        let _ = diagnostics_of(&text[..cut]);
+    }
+}
