@@ -135,6 +135,10 @@ pub struct Body {
     /// [`Body::signature_types`] are checked (`MR0123`). `Private`, which
     /// nothing is narrower than, for one the body checks nothing for.
     pub visibility: Visibility,
+    /// The return type, as written, of a declaration whose signature the
+    /// item tree does not hold; `None` when none is written or the item
+    /// tree holds it.
+    pub ret: Option<TypeId>,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a

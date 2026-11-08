@@ -37,6 +37,8 @@ mod type_ref;
 
 #[cfg(test)]
 mod test_db;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use arena::arena_index;
 pub use bodies::{

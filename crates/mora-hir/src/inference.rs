@@ -903,53 +903,9 @@ mod tests {
         assert_eq!(fixed.remaining, Vec::<String>::new());
     }
 
-    /// A text with the edits of every fix its diagnostics offer applied.
-    struct Fixed {
-        /// The text after the edits.
-        text: String,
-        /// How many edits were applied.
-        edits: usize,
-        /// The lines a fix changed that still report a diagnostic, which
-        /// must be none.
-        remaining: Vec<String>,
-    }
-
-    /// `text` with every fix its diagnostics offer applied. A fix adds no
-    /// line, so a line has one number in both texts.
-    fn apply_fixes(text: &str) -> Fixed {
-        let mut edits: Vec<_> = diagnostics_of(text)
-            .iter()
-            .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.clone()))
-            .collect();
-        // Edits apply from the end of the text, so earlier offsets hold.
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
-        let mut fixed = text.to_owned();
-        for edit in &edits {
-            fixed.replace_range(
-                std::ops::Range::<usize>::from(edit.span.range),
-                &edit.replacement,
-            );
-        }
-        let line_of =
-            |index: &mora_span::LineIndex, offset| index.line_col(offset).map(|at| at.line);
-        let before = mora_span::LineIndex::new(text);
-        let fixed_lines: std::collections::BTreeSet<_> = edits
-            .iter()
-            .map(|edit| line_of(&before, edit.span.range.start()))
-            .collect();
-        let after = mora_span::LineIndex::new(&fixed);
-        let lines: Vec<_> = fixed.lines().collect();
-        let remaining = diagnostics_of(&fixed)
-            .iter()
-            .map(|d| line_of(&after, d.primary.span.range.start()))
-            .filter(|line| fixed_lines.contains(line))
-            .map(|line| line.map_or("?", |line| lines[line as usize]).to_owned())
-            .collect();
-        Fixed {
-            edits: edits.len(),
-            text: fixed,
-            remaining,
-        }
+    /// `text` with every fix its diagnostics offer applied.
+    fn apply_fixes(text: &str) -> crate::test_support::Fixed {
+        crate::test_support::apply_fixes(text, diagnostics_of)
     }
 
     #[test]

@@ -1,68 +1,59 @@
 //! Tests of the control-flow checks.
 
 use mora_diag::Diagnostic;
-use mora_span::{FileId, Project, ProjectKind, SourceFile};
-
-/// A database for the tests.
-#[salsa::db]
-#[derive(Clone, Default)]
-struct TestDb {
-    storage: salsa::Storage<Self>,
-}
-
-#[salsa::db]
-impl salsa::Database for TestDb {}
-
-#[salsa::db]
-impl mora_span::Db for TestDb {}
+use mora_hir::test_support::{TestDb, app, apply_fixes, codes, file_named};
+use salsa::Setter;
 
 /// The control-flow errors of `src/Program.mr` alone in an app.
 fn diagnostics_of(text: &str) -> Vec<Diagnostic> {
-    let db = TestDb::default();
-    let file = SourceFile::new(&db, FileId::new(0), "src/Program.mr".into(), text.into());
-    let project = Project::new(
-        &db,
-        "app".into(),
-        vec![file],
-        "App".into(),
-        ProjectKind::App,
-        "src/Program.mr".into(),
-        Vec::new(),
-    );
+    let db = TestDb::new();
+    let project = app(&db, &[("src/Program.mr", text)]);
     crate::diagnostics(&db, project).clone()
 }
 
 /// The codes `text` reports.
 fn reported(text: &str) -> Vec<String> {
-    diagnostics_of(text)
-        .iter()
-        .map(|d| d.code.to_string())
-        .collect()
+    codes(&diagnostics_of(text))
 }
 
 /// `text` with the edits of every fix its diagnostics offer applied.
 fn fixed(text: &str) -> String {
-    let mut edits: Vec<_> = diagnostics_of(text)
-        .iter()
-        .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.clone()))
-        .collect();
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
-    let mut out = text.to_owned();
-    for edit in &edits {
-        out.replace_range(
-            std::ops::Range::<usize>::from(edit.span.range),
-            &edit.replacement,
-        );
-    }
-    out
+    apply_fixes(text, diagnostics_of).text
 }
 
 /// The messages `text` reports.
 fn messages(text: &str) -> Vec<String> {
-    diagnostics_of(text)
-        .iter()
-        .map(|d| d.message.clone())
-        .collect()
+    mora_hir::test_support::messages(&diagnostics_of(text))
+}
+
+#[test]
+fn an_edit_checks_the_edited_file_again_only() {
+    let mut db = TestDb::new();
+    let text = |n: u32| format!("A(): int {{\n    let x: int;\n    return x + {n};\n}}\n");
+    let project = app(
+        &db,
+        &[
+            ("src/Program.mr", &text(1)),
+            ("src/Other.mr", "B(): int {\n}\n"),
+        ],
+    );
+    let file = file_named(&db, project, "src/Program.mr");
+    assert_eq!(
+        codes(crate::diagnostics(&db, project)),
+        ["MR0184", "MR0181"]
+    );
+    db.take_executed();
+    file.set_text(&mut db).to(text(2));
+    assert_eq!(
+        codes(crate::diagnostics(&db, project)),
+        ["MR0184", "MR0181"]
+    );
+    let rebuilt = db
+        .take_executed()
+        .into_iter()
+        .filter(|key| key.starts_with("file_diagnostics("))
+        .count();
+    assert_eq!(rebuilt, 1);
 }
 
 #[test]
@@ -410,7 +401,6 @@ fn an_assignment_anywhere_in_a_loop_counts_for_later_runs() {
         "foreach (let k in [x = 1]) {}",
         "match (1) { _ when (x = 1) > 0 => {} _ => {} }",
         "unsafe { x = 1; }",
-        "return (x = 1);",
         "let (u, v) = (x = 1, 2);",
         "if ((x = 1) > 0) {}",
     ] {
@@ -513,4 +503,109 @@ fn patterns_defaults_and_qualified_calls() {
     ] {
         assert_eq!(reported(text), expected, "{text}");
     }
+}
+
+#[test]
+fn a_call_of_std_panic_ends_a_path() {
+    assert_eq!(
+        reported("F(): int {\n    Std.panic(\"x\");\n}\n"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        reported("G(): int {\n    Std.Debug.panic();\n}\n"),
+        ["MR0184"]
+    );
+}
+
+#[test]
+fn methods_and_extension_functions_return_a_value_on_every_path() {
+    let method = "interface I {\n    M(): int;\n}\nclass C : I {\n    I.M(): int {\n    }\n}\n";
+    assert_eq!(reported(method), ["MR0184"]);
+    let extension = "struct S {\n    X: int;\n}\nextension (s: S) {\n    F(): int {\n    }\n    \
+                     G(): int {\n        return 1;\n    }\n}\n";
+    assert_eq!(reported(extension), ["MR0184"]);
+}
+
+#[test]
+fn only_a_path_back_to_the_loop_start_assigns_again() {
+    let c = "let c = true;\nlet x: int;\n";
+    for (text, expected) in [
+        ("while (c) {\n    x = 1;\n    break;\n}\n", vec![]),
+        (
+            "while (true) {\n    x = 1;\n    break;\n}\nlet y = x;\n",
+            vec![],
+        ),
+        ("do {\n    x = 1;\n} while (false);\n", vec![]),
+        (
+            "while (c) {\n    if (c) {\n        x = 1;\n        break;\n    }\n}\n",
+            vec![],
+        ),
+        (
+            "while (c) {\n    if (c) {\n        x = 1;\n        continue;\n    }\n}\n",
+            vec!["MR0182"],
+        ),
+        (
+            "while (c) {\n    while (c) {\n        x = 1;\n        break;\n    }\n}\n",
+            vec!["MR0182"],
+        ),
+        (
+            "for (var i = 0; i < 3; i++) {\n    x = i;\n    return;\n}\n",
+            vec![],
+        ),
+        ("foreach (let k in [1]) {\n    x = k;\n}\n", vec!["MR0182"]),
+        (
+            "while (c) {\n    while (c) {\n        if (c) {\n            x = 1;\n            return;\n        }\n    }\n}\n",
+            vec![],
+        ),
+        (
+            "while (c) {\n    while (c) {\n        if (c) {\n            x = 1;\n        }\n    }\n}\n",
+            vec!["MR0182"],
+        ),
+        (
+            "do {\n    if (c) {\n        continue;\n    }\n    x = 1;\n} while (c);\n",
+            vec!["MR0182"],
+        ),
+    ] {
+        assert_eq!(reported(&format!("{c}{text}")), expected, "{text}");
+    }
+}
+
+#[test]
+fn a_condition_assigns_what_its_true_or_false_paths_assign() {
+    let c = "let c = true;\nvar x: int;\n";
+    for (text, expected) in [
+        ("if (c && (x = 1) > 0) {\n    let y = x;\n}\n", vec![]),
+        (
+            "if (c || (x = 1) > 0) {\n} else {\n    let y = x;\n}\n",
+            vec![],
+        ),
+        ("if (!(c || (x = 1) > 0)) {\n    let y = x;\n}\n", vec![]),
+        (
+            "if (c && (x = 1) > 0) {\n} else {\n    let y = x;\n}\n",
+            vec!["MR0181"],
+        ),
+        ("let b = c && (x = 1) > 0;\nlet y = x;\n", vec!["MR0181"]),
+        ("while (c && (x = 1) > 0) {\n    let y = x;\n}\n", vec![]),
+        ("let z = c && (x = 1) > 0 ? x : 0;\n", vec![]),
+        (
+            "match (1) {\n    _ when c && (x = 1) > 0 => x,\n    _ => 0,\n};\n",
+            vec![],
+        ),
+    ] {
+        assert_eq!(reported(&format!("{c}{text}")), expected, "{text}");
+    }
+}
+
+#[test]
+fn an_arm_after_a_guard_sees_what_the_guard_assigned() {
+    let text = "let x: int;\nmatch (1) {\n    _ when (x = 1) > 0 => {}\n    _ => {\n        x = 2;\n    }\n}\n";
+    assert_eq!(reported(text), ["MR0182"]);
+}
+
+#[test]
+fn a_recovered_return_reports_only_the_parse_error() {
+    assert_eq!(
+        reported("F(): int {\n    return\n}\n"),
+        Vec::<String>::new()
+    );
 }

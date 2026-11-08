@@ -1,95 +1,12 @@
 //! The database and helpers the tests of this crate share.
 
-use std::sync::{Arc, Mutex};
+use mora_span::{Project, SourceFile};
 
-use mora_diag::Diagnostic;
-use mora_span::{Dependency, FileId, Project, ProjectKind, SourceFile};
-
+pub(crate) use crate::test_support::{TestDb, app, codes, file_named, messages};
 use crate::*;
-
-/// A database that records every query execution.
-#[salsa::db]
-#[derive(Clone)]
-pub(crate) struct TestDb {
-    storage: salsa::Storage<Self>,
-    executed: Arc<Mutex<Vec<String>>>,
-    next_file: Arc<Mutex<u32>>,
-}
-
-impl TestDb {
-    pub(crate) fn new() -> Self {
-        let executed = Arc::new(Mutex::new(Vec::new()));
-        let log = Arc::clone(&executed);
-        let storage = salsa::Storage::new(Some(Box::new(move |event: salsa::Event| {
-            if let salsa::EventKind::WillExecute { database_key } = event.kind {
-                log.lock().unwrap().push(format!("{database_key:?}"));
-            }
-        })));
-        Self {
-            storage,
-            executed,
-            next_file: Arc::default(),
-        }
-    }
-
-    pub(crate) fn take_executed(&self) -> Vec<String> {
-        std::mem::take(&mut *self.executed.lock().unwrap())
-    }
-
-    pub(crate) fn file(&self, path: &str, text: &str) -> SourceFile {
-        let mut next = self.next_file.lock().unwrap();
-        let id = FileId::new(*next);
-        *next += 1;
-        SourceFile::new(self, id, path.into(), text.into())
-    }
-
-    pub(crate) fn project(
-        &self,
-        name: &str,
-        kind: ProjectKind,
-        files: &[(&str, &str)],
-        dependencies: Vec<Dependency>,
-    ) -> Project {
-        let files = files
-            .iter()
-            .map(|(path, text)| self.file(path, text))
-            .collect();
-        Project::new(
-            self,
-            name.into(),
-            files,
-            pascal_case(name).unwrap(),
-            kind,
-            "src/Program.mr".into(),
-            dependencies,
-        )
-    }
-}
-
-#[salsa::db]
-impl salsa::Database for TestDb {}
-
-#[salsa::db]
-impl mora_span::Db for TestDb {}
-
-pub(crate) fn app(db: &TestDb, files: &[(&str, &str)]) -> Project {
-    db.project("users-api", ProjectKind::App, files, Vec::new())
-}
-
-pub(crate) fn codes(diagnostics: &[Diagnostic]) -> Vec<String> {
-    diagnostics.iter().map(|d| d.code.to_string()).collect()
-}
 
 pub(crate) fn path(text: &str) -> Vec<String> {
     text.split('.').map(str::to_owned).collect()
-}
-
-pub(crate) fn file_named(db: &TestDb, project: Project, path: &str) -> SourceFile {
-    *project
-        .files(db)
-        .iter()
-        .find(|file| file.path(db) == path)
-        .unwrap()
 }
 
 /// The full name of what `text` resolves to from the file at `from`.
@@ -151,8 +68,4 @@ pub(crate) fn unsupported(ty: &Ty) -> (Construct, usize) {
         Ty::Unsupported(it) => (it.construct, it.parts.len()),
         other => panic!("not unsupported: {other:?}"),
     }
-}
-
-pub(crate) fn messages(diagnostics: &[Diagnostic]) -> Vec<String> {
-    diagnostics.iter().map(|d| d.message.clone()).collect()
 }

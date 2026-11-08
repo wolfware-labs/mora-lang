@@ -343,9 +343,12 @@ impl Lower {
             }
             ast::Stmt::BreakStmt(_) => Stmt::Break,
             ast::Stmt::ContinueStmt(_) => Stmt::Continue,
-            ast::Stmt::ReturnStmt(it) => {
-                Stmt::Return(it.expr().map(|expr| self.expr(Some(expr), range)))
-            }
+            // A `return` the parser recovered from, with neither a value nor
+            // `;`, has a missing value rather than none.
+            ast::Stmt::ReturnStmt(it) => match (it.expr(), it.semicolon_token()) {
+                (None, Some(_)) => Stmt::Return(None),
+                (expr, _) => Stmt::Return(Some(self.expr(expr, range))),
+            },
             ast::Stmt::MatchStmt(it) => {
                 let scrutinee = self.expr(it.scrutinee(), range);
                 let arms = self.match_arms(it.match_arm_list());

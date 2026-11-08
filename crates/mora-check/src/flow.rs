@@ -8,9 +8,9 @@
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
-    Arg, BinaryOp, Body, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId, InterpPart,
-    ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, Signature, Stmt, StmtId,
-    Target, Ty, UnaryOp, arena_index, body_resolution, item_tree, signature,
+    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId,
+    InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, Signature,
+    Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree, signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
@@ -158,12 +158,13 @@ pub(crate) fn check(
             assigned.remove(*local);
         }
     }
+    let resolution = body_resolution(db, project, file, owner);
     let mut flow = Flow {
         db,
         file,
         body,
         map,
-        resolution: body_resolution(db, project, file, owner),
+        resolution,
         state: State {
             reachable: true,
             maybe: Locals::empty(len),
@@ -173,7 +174,8 @@ pub(crate) fn check(
         depth: vec![0; len],
         closure: 0,
         loops: Vec::new(),
-        function: function(db, project, file, owner),
+        dry: false,
+        function: function(db, project, file, owner, body, resolution),
         reported: Locals::empty(len),
         out,
     };
@@ -187,24 +189,43 @@ pub(crate) fn check(
 }
 
 /// The function `owner` is, when it returns a value: an item whose
-/// signature gives its return type. Other bodies, whose return types come
-/// with their kinds of member, are not checked yet (D-138).
-fn function(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Function {
-    let BodyOwner::Item(item) = owner else {
-        return Function::default();
-    };
-    let id = ItemId {
-        project,
-        file,
-        item,
-    };
-    let returns_value = match signature(db, id) {
-        Signature::Function(function) => returns_value(&function.ret),
-        _ => false,
-    };
-    Function {
-        name: item_tree(db, file).item(item).name.clone(),
-        returns_value,
+/// signature gives its return type, or a function that implements an
+/// interface member or extends a type, whose body holds it. Other bodies,
+/// whose return types come with their kinds of member, are not checked yet
+/// (D-138).
+fn function(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    body: &Body,
+    resolution: &BodyResolution,
+) -> Function {
+    match owner {
+        BodyOwner::Item(item) => {
+            let id = ItemId {
+                project,
+                file,
+                item,
+            };
+            let returns_value = match signature(db, id) {
+                Signature::Function(function) => returns_value(&function.ret),
+                _ => false,
+            };
+            Function {
+                name: item_tree(db, file).item(item).name.clone(),
+                returns_value,
+            }
+        }
+        BodyOwner::Member(..) | BodyOwner::Extension(..) if body.kind == BodyKind::Function => {
+            Function {
+                name: body.name.clone(),
+                returns_value: body
+                    .ret
+                    .is_some_and(|ret| returns_value(&resolution.written(ret))),
+            }
+        }
+        _ => Function::default(),
     }
 }
 
@@ -236,6 +257,9 @@ struct Flow<'a> {
     closure: u32,
     /// The loops around the walk, innermost last.
     loops: Vec<Loop>,
+    /// Whether the walk is a first pass over a loop, which only finds what
+    /// its iterations may assign and reports nothing.
+    dry: bool,
     /// The function the walk is in.
     function: Function,
     /// The locals already reported as read before they are assigned.
@@ -329,33 +353,36 @@ impl Flow<'_> {
                 then,
                 r#else,
             } => {
-                self.expr(*condition);
-                let before = self.state.clone();
+                let (when_true, when_false) = self.condition(*condition);
+                self.state = when_true;
                 self.stmt(*then);
-                let after_then = std::mem::replace(&mut self.state, before);
+                let after_then = std::mem::replace(&mut self.state, when_false);
                 if let Some(r#else) = r#else {
                     self.stmt(*r#else);
                 }
                 self.state.join(&after_then);
             }
-            Stmt::While { condition, body } => {
-                self.enter_loop(&[*condition], &[*body]);
-                self.expr(*condition);
-                let exit = (!is_true(self.body, *condition)).then(|| self.state.clone());
-                self.loops.push(self.fresh_loop());
-                self.stmt(*body);
-                self.leave_loop(exit);
-            }
-            Stmt::DoWhile { body, condition } => {
-                self.enter_loop(&[*condition], &[*body]);
-                self.loops.push(self.fresh_loop());
-                self.stmt(*body);
-                let continues = self.continues();
-                self.state.join(&continues);
-                self.expr(*condition);
-                let exit = (!is_true(self.body, *condition)).then(|| self.state.clone());
-                self.leave_loop(exit);
-            }
+            Stmt::While { condition, body } => self.r#loop(|flow| {
+                let exit = flow.head(Some(*condition));
+                flow.stmt(*body);
+                let back = flow.back();
+                (exit, back)
+            }),
+            Stmt::DoWhile { body, condition } => self.r#loop(|flow| {
+                flow.stmt(*body);
+                let end = flow.back();
+                flow.state = end;
+                let (when_true, when_false) = flow.condition(*condition);
+                let body = flow.body;
+                let exit = (!is_bool(body, *condition, true)).then_some(when_false);
+                // `do { } while (false);` runs its body once.
+                let back = if is_bool(body, *condition, false) {
+                    flow.unreachable()
+                } else {
+                    when_true
+                };
+                (exit, back)
+            }),
             Stmt::For {
                 init,
                 condition,
@@ -363,22 +390,15 @@ impl Flow<'_> {
                 body: loop_body,
             } => {
                 self.block(init);
-                self.enter_loop(condition.iter().chain(update), &[*loop_body]);
-                let exit = match condition {
-                    Some(condition) => {
-                        self.expr(*condition);
-                        (!is_true(self.body, *condition)).then(|| self.state.clone())
+                self.r#loop(|flow| {
+                    let exit = flow.head(*condition);
+                    flow.stmt(*loop_body);
+                    flow.state = flow.back();
+                    for &expr in update {
+                        flow.expr(expr);
                     }
-                    None => None,
-                };
-                self.loops.push(self.fresh_loop());
-                self.stmt(*loop_body);
-                let continues = self.continues();
-                self.state.join(&continues);
-                for &expr in update {
-                    self.expr(expr);
-                }
-                self.leave_loop(exit);
+                    (exit, flow.state.clone())
+                });
             }
             Stmt::Foreach {
                 pat,
@@ -387,12 +407,13 @@ impl Flow<'_> {
                 ..
             } => {
                 self.expr(*iterable);
-                self.enter_loop(&[], &[*loop_body]);
-                let exit = Some(self.state.clone());
-                self.pat(*pat);
-                self.loops.push(self.fresh_loop());
-                self.stmt(*loop_body);
-                self.leave_loop(exit);
+                self.r#loop(|flow| {
+                    let exit = Some(flow.state.clone());
+                    flow.pat(*pat);
+                    flow.stmt(*loop_body);
+                    let back = flow.back();
+                    (exit, back)
+                });
             }
             Stmt::Break => self.jump(stmt, Jump::Break),
             Stmt::Continue => self.jump(stmt, Jump::Continue),
@@ -426,45 +447,115 @@ impl Flow<'_> {
         self.state = self.unreachable();
     }
 
-    /// A loop that nothing has left yet.
-    fn fresh_loop(&self) -> Loop {
-        Loop {
+    /// A loop, whose iteration `iterate` walks from the loop's start: it
+    /// returns the state that leaves the loop by its condition, `None` for a
+    /// loop that never ends by it, and the state that goes back to the start.
+    ///
+    /// A first pass finds what an iteration may assign before it goes back,
+    /// so that the second, which reports, knows what may be assigned already
+    /// at the start. A loop inside a first pass is walked once: what its
+    /// iterations assign is on its way out as well.
+    fn r#loop(&mut self, iterate: impl Fn(&mut Self) -> (Option<State>, State)) {
+        let entry = self.state.clone();
+        let back = if self.dry {
+            None
+        } else {
+            let reported = self.reported.clone();
+            let len = self.out.len();
+            self.dry = true;
+            let back = self.iteration(&iterate).1;
+            self.dry = false;
+            self.out.truncate(len);
+            self.reported = reported;
+            self.state = entry;
+            self.state.maybe.union(&back.maybe);
+            Some(back)
+        };
+        let (exit, again) = self.iteration(&iterate);
+        self.state = exit;
+        if back.is_none() {
+            self.state.maybe.union(&again.maybe);
+        }
+    }
+
+    /// One walk of a loop's iteration: the state after the loop, and the
+    /// state that goes back to its start.
+    fn iteration(
+        &mut self,
+        iterate: &impl Fn(&mut Self) -> (Option<State>, State),
+    ) -> (State, State) {
+        self.loops.push(Loop {
             breaks: self.unreachable(),
             continues: self.unreachable(),
-        }
-    }
-
-    /// The paths that `continue` the innermost loop.
-    fn continues(&mut self) -> State {
-        self.loops
-            .last()
-            .map_or_else(|| self.unreachable(), |target| target.continues.clone())
-    }
-
-    /// Before a loop's first iteration: a local it assigns may be assigned
-    /// already when an iteration after the first assigns it.
-    fn enter_loop<'e>(&mut self, exprs: impl IntoIterator<Item = &'e ExprId>, stmts: &[StmtId]) {
-        let mut assigned = Locals::empty(self.body.locals.len());
-        let mut collect = Assigned {
-            body: self.body,
-            out: &mut assigned,
-        };
-        for &expr in exprs {
-            collect.expr(expr);
-        }
-        for &stmt in stmts {
-            collect.stmt(stmt);
-        }
-        self.state.maybe.union(&assigned);
-    }
-
-    /// After a loop: the paths that leave it, by its condition (`exit`,
-    /// `None` for a loop that never ends by it) or by `break`.
-    fn leave_loop(&mut self, exit: Option<State>) {
+        });
+        let (exit, back) = iterate(self);
         let target = self.loops.pop();
-        self.state = exit.unwrap_or_else(|| self.unreachable());
+        let mut after = exit.unwrap_or_else(|| self.unreachable());
         if let Some(target) = target {
-            self.state.join(&target.breaks);
+            after.join(&target.breaks);
+        }
+        (after, back)
+    }
+
+    /// The start of an iteration of a loop with the condition `condition`:
+    /// the walk goes on where it holds, and the state where it does not,
+    /// which leaves the loop, is returned. `None` for a loop that never ends
+    /// by its condition: one with none or with the literal `true` (D-138).
+    fn head(&mut self, condition: Option<ExprId>) -> Option<State> {
+        let condition = condition?;
+        let (when_true, when_false) = self.condition(condition);
+        self.state = when_true;
+        (!is_bool(self.body, condition, true)).then_some(when_false)
+    }
+
+    /// Where the end of an iteration and the paths that `continue` it meet.
+    fn back(&self) -> State {
+        let mut back = self.state.clone();
+        if let Some(target) = self.loops.last() {
+            back.join(&target.continues);
+        }
+        back
+    }
+
+    /// The condition `condition`: the states where it is `true` and where it
+    /// is `false`. The operands of `&&`, `||` and `!` lead to one or the
+    /// other.
+    fn condition(&mut self, condition: ExprId) -> (State, State) {
+        let body = self.body;
+        match &body.exprs[condition] {
+            Expr::Binary {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
+            } => {
+                let (when_true, mut when_false) = self.condition(*lhs);
+                self.state = when_true;
+                let (when_true, rhs_false) = self.condition(*rhs);
+                when_false.join(&rhs_false);
+                (when_true, when_false)
+            }
+            Expr::Binary {
+                op: BinaryOp::Or,
+                lhs,
+                rhs,
+            } => {
+                let (mut when_true, when_false) = self.condition(*lhs);
+                self.state = when_false;
+                let (rhs_true, when_false) = self.condition(*rhs);
+                when_true.join(&rhs_true);
+                (when_true, when_false)
+            }
+            Expr::Unary {
+                op: UnaryOp::Not,
+                expr,
+            } => {
+                let (when_true, when_false) = self.condition(*expr);
+                (when_false, when_true)
+            }
+            _ => {
+                self.expr(condition);
+                (self.state.clone(), self.state.clone())
+            }
         }
     }
 
@@ -478,11 +569,16 @@ impl Flow<'_> {
         } else {
             self.unreachable()
         };
+        // An arm is reached as well where an arm before it matched but its
+        // guard did not hold.
+        let mut entry = before;
         for arm in arms {
-            self.state = before.clone();
+            self.state = entry.clone();
             self.pat(arm.pat);
             if let Some(guard) = arm.guard {
-                self.expr(guard);
+                let (when_true, when_false) = self.condition(guard);
+                entry.join(&when_false);
+                self.state = when_true;
             }
             self.expr(arm.body);
             after.join(&self.state);
@@ -621,9 +717,17 @@ impl Flow<'_> {
             | Expr::Await(operand)
             | Expr::Cast { expr: operand, .. }
             | Expr::As { expr: operand, .. } => self.expr(*operand),
+            Expr::Binary {
+                op: BinaryOp::And | BinaryOp::Or,
+                ..
+            } => {
+                let (when_true, when_false) = self.condition(expr);
+                self.state = when_true;
+                self.state.join(&when_false);
+            }
             Expr::Binary { op, lhs, rhs } => {
                 self.expr(*lhs);
-                if matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce) {
+                if *op == BinaryOp::Coalesce {
                     // The right operand may not run.
                     let before = self.state.clone();
                     self.expr(*rhs);
@@ -661,10 +765,10 @@ impl Flow<'_> {
                 then,
                 r#else,
             } => {
-                self.expr(*condition);
-                let before = self.state.clone();
+                let (when_true, when_false) = self.condition(*condition);
+                self.state = when_true;
                 self.expr(*then);
-                let after_then = std::mem::replace(&mut self.state, before);
+                let after_then = std::mem::replace(&mut self.state, when_false);
                 self.expr(*r#else);
                 self.state.join(&after_then);
             }
@@ -688,22 +792,27 @@ impl Flow<'_> {
     }
 
     /// Whether a call of `callee` never returns: a call of `panic`,
-    /// `Unreachable` or `Todo` of the standard library (§11.4, D-138).
+    /// `Unreachable` or `Todo` of the standard library, by its name or as
+    /// `Std.panic` (§11.4, D-138).
     fn diverges(&self, callee: ExprId) -> bool {
-        let Expr::Path(path) = &self.body.exprs[callee] else {
-            return false;
-        };
-        let [name] = path.segments.as_slice() else {
-            return false;
+        let body = self.body;
+        // The path that has to name the standard library: the function's own
+        // name, or `Std` before it.
+        let (name, path) = match &body.exprs[callee] {
+            Expr::Path(path) => match path.segments.as_slice() {
+                [name] => (name, callee),
+                _ => return false,
+            },
+            Expr::Member { receiver, name, .. } => match &body.exprs[*receiver] {
+                Expr::Path(path) if path.segments == ["Std"] => (name, *receiver),
+                _ => return false,
+            },
+            _ => return false,
         };
         DIVERGING.contains(&name.as_str())
-            && self
-                .resolution
-                .paths
-                .get(&callee)
-                .is_some_and(|resolution| {
-                    matches!(resolution.target, Target::Item(Resolved::External))
-                })
+            && self.resolution.paths.get(&path).is_some_and(|resolution| {
+                matches!(resolution.target, Target::Item(Resolved::External))
+            })
     }
 
     /// A read of `local` at `expr`: `MR0181` when it may not be assigned.
@@ -835,200 +944,9 @@ fn note_mr0184(name: &str) -> String {
     )
 }
 
-/// Whether `condition` is the literal `true`, which makes a loop end only
-/// by `break` (D-138).
-fn is_true(body: &Body, condition: ExprId) -> bool {
-    matches!(body.exprs[condition], Expr::Literal(Literal::Bool(true)))
-}
-
-/// The locals that a part of a body assigns, outside the closures in it.
-struct Assigned<'a> {
-    /// The body.
-    body: &'a Body,
-    /// The locals found so far.
-    out: &'a mut Locals,
-}
-
-impl Assigned<'_> {
-    fn stmt(&mut self, stmt: StmtId) {
-        let body = self.body;
-        match &body.stmts[stmt] {
-            Stmt::Missing | Stmt::Break | Stmt::Continue | Stmt::Return(None) => {}
-            Stmt::Function(_) => {}
-            Stmt::Expr(expr) | Stmt::Return(Some(expr)) | Stmt::Deconstruct { init: expr, .. } => {
-                self.expr(*expr);
-            }
-            Stmt::Local { init, .. } => {
-                if let Some(init) = init {
-                    self.expr(*init);
-                }
-            }
-            Stmt::Block(stmts) => {
-                for &stmt in stmts {
-                    self.stmt(stmt);
-                }
-            }
-            Stmt::If {
-                condition,
-                then,
-                r#else,
-            } => {
-                self.expr(*condition);
-                self.stmt(*then);
-                if let Some(r#else) = r#else {
-                    self.stmt(*r#else);
-                }
-            }
-            Stmt::While { condition, body } | Stmt::DoWhile { body, condition } => {
-                self.expr(*condition);
-                self.stmt(*body);
-            }
-            Stmt::For {
-                init,
-                condition,
-                update,
-                body,
-            } => {
-                for &stmt in init {
-                    self.stmt(stmt);
-                }
-                for &expr in condition.iter().chain(update) {
-                    self.expr(expr);
-                }
-                self.stmt(*body);
-            }
-            Stmt::Foreach { iterable, body, .. } => {
-                self.expr(*iterable);
-                self.stmt(*body);
-            }
-            Stmt::Match { scrutinee, arms } => {
-                self.expr(*scrutinee);
-                for arm in arms {
-                    if let Some(guard) = arm.guard {
-                        self.expr(guard);
-                    }
-                    self.expr(arm.body);
-                }
-            }
-            Stmt::Unsafe(stmt) => self.stmt(*stmt),
-        }
-    }
-
-    fn expr(&mut self, expr: ExprId) {
-        let body = self.body;
-        match &body.exprs[expr] {
-            Expr::Missing
-            | Expr::Literal(_)
-            | Expr::Local(_)
-            | Expr::Path(_)
-            | Expr::This
-            | Expr::Type(_)
-            | Expr::Default(_)
-            | Expr::Sizeof(_)
-            | Expr::Nameof(_)
-            | Expr::Macro
-            // A closure's assignments are checked as its own.
-            | Expr::Lambda(_) => {}
-            Expr::Assign { lhs, rhs, .. } => {
-                self.place(*lhs);
-                self.expr(*rhs);
-            }
-            Expr::Unary {
-                op: UnaryOp::PreIncrement | UnaryOp::PreDecrement,
-                expr: place,
-            }
-            | Expr::Postfix { expr: place, .. } => self.place(*place),
-            Expr::Unary { expr: inner, .. }
-            | Expr::Propagate(inner)
-            | Expr::Await(inner)
-            | Expr::Cast { expr: inner, .. }
-            | Expr::As { expr: inner, .. }
-            | Expr::Member { receiver: inner, .. }
-            | Expr::NewArray { size: inner, .. }
-            | Expr::Is { expr: inner, .. } => self.expr(*inner),
-            Expr::Interpolated(parts) => {
-                for part in parts {
-                    if let InterpPart::Hole {
-                        value, alignment, ..
-                    } = part
-                    {
-                        self.expr(*value);
-                        if let Some(alignment) = alignment {
-                            self.expr(*alignment);
-                        }
-                    }
-                }
-            }
-            Expr::Tuple(elems) => {
-                for &(_, elem) in elems {
-                    self.expr(elem);
-                }
-            }
-            Expr::Collection(elems) => {
-                for &(_, elem) in elems {
-                    self.expr(elem);
-                }
-            }
-            Expr::Call { callee: base, args } | Expr::Index { base, args, .. } => {
-                self.expr(*base);
-                for arg in args {
-                    self.expr(arg.expr);
-                }
-            }
-            Expr::Binary { lhs, rhs, .. } => {
-                self.expr(*lhs);
-                self.expr(*rhs);
-            }
-            Expr::Range { start, end } => {
-                for &part in start.iter().chain(end) {
-                    self.expr(part);
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                self.expr(*scrutinee);
-                for arm in arms {
-                    if let Some(guard) = arm.guard {
-                        self.expr(guard);
-                    }
-                    self.expr(arm.body);
-                }
-            }
-            Expr::With { expr: value, inits } => {
-                self.expr(*value);
-                for &(_, init) in inits {
-                    self.expr(init);
-                }
-            }
-            Expr::Conditional {
-                condition,
-                then,
-                r#else,
-            } => {
-                self.expr(*condition);
-                self.expr(*then);
-                self.expr(*r#else);
-            }
-            Expr::New { args, inits, .. } => {
-                for arg in args.iter().flatten() {
-                    self.expr(arg.expr);
-                }
-                for &(_, init) in inits.iter().flatten() {
-                    self.expr(init);
-                }
-            }
-            Expr::Block(stmts) => {
-                for &stmt in stmts {
-                    self.stmt(stmt);
-                }
-            }
-        }
-    }
-
-    /// An assigned place: a local is assigned, and any other place is read.
-    fn place(&mut self, place: ExprId) {
-        match self.body.exprs[place] {
-            Expr::Local(local) => self.out.insert(local),
-            _ => self.expr(place),
-        }
-    }
+/// Whether `condition` is the literal `value`: a loop whose condition is
+/// `true` ends only by `break`, and one whose condition is `false` after its
+/// body does not go back (D-138).
+fn is_bool(body: &Body, condition: ExprId, value: bool) -> bool {
+    matches!(body.exprs[condition], Expr::Literal(Literal::Bool(literal)) if literal == value)
 }

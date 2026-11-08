@@ -125,6 +125,7 @@ fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
     {
         let ty = lower.ty(Some(ret));
         lower.body.signature_types.push(ty);
+        lower.body.ret = Some(ty);
     }
     if let Some(args) = it.this_call {
         let range = args.syntax().text_range();
