@@ -515,6 +515,8 @@ fn a_call_of_std_panic_ends_a_path() {
         reported("G(): int {\n    Std.Debug.panic();\n}\n"),
         ["MR0184"]
     );
+    // `Debug` is a name of the prelude, but not the standard library's root.
+    assert_eq!(reported("H(): int {\n    Debug.panic();\n}\n"), ["MR0184"]);
 }
 
 #[test]
@@ -524,6 +526,10 @@ fn methods_and_extension_functions_return_a_value_on_every_path() {
     let extension = "struct S {\n    X: int;\n}\nextension (s: S) {\n    F(): int {\n    }\n    \
                      G(): int {\n        return 1;\n    }\n}\n";
     assert_eq!(reported(extension), ["MR0184"]);
+    // An operator waits for its return type (D-138).
+    let operator =
+        "struct V {\n    X: int;\n    public static operator +(a: V, b: V): V {\n    }\n}\n";
+    assert_eq!(reported(operator), Vec::<String>::new());
 }
 
 #[test]
@@ -585,6 +591,8 @@ fn a_condition_assigns_what_its_true_or_false_paths_assign() {
             vec!["MR0181"],
         ),
         ("let b = c && (x = 1) > 0;\nlet y = x;\n", vec!["MR0181"]),
+        ("let b = c ?? (x = 1);\nlet y = x;\n", vec!["MR0181"]),
+        ("let b = 1 + (x = 1);\nlet y = x;\n", vec![]),
         ("while (c && (x = 1) > 0) {\n    let y = x;\n}\n", vec![]),
         ("let z = c && (x = 1) > 0 ? x : 0;\n", vec![]),
         (
