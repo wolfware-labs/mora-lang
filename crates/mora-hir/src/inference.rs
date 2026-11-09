@@ -628,6 +628,10 @@ mod tests {
             [mismatch("int", "string"), mismatch("int", "string")].concat()
         );
         assert_eq!(body("(a, _) = (1, \"x\");"), none());
+        // Each element of a literal is checked, and reported, where it is.
+        let text = "F() {\n    var a = 1;\n    var b = 2;\n    (a, b) = (1, \"x\");\n}\n";
+        let at = diagnostics_of(text)[0].primary.span.range;
+        assert_eq!(&text[std::ops::Range::<usize>::from(at)], "\"x\"");
         assert_eq!(body("(_, a) = (1, \"x\");"), mismatch("int", "string"));
         assert_eq!(
             body("(a, (b, _)) = (1, (\"z\", 3));"),

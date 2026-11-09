@@ -972,29 +972,21 @@ impl Check<'_> {
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
         match op {
-            None if matches!(self.body.exprs[lhs], Expr::Tuple(_)) => {
+            None => {
                 let places = self.place_type(lhs);
                 self.deconstruct(lhs, &places, rhs);
             }
-            None => match self.infer(lhs) {
-                Some(place) => self.check(rhs, &place),
-                None => {
-                    self.infer(rhs);
-                }
-            },
             Some(op) => {
                 self.binary(expr, op, lhs, rhs);
             }
         }
     }
 
-    /// The type of the places `place` of a deconstructing assignment: a
-    /// tuple for a tuple of places, and `_` for a discarded element or a
-    /// place of unknown type (D-139).
+    /// The type of the place `place` of `=`: a tuple for a tuple of places
+    /// (D-139), and `_` for a discarded element or a place of unknown type.
     fn place_type(&mut self, place: ExprId) -> Ty {
         let body = self.body;
         match &body.exprs[place] {
-            Expr::Discard => Ty::Error,
             Expr::Tuple(places) => Ty::Tuple(
                 places
                     .iter()
@@ -1026,10 +1018,8 @@ impl Check<'_> {
                     self.matches(place, places, value, &found);
                 }
             }
-            // A discarded element or a place of unknown type takes any value.
-            (_, Ty::Error, _) => {
-                self.infer(value);
-            }
+            // A discarded element or a place of unknown type, `_`, takes any
+            // value.
             _ => self.check(value, places),
         }
     }
