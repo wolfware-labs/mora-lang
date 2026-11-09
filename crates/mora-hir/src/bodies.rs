@@ -139,6 +139,8 @@ pub struct Body {
     /// item tree does not hold; `None` when none is written or the item
     /// tree holds it.
     pub ret: Option<TypeId>,
+    /// Whether that declaration is `async`.
+    pub is_async: bool,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
@@ -226,6 +228,9 @@ pub enum Expr {
     Type(TypeId),
     /// `(a, b)`, with the names of named elements.
     Tuple(Vec<(Option<String>, ExprId)>),
+    /// `_` among the places of a deconstructing assignment, as in
+    /// `(a, _) = pair;` (§5.5): the element is not stored.
+    Discard,
     /// `[a, ..b]`: each element, and whether it is spread.
     Collection(Vec<(bool, ExprId)>),
     /// `x.m` or `x?.m`.
@@ -756,6 +761,16 @@ mod tests {
              fn UsersApi.Point.Length() {\n    let d#0: int = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
              return d#0 + Twice{fn UsersApi.Twice}(X{field UsersApi.Point.X});\n}\n\n\
              fn UsersApi.Twice(n#0) => n#0 * 2;\n"
+        );
+    }
+
+    #[test]
+    fn a_deconstructing_assignment_lowers_its_places() {
+        let text = "var a = 1;\nvar b = 2;\n(a, (b, _)) = (1, (2, 3));\n(a, b) += (1, 2);\n";
+        assert_eq!(
+            dump(text),
+            "top-level {\n    var a#0: int = 1;\n    var b#1: int = 2;\n    \
+             (a#0, (b#1, _)) = (1, (2, 3));\n    (a#0, b#1) += (1, 2);\n}\n"
         );
     }
 

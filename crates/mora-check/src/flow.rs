@@ -673,6 +673,7 @@ impl Flow<'_> {
         let body = self.body;
         match &body.exprs[expr] {
             Expr::Missing
+            | Expr::Discard
             | Expr::Literal(_)
             | Expr::Path(_)
             | Expr::This
@@ -751,8 +752,10 @@ impl Flow<'_> {
             }
             Expr::Assign { op, lhs, rhs } => {
                 // A compound assignment reads its place first.
-                if op.is_some() || !matches!(body.exprs[*lhs], Expr::Local(_)) {
+                if op.is_some() {
                     self.expr(*lhs);
+                } else {
+                    self.place(*lhs);
                 }
                 self.expr(*rhs);
                 self.assign(*lhs);
@@ -857,11 +860,36 @@ impl Flow<'_> {
         );
     }
 
-    /// An assignment to the place `place`: it assigns a local, which may
-    /// not be a `let` that is or may be assigned already (`MR0182`).
+    /// What `=` reads of the place `place` before it stores: the receivers
+    /// and indexes in it, but not a local or a discarded element.
+    fn place(&mut self, place: ExprId) {
+        let body = self.body;
+        match &body.exprs[place] {
+            Expr::Local(_) | Expr::Discard => {}
+            Expr::Tuple(places) => {
+                for &(_, place) in places {
+                    self.place(place);
+                }
+            }
+            _ => self.expr(place),
+        }
+    }
+
+    /// An assignment to the place `place`: it assigns a local, or each
+    /// place of a tuple, and a local may not be a `let` that is or may be
+    /// assigned already (`MR0182`).
     fn assign(&mut self, place: ExprId) {
-        let Expr::Local(local) = self.body.exprs[place] else {
-            return;
+        let body = self.body;
+        let local = match &body.exprs[place] {
+            Expr::Local(local) => *local,
+            // A deconstructing assignment assigns each of its places.
+            Expr::Tuple(places) => {
+                for &(_, place) in places {
+                    self.assign(place);
+                }
+                return;
+            }
+            _ => return,
         };
         let data = &self.body.locals[local];
         let in_closure = self.depth[arena_index(local)] < self.closure;

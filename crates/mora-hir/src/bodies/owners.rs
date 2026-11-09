@@ -73,6 +73,8 @@ struct Callable<'a> {
     visibility: Visibility,
     /// The return type, or the type of a getter or an indexer.
     ret: Option<ast::Type<'a>>,
+    /// Whether it is `async`.
+    is_async: bool,
     /// A `set` accessor's implicit `value`, and where it is declared.
     value: Option<TextRange>,
     /// The arguments of a constructor's `: this(...)`.
@@ -93,6 +95,7 @@ impl Default for Callable<'_> {
             with_defaults: true,
             visibility: Visibility::Private,
             ret: None,
+            is_async: false,
             value: None,
             this_call: None,
             block: None,
@@ -127,6 +130,7 @@ fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
         lower.body.signature_types.push(ty);
         lower.body.ret = Some(ty);
     }
+    lower.body.is_async = it.is_async;
     if let Some(args) = it.this_call {
         let range = args.syntax().text_range();
         let this = lower.alloc_expr(Expr::This, range);
@@ -363,6 +367,7 @@ fn member_bodies(
                         type_params: it.type_param_list().into_iter().collect(),
                         check_types: true,
                         ret: it.ret(),
+                        is_async: Written::of(it.modifiers()).is_async,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()
@@ -517,6 +522,7 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
                         type_params,
                         check_types: true,
                         ret: it.ret(),
+                        is_async: Written::of(it.modifiers()).is_async,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()

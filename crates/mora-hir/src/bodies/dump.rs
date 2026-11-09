@@ -378,6 +378,7 @@ impl Printer<'_> {
     fn expr(&mut self, expr: ExprId) {
         match &self.body.exprs[expr] {
             Expr::Missing => self.out.push_str("<missing>"),
+            Expr::Discard => self.out.push('_'),
             Expr::Literal(literal) => match literal {
                 Literal::Int(text)
                 | Literal::Real(text)

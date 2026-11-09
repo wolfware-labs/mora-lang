@@ -603,6 +603,48 @@ mod tests {
     }
 
     #[test]
+    fn a_deconstructing_assignment_checks_each_place() {
+        let body = |stmt: &str| {
+            let text =
+                format!("F(p: (int, string)) {{\n    var a = 1;\n    var b = 2;\n    {stmt}\n}}\n");
+            codes(&diagnostics_of(&text))
+        };
+        assert_eq!(body("(a, b) = (1, 2);"), Vec::<String>::new());
+        assert_eq!(body("(a, b) = (\"x\", \"y\");"), ["MR0203", "MR0203"]);
+        assert_eq!(body("(a, _) = (1, \"x\");"), Vec::<String>::new());
+        assert_eq!(body("(_, a) = (1, \"x\");"), ["MR0203"]);
+        assert_eq!(body("(a, (b, _)) = (1, (\"z\", 3));"), ["MR0203"]);
+        // A value that is not a tuple literal is checked whole.
+        assert_eq!(body("(a, b) = p;"), ["MR0203"]);
+        assert_eq!(body("(a, b) = (1, 2, 3);"), ["MR0203"]);
+        let positional = "struct P(X: int, Y: string);\nF(p: P) {\n    var a = 1;\n    \
+                          var b = \"\";\n    (a, b) = p;\n    (a, b) = 1;\n}\n";
+        assert_eq!(codes(&diagnostics_of(positional)), ["MR0203"]);
+        // `_` is a place only inside a deconstruction.
+        assert_eq!(body("_ = 1;"), ["MR0127"]);
+        assert_eq!(body("a += (_, 1).Item1;"), ["MR0127"]);
+    }
+
+    #[test]
+    fn members_and_extension_functions_return_their_own_type() {
+        let mismatches = |text: &str| {
+            codes(&diagnostics_of(text))
+                .into_iter()
+                .filter(|code| code == "MR0203")
+                .count()
+        };
+        let member = "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    \
+                      I.M(): int {\n        return \"x\";\n    }\n    \
+                      async I.N(): int {\n        return \"x\";\n    }\n}\n";
+        assert_eq!(mismatches(member), 1);
+        let extension = "struct S {\n    X: int;\n}\nextension (s: S) {\n    \
+                         F(): int => \"x\";\n    G() {\n        return 1;\n    }\n    \
+                         H(): int {\n        return 1;\n    }\n    \
+                         async K(): int {\n        return \"x\";\n    }\n}\n";
+        assert_eq!(mismatches(extension), 2);
+    }
+
+    #[test]
     fn diagnostics_check_the_bodies_of_an_edited_file_only() {
         let mut db = TestDb::new();
         let text = |n: u32| format!("A(): int {{\n    return {n};\n}}\nB(): int => \"b\";\n");

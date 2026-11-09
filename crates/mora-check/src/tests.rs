@@ -611,6 +611,32 @@ fn an_arm_after_a_guard_sees_what_the_guard_assigned() {
 }
 
 #[test]
+fn a_deconstructing_assignment_assigns_each_place() {
+    let c = "let c = true;\n";
+    for (text, expected) in [
+        (
+            "let a: int;\nvar b: int;\n(a, b) = (1, 2);\nlet d = a + b;\n",
+            vec![],
+        ),
+        (
+            "let a = 1;\nvar b: int;\n(a, b) = (1, 2);\n",
+            vec!["MR0182"],
+        ),
+        (
+            "var a: int;\nvar b: int;\nvar e: int;\n(a, (b, _)) = (1, (2, 3));\nlet d = a + b + e;\n",
+            vec!["MR0181"],
+        ),
+        (
+            "let a: int;\nwhile (c) {\n    (a, _) = (1, 2);\n}\n",
+            vec!["MR0182"],
+        ),
+        ("var a: int;\n(a, a.Length) = (\"x\", 1);\n", vec!["MR0181"]),
+    ] {
+        assert_eq!(reported(&format!("{c}{text}")), expected, "{text}");
+    }
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),

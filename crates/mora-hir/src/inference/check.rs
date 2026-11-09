@@ -97,13 +97,19 @@ pub(super) fn infer_body(
             }
         }
         Some(Signature::Value(ty)) => expected = Some(ty.clone()),
-        _ => {
-            if body.kind == BodyKind::Initializer
-                && let [ty] = body.signature_types[..]
-            {
-                expected = Some(check.resolution.written(ty));
+        _ => match body.kind {
+            BodyKind::Initializer => {
+                if let [ty] = body.signature_types[..] {
+                    expected = Some(check.resolution.written(ty));
+                }
             }
-        }
+            // A function that implements an interface member or extends a
+            // type holds its own return type, `()` when none is written.
+            BodyKind::Function if !body.is_async => {
+                expected = Some(body.ret.map_or(Ty::UNIT, |ty| check.resolution.written(ty)));
+            }
+            _ => {}
+        },
     }
     check.defaults(&body.defaults);
     if let Some(call) = body.this_call {
@@ -432,6 +438,8 @@ impl Check<'_> {
         match &body.exprs[expr] {
             // The parser reported it.
             Expr::Missing => Some(Ty::Error),
+            // A discarded element takes any type, so it checks nothing.
+            Expr::Discard => Some(Ty::Error),
             Expr::Literal(literal) => self.literal(expr, literal, false, expect),
             Expr::Interpolated(parts) => {
                 for part in parts {
@@ -964,7 +972,22 @@ impl Check<'_> {
     /// compound assignments, whose result converts back to the type of the
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
+        let body = self.body;
         match op {
+            // A tuple of places takes a tuple literal element by element, and
+            // another value whole; a struct's deconstruction is not checked
+            // yet, as in a declaration (D-139).
+            None if matches!(body.exprs[lhs], Expr::Tuple(_))
+                && !matches!(body.exprs[rhs], Expr::Tuple(_)) =>
+            {
+                let place = self.infer(lhs);
+                let value = self.infer(rhs);
+                if let Some(place) = place
+                    && !value.as_ref().is_some_and(is_struct)
+                {
+                    self.coerce(rhs, value.as_ref(), &place, Context::Value);
+                }
+            }
             None => match self.infer(lhs) {
                 Some(place) => self.check(rhs, &place),
                 None => {
