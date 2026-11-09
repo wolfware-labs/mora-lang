@@ -268,6 +268,7 @@ struct Decl<'a> {
     modifiers: Vec<ast::Modifier<'a>>,
     members: Vec<ast::Member<'a>>,
     values: Vec<(ValueMember, TextRange)>,
+    is_positional: bool,
 }
 
 /// The syntax node of every item of `file`, indexed like
@@ -334,7 +335,7 @@ impl Lowered {
             parent,
             members: Vec::new(),
             values,
-            is_positional: ast::StructDecl::cast(*node).is_some_and(|it| it.param_list().is_some()),
+            is_positional: decl.is_positional,
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),
@@ -366,6 +367,7 @@ fn decl<'a>(node: &SyntaxNode<'a>, member: bool) -> Option<Decl<'a>> {
             modifiers: modifiers.collect(),
             values: member_values(&members),
             members,
+            is_positional: false,
         };
     let members = |list: Option<ast::MemberList<'a>>| {
         list.map(|list| list.members().collect())
@@ -373,7 +375,9 @@ fn decl<'a>(node: &SyntaxNode<'a>, member: bool) -> Option<Decl<'a>> {
     };
     if let Some(it) = ast::StructDecl::cast(node) {
         let list = members(it.member_list());
-        return Some(decl(ItemKind::Struct, it.name(), it.modifiers(), list));
+        let mut decl = decl(ItemKind::Struct, it.name(), it.modifiers(), list);
+        decl.is_positional = it.param_list().is_some();
+        return Some(decl);
     }
     if let Some(it) = ast::ClassDecl::cast(node) {
         let list = members(it.member_list());

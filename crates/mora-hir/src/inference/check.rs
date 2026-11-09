@@ -436,8 +436,8 @@ impl Check<'_> {
     fn expr_kind(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
         let body = self.body;
         match &body.exprs[expr] {
-            // The parser reported it.
-            // A discarded element takes any type, so it checks nothing.
+            // The parser reported a missing expression, and a discarded
+            // element takes any type, so neither checks anything.
             Expr::Missing | Expr::Discard => Some(Ty::Error),
             Expr::Literal(literal) => self.literal(expr, literal, false, expect),
             Expr::Interpolated(parts) => {
@@ -1015,20 +1015,20 @@ impl Check<'_> {
             }
             (Expr::Tuple(_), ..) => {
                 if let Some(found) = self.infer(value) {
-                    self.matches(place, places, value, &found);
+                    self.deconstruct_type(place, places, value, &found);
                 }
             }
-            // A discarded element or a place of unknown type, `_`, takes any
-            // value.
+            // One place takes a value of its type; `_`, a discarded element or
+            // a place of unknown type, takes any value.
             _ => self.check(value, places),
         }
     }
 
-    /// Checks that `value`, of type `found`, can be stored in `place`, of
-    /// type `places`: a tuple of places takes a tuple of as many elements,
-    /// each stored in its place, or a positional struct, whose
+    /// `place = value`, where `places` is the type of `place` and `found`
+    /// the type of `value`: a tuple of places takes a tuple of as many
+    /// elements, each stored in its place, or a positional struct, whose
     /// deconstruction is not checked yet, as in a declaration (D-139).
-    fn matches(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
+    fn deconstruct_type(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
         let body = self.body;
         let Expr::Tuple(inner) = &body.exprs[place] else {
             self.coerce(value, Some(found), places, Context::Value);
@@ -1037,7 +1037,7 @@ impl Check<'_> {
         match (places, found) {
             (Ty::Tuple(types), Ty::Tuple(elems)) if elems.len() == inner.len() => {
                 for ((&(_, place), ty), elem) in inner.iter().zip(types).zip(elems) {
-                    self.matches(place, &ty.ty, value, &elem.ty);
+                    self.deconstruct_type(place, &ty.ty, value, &elem.ty);
                 }
             }
             (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
@@ -1049,7 +1049,7 @@ impl Check<'_> {
                     context: Context::Value,
                 });
             }
-            _ => {}
+            (_, Ty::Unsupported(_) | Ty::Error) => {}
         }
     }
 

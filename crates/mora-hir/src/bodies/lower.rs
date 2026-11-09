@@ -735,7 +735,8 @@ impl Lower {
     }
 
     /// The place `=` assigns: a tuple of places deconstructs the value, and
-    /// `_` among them discards its element (§5.5).
+    /// `_` among them discards its element (§5.5); parentheses around a
+    /// place only group it.
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
         let Some(ast::Expr::TupleExpr(tuple)) = unparen(place) else {
             return self.expr(place, range);

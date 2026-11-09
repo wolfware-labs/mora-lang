@@ -607,14 +607,10 @@ mod tests {
         let body = |stmt: &str| {
             let text = format!(
                 "struct P(X: int, Y: string);\nstruct Q {{\n    X: int;\n}}\n\
-                 F(p: (int, string), xs: Unknown, s: P, q: Q) {{\n    var a = 1;\n    \
+                 F(p: (int, string), xs: int[], s: P, q: Q) {{\n    var a = 1;\n    \
                  var b = 2;\n    {stmt}\n}}\n"
             );
-            diagnostics_of(&text)
-                .iter()
-                .filter(|d| d.code.to_string() != "MR0127")
-                .map(|d| d.message.clone())
-                .collect::<Vec<_>>()
+            messages(&diagnostics_of(&text))
         };
         let mismatch = |expected: &str, found: &str| {
             vec![format!(
