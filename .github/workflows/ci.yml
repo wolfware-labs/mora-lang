@@ -302,30 +302,12 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: git diff "origin/$BASE...HEAD" > "$RUNNER_TEMP/pr.diff"
-      # --in-place builds in the checkout, so the cached target directory is
-      # reused instead of copying the tree for every shard.
-      # Exit status 3 means some mutants timed out: they made the tests
-      # hang, which a test run would also notice, so they count as caught.
-      # cargo-mutants also exits with 3 when mutants were missed besides,
-      # so the job reads missed.txt instead of trusting the status: a
-      # missed mutant, status 2 and the others fail the job.
-      # Each test process may allocate 2 GiB: a mutant that turns a loop that
-      # allocates into an endless one then aborts its tests, which counts as
-      # caught, instead of filling the runner's memory until the runner dies.
+      # .github/scripts/mutants.sh sets the 2 GiB limit per test process and
+      # fails the job on a missed mutant whatever cargo-mutants exits with.
       - name: Mutate the changed lines
         env:
           SHARD: ${{ matrix.shard }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
-        run: |
-          status=0
-          cargo mutants --in-diff "$RUNNER_TEMP/pr.diff" --in-place --no-shuffle \
-            --shard "$SHARD/4" --output "$RUNNER_TEMP" || status=$?
-          if [ -s "$RUNNER_TEMP/mutants.out/missed.txt" ]; then
-            exit 2
-          fi
-          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
-            exit "$status"
-          fi
+        run: .github/scripts/mutants.sh --in-diff "$RUNNER_TEMP/pr.diff" --shard "$SHARD/4"
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

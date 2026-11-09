@@ -36,24 +36,13 @@ jobs:
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
           tool: cargo-mutants
-      # Same rules as the pull request job in ci.yml: timeouts count as
-      # caught, a missed mutant fails the job whatever the status, and
-      # each test process may allocate 2 GiB, so an endless loop that
-      # allocates aborts its tests instead of taking the runner down.
+      # Same script as the pull request job in ci.yml: timeouts count as
+      # caught, a missed mutant fails the job, and each test process may
+      # allocate 2 GiB.
       - name: Mutate the workspace
         env:
           SHARD: ${{ matrix.shard }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
-        run: |
-          status=0
-          cargo mutants --in-place --no-shuffle \
-            --shard "$SHARD/16" --output "$RUNNER_TEMP" || status=$?
-          if [ -s "$RUNNER_TEMP/mutants.out/missed.txt" ]; then
-            exit 2
-          fi
-          if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
-            exit "$status"
-          fi
+        run: .github/scripts/mutants.sh --shard "$SHARD/16"
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
