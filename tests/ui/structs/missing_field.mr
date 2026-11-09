@@ -1,0 +1,10 @@
+// Memberwise creation assigns every field that has no initializer.
+public struct Point {
+    public X: int;
+    public Y: int;
+    public Z: int = 0;
+}
+
+let a = new Point { X = 1, Y = 2 };
+let b = new Point { X = 1 }; //~ ERROR MR0143
+let c = new Point { Y = 2, Z = 3 }; //~ ERROR MR0143

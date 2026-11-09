@@ -118,6 +118,7 @@ fn item_signature(
                         name: field.name.clone(),
                         visibility: field.visibility,
                         ty: lower.ty(&field.ty),
+                        needs_init: field.needs_init,
                     }
                 })
                 .collect();
@@ -401,7 +402,7 @@ mod tests {
                 "src/Program.mr",
                 "struct Point {\n    public X: int;\n    private mut Y: Point;\n    file Z: float;\n    \
              internal W: char;\n    mut static V: bool;\n    Length(): int => X;\n}\n\
-             static Origin: Point = new Point {};\nF(p: Point) {}\n",
+             static Origin: Point = default;\nF(p: Point) {}\n",
             )],
         );
         let file = file_named(&db, project, "src/Program.mr");
@@ -411,16 +412,26 @@ mod tests {
         };
         let shape: Vec<_> = fields
             .iter()
-            .map(|f| (f.name.as_str(), f.visibility, f.ty.clone()))
+            .map(|f| (f.name.as_str(), f.visibility, f.ty.clone(), f.needs_init))
             .collect();
         assert_eq!(
             shape,
             [
-                ("X", Visibility::Public, Ty::Primitive(Primitive::Int)),
-                ("Y", Visibility::Private, Ty::Struct(point)),
-                ("Z", Visibility::File, Ty::Primitive(Primitive::Float)),
-                ("W", Visibility::Internal, Ty::Primitive(Primitive::Char)),
-                ("V", Visibility::Folder, Ty::Primitive(Primitive::Bool)),
+                ("X", Visibility::Public, Ty::Primitive(Primitive::Int), true),
+                ("Y", Visibility::Private, Ty::Struct(point), true),
+                ("Z", Visibility::File, Ty::Primitive(Primitive::Float), true),
+                (
+                    "W",
+                    Visibility::Internal,
+                    Ty::Primitive(Primitive::Char),
+                    true
+                ),
+                (
+                    "V",
+                    Visibility::Folder,
+                    Ty::Primitive(Primitive::Bool),
+                    false
+                ),
             ]
         );
         assert_eq!(

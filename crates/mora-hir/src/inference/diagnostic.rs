@@ -2,6 +2,7 @@
 //! those of calls, `MR0205` to `MR0208`, in [`call`].
 
 mod call;
+mod struct_new;
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
@@ -180,6 +181,9 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         } => call::ambiguous(source, *expr, name, candidates),
         TypeError::NamedArgument { arg, problem } => call::named(source, *arg, problem),
         TypeError::NotCallable { expr, ty } => call::not_callable(source, *expr, ty),
+        TypeError::MissingField { expr, ty, field } => {
+            struct_new::missing_field(source, *expr, ty, field)
+        }
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
         }

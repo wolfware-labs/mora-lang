@@ -74,6 +74,7 @@ pub(crate) struct FieldRef {
     pub(crate) name: String,
     pub(crate) visibility: Visibility,
     pub(crate) ty: TypeRef,
+    pub(crate) needs_init: bool,
 }
 
 /// Where the paths of one item's signature are.
@@ -174,10 +175,12 @@ impl LowerTypes {
         let declarator = field.variable_declarator()?;
         let name = declarator.name()?.ident_token()?;
         self.source.fields.push(name.text_range());
+        let written = Written::of(field.modifiers());
         Some(FieldRef {
             name: token_name(name),
-            visibility: Written::of(field.modifiers()).visibility_or_folder(),
+            visibility: written.visibility_or_folder(),
             ty: self.optional(declarator.ty().as_ref()),
+            needs_init: declarator.eq_token().is_none() && !written.is_static && !written.is_const,
         })
     }
 

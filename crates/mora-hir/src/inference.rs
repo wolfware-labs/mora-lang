@@ -189,6 +189,9 @@ pub(crate) enum TypeError {
     /// The callee `expr` has the type `ty`, which is not a function type
     /// (`MR0208`).
     NotCallable { expr: ExprId, ty: Ty },
+    /// The memberwise creation `expr` of a struct, `ty`, does not assign
+    /// the field `field`, which has no initializer (`MR0143`).
+    MissingField { expr: ExprId, ty: Ty, field: String },
     /// The callee `expr` names methods of a value, none of which is visible
     /// from `from`; `item` is the first (`MR0129`).
     NotVisible {
@@ -1925,5 +1928,76 @@ mod tests {
         let found = diagnostics_of(text);
         assert_eq!(codes(&found), ["MR0205", "MR0205"]);
         assert!(found.iter().all(|d| d.fixes.is_empty()), "{found:#?}");
+    }
+
+    const POINT: &str = "struct Point {\n    public X: int;\n    public Y: int;\n    \
+                         Scaled(factor: int): Point => new Point { X = X * factor, Y = Y * factor };\n}\n";
+
+    #[test]
+    fn new_struct_has_the_struct_type() {
+        let text = format!(
+            "{POINT}let p = new Point {{ X = 3, Y = 4 }};\nlet x = p.X;\nlet q = p.Scaled(2);\n"
+        );
+        assert_eq!(local_types(&text), ["p: Point", "x: int", "q: Point"]);
+        assert_eq!(reported(&text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn initializer_converts_to_field_type() {
+        let text = "struct S {\n    public L: long;\n}\nlet s = new S { L = 1 };\n";
+        assert_eq!(local_types(text), ["s: S"]);
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn initializer_of_the_wrong_type_is_a_mismatch() {
+        let text = "struct S {\n    public L: int;\n}\nlet s = new S { L = \"a\" };\n";
+        assert_eq!(reported(text), ["MR0203"]);
+    }
+
+    #[test]
+    fn unknown_initializer_name_is_still_inferred() {
+        let text = "struct S {\n    public L: int;\n}\nlet s = new S { L = 1, M = 2 };\n";
+        assert_eq!(local_types(text), ["s: S"]);
+    }
+
+    #[test]
+    fn missing_field_without_initializer_is_mr0143() {
+        let text = format!("{POINT}let p = new Point {{ X = 3 }};\n");
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", &text)]);
+        let found = diagnostics(&db, project);
+        assert_eq!(codes(found), ["MR0143"]);
+        assert_eq!(found[0].message, "`new Point { ... }` does not assign `Y`");
+        assert_eq!(&text[found[0].primary.span.range], "new Point { X = 3 }");
+        // The first missing field in declaration order is named.
+        let text = format!("{POINT}let p = new Point {{}};\n");
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", &text)]);
+        let found = diagnostics(&db, project);
+        assert_eq!(codes(found), ["MR0143"]);
+        assert_eq!(found[0].message, "`new Point { ... }` does not assign `X`");
+    }
+
+    #[test]
+    fn omitted_field_with_initializer_is_accepted() {
+        let text = "struct S {\n    public N: int = 5;\n    public static C: int;\n    \
+                    public const K: int = 1;\n    public M: int;\n}\n\
+                    let a = new S { M = 1 };\nlet b = new S { N = 2, M = 1 };\n";
+        assert_eq!(local_types(text), ["a: S", "b: S"]);
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_constructor_call_assigns_the_fields_itself() {
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S(1);\n";
+        assert_eq!(local_types(text), ["s: S"]);
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn new_of_other_targets_has_no_type() {
+        let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 };\nlet d = new();\n";
+        assert_eq!(local_types(text), ["c: ?", "d: ?"]);
     }
 }

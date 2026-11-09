@@ -757,7 +757,7 @@ mod tests {
                     let p = new Point { X = 3 };\nConsole.WriteLine(p.Length());\n";
         assert_eq!(
             dump(text),
-            "top-level {\n    let p#0 = new Point { X = 3 };\n    \
+            "top-level {\n    let p#0: Point = new Point { X = 3 };\n    \
              Console{external}.WriteLine{external}(p#0.Length());\n}\n\n\
              fn UsersApi.Point.Length() {\n    let d#0: int = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
              return d#0 + Twice{fn UsersApi.Twice}(X{field UsersApi.Point.X});\n}\n\n\
@@ -1223,7 +1223,7 @@ fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
     let f#20 = [weak this, move p#1] async (u#18, v#19) => u#18 + v#19;
     let st#21 = static () => 1;
     let all#22 = [1, ..xs#2];
-    let q#23 = new P { X = 1, Y = 2 };
+    let q#23: P = new P { X = 1, Y = 2 };
     let k#25 = match (o#0) {
         Shape.Circle{case UsersApi.Shape.Circle}(let r#24) => 1,
         Shape.Rect{case UsersApi.Shape.Rect}((> 0.0 and < 1.0), (not 2.0 or 3.0)) => 2,
@@ -1231,7 +1231,7 @@ fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
     };
     let lp#28: bool = (xs#2 is [1, .. var rest#26]) && (p#1 is P {X: 1, Y: _} let pq#27);
     let e#29 = xs#2?[0];
-    let w#30 = q#23 with { X = 3, Y = 4 };
+    let w#30: P = q#23 with { X = 3, Y = 4 };
     let c#31 = ((long)n#3) as long;
     let arr#32 = new int[n#3];
     let sa#33 = stackalloc int[2];
@@ -1684,8 +1684,8 @@ get extension#0.Empty(items#0) => items#0[0];
                     match (p) {\n        p.Q(_) => {}\n    }\n}\n";
         let dumped = dump(text);
         for expected in [
-            "let made#2 = new P(1);",
-            "let empty#3 = new P {};",
+            "let made#2: P = new P(1);",
+            "let empty#3: P = new P {};",
             "let isInt#4: bool = n#1 is int;",
             "let f#5 = [move nope{error}] () => 1;",
             "p#0.Q(_) => {},",

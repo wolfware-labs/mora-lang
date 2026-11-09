@@ -553,14 +553,8 @@ impl Check<'_> {
                 self.function_body(lambda.body, None);
                 None
             }
-            Expr::New { args, inits, .. } => {
-                if let Some(args) = args {
-                    self.args(args);
-                }
-                for &(_, init) in inits.iter().flatten() {
-                    self.infer(init);
-                }
-                None
+            Expr::New { ty, args, inits } => {
+                self.new_expr(expr, *ty, args.as_deref(), inits.as_deref())
             }
             Expr::NewArray { size, .. } => {
                 self.infer(*size);
@@ -1051,6 +1045,60 @@ impl Check<'_> {
             }
             (_, Ty::Unsupported(_) | Ty::Error) => {}
         }
+    }
+
+    /// `new T(args) { F = v }`. For a struct built memberwise, each
+    /// initializer is checked against its field's type and every field
+    /// without an initializer of its own must be assigned (§6.2); its type
+    /// is the struct; a call with arguments runs a constructor, which
+    /// assigns the fields. Other targets have no type yet.
+    fn new_expr(
+        &mut self,
+        expr: ExprId,
+        ty: Option<TypeId>,
+        args: Option<&[Arg]>,
+        inits: Option<&[(String, ExprId)]>,
+    ) -> Option<Ty> {
+        let has_args = args.is_some();
+        if let Some(args) = args {
+            self.args(args);
+        }
+        let written = ty.map(|ty| self.resolution.written(ty));
+        let fields = match &written {
+            Some(Ty::Struct(item)) => match signature(self.db, *item) {
+                Signature::Struct(fields) => Some(fields),
+                _ => None,
+            },
+            _ => None,
+        };
+        let (Some(written), Some(fields)) = (written, fields) else {
+            for &(_, init) in inits.into_iter().flatten() {
+                self.infer(init);
+            }
+            return None;
+        };
+        let inits = inits.unwrap_or_default();
+        for (name, init) in inits {
+            match fields.iter().find(|field| field.name == *name) {
+                Some(field) => self.check(*init, &field.ty),
+                None => {
+                    self.infer(*init);
+                }
+            }
+        }
+        // A constructor call sets the fields itself.
+        let missing = fields
+            .iter()
+            .filter(|_| !has_args)
+            .find(|field| field.needs_init && !inits.iter().any(|(name, _)| *name == field.name));
+        if let Some(missing) = missing {
+            self.errors.push(TypeError::MissingField {
+                expr,
+                ty: written.clone(),
+                field: missing.name.clone(),
+            });
+        }
+        Some(written)
     }
 
     /// `(T)x`: a cast converts between numeric types (§5.10).
