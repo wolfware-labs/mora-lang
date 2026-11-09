@@ -135,6 +135,13 @@ pub struct Body {
     /// [`Body::signature_types`] are checked (`MR0123`). `Private`, which
     /// nothing is narrower than, for one the body checks nothing for.
     pub visibility: Visibility,
+    /// The return type, as written, of a declaration whose signature the
+    /// item tree does not hold; `None` when none is written or the item
+    /// tree holds it.
+    pub ret: Option<TypeId>,
+    /// Whether that declaration is `async`; `false` when the item tree
+    /// holds its signature, which says it ([`crate::FnSignature::is_async`]).
+    pub is_async: bool,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
@@ -222,6 +229,9 @@ pub enum Expr {
     Type(TypeId),
     /// `(a, b)`, with the names of named elements.
     Tuple(Vec<(Option<String>, ExprId)>),
+    /// `_` among the places of a deconstructing assignment, as in
+    /// `(a, _) = pair;` (§5.5): the element is not stored.
+    Discard,
     /// `[a, ..b]`: each element, and whether it is spread.
     Collection(Vec<(bool, ExprId)>),
     /// `x.m` or `x?.m`.
@@ -644,7 +654,15 @@ pub struct BodySourceMap {
     /// The marker of each argument written with one, by the argument's
     /// expression.
     pub markers: HashMap<ExprId, TextRange>,
-    /// The name of each unresolved capture, by its lambda and position.
+    /// Each `break`, `continue` and `return` statement.
+    pub jumps: HashMap<StmtId, TextRange>,
+    /// The `let` written right before the name of a local, which the fix
+    /// of `MR0182` turns into `var`.
+    pub lets: HashMap<LocalId, TextRange>,
+    /// The closing brace of each function and local function body written
+    /// as a block, by the block's expression.
+    pub ends: HashMap<ExprId, TextRange>,
+    /// The name of each capture, or its `this`, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
     /// [`crate::type_ref::PathRef::index`].
@@ -744,6 +762,16 @@ mod tests {
              fn UsersApi.Point.Length() {\n    let d#0: int = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
              return d#0 + Twice{fn UsersApi.Twice}(X{field UsersApi.Point.X});\n}\n\n\
              fn UsersApi.Twice(n#0) => n#0 * 2;\n"
+        );
+    }
+
+    #[test]
+    fn a_deconstructing_assignment_lowers_its_places() {
+        let text = "var a = 1;\nvar b = 2;\n(a, (b, _)) = (1, (2, 3));\n(a, b) += (1, 2);\n";
+        assert_eq!(
+            dump(text),
+            "top-level {\n    var a#0: int = 1;\n    var b#1: int = 2;\n    \
+             (a#0, (b#1, _)) = (1, (2, 3));\n    (a#0, b#1) += (1, 2);\n}\n"
         );
     }
 
@@ -1381,6 +1409,80 @@ get extension#0.Empty(items#0) => items#0[0];
             .unwrap()
             .0;
         assert_eq!(&text[map.expr(sum)], "1 + 2");
+    }
+
+    #[test]
+    fn source_maps_keep_jumps_lets_and_closing_braces() {
+        let db = TestDb::new();
+        let text = "while (true) {\n    break;\n}\nlet a = 1;\nvar b = 2;\nlet (c, d) = (1, 2);\n\
+                    foreach (let e in [1]) {\n    continue;\n}\nif (1 is let f) {}\n\
+                    if (1 is int g) {}\nF(): int {\n    G(): int => 1;\n    return 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let text = file.text(&db);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let mut jumps: Vec<_> = map.jumps.values().map(|&range| &text[range]).collect();
+        jumps.sort_unstable();
+        assert_eq!(jumps, ["break;", "continue;"]);
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let mut lets: Vec<_> = map
+            .lets
+            .iter()
+            .map(|(&local, &range)| (body.locals[local].name.as_str(), &text[range]))
+            .collect();
+        lets.sort_unstable();
+        assert_eq!(lets, [("a", "let"), ("e", "let"), ("f", "let")]);
+        // Only a function body written as a block keeps its closing brace.
+        assert!(map.ends.is_empty());
+        let owner = body_owners(&db, file)
+            .into_iter()
+            .find(|&owner| owner != BodyOwner::TopLevel)
+            .unwrap();
+        let function = body_source_map(&db, file, owner);
+        let end = mora_span::TextSize::of(text.trim_end()) - mora_span::TextSize::of('}');
+        let ends: Vec<_> = function.ends.values().map(|range| range.start()).collect();
+        assert_eq!(ends, [end]);
+        let jumps: Vec<_> = function.jumps.values().map(|&range| &text[range]).collect();
+        assert_eq!(jumps, ["return 1;"]);
+    }
+
+    #[test]
+    fn a_body_keeps_the_return_type_no_signature_holds() {
+        let db = TestDb::new();
+        let text = "interface I {\n    M(): int;\n}\nclass C : I {\n    I.M(): int => 1;\n}\n\
+                    F(): int => 1;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let returns: Vec<_> = body_owners(&db, file)
+            .into_iter()
+            .filter_map(|owner| {
+                let body = body(&db, file, owner);
+                let name = match owner {
+                    BodyOwner::Item(item) => item_tree(&db, file).item(item).name.clone(),
+                    BodyOwner::Member(..) => body.name.clone(),
+                    _ => return None,
+                };
+                let resolution = body_resolution(&db, project, file, owner);
+                Some((name, body.ret.map(|ret| resolution.written(ret))))
+            })
+            .collect();
+        // An item's signature holds its return type; the member's body does.
+        assert_eq!(
+            returns,
+            [
+                ("M".to_owned(), None),
+                ("I.M".to_owned(), Some(Ty::Primitive(Primitive::Int))),
+                ("F".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recovered_return_has_a_missing_value() {
+        assert_eq!(
+            dump("F(): int {\n    return\n}\nG() {\n    return;\n}\n"),
+            "fn UsersApi.F() {\n    return <missing>;\n}\n\nfn UsersApi.G() {\n    return;\n}\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,40 @@
+// A function that returns a value returns one on every path (§7.11).
+Sign(n: int): int {
+    if (n < 0) {
+        return -1;
+    }
+} //~ ERROR MR0184
+
+Both(n: int): int {
+    if (n < 0) {
+        return -1;
+    } else {
+        return 1;
+    }
+}
+
+Nothing(): int {
+    return; //~ ERROR MR0184
+}
+
+Forever(): int {
+    while (true) {}
+}
+
+Fails(): int {
+    panic("not yet");
+}
+
+Chosen(n: int): int {
+    match (n) {
+        0 => { return 0; }
+        _ => { return 1; }
+    }
+}
+
+Short(): int => 1;
+
+Outer() {
+    Inner(): int {
+    } //~ ERROR MR0184
+}

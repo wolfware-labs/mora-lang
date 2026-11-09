@@ -217,7 +217,11 @@ impl Lower {
         expr: Option<ast::ExprBody>,
     ) -> Option<ExprId> {
         if let Some(block) = block {
-            return Some(self.block_expr(&block));
+            let id = self.block_expr(&block);
+            if let Some(brace) = block.r_brace_token() {
+                self.map.ends.insert(id, brace.text_range());
+            }
+            return Some(id);
         }
         let expr = expr?;
         Some(self.expr(expr.expr(), expr.syntax().text_range()))
@@ -260,7 +264,12 @@ impl Lower {
             ast::Stmt::AttributedStmt(it) => return self.opt_stmt(it.stmt()),
             _ => self.scoped(|this| this.scoped_stmt(stmt)),
         };
-        self.alloc_stmt(lowered)
+        let jump = matches!(lowered, Stmt::Break | Stmt::Continue | Stmt::Return(_));
+        let id = self.alloc_stmt(lowered);
+        if jump {
+            self.map.jumps.insert(id, stmt.syntax().text_range());
+        }
+        id
     }
 
     /// A statement that declares nothing after itself.
@@ -320,9 +329,8 @@ impl Lower {
             }
             ast::Stmt::ForeachStmt(it) => {
                 let iterable = self.expr(it.iterable(), range);
-                let kind = binding_kind(it.kw());
                 let pat = match it.designation() {
-                    Some(designation) => self.designation(&designation, kind),
+                    Some(designation) => self.keyword_designation(it.kw(), &designation),
                     None => self.alloc_pat(Pat::Missing),
                 };
                 let body = self.opt_stmt(it.body());
@@ -335,9 +343,12 @@ impl Lower {
             }
             ast::Stmt::BreakStmt(_) => Stmt::Break,
             ast::Stmt::ContinueStmt(_) => Stmt::Continue,
-            ast::Stmt::ReturnStmt(it) => {
-                Stmt::Return(it.expr().map(|expr| self.expr(Some(expr), range)))
-            }
+            // A `return` the parser recovered from, with neither a value nor
+            // `;`, has a missing value rather than none.
+            ast::Stmt::ReturnStmt(it) => match (it.expr(), it.semicolon_token()) {
+                (None, Some(_)) => Stmt::Return(None),
+                (expr, _) => Stmt::Return(Some(self.expr(expr, range))),
+            },
             ast::Stmt::MatchStmt(it) => {
                 let scrutinee = self.expr(it.scrutinee(), range);
                 let arms = self.match_arms(it.match_arm_list());
@@ -367,7 +378,8 @@ impl Lower {
         let Some(decl) = decl else {
             return self.alloc_stmt(Stmt::Missing);
         };
-        let kind = binding_kind(decl.kw());
+        let kw = decl.kw();
+        let kind = binding_kind(kw);
         let declarator = decl.variable_declarator();
         let ty = self.opt_ty(declarator.as_ref().and_then(|it| it.ty()));
         let init = declarator.as_ref().and_then(|it| it.init()).map(|init| {
@@ -375,6 +387,9 @@ impl Lower {
             self.scoped(|this| this.expr(Some(init), range))
         });
         let local = self.declare(declarator.and_then(|it| it.name()), kind, ty);
+        if let Some(local) = local {
+            self.record_let(kw, local);
+        }
         match local {
             Some(local) => self.alloc_stmt(Stmt::Local { local, init }),
             None => match init {
@@ -640,9 +655,12 @@ impl Lower {
                 r#else: self.expr(it.r#else(), range),
             },
             ast::Expr::AssignExpr(it) => {
-                let lhs = self.expr(it.lhs(), range);
-                let rhs = self.expr(it.rhs(), range);
                 let op = it.op().and_then(|op| assign_op(op.kind()));
+                let lhs = match op {
+                    None => self.place(it.lhs(), range),
+                    Some(_) => self.expr(it.lhs(), range),
+                };
+                let rhs = self.expr(it.rhs(), range);
                 Expr::Assign { op, lhs, rhs }
             }
             ast::Expr::LambdaExpr(it) => {
@@ -650,7 +668,7 @@ impl Lower {
                 // it is lowered before the parameters.
                 // A capture without a name declares nothing; the parser has
                 // reported it.
-                let (captures, unresolved): (Vec<_>, Vec<_>) = it
+                let (captures, names): (Vec<_>, Vec<_>) = it
                     .capture_list()
                     .iter()
                     .flat_map(|list| list.captures())
@@ -684,10 +702,8 @@ impl Lower {
                     body,
                 };
                 let id = self.alloc_expr(Expr::Lambda(lambda), range);
-                for (index, at) in unresolved.into_iter().enumerate() {
-                    if let Some(at) = at {
-                        self.map.captures.insert((id, index), at);
-                    }
+                for (index, at) in names.into_iter().enumerate() {
+                    self.map.captures.insert((id, index), at);
                 }
                 return id;
             }
@@ -714,6 +730,28 @@ impl Lower {
             }
         };
         self.alloc_expr(lowered, range)
+    }
+
+    /// The place `=` assigns: a tuple of places deconstructs the value, and
+    /// `_` among them discards its element (§5.5); parentheses around a
+    /// place only group it.
+    fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
+        let Some(ast::Expr::TupleExpr(tuple)) = unparen(place) else {
+            return self.expr(place, range);
+        };
+        let elems = tuple
+            .tuple_elems()
+            .map(|elem| {
+                let place = match unparen(elem.expr()) {
+                    Some(expr) if is_discard(&expr) => {
+                        self.alloc_expr(Expr::Discard, expr.syntax().text_range())
+                    }
+                    expr => self.place(expr, range),
+                };
+                (name_ref_of(elem.name_ref()), place)
+            })
+            .collect();
+        self.alloc_expr(Expr::Tuple(elems), tuple.syntax().text_range())
     }
 
     /// A path whose first segment is a local in scope is that local and
@@ -804,25 +842,21 @@ impl Lower {
 
     /// A capture, and where its name is when it names no local in scope;
     /// `None` for a capture the parser recovered from.
-    fn capture(&mut self, capture: &ast::Capture) -> Option<(Capture, Option<TextRange>)> {
+    fn capture(&mut self, capture: &ast::Capture) -> Option<(Capture, TextRange)> {
         let weak = capture
             .mode()
             .is_some_and(|mode| mode.kind() == SyntaxKind::WeakKw);
-        let mut unresolved = None;
-        let target = if capture.this_token().is_some() {
-            CaptureTarget::This
-        } else {
-            let token = capture.name_ref()?.ident_token()?;
-            let name = token_name(token);
-            match self.lookup(&name) {
-                Some(local) => CaptureTarget::Local(local),
-                None => {
-                    unresolved = Some(token.text_range());
-                    CaptureTarget::Unresolved(name)
-                }
-            }
+        if let Some(this) = capture.this_token() {
+            let target = CaptureTarget::This;
+            return Some((Capture { weak, target }, this.text_range()));
+        }
+        let token = capture.name_ref()?.ident_token()?;
+        let name = token_name(token);
+        let target = match self.lookup(&name) {
+            Some(local) => CaptureTarget::Local(local),
+            None => CaptureTarget::Unresolved(name),
         };
-        Some((Capture { weak, target }, unresolved))
+        Some((Capture { weak, target }, token.text_range()))
     }
 
     fn opt_pattern(&mut self, pattern: Option<ast::Pattern>) -> PatId {
@@ -848,9 +882,8 @@ impl Lower {
                 Pat::Type { ty, binding }
             }
             ast::Pattern::BindingPattern(it) => {
-                let kind = binding_kind(it.kw());
                 return match it.designation() {
-                    Some(designation) => self.designation(&designation, kind),
+                    Some(designation) => self.keyword_designation(it.kw(), &designation),
                     None => self.alloc_pat(Pat::Missing),
                 };
             }
@@ -917,6 +950,27 @@ impl Lower {
                 )
             })
             .collect()
+    }
+
+    /// A designation after `let` or `var` (`kw`): a single name keeps
+    /// where its `let` is.
+    fn keyword_designation(
+        &mut self,
+        kw: Option<SyntaxToken>,
+        designation: &ast::Designation,
+    ) -> PatId {
+        let pat = self.designation(designation, binding_kind(kw));
+        if let Pat::Bind(local) = self.body.pats[pat] {
+            self.record_let(kw, local);
+        }
+        pat
+    }
+
+    /// Records `kw` as the `let` of `local` when it is one.
+    fn record_let(&mut self, kw: Option<SyntaxToken>, local: LocalId) {
+        if let Some(kw) = kw.filter(|kw| kw.kind() == SyntaxKind::LetKw) {
+            self.map.lets.insert(local, kw.text_range());
+        }
     }
 
     fn designation(&mut self, designation: &ast::Designation, kind: LocalKind) -> PatId {
@@ -1007,6 +1061,30 @@ fn binary_op(kind: SyntaxKind) -> Option<BinaryOp> {
         K::QuestionQuestion => B::Coalesce,
         _ => return None,
     })
+}
+
+/// `expr` without the parentheses around it.
+fn unparen(mut expr: Option<ast::Expr>) -> Option<ast::Expr> {
+    while let Some(ast::Expr::ParenExpr(it)) = expr {
+        expr = it.expr();
+    }
+    expr
+}
+
+/// Whether `expr` is `_` alone.
+fn is_discard(expr: &ast::Expr) -> bool {
+    let ast::Expr::PathExpr(it) = expr else {
+        return false;
+    };
+    let mut segments = it.path().into_iter().flat_map(|path| path.path_segments());
+    let (Some(segment), None) = (segments.next(), segments.next()) else {
+        return false;
+    };
+    segment.generic_arg_list().is_none()
+        && segment
+            .name_ref()
+            .and_then(|name| name.ident_token())
+            .is_some_and(|token| token.text() == "_")
 }
 
 /// The operator of a compound assignment; `None` for `=`.

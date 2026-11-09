@@ -1,0 +1,27 @@
+// A `let` local is assigned exactly once (§7.10).
+let ready = true;
+let fixed = 1;
+fixed = 2; //~ ERROR MR0182
+
+let later: int;
+later = 1;
+later = 2; //~ ERROR MR0182
+
+let maybe: int;
+if (ready) {
+    maybe = 1;
+}
+maybe = 2; //~ ERROR MR0182
+
+let each: int;
+while (ready) {
+    each = 1; //~ ERROR MR0182
+}
+
+let captured = 1;
+let change = () => {
+    captured = 2; //~ ERROR MR0182
+};
+
+var free = 1;
+free = 2;

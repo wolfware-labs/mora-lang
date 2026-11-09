@@ -603,6 +603,101 @@ mod tests {
     }
 
     #[test]
+    fn a_deconstructing_assignment_checks_each_place() {
+        let body = |stmt: &str| {
+            let text = format!(
+                "struct P(X: int, Y: string);\nstruct Q {{\n    X: int;\n}}\n\
+                 F(p: (int, string), xs: int[], s: P, q: Q) {{\n    var a = 1;\n    \
+                 var b = 2;\n    {stmt}\n}}\n"
+            );
+            messages(&diagnostics_of(&text))
+        };
+        let mismatch = |expected: &str, found: &str| {
+            vec![format!(
+                "mismatched types: expected `{expected}`, found `{found}`"
+            )]
+        };
+        let none = Vec::<String>::new;
+        assert_eq!(body("(a, b) = (1, 2);"), none());
+        assert_eq!(
+            body("(a, b) = (\"x\", \"y\");"),
+            [mismatch("int", "string"), mismatch("int", "string")].concat()
+        );
+        assert_eq!(body("(a, _) = (1, \"x\");"), none());
+        // Each element of a literal is checked, and reported, where it is.
+        let text = "F() {\n    var a = 1;\n    var b = 2;\n    (a, b) = (1, \"x\");\n}\n";
+        let at = diagnostics_of(text)[0].primary.span.range;
+        assert_eq!(&text[std::ops::Range::<usize>::from(at)], "\"x\"");
+        assert_eq!(body("(_, a) = (1, \"x\");"), mismatch("int", "string"));
+        assert_eq!(
+            body("(a, (b, _)) = (1, (\"z\", 3));"),
+            mismatch("int", "string")
+        );
+        // A discard counts toward the arity, and a value of another shape
+        // does not deconstruct.
+        assert_eq!(body("(a, _) = 5;"), mismatch("(int, _)", "int"));
+        assert_eq!(body("(a, _) = \"s\";"), mismatch("(int, _)", "string"));
+        assert_eq!(
+            body("(a, _) = (1, 2, 3);"),
+            mismatch("(int, _)", "(int, int, int)")
+        );
+        assert_eq!(
+            body("(a, b, _) = (1, 2);"),
+            mismatch("(int, int, _)", "(int, int)")
+        );
+        assert_eq!(
+            body("(a, _) = (\"x\", 2, 3);"),
+            mismatch("(int, _)", "(string, int, int)")
+        );
+        assert_eq!(body("(a, (b, _)) = (1, 5);"), mismatch("(int, _)", "int"));
+        assert_eq!(
+            body("let t = (\"x\", 2);\n    (a, _) = t;"),
+            mismatch("int", "string")
+        );
+        assert_eq!(
+            body("let t = (1, 2, 3);\n    (a, _) = t;"),
+            mismatch("(int, _)", "(int, int, int)")
+        );
+        // A value that is not a tuple literal is checked element by element.
+        assert_eq!(body("(a, b) = p;"), mismatch("int", "string"));
+        // A place of unknown type checks nothing, and the others still do.
+        assert_eq!(body("(a, xs[0]) = (\"x\", 2);"), mismatch("int", "string"));
+        // A positional struct deconstructs, unchecked as in a declaration;
+        // any other struct does not.
+        assert_eq!(body("(a, b) = s;"), none());
+        assert_eq!(body("(a, b) = q;"), mismatch("(int, int)", "Q"));
+        assert_eq!(body("(a, b) = 1;"), mismatch("(int, int)", "int"));
+        // Parentheses around places and discards only group them.
+        assert_eq!(body("((a, _)) = (1, 2);"), none());
+        assert_eq!(body("(a, (_)) = (1, \"x\");"), none());
+        // `_` is a place only inside a deconstruction.
+        assert_eq!(codes(&diagnostics_of("F() {\n    _ = 1;\n}\n")), ["MR0127"]);
+        assert_eq!(
+            codes(&diagnostics_of("F(a: int) {\n    a += (_, 1).Item1;\n}\n")),
+            ["MR0127"]
+        );
+    }
+
+    #[test]
+    fn members_and_extension_functions_return_their_own_type() {
+        let mismatches = |text: &str| {
+            codes(&diagnostics_of(text))
+                .into_iter()
+                .filter(|code| code == "MR0203")
+                .count()
+        };
+        let member = "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    \
+                      I.M(): int {\n        return \"x\";\n    }\n    \
+                      async I.N(): int {\n        return \"x\";\n    }\n}\n";
+        assert_eq!(mismatches(member), 1);
+        let extension = "struct S {\n    X: int;\n}\nextension (s: S) {\n    \
+                         F(): int => \"x\";\n    G() {\n        return 1;\n    }\n    \
+                         H(): int {\n        return 1;\n    }\n    \
+                         async K(): int {\n        return \"x\";\n    }\n}\n";
+        assert_eq!(mismatches(extension), 2);
+    }
+
+    #[test]
     fn diagnostics_check_the_bodies_of_an_edited_file_only() {
         let mut db = TestDb::new();
         let text = |n: u32| format!("A(): int {{\n    return {n};\n}}\nB(): int => \"b\";\n");
@@ -903,53 +998,9 @@ mod tests {
         assert_eq!(fixed.remaining, Vec::<String>::new());
     }
 
-    /// A text with the edits of every fix its diagnostics offer applied.
-    struct Fixed {
-        /// The text after the edits.
-        text: String,
-        /// How many edits were applied.
-        edits: usize,
-        /// The lines a fix changed that still report a diagnostic, which
-        /// must be none.
-        remaining: Vec<String>,
-    }
-
-    /// `text` with every fix its diagnostics offer applied. A fix adds no
-    /// line, so a line has one number in both texts.
-    fn apply_fixes(text: &str) -> Fixed {
-        let mut edits: Vec<_> = diagnostics_of(text)
-            .iter()
-            .flat_map(|d| d.fixes.iter().flat_map(|fix| fix.edits.clone()))
-            .collect();
-        // Edits apply from the end of the text, so earlier offsets hold.
-        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
-        let mut fixed = text.to_owned();
-        for edit in &edits {
-            fixed.replace_range(
-                std::ops::Range::<usize>::from(edit.span.range),
-                &edit.replacement,
-            );
-        }
-        let line_of =
-            |index: &mora_span::LineIndex, offset| index.line_col(offset).map(|at| at.line);
-        let before = mora_span::LineIndex::new(text);
-        let fixed_lines: std::collections::BTreeSet<_> = edits
-            .iter()
-            .map(|edit| line_of(&before, edit.span.range.start()))
-            .collect();
-        let after = mora_span::LineIndex::new(&fixed);
-        let lines: Vec<_> = fixed.lines().collect();
-        let remaining = diagnostics_of(&fixed)
-            .iter()
-            .map(|d| line_of(&after, d.primary.span.range.start()))
-            .filter(|line| fixed_lines.contains(line))
-            .map(|line| line.map_or("?", |line| lines[line as usize]).to_owned())
-            .collect();
-        Fixed {
-            edits: edits.len(),
-            text: fixed,
-            remaining,
-        }
+    /// `text` with every fix its diagnostics offer applied.
+    fn apply_fixes(text: &str) -> crate::test_support::Fixed {
+        crate::test_support::apply_fixes(text, diagnostics_of)
     }
 
     #[test]

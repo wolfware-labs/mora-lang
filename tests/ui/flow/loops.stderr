@@ -1,0 +1,23 @@
+error[MR0183]: `break` outside a loop
+ --> tests/ui/flow/loops.mr:3:1
+  |
+3 | break; //~ ERROR MR0183
+  | ^^^^^^ no loop to leave
+  |
+  = note: `break` and `continue` act on the innermost `while`, `do`, `for` or `foreach` around them
+
+error[MR0183]: `continue` outside a loop
+ --> tests/ui/flow/loops.mr:4:1
+  |
+4 | continue; //~ ERROR MR0183
+  | ^^^^^^^^^ no loop to leave
+  |
+  = note: `break` and `continue` act on the innermost `while`, `do`, `for` or `foreach` around them
+
+error[MR0183]: `break` outside a loop
+  --> tests/ui/flow/loops.mr:13:9
+   |
+13 |         break; //~ ERROR MR0183
+   |         ^^^^^^ no loop to leave
+   |
+   = note: a lambda or a local function does not see the loops around it, so its `break` and `continue` have no loop to leave

@@ -59,7 +59,7 @@ impl Compiler for Unbuilt {
 
 /// Stands in for the driver until it can compile: checking a case reports
 /// its lexical and syntax errors and the errors of name resolution,
-/// signatures and entry points. A case may describe several files (see
+/// signatures, types, control flow and entry points. A case may describe several files (see
 /// [`crate::case`]); the standard library is not loaded, so names under
 /// `Std`, the names of the prelude and names in a file with a `using`
 /// directive of `Std` are not checked when nothing else declares them. It
@@ -121,6 +121,7 @@ impl FrontEnd {
             Vec::new(),
         );
         diagnostics.extend(mora_hir::diagnostics(&db, project).iter().cloned());
+        diagnostics.extend(mora_check::diagnostics(&db, project).iter().cloned());
         Analysis {
             shown,
             db,

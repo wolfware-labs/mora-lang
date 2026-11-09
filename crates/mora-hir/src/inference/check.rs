@@ -19,7 +19,7 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
-use crate::resolve::{Resolved, Scope};
+use crate::resolve::{Resolved, Scope, item_data};
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
@@ -69,7 +69,7 @@ pub(super) fn infer_body(
     check.locals = body
         .locals
         .iter()
-        .map(|(_, local)| local.ty.map(|ty| check.written(ty)))
+        .map(|(_, local)| local.ty.map(|ty| check.resolution.written(ty)))
         .collect();
     // What the body's root is checked against: an initializer's type, or a
     // function's return type.
@@ -97,13 +97,19 @@ pub(super) fn infer_body(
             }
         }
         Some(Signature::Value(ty)) => expected = Some(ty.clone()),
-        _ => {
-            if body.kind == BodyKind::Initializer
-                && let [ty] = body.signature_types[..]
-            {
-                expected = Some(check.written(ty));
+        _ => match body.kind {
+            BodyKind::Initializer => {
+                if let [ty] = body.signature_types[..] {
+                    expected = Some(check.resolution.written(ty));
+                }
             }
-        }
+            // A function that implements an interface member or extends a
+            // type holds its own return type, `()` when none is written.
+            BodyKind::Function if !body.is_async => {
+                expected = Some(check.resolution.return_type(body.ret));
+            }
+            _ => {}
+        },
     }
     check.defaults(&body.defaults);
     if let Some(call) = body.this_call {
@@ -151,15 +157,6 @@ struct Check<'a> {
 }
 
 impl Check<'_> {
-    /// The type written at `ty`, with its names looked up.
-    fn written(&self, ty: TypeId) -> Ty {
-        self.resolution
-            .types
-            .get(arena_index(ty))
-            .cloned()
-            .unwrap_or(Ty::Error)
-    }
-
     /// The body of a function, a local function or a lambda, whose
     /// `return` statements check against `ret`. An expression body is the
     /// value returned, unless the function returns `()`.
@@ -251,8 +248,7 @@ impl Check<'_> {
             }
             Stmt::Function(function) => {
                 self.defaults(&function.defaults);
-                let ret = (!function.is_async)
-                    .then(|| function.ret.map_or(Ty::UNIT, |ty| self.written(ty)));
+                let ret = (!function.is_async).then(|| self.resolution.return_type(function.ret));
                 if let Some(root) = function.body {
                     self.function_body(root, ret);
                 }
@@ -440,8 +436,9 @@ impl Check<'_> {
     fn expr_kind(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
         let body = self.body;
         match &body.exprs[expr] {
-            // The parser reported it.
-            Expr::Missing => Some(Ty::Error),
+            // The parser reported a missing expression, and a discarded
+            // element takes any type, so neither checks anything.
+            Expr::Missing | Expr::Discard => Some(Ty::Error),
             Expr::Literal(literal) => self.literal(expr, literal, false, expect),
             Expr::Interpolated(parts) => {
                 for part in parts {
@@ -975,21 +972,90 @@ impl Check<'_> {
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
         match op {
-            None => match self.infer(lhs) {
-                Some(place) => self.check(rhs, &place),
-                None => {
-                    self.infer(rhs);
-                }
-            },
+            None => {
+                let places = self.place_type(lhs);
+                self.deconstruct(lhs, &places, rhs);
+            }
             Some(op) => {
                 self.binary(expr, op, lhs, rhs);
             }
         }
     }
 
+    /// The type of the place `place` of `=`: a tuple for a tuple of places
+    /// (D-139), and `_` for a discarded element or a place of unknown type.
+    fn place_type(&mut self, place: ExprId) -> Ty {
+        let body = self.body;
+        match &body.exprs[place] {
+            Expr::Tuple(places) => Ty::Tuple(
+                places
+                    .iter()
+                    .map(|(name, place)| TupleElem {
+                        name: name.clone(),
+                        ty: self.place_type(*place),
+                    })
+                    .collect(),
+            ),
+            _ => self.infer(place).unwrap_or(Ty::Error),
+        }
+    }
+
+    /// `place = value`, where `places` is the type of `place`: a tuple
+    /// literal gives each of its elements to the place at its position, and
+    /// another value is matched against the places by its type.
+    fn deconstruct(&mut self, place: ExprId, places: &Ty, value: ExprId) {
+        let body = self.body;
+        match (&body.exprs[place], places, &body.exprs[value]) {
+            (Expr::Tuple(inner), Ty::Tuple(types), Expr::Tuple(values))
+                if inner.len() == values.len() =>
+            {
+                for ((&(_, place), ty), &(_, value)) in inner.iter().zip(types).zip(values) {
+                    self.deconstruct(place, &ty.ty, value);
+                }
+            }
+            (Expr::Tuple(_), ..) => {
+                if let Some(found) = self.infer(value) {
+                    self.deconstruct_type(place, places, value, &found);
+                }
+            }
+            // One place takes a value of its type; `_`, a discarded element or
+            // a place of unknown type, takes any value.
+            _ => self.check(value, places),
+        }
+    }
+
+    /// `place = value`, where `places` is the type of `place` and `found`
+    /// the type of `value`: a tuple of places takes a tuple of as many
+    /// elements, each stored in its place, or a positional struct, whose
+    /// deconstruction is not checked yet, as in a declaration (D-139).
+    fn deconstruct_type(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
+        let body = self.body;
+        let Expr::Tuple(inner) = &body.exprs[place] else {
+            self.coerce(value, Some(found), places, Context::Value);
+            return;
+        };
+        match (places, found) {
+            (Ty::Tuple(types), Ty::Tuple(elems)) if elems.len() == inner.len() => {
+                for ((&(_, place), ty), elem) in inner.iter().zip(types).zip(elems) {
+                    self.deconstruct_type(place, &ty.ty, value, &elem.ty);
+                }
+            }
+            (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
+            (_, Ty::Tuple(_) | Ty::Primitive(_) | Ty::String | Ty::Struct(_)) => {
+                self.errors.push(TypeError::Mismatch {
+                    expr: value,
+                    expected: places.clone(),
+                    found: found.clone(),
+                    context: Context::Value,
+                });
+            }
+            (_, Ty::Unsupported(_) | Ty::Error) => {}
+        }
+    }
+
     /// `(T)x`: a cast converts between numeric types (§5.10).
     fn cast(&mut self, expr: ExprId, ty: TypeId, operand: ExprId) -> Option<Ty> {
-        let to = self.written(ty);
+        let to = self.resolution.written(ty);
         if let Some(from) = self.infer(operand)
             && is_known(&from)
             && is_known(&to)

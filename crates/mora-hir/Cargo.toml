@@ -21,6 +21,11 @@ salsa.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 
+[features]
+# The test database and helpers of `mora_hir::test_support`, for the tests of
+# the crates above this one.
+test-support = []
+
 [[bench]]
 name = "front_end"
 harness = false

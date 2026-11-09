@@ -124,6 +124,8 @@ registry! {
     MR0180 = 180: "a local shadows a local or parameter of an enclosing scope",
     MR0181 = 181: "a local used before it is definitely assigned",
     MR0182 = 182: "a `let` local is reassigned",
+    MR0183 = 183: "`break` or `continue` outside a loop",
+    MR0184 = 184: "a function that returns a value can end without one",
     MR0190 = 190: "`default` of a type that has no default value",
     MR0201 = 201: "`?` cannot convert the error to the function's error type",
     MR0202 = 202: "`?` on an option in a function that does not return an option",

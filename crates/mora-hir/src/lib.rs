@@ -37,7 +37,10 @@ mod type_ref;
 
 #[cfg(test)]
 mod test_db;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
+pub use arena::arena_index;
 pub use bodies::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
     CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
@@ -56,7 +59,8 @@ pub use items::{
 pub use name::pascal_case;
 pub use report::diagnostics;
 pub use resolve::{
-    ResolveError, ResolveErrorKind, Resolved, Scope, effective_visibility, is_visible, resolve_path,
+    ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, is_visible,
+    resolve_path,
 };
 pub use signature::signature;
 pub use ty::{

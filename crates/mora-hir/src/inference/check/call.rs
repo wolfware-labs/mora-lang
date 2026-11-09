@@ -363,7 +363,7 @@ impl<'a> Check<'a> {
             .filter_map(|&param| body.locals[param].ty)
             .chain(function.ret)
             .any(|ty| body.type_params.contains_key(&ty));
-        let ret = function.ret.map_or(Ty::UNIT, |ty| self.written(ty));
+        let ret = self.resolution.return_type(function.ret);
         Some(Candidate {
             origin: Callee::Local(local),
             name: &body.locals[local].name,
