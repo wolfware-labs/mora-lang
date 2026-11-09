@@ -647,6 +647,20 @@ fn a_deconstructing_assignment_assigns_each_place() {
 }
 
 #[test]
+fn async_bodies_wait_for_their_return_types() {
+    // An item, a local function, an interface member and an extension
+    // function, each `async`, with an end and a `return;` (D-138).
+    let found = [
+        "async F(): int {\n}\nasync G(): int {\n    return;\n}\n",
+        "H() {\n    async L(): int {\n    }\n    async M(): int {\n        return;\n    }\n}\n",
+        "interface I {\n    M(): int;\n}\nclass C : I {\n    async I.M(): int {\n        return;\n    }\n}\n",
+        "struct S {\n    X: int;\n}\nextension (s: S) {\n    async F(): int {\n    }\n}\n",
+    ]
+    .map(messages);
+    assert_eq!(found, [(); 4].map(|()| Vec::<String>::new()));
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),

@@ -192,8 +192,8 @@ pub(crate) fn check(
 /// The function `owner` is, when it returns a value: an item whose
 /// signature gives its return type, or a function that implements an
 /// interface member or extends a type, whose body holds it. Other bodies,
-/// whose return types come with their kinds of member, are not checked yet
-/// (D-138).
+/// whose return types come with their kinds of member, and `async` bodies,
+/// whose returns async gives meaning to, are not checked yet (D-138).
 fn function(
     db: &dyn Db,
     project: Project,
@@ -210,7 +210,7 @@ fn function(
                 item,
             };
             let returns_value = match signature(db, id) {
-                Signature::Function(function) => returns_value(&function.ret),
+                Signature::Function(function) => !function.is_async && returns_value(&function.ret),
                 _ => false,
             };
             Function {
@@ -221,7 +221,7 @@ fn function(
         BodyOwner::Member(..) | BodyOwner::Extension(..) if body.kind == BodyKind::Function => {
             Function {
                 name: body.name.clone(),
-                returns_value: returns_value(&resolution.return_type(body.ret)),
+                returns_value: !body.is_async && returns_value(&resolution.return_type(body.ret)),
             }
         }
         _ => Function::default(),
@@ -337,7 +337,8 @@ impl Flow<'_> {
             Stmt::Function(function) => {
                 let inner = Function {
                     name: body.locals[function.local].name.clone(),
-                    returns_value: returns_value(&self.resolution.return_type(function.ret)),
+                    returns_value: !function.is_async
+                        && returns_value(&self.resolution.return_type(function.ret)),
                 };
                 for &(_, default) in &function.defaults {
                     self.expr(default);
