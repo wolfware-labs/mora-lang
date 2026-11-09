@@ -116,6 +116,8 @@ pub struct Item {
     /// The members that hold or give a value: fields, getters, constants,
     /// enum members and union cases, in the order of the text.
     pub values: Vec<ValueMember>,
+    /// Whether it is a positional struct, `struct User(Id: int);` (§6.5).
+    pub is_positional: bool,
 }
 
 /// A member of a type that an expression reads as a value (§14.5).
@@ -332,6 +334,7 @@ impl Lowered {
             parent,
             members: Vec::new(),
             values,
+            is_positional: ast::StructDecl::cast(*node).is_some_and(|it| it.param_list().is_some()),
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),

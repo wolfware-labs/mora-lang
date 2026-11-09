@@ -605,24 +605,77 @@ mod tests {
     #[test]
     fn a_deconstructing_assignment_checks_each_place() {
         let body = |stmt: &str| {
-            let text =
-                format!("F(p: (int, string)) {{\n    var a = 1;\n    var b = 2;\n    {stmt}\n}}\n");
-            codes(&diagnostics_of(&text))
+            let text = format!(
+                "struct P(X: int, Y: string);\nstruct Q {{\n    X: int;\n}}\n\
+                 F(p: (int, string), xs: Unknown, s: P, q: Q) {{\n    var a = 1;\n    \
+                 var b = 2;\n    {stmt}\n}}\n"
+            );
+            diagnostics_of(&text)
+                .iter()
+                .filter(|d| d.code.to_string() != "MR0127")
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
         };
-        assert_eq!(body("(a, b) = (1, 2);"), Vec::<String>::new());
-        assert_eq!(body("(a, b) = (\"x\", \"y\");"), ["MR0203", "MR0203"]);
-        assert_eq!(body("(a, _) = (1, \"x\");"), Vec::<String>::new());
-        assert_eq!(body("(_, a) = (1, \"x\");"), ["MR0203"]);
-        assert_eq!(body("(a, (b, _)) = (1, (\"z\", 3));"), ["MR0203"]);
-        // A value that is not a tuple literal is checked whole.
-        assert_eq!(body("(a, b) = p;"), ["MR0203"]);
-        assert_eq!(body("(a, b) = (1, 2, 3);"), ["MR0203"]);
-        let positional = "struct P(X: int, Y: string);\nF(p: P) {\n    var a = 1;\n    \
-                          var b = \"\";\n    (a, b) = p;\n    (a, b) = 1;\n}\n";
-        assert_eq!(codes(&diagnostics_of(positional)), ["MR0203"]);
+        let mismatch = |expected: &str, found: &str| {
+            vec![format!(
+                "mismatched types: expected `{expected}`, found `{found}`"
+            )]
+        };
+        let none = Vec::<String>::new;
+        assert_eq!(body("(a, b) = (1, 2);"), none());
+        assert_eq!(
+            body("(a, b) = (\"x\", \"y\");"),
+            [mismatch("int", "string"), mismatch("int", "string")].concat()
+        );
+        assert_eq!(body("(a, _) = (1, \"x\");"), none());
+        assert_eq!(body("(_, a) = (1, \"x\");"), mismatch("int", "string"));
+        assert_eq!(
+            body("(a, (b, _)) = (1, (\"z\", 3));"),
+            mismatch("int", "string")
+        );
+        // A discard counts toward the arity, and a value of another shape
+        // does not deconstruct.
+        assert_eq!(body("(a, _) = 5;"), mismatch("(int, _)", "int"));
+        assert_eq!(body("(a, _) = \"s\";"), mismatch("(int, _)", "string"));
+        assert_eq!(
+            body("(a, _) = (1, 2, 3);"),
+            mismatch("(int, _)", "(int, int, int)")
+        );
+        assert_eq!(
+            body("(a, b, _) = (1, 2);"),
+            mismatch("(int, int, _)", "(int, int)")
+        );
+        assert_eq!(
+            body("(a, _) = (\"x\", 2, 3);"),
+            mismatch("(int, _)", "(string, int, int)")
+        );
+        assert_eq!(body("(a, (b, _)) = (1, 5);"), mismatch("(int, _)", "int"));
+        assert_eq!(
+            body("let t = (\"x\", 2);\n    (a, _) = t;"),
+            mismatch("int", "string")
+        );
+        assert_eq!(
+            body("let t = (1, 2, 3);\n    (a, _) = t;"),
+            mismatch("(int, _)", "(int, int, int)")
+        );
+        // A value that is not a tuple literal is checked element by element.
+        assert_eq!(body("(a, b) = p;"), mismatch("int", "string"));
+        // A place of unknown type checks nothing, and the others still do.
+        assert_eq!(body("(a, xs[0]) = (\"x\", 2);"), mismatch("int", "string"));
+        // A positional struct deconstructs, unchecked as in a declaration;
+        // any other struct does not.
+        assert_eq!(body("(a, b) = s;"), none());
+        assert_eq!(body("(a, b) = q;"), mismatch("(int, int)", "Q"));
+        assert_eq!(body("(a, b) = 1;"), mismatch("(int, int)", "int"));
+        // Parentheses around places and discards only group them.
+        assert_eq!(body("((a, _)) = (1, 2);"), none());
+        assert_eq!(body("(a, (_)) = (1, \"x\");"), none());
         // `_` is a place only inside a deconstruction.
-        assert_eq!(body("_ = 1;"), ["MR0127"]);
-        assert_eq!(body("a += (_, 1).Item1;"), ["MR0127"]);
+        assert_eq!(codes(&diagnostics_of("F() {\n    _ = 1;\n}\n")), ["MR0127"]);
+        assert_eq!(
+            codes(&diagnostics_of("F(a: int) {\n    a += (_, 1).Item1;\n}\n")),
+            ["MR0127"]
+        );
     }
 
     #[test]

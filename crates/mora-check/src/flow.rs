@@ -749,14 +749,17 @@ impl Flow<'_> {
                 }
             }
             Expr::Assign { op, lhs, rhs } => {
-                // A compound assignment reads its place first.
+                // A compound assignment reads its place first, and only `=`
+                // deconstructs.
                 if op.is_some() {
                     self.expr(*lhs);
+                    self.expr(*rhs);
+                    self.assign(*lhs);
                 } else {
                     self.place(*lhs);
+                    self.expr(*rhs);
+                    self.store(*lhs);
                 }
-                self.expr(*rhs);
-                self.assign(*lhs);
             }
             Expr::Range { start, end } => {
                 for &part in start.iter().chain(end) {
@@ -873,21 +876,25 @@ impl Flow<'_> {
         }
     }
 
-    /// An assignment to the place `place`: it assigns a local, or each
-    /// place of a tuple, and a local may not be a `let` that is or may be
-    /// assigned already (`MR0182`).
-    fn assign(&mut self, place: ExprId) {
+    /// What `=` stores in the place `place`: a deconstruction stores in each
+    /// of its places.
+    fn store(&mut self, place: ExprId) {
         let body = self.body;
-        let local = match &body.exprs[place] {
-            Expr::Local(local) => *local,
-            // A deconstructing assignment assigns each of its places.
+        match &body.exprs[place] {
             Expr::Tuple(places) => {
                 for &(_, place) in places {
-                    self.assign(place);
+                    self.store(place);
                 }
-                return;
             }
-            _ => return,
+            _ => self.assign(place),
+        }
+    }
+
+    /// An assignment to the place `place`: it assigns a local, which may
+    /// not be a `let` that is or may be assigned already (`MR0182`).
+    fn assign(&mut self, place: ExprId) {
+        let Expr::Local(local) = self.body.exprs[place] else {
+            return;
         };
         let data = &self.body.locals[local];
         let in_closure = self.depth[arena_index(local)] < self.closure;

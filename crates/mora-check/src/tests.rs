@@ -631,6 +631,16 @@ fn a_deconstructing_assignment_assigns_each_place() {
             vec!["MR0182"],
         ),
         ("var a: int;\n(a, a.Length) = (\"x\", 1);\n", vec!["MR0181"]),
+        // Only `=` deconstructs: a compound assignment reads its places.
+        ("let a = 1;\nlet b = 2;\n(a, b) += (1, 2);\n", vec![]),
+        (
+            "var a: int;\nvar b = 2;\n(a, b) += (1, 2);\n",
+            vec!["MR0181"],
+        ),
+        (
+            "let a: int;\nlet b: int;\n((a, (b))) = (1, 2);\nlet d = a + b;\n",
+            vec![],
+        ),
     ] {
         assert_eq!(reported(&format!("{c}{text}")), expected, "{text}");
     }

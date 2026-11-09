@@ -19,7 +19,7 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
-use crate::resolve::{Resolved, Scope};
+use crate::resolve::{Resolved, Scope, item_data};
 use crate::signature::signature;
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
@@ -437,9 +437,8 @@ impl Check<'_> {
         let body = self.body;
         match &body.exprs[expr] {
             // The parser reported it.
-            Expr::Missing => Some(Ty::Error),
             // A discarded element takes any type, so it checks nothing.
-            Expr::Discard => Some(Ty::Error),
+            Expr::Missing | Expr::Discard => Some(Ty::Error),
             Expr::Literal(literal) => self.literal(expr, literal, false, expect),
             Expr::Interpolated(parts) => {
                 for part in parts {
@@ -972,21 +971,10 @@ impl Check<'_> {
     /// compound assignments, whose result converts back to the type of the
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
-        let body = self.body;
         match op {
-            // A tuple of places takes a tuple literal element by element, and
-            // another value whole; a struct's deconstruction is not checked
-            // yet, as in a declaration (D-139).
-            None if matches!(body.exprs[lhs], Expr::Tuple(_))
-                && !matches!(body.exprs[rhs], Expr::Tuple(_)) =>
-            {
-                let place = self.infer(lhs);
-                let value = self.infer(rhs);
-                if let Some(place) = place
-                    && !value.as_ref().is_some_and(is_struct)
-                {
-                    self.coerce(rhs, value.as_ref(), &place, Context::Value);
-                }
+            None if matches!(self.body.exprs[lhs], Expr::Tuple(_)) => {
+                let places = self.place_type(lhs);
+                self.deconstruct(lhs, &places, rhs);
             }
             None => match self.infer(lhs) {
                 Some(place) => self.check(rhs, &place),
@@ -997,6 +985,81 @@ impl Check<'_> {
             Some(op) => {
                 self.binary(expr, op, lhs, rhs);
             }
+        }
+    }
+
+    /// The type of the places `place` of a deconstructing assignment: a
+    /// tuple for a tuple of places, and `_` for a discarded element or a
+    /// place of unknown type (D-139).
+    fn place_type(&mut self, place: ExprId) -> Ty {
+        let body = self.body;
+        match &body.exprs[place] {
+            Expr::Discard => Ty::Error,
+            Expr::Tuple(places) => Ty::Tuple(
+                places
+                    .iter()
+                    .map(|(name, place)| TupleElem {
+                        name: name.clone(),
+                        ty: self.place_type(*place),
+                    })
+                    .collect(),
+            ),
+            _ => self.infer(place).unwrap_or(Ty::Error),
+        }
+    }
+
+    /// `place = value`, where `places` is the type of `place`: a tuple
+    /// literal gives each of its elements to the place at its position, and
+    /// another value is matched against the places by its type.
+    fn deconstruct(&mut self, place: ExprId, places: &Ty, value: ExprId) {
+        let body = self.body;
+        match (&body.exprs[place], places, &body.exprs[value]) {
+            (Expr::Tuple(inner), Ty::Tuple(types), Expr::Tuple(values))
+                if inner.len() == values.len() =>
+            {
+                for ((&(_, place), ty), &(_, value)) in inner.iter().zip(types).zip(values) {
+                    self.deconstruct(place, &ty.ty, value);
+                }
+            }
+            (Expr::Tuple(_), ..) => {
+                if let Some(found) = self.infer(value) {
+                    self.matches(place, places, value, &found);
+                }
+            }
+            // A discarded element or a place of unknown type takes any value.
+            (_, Ty::Error, _) => {
+                self.infer(value);
+            }
+            _ => self.check(value, places),
+        }
+    }
+
+    /// Checks that `value`, of type `found`, can be stored in `place`, of
+    /// type `places`: a tuple of places takes a tuple of as many elements,
+    /// each stored in its place, or a positional struct, whose
+    /// deconstruction is not checked yet, as in a declaration (D-139).
+    fn matches(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
+        let body = self.body;
+        let Expr::Tuple(inner) = &body.exprs[place] else {
+            self.coerce(value, Some(found), places, Context::Value);
+            return;
+        };
+        match (places, found) {
+            (Ty::Tuple(types), Ty::Tuple(elems)) if elems.len() == inner.len() => {
+                for ((&(_, place), ty), elem) in inner.iter().zip(types).zip(elems) {
+                    self.matches(place, &ty.ty, value, &elem.ty);
+                }
+            }
+            (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
+            (_, Ty::Tuple(_) | Ty::Primitive(_) | Ty::String | Ty::Struct(_)) => {
+                self.errors.push(TypeError::Mismatch {
+                    expr: value,
+                    expected: places.clone(),
+                    found: found.clone(),
+                    context: Context::Value,
+                });
+            }
+            _ => {}
         }
     }
 

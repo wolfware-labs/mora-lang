@@ -737,13 +737,13 @@ impl Lower {
     /// The place `=` assigns: a tuple of places deconstructs the value, and
     /// `_` among them discards its element (§5.5).
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
-        let Some(ast::Expr::TupleExpr(tuple)) = place else {
+        let Some(ast::Expr::TupleExpr(tuple)) = unparen(place) else {
             return self.expr(place, range);
         };
         let elems = tuple
             .tuple_elems()
             .map(|elem| {
-                let place = match elem.expr() {
+                let place = match unparen(elem.expr()) {
                     Some(expr) if is_discard(&expr) => {
                         self.alloc_expr(Expr::Discard, expr.syntax().text_range())
                     }
@@ -1066,6 +1066,14 @@ fn binary_op(kind: SyntaxKind) -> Option<BinaryOp> {
         K::QuestionQuestion => B::Coalesce,
         _ => return None,
     })
+}
+
+/// `expr` without the parentheses around it.
+fn unparen(mut expr: Option<ast::Expr>) -> Option<ast::Expr> {
+    while let Some(ast::Expr::ParenExpr(it)) = expr {
+        expr = it.expr();
+    }
+    expr
 }
 
 /// Whether `expr` is `_` alone.
