@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use mora_span::{Db, Project, SourceFile};
 
-use super::{BodyOwner, CaptureTarget, Expr, ExprId, LocalFunction, ScopeId, TypeId, body};
+use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, TypeId, body};
 use crate::arena::arena_index;
 use crate::defs::ItemId;
 use crate::items::{ItemKind, ValueMember, Visibility, item_tree, signature_refs};
@@ -67,10 +67,10 @@ impl BodyResolution {
             .unwrap_or(Ty::Error)
     }
 
-    /// The return type of the local function `function`: `()` when none is
-    /// written.
-    pub fn return_type(&self, function: &LocalFunction) -> Ty {
-        function.ret.map_or(Ty::UNIT, |ty| self.written(ty))
+    /// The return type written at `ret`, of a local function or of a body
+    /// that holds its own ([`crate::Body::ret`]): `()` when none is written.
+    pub fn return_type(&self, ret: Option<TypeId>) -> Ty {
+        ret.map_or(Ty::UNIT, |ty| self.written(ty))
     }
 }
 

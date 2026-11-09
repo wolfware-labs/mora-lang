@@ -221,9 +221,7 @@ fn function(
         BodyOwner::Member(..) | BodyOwner::Extension(..) if body.kind == BodyKind::Function => {
             Function {
                 name: body.name.clone(),
-                returns_value: body
-                    .ret
-                    .is_some_and(|ret| returns_value(&resolution.written(ret))),
+                returns_value: returns_value(&resolution.return_type(body.ret)),
             }
         }
         _ => Function::default(),
@@ -339,7 +337,7 @@ impl Flow<'_> {
             Stmt::Function(function) => {
                 let inner = Function {
                     name: body.locals[function.local].name.clone(),
-                    returns_value: returns_value(&self.resolution.return_type(function)),
+                    returns_value: returns_value(&self.resolution.return_type(function.ret)),
                 };
                 for &(_, default) in &function.defaults {
                     self.expr(default);

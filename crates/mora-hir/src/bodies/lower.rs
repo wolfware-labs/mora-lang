@@ -734,9 +734,6 @@ impl Lower {
         self.alloc_expr(lowered, range)
     }
 
-    /// A path whose first segment is a local in scope is that local and
-    /// member accesses on it; any other path is left for
-    /// [`crate::body_resolution`].
     /// The place `=` assigns: a tuple of places deconstructs the value, and
     /// `_` among them discards its element (§5.5).
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
@@ -758,6 +755,9 @@ impl Lower {
         self.alloc_expr(Expr::Tuple(elems), tuple.syntax().text_range())
     }
 
+    /// A path whose first segment is a local in scope is that local and
+    /// member accesses on it; any other path is left for
+    /// [`crate::body_resolution`].
     fn path_expr(&mut self, path: Option<ast::Path>, range: TextRange) -> ExprId {
         let mut segments = Vec::new();
         let mut ranges = Vec::new();
@@ -1068,20 +1068,23 @@ fn binary_op(kind: SyntaxKind) -> Option<BinaryOp> {
     })
 }
 
-/// The operator of a compound assignment; `None` for `=`.
 /// Whether `expr` is `_` alone.
 fn is_discard(expr: &ast::Expr) -> bool {
     let ast::Expr::PathExpr(it) = expr else {
         return false;
     };
     let mut segments = it.path().into_iter().flat_map(|path| path.path_segments());
-    matches!(
-        (segments.next(), segments.next()),
-        (Some(segment), None) if segment.generic_arg_list().is_none()
-            && segment.name_ref().and_then(|name| name.ident_token()).is_some_and(|token| token.text() == "_")
-    )
+    let (Some(segment), None) = (segments.next(), segments.next()) else {
+        return false;
+    };
+    segment.generic_arg_list().is_none()
+        && segment
+            .name_ref()
+            .and_then(|name| name.ident_token())
+            .is_some_and(|token| token.text() == "_")
 }
 
+/// The operator of a compound assignment; `None` for `=`.
 fn assign_op(kind: SyntaxKind) -> Option<BinaryOp> {
     use BinaryOp as B;
     use SyntaxKind as K;

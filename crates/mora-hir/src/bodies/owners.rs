@@ -512,17 +512,18 @@ fn extension_bodies(extension: &ast::ExtensionDecl, index: u32, found: &mut Foun
         let body = match &decl {
             ast::Member::FunctionDecl(it) => {
                 type_params.extend(it.type_param_list());
+                let written = Written::of(it.modifiers());
                 callable(
                     BodyKind::Function,
                     name_of(it.name()).unwrap_or_default(),
                     Callable {
-                        visibility: Written::of(it.modifiers()).visibility_or_folder(),
+                        visibility: written.visibility_or_folder(),
                         receiver,
                         params: params(it.param_list()),
                         type_params,
                         check_types: true,
                         ret: it.ret(),
-                        is_async: Written::of(it.modifiers()).is_async,
+                        is_async: written.is_async,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()

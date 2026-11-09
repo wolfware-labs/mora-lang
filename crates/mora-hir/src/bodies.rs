@@ -139,7 +139,8 @@ pub struct Body {
     /// item tree does not hold; `None` when none is written or the item
     /// tree holds it.
     pub ret: Option<TypeId>,
-    /// Whether that declaration is `async`.
+    /// Whether that declaration is `async`; `false` when the item tree
+    /// holds its signature, which says it ([`crate::FnSignature::is_async`]).
     pub is_async: bool,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,

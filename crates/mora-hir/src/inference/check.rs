@@ -106,7 +106,7 @@ pub(super) fn infer_body(
             // A function that implements an interface member or extends a
             // type holds its own return type, `()` when none is written.
             BodyKind::Function if !body.is_async => {
-                expected = Some(body.ret.map_or(Ty::UNIT, |ty| check.resolution.written(ty)));
+                expected = Some(check.resolution.return_type(body.ret));
             }
             _ => {}
         },
@@ -248,7 +248,7 @@ impl Check<'_> {
             }
             Stmt::Function(function) => {
                 self.defaults(&function.defaults);
-                let ret = (!function.is_async).then(|| self.resolution.return_type(function));
+                let ret = (!function.is_async).then(|| self.resolution.return_type(function.ret));
                 if let Some(root) = function.body {
                     self.function_body(root, ret);
                 }
