@@ -60,6 +60,10 @@ impl TestDb {
     }
 
     /// A project named `name` of the files `files`, as path and text.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is not a valid project name.
     pub fn project(
         &self,
         name: &str,
@@ -67,6 +71,9 @@ impl TestDb {
         files: &[(&str, &str)],
         dependencies: Vec<Dependency>,
     ) -> Project {
+        let Some(namespace) = pascal_case(name) else {
+            panic!("not a project name: {name}");
+        };
         let files = files
             .iter()
             .map(|(path, text)| self.file(path, text))
@@ -75,7 +82,7 @@ impl TestDb {
             self,
             name.into(),
             files,
-            pascal_case(name).unwrap_or_default(),
+            namespace,
             kind,
             "src/Program.mr".into(),
             dependencies,

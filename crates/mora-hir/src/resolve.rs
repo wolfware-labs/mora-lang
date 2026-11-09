@@ -4,7 +4,7 @@ use crate::defs::{ItemId, NamespaceRef, def_map};
 use crate::items::{Item, ItemIdx, ItemKind, ItemTree, ValueMember, Visibility, item_tree};
 
 /// The name of the standard library's root namespace (§4.4).
-pub(crate) const STD: &str = "Std";
+pub const STD: &str = "Std";
 
 /// Where a name is looked up from: a file of a project, at namespace level
 /// or inside a type of the file.
@@ -974,7 +974,7 @@ mod tests {
                 ("src/Other.mr", ""),
             ],
             vec![Dependency {
-                name: "Std".into(),
+                name: STD.into(),
                 project: std,
             }],
         );
@@ -1335,7 +1335,7 @@ mod tests {
              F(a: Consol, b: Option, c: JsonValu, d: J.JsonValue, e: Pie) {}\n",
             )],
             vec![Dependency {
-                name: "Std".into(),
+                name: STD.into(),
                 project: std,
             }],
         );

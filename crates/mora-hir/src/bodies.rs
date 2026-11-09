@@ -1431,6 +1431,45 @@ get extension#0.Empty(items#0) => items#0[0];
     }
 
     #[test]
+    fn a_body_keeps_the_return_type_no_signature_holds() {
+        let db = TestDb::new();
+        let text = "interface I {\n    M(): int;\n}\nclass C : I {\n    I.M(): int => 1;\n}\n\
+                    F(): int => 1;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let returns: Vec<_> = body_owners(&db, file)
+            .into_iter()
+            .filter_map(|owner| {
+                let body = body(&db, file, owner);
+                let name = match owner {
+                    BodyOwner::Item(item) => item_tree(&db, file).item(item).name.clone(),
+                    BodyOwner::Member(..) => body.name.clone(),
+                    _ => return None,
+                };
+                let resolution = body_resolution(&db, project, file, owner);
+                Some((name, body.ret.map(|ret| resolution.written(ret))))
+            })
+            .collect();
+        // An item's signature holds its return type; the member's body does.
+        assert_eq!(
+            returns,
+            [
+                ("M".to_owned(), None),
+                ("I.M".to_owned(), Some(Ty::Primitive(Primitive::Int))),
+                ("F".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recovered_return_has_a_missing_value() {
+        assert_eq!(
+            dump("F(): int {\n    return\n}\nG() {\n    return;\n}\n"),
+            "fn UsersApi.F() {\n    return <missing>;\n}\n\nfn UsersApi.G() {\n    return;\n}\n"
+        );
+    }
+
+    #[test]
     fn literals_keep_their_kind() {
         let db = TestDb::new();
         let project = app(

@@ -9,8 +9,9 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId,
-    InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, Signature,
-    Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree, signature,
+    InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
+    Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree,
+    signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
@@ -352,16 +353,15 @@ impl Flow<'_> {
                 condition,
                 then,
                 r#else,
-            } => {
-                let (when_true, when_false) = self.condition(*condition);
-                self.state = when_true;
-                self.stmt(*then);
-                let after_then = std::mem::replace(&mut self.state, when_false);
-                if let Some(r#else) = r#else {
-                    self.stmt(*r#else);
-                }
-                self.state.join(&after_then);
-            }
+            } => self.branches(
+                *condition,
+                |flow| flow.stmt(*then),
+                |flow| {
+                    if let Some(r#else) = r#else {
+                        flow.stmt(*r#else);
+                    }
+                },
+            ),
             Stmt::While { condition, body } => self.r#loop(|flow| {
                 let exit = flow.head(Some(*condition));
                 flow.stmt(*body);
@@ -456,26 +456,23 @@ impl Flow<'_> {
     /// at the start. A loop inside a first pass is walked once: what its
     /// iterations assign is on its way out as well.
     fn r#loop(&mut self, iterate: impl Fn(&mut Self) -> (Option<State>, State)) {
-        let entry = self.state.clone();
-        let back = if self.dry {
-            None
-        } else {
-            let reported = self.reported.clone();
-            let len = self.out.len();
-            self.dry = true;
-            let back = self.iteration(&iterate).1;
-            self.dry = false;
-            self.out.truncate(len);
-            self.reported = reported;
-            self.state = entry;
+        if self.dry {
+            let (exit, back) = self.iteration(&iterate);
+            self.state = exit;
             self.state.maybe.union(&back.maybe);
-            Some(back)
-        };
-        let (exit, again) = self.iteration(&iterate);
-        self.state = exit;
-        if back.is_none() {
-            self.state.maybe.union(&again.maybe);
+            return;
         }
+        let entry = self.state.clone();
+        let reported = self.reported.clone();
+        let len = self.out.len();
+        self.dry = true;
+        let back = self.iteration(&iterate).1;
+        self.dry = false;
+        self.out.truncate(len);
+        self.reported = reported;
+        self.state = entry;
+        self.state.maybe.union(&back.maybe);
+        self.state = self.iteration(&iterate).0;
     }
 
     /// One walk of a loop's iteration: the state after the loop, and the
@@ -557,6 +554,22 @@ impl Flow<'_> {
                 (self.state.clone(), self.state.clone())
             }
         }
+    }
+
+    /// `then` where `condition` holds and `r#else` where it does not, of an
+    /// `if` or `c ? a : b`; the paths meet after them.
+    fn branches(
+        &mut self,
+        condition: ExprId,
+        then: impl FnOnce(&mut Self),
+        r#else: impl FnOnce(&mut Self),
+    ) {
+        let (when_true, when_false) = self.condition(condition);
+        self.state = when_true;
+        then(self);
+        let after_then = std::mem::replace(&mut self.state, when_false);
+        r#else(self);
+        self.state.join(&after_then);
     }
 
     fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm]) {
@@ -764,14 +777,11 @@ impl Flow<'_> {
                 condition,
                 then,
                 r#else,
-            } => {
-                let (when_true, when_false) = self.condition(*condition);
-                self.state = when_true;
-                self.expr(*then);
-                let after_then = std::mem::replace(&mut self.state, when_false);
-                self.expr(*r#else);
-                self.state.join(&after_then);
-            }
+            } => self.branches(
+                *condition,
+                |flow| flow.expr(*then),
+                |flow| flow.expr(*r#else),
+            ),
             Expr::Lambda(lambda) => {
                 for &(_, default) in &lambda.defaults {
                     self.expr(default);
@@ -804,7 +814,7 @@ impl Flow<'_> {
                 _ => return false,
             },
             Expr::Member { receiver, name, .. } => match &body.exprs[*receiver] {
-                Expr::Path(path) if path.segments == ["Std"] => (name, *receiver),
+                Expr::Path(path) if path.segments == [STD] => (name, *receiver),
                 _ => return false,
             },
             _ => return false,
