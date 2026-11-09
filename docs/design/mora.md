@@ -2596,7 +2596,7 @@ await app.RunAsync("127.0.0.1:8080")?;
 **Blocks and bindings.** The fragment below joins the ungrammar of §14.4 when M6.9 adds its parser.
 
 ```ebnf
-ServicesDecl = Attribute* Modifier* "services" Identifier ( ":" Path ( "," Path )* )? "{" Binding* "}" ;
+ServicesDecl = Attribute* Modifier* "services" Identifier TypeParams? ( ":" Path ( "," Path )* )? Constraints* "{" Binding* "}" ;
 Binding      = Attribute* "override"? Lifetime TypeParams? Type ( "per" Type )? ( "=" ( Type | Lambda | "[" ( Type ( "," Type )* )? "]" ) | "+=" ( Type | Lambda ) )? ";"
              | Attribute* "override"? "decorate" TypeParams? Type "with" Type ";" ;
 Lifetime     = "singleton" | "scoped" | "transient" ;
@@ -2613,6 +2613,7 @@ Lifetime     = "singleton" | "scoped" | "transient" ;
 **Inheriting blocks** (D-124). A block lists its bases after `:`. This combines declarations; it is not class inheritance.
 
 - A block has every binding of its bases. One binding that reaches it through two bases, because both inherit it from a shared base, counts once.
+- A block MUST NOT reach itself through its bases, directly or through other blocks (`MR0717`, which prints the cycle).
 - Redefining an inherited binding MUST be marked `override` (`MR0700`). Binding a requirement is an override too. An `override` MUST match an inherited binding of the same service with the same lifetime (`MR0702`).
 - Two bases that bind one service to different implementations or with different lifetimes are `MR0712`, which names both blocks and both bindings; the fix is an `override` in the combining block. Base order never settles it.
 - `override singleton ILogger = FastLog.ILogger;` reuses the binding of the base `FastLog`, its implementation and its factory or configuration, by naming the base's associated type.
@@ -2628,6 +2629,34 @@ services App : LibBase {
 - `@Cfg` applies to whole blocks and to single bindings (§6.11, §17.2). An inactive block or binding does not exist. Two active blocks with one name are `MR0128` wherever the name is used.
 - A **final** composition is one that a host runs: the type argument of `WebApp.Create<App>(args)` or `ServiceHost.StartAsync<TestApp>()`. It MUST bind every requirement it inherits (`MR0713`, naming the requirement and the block that declares it), and the checks of the rest of this section apply to it. Other blocks are checked only for the rules of this list.
 - A library publishes blocks with `public services` for apps to inherit. A binding may name a type of the library that the app cannot see, because only the composition builds it.
+
+**Generic blocks** (D-140). A block may take type parameters and constraints, as a generic type does (§8.1, §8.2), so a library can publish one block for a graph that depends on a type the app chooses. The app names an instantiation of it as a base:
+
+```mora
+// In a library
+public services SqlStore<TDb> where TDb : class, IDatabase {
+    singleton DbOptions<TDb>;                    // built by its constructor unless an app overrides it
+    singleton IConnectionPool = PgPool;
+    scoped TDb;
+}
+
+// In the app
+services App : SqlStore<UsersDb> {
+    override singleton DbOptions<UsersDb> = (cfg: AppConfig) => DbOptions<UsersDb>.Postgres(cfg.Database);
+    scoped IUserStore = SqlUserStore;
+}
+```
+
+- `SqlStore<UsersDb>` in a base list gives the block every binding of `SqlStore` with `UsersDb` in place of `TDb`. The type arguments MUST meet the block's constraints, as any type arguments must (§8.2).
+- The cycle rule above goes by block name, whatever the type arguments: `services A<T> : B<List<T>>` with `services B<T> : A<List<T>>` is `MR0717`, although `A<int>` never reaches `A<int>` again. Each path through the bases then meets each block once, so a final composition holds a finite set of instantiations.
+- **Two instantiations are two bases.** `SqlStore<UsersDb>` and `SqlStore<AuditDb>` in one base list combine under the rules above. `scoped TDb;` gives two services, `UsersDb` and `AuditDb`, and `singleton IConnectionPool = PgPool;`, which does not use `TDb`, comes out the same from both and counts once. Had the block bound `scoped IDatabase = TDb;`, the two would bind `IDatabase` two ways, which is `MR0712` until the combining block overrides it. The `+=` elements of both join one list, in base-list order.
+- One instantiation reached through several bases counts once, as any shared base does, but only with the same type arguments: `services C : A, B` has one `SqlStore<UsersDb>` when `A` and `B` both inherit it, and two instantiations when `B` inherits `SqlStore<AuditDb>` instead.
+- **Associated types** are named by the service after substitution: `App.UsersDb`, `App.DbOptions<UsersDb>` and `App.IConnectionPool`. A type parameter never names one, so `App.TDb` is `MR0127`. Reusing a base's binding names the instantiation, as in `SqlStore<UsersDb>.IConnectionPool`.
+- **Overrides** match an inherited binding after substitution: `override singleton DbOptions<UsersDb>` in `App` matches `singleton DbOptions<TDb>;` of `SqlStore<UsersDb>`. An `override` that matches no inherited binding after substitution, such as `override singleton DbOptions<AuditDb>` in `App`, is `MR0702`.
+- **Checking.** A generic block is checked once, with each type parameter standing for an unknown type that meets its constraints, as a service class is (D-123). Its bindings MUST hold for every such type: without `class` in its constraints, `scoped TDb;` would be `MR0711`, since `TDb` could be a struct. What depends on the type argument itself, such as the constructor that `scoped TDb;` calls and that constructor's dependencies, is checked with each instantiation, in the graph of every final composition that holds it.
+- **Diagnostics** that name a block name the instantiation, `SqlStore<UsersDb>` rather than `SqlStore`. That covers the two blocks of `MR0712` and the chain of `MR0703`: ``no binding for `ISchema`, needed by `UsersDb` (scoped, from `SqlStore<UsersDb>`), needed by `SqlUserStore` (scoped), needed by the handler of `POST /users` ``.
+- A final composition MUST NOT be a generic block. `WebApp.Create<SqlStore<UsersDb>>(args)` is `MR0716`, whose fix declares a block that inherits the instantiation and runs that block instead, so every world the program compiles is a block it declares.
+- **Cost.** Each instantiation is checked on its own, in each final composition that holds it, so the work of checking grows with the instantiations a program uses. Nothing is added at run time: each final composition is already compiled as its own world (D-128), whatever instantiations it holds.
 
 **Choosing an implementation** (D-125). No binding is made by running code, so a run-time `if` around a binding cannot be written.
 
@@ -2763,7 +2792,7 @@ test {
 
 **Plugins** [post-MVP]. `singleton IExporter += from "plugins/exporters";` adds the implementations that the plugin libraries in that folder provide through the plugin ABI (M8), loaded when the host starts, as `any IExporter` elements after the collection's other elements. The `uses` bounds of `IExporter`'s methods stand for the effects of calls into a plugin, and a call through a method without one is `dyn` (§6.14). Plugins, factories that return `any I` and collections are the only places where injection adds dynamic dispatch.
 
-**Compilation.** `mora-syntax` parses blocks. `mora-check` resolves each block's bases and bindings, checks every final composition's graph and checks each root where it is written, against the composition `S` of its `IRoot<S, R>`, before monomorphization, so `mora check` and the language server report every error of this section. `mora-mir` generates the wiring and instantiates each world during monomorphization. `mora expand` shows each root's wiring as Mora code (§9.8).
+**Compilation.** `mora-syntax` parses blocks. `mora-check` resolves each block's bases, instantiating generic ones, and its bindings, checks every final composition's graph and checks each root where it is written, against the composition `S` of its `IRoot<S, R>`, before monomorphization, so `mora check` and the language server report every error of this section. `mora-mir` generates the wiring and instantiates each world during monomorphization. `mora expand` shows each root's wiring as Mora code (§9.8).
 
 ## 17. Toolchain, CLI and editor support
 
@@ -3337,6 +3366,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-135 | Until the compiler can look up `IFrom` implementations (M3.6), the checker carries the numeric rows of §5.10 as a built-in table that stands in for those of `Std`; the conversions are the same | user | 5.10 |
 | D-136 | A call of a function with one declaration reports a wrong-typed argument as `MR0203` and a missing or extra argument as `MR0205` naming its signature; overloads get `MR0205` and `MR0206` listing the candidates; a positional argument after a named one and a repeated name are `MR0207` in every call, and an unknown name and a name for a parameter given by position are `MR0207` too, with overloads only when every overload fails that way for a name given by position; an argument whose marker does not suit its parameter's mode makes the function not applicable, `MR0205` with a fix for one declaration; a `ref` argument has exactly its parameter's type; calling a value of a known non-function type is `MR0208`; only visible methods are candidates, and a call of a value's method none of whose overloads is visible is `MR0129` | user | 6.9, 10.3 |
 | D-137 | Until type arguments are inferred (M3.8) and `params` arguments are expanded, a call that a generic, `params` or `async` overload could take is not checked, nor a call of a static method through a value; an argument or a parameter of a type not known yet fits, and a call it leaves more than one overload for is not resolved or reported, with a type only when they all return it; a literal ranks its natural type first, then that type's §5.10 conversions, then the types it takes only as a literal | user | 6.9 |
+| D-140 | A `services` block may be generic, with type parameters and constraints; an instantiation such as `SqlStore<UsersDb>` is a base, two instantiations with different type arguments are two bases whose bindings combine under D-124, and one instantiation reached through several paths counts once; associated types and `override` match services after substitution, so a type parameter never names an associated type and an `override` with no match is `MR0702`; a generic block is checked once with each type parameter standing for an unknown type that meets its constraints, and what depends on the type argument is checked per instantiation in each final composition; diagnostics name the instantiation; a final composition must not be generic (`MR0716`); a block that reaches itself through its bases by name, whatever the type arguments, is `MR0717`, so instantiation ends; there is no run-time cost | user | 16.4 |
 
 ## 24. Open questions
 
