@@ -159,6 +159,14 @@ pub(crate) fn check(
             assigned.remove(*local);
         }
     }
+    // A pattern's binding is assigned where the pattern matches.
+    let mut bound = Locals::empty(len);
+    for (_, pat) in body.pats.iter() {
+        if let Pat::Bind(local) = pat {
+            bound.insert(*local);
+            assigned.remove(*local);
+        }
+    }
     let resolution = body_resolution(db, project, file, owner);
     let mut flow = Flow {
         db,
@@ -172,6 +180,7 @@ pub(crate) fn check(
             assigned,
         },
         unassigned,
+        bound,
         depth: vec![0; len],
         closure: 0,
         loops: Vec::new(),
@@ -250,6 +259,8 @@ struct Flow<'a> {
     state: State,
     /// The locals declared without a value.
     unassigned: Locals,
+    /// The bindings of patterns.
+    bound: Locals,
     /// How many closures each local is declared inside.
     depth: Vec<u32>,
     /// How many closures the walk is inside.
@@ -548,6 +559,13 @@ impl Flow<'_> {
                 let (when_true, when_false) = self.condition(*expr);
                 (when_false, when_true)
             }
+            // The bindings of the pattern are assigned where it matches.
+            Expr::Is { expr: value, pat } => {
+                self.expr(*value);
+                let when_false = self.state.clone();
+                self.pat(*pat);
+                (self.state.clone(), when_false)
+            }
             _ => {
                 self.expr(condition);
                 (self.state.clone(), self.state.clone())
@@ -595,6 +613,11 @@ impl Flow<'_> {
             self.expr(arm.body);
             after.join(&self.state);
         }
+        // A guarded last arm leaves open the path where its guard does not
+        // hold; whether the arms cover every value is for exhaustiveness.
+        if arms.last().is_some_and(|arm| arm.guard.is_some()) {
+            after.join(&entry);
+        }
         self.state = after;
     }
 
@@ -603,7 +626,10 @@ impl Flow<'_> {
         let body = self.body;
         match &body.pats[pat] {
             Pat::Missing | Pat::Discard | Pat::Slice(None) => {}
-            Pat::Bind(local) => self.depth[arena_index(*local)] = self.closure,
+            Pat::Bind(local) => {
+                self.depth[arena_index(*local)] = self.closure;
+                self.state.assigned.insert(*local);
+            }
             Pat::Constant(expr) | Pat::Relational { value: expr, .. } => self.expr(*expr),
             Pat::Type { binding, .. } => {
                 if let Some(binding) = binding {
@@ -730,10 +756,12 @@ impl Flow<'_> {
             | Expr::Await(operand)
             | Expr::Cast { expr: operand, .. }
             | Expr::As { expr: operand, .. } => self.expr(*operand),
+            // The paths where a condition holds and where it does not meet.
             Expr::Binary {
                 op: BinaryOp::And | BinaryOp::Or,
                 ..
-            } => {
+            }
+            | Expr::Is { .. } => {
                 let (when_true, when_false) = self.condition(expr);
                 self.state = when_true;
                 self.state.join(&when_false);
@@ -773,10 +801,6 @@ impl Flow<'_> {
                 for &(_, init) in inits {
                     self.expr(init);
                 }
-            }
-            Expr::Is { expr: value, pat } => {
-                self.expr(*value);
-                self.pat(*pat);
             }
             Expr::Conditional {
                 condition,
@@ -840,6 +864,19 @@ impl Flow<'_> {
         self.state.assigned.insert(local);
         let name = &self.body.locals[local].name;
         let in_closure = self.depth[arena_index(local)] < self.closure;
+        let (declared, note) = if self.bound.contains(local) {
+            (
+                "bound here",
+                "a pattern's binding is assigned only where the pattern matches, \
+                 so it is read only where the test holds",
+            )
+        } else {
+            (
+                "declared here without a value",
+                "a local declared without a value must be assigned on every path before it is read; \
+                 a closure sees the locals assigned where it is declared",
+            )
+        };
         let label = if in_closure {
             format!("the closure reads `{name}`, which is not assigned where it is declared")
         } else {
@@ -851,14 +888,8 @@ impl Flow<'_> {
                 format!("`{name}` is used before it is assigned"),
                 Label::new(self.span(self.map.expr(expr)), label),
             )
-            .with_secondary(Label::new(
-                self.span(self.map.local(local)),
-                "declared here without a value",
-            ))
-            .with_note(
-                "a local declared without a value must be assigned on every path before it is read; \
-                 a closure sees the locals assigned where it is declared",
-            ),
+            .with_secondary(Label::new(self.span(self.map.local(local)), declared))
+            .with_note(note),
         );
     }
 

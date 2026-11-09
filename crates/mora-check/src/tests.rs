@@ -661,6 +661,62 @@ fn async_bodies_wait_for_their_return_types() {
 }
 
 #[test]
+fn a_guarded_last_arm_leaves_its_guard_false_path_open() {
+    let returns = "F(c: bool, x: int): int {\n    match (x) {\n        _ when c => {\n            return 1;\n        }\n    }\n}\n";
+    assert_eq!(
+        messages(returns),
+        ["`F` can reach its end without returning a value"]
+    );
+    let closed = "F(c: bool, x: int): int {\n    match (x) {\n        _ when c => {\n            return 1;\n        }\n        _ => {\n            return 2;\n        }\n    }\n}\n";
+    assert_eq!(messages(closed), Vec::<String>::new());
+    let assigns = "let c = true;\nlet a: int;\nmatch (1) {\n    _ when c => {\n        a = 1;\n    }\n}\nlet b = a;\n";
+    assert_eq!(messages(assigns), ["`a` is used before it is assigned"]);
+}
+
+#[test]
+fn an_is_binding_is_assigned_only_where_the_test_holds() {
+    let read = ["`b` is used before it is assigned"];
+    for (test, expected) in [
+        (
+            "if (o is int b) {\n    } else {\n        let d = b;\n    }",
+            read.to_vec(),
+        ),
+        (
+            "if (!(o is int b)) {\n        let d = b;\n    }",
+            read.to_vec(),
+        ),
+        (
+            "if (o is int b || c) {\n        let d = b;\n    }",
+            read.to_vec(),
+        ),
+        (
+            "if (o is int b && b > 0) {\n        let d = b;\n    }",
+            vec![],
+        ),
+        (
+            "if (!(o is int b) || b > 0) {\n    } else {\n        let d = b;\n    }",
+            vec![],
+        ),
+        ("let t = o is int b && b > 0;", vec![]),
+        ("let t = o is int b ? b : b;", read.to_vec()),
+        (
+            "match (o) {\n        int b => b,\n        _ => 0,\n    };",
+            vec![],
+        ),
+        ("let (b, e) = (1, 2);\n    let d = b + e;", vec![]),
+    ] {
+        let text = format!("F(o: int, c: bool) {{\n    {test}\n}}\n");
+        assert_eq!(messages(&text), expected, "{test}");
+    }
+    let text = "F(o: int) {\n    if (!(o is int b)) {\n        let d = b;\n    }\n}\n";
+    let note = diagnostics_of(text)[0].note.clone().unwrap_or_default();
+    assert!(
+        note.starts_with("a pattern's binding is assigned only where"),
+        "{note}"
+    );
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),
