@@ -779,6 +779,27 @@ fn a_capture_reads_the_local_where_the_lambda_is_declared() {
 }
 
 #[test]
+fn a_later_arm_sees_what_an_earlier_pattern_evaluated() {
+    for (text, expected) in [
+        (
+            "var x: int;\nmatch (1) {\n    < (x = 1) => {}\n    _ => {\n        let y = x;\n    }\n}\n",
+            vec![],
+        ),
+        (
+            "let x: int;\nmatch (1) {\n    < (x = 1) => {}\n    _ => {\n        x = 2;\n    }\n}\n",
+            vec!["`x` is declared with `let` and may be assigned already"],
+        ),
+        // The last arm's pattern failing is for exhaustiveness (M3.4).
+        (
+            "F(o: int): int {\n    match (o) {\n        0 => {\n            return 1;\n        }\n    }\n}\n",
+            vec![],
+        ),
+    ] {
+        assert_eq!(messages(text), expected, "{text}");
+    }
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),

@@ -597,24 +597,28 @@ impl Flow<'_> {
         } else {
             self.unreachable()
         };
-        // An arm is reached as well where an arm before it matched but its
-        // guard did not hold.
+        // An arm is reached where the arm before it did not match, or matched
+        // but its guard did not hold.
         let mut entry = before;
+        let mut guard_failed = None;
         for arm in arms {
-            self.state = entry.clone();
-            self.pat(arm.pat);
-            if let Some(guard) = arm.guard {
+            self.state = entry;
+            let (matched, failed) = self.pattern(arm.pat);
+            entry = failed;
+            self.state = matched;
+            guard_failed = arm.guard.map(|guard| {
                 let (when_true, when_false) = self.condition(guard);
                 entry.join(&when_false);
                 self.state = when_true;
-            }
+                when_false
+            });
             self.expr(arm.body);
             after.join(&self.state);
         }
         // A guarded last arm leaves open the path where its guard does not
-        // hold; whether the arms cover every value is for exhaustiveness.
-        if arms.last().is_some_and(|arm| arm.guard.is_some()) {
-            after.join(&entry);
+        // hold; whether its pattern covers every value is for exhaustiveness.
+        if let Some(open) = guard_failed {
+            after.join(&open);
         }
         self.state = after;
     }
