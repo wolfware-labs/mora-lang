@@ -18,45 +18,29 @@ exclude_globs = [
 # at the same spot still run, and an edit that moves the code brings the
 # mutant back for review instead of hiding a new one with the same name.
 exclude_re = [
-    # The overflow fallback: reached only after 584 years of uptime.
-    '^crates/mora-rt/src/pal\.rs:89:57: replace - with / in mora_pal_now$',
     # Lexer arithmetic that lands on the same result: index 0 of an
-    # identifier is always an identifier character, number errors always
-    # start at offset 0, and the raw-string indent scan only gains or loses
-    # blank lines.
-    '^crates/mora-syntax/src/lexer/mod\.rs:496:35: replace > with >= in Lexer<.a>::code_token$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:1132:60: replace \+ with \* in Lexer<.a>::check_raw$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:1133:26: replace < with <= in Lexer<.a>::check_raw$',
-    '^crates/mora-syntax/src/lexer/mod\.rs:1133:57: replace \+ with \* in Lexer<.a>::check_raw$',
-    '^crates/mora-syntax/src/lexer/number\.rs:235:37: replace \+ with \* in separators$',
+    # identifier is always an identifier character, and number errors always
+    # start at offset 0.
+    '^crates/mora-syntax/src/lexer/mod\.rs:481:35: replace > with >= in Lexer<.a>::code_token$',
+    '^crates/mora-syntax/src/lexer/number\.rs:247:37: replace \+ with \* in separators$',
     # Popping the last event and leaving a tombstone build the same tree.
-    '^crates/mora-syntax/src/parser/mod\.rs:193:21: replace \+ with - in Marker::abandon$',
-    '^crates/mora-syntax/src/parser/mod\.rs:193:21: replace \+ with \* in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:230:21: replace \+ with - in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:230:21: replace \+ with \* in Marker::abandon$',
     # The scan starting one token early sees the `?` itself, which it skips;
     # scanning past the end reads the end-of-file kind.
-    '^crates/mora-syntax/src/parser/exprs\.rs:269:20: replace \+ with \* in conditional_follows$',
-    '^crates/mora-syntax/src/parser/exprs\.rs:270:13: replace < with <= in conditional_follows$',
-    # At the top level an item without attributes only gets this far when
-    # it starts a declaration, which the attributed-statement arms never take.
-    '^crates/mora-syntax/src/parser/items\.rs:231:30: replace > with >= in declaration$',
+    '^crates/mora-syntax/src/parser/exprs\.rs:259:20: replace \+ with \* in conditional_follows$',
+    '^crates/mora-syntax/src/parser/exprs\.rs:260:13: replace < with <= in conditional_follows$',
     # Any hash finds equal tokens; only the speed of the table depends on it.
-    '^crates/mora-syntax/src/tree\.rs:480:5: replace token_hash -> u64 with 0$',
-    '^crates/mora-syntax/src/tree\.rs:480:5: replace token_hash -> u64 with 1$',
+    '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 0$',
+    '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 1$',
     # The placeholder compiler has no backends either way.
-    '^crates/mora-testkit/src/compiler\.rs:40:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
-    '^crates/mora-testkit/src/compiler\.rs:119:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
-    # Width of a separator line; any width reads the same.
-    '^crates/mora-testkit/src/diff\.rs:32:87: replace \+ with \* in diff$',
-    # Codegen paths that produce the same text: the widened ranges only add
-    # nodes, which carry no token kind; equal fields merge to themselves; and
-    # `show` already brackets a nested sequence or alternative.
-    '^xtask/src/codegen\.rs:584:32: replace \+ with \* in place$',
-    '^xtask/src/codegen\.rs:590:40: replace \+ with \* in place$',
-    '^xtask/src/codegen\.rs:609:31: replace match guard \*existing == field with false in dedupe$',
-    '^xtask/src/codegen\.rs:663:9: delete match arm Rule::Seq\(_\) \| Rule::Alt\(_\) in show$',
-    '^xtask/src/codegen\.rs:674:21: delete match arm Rule::Alt\(_\) in show$',
+    '^crates/mora-testkit/src/compiler\.rs:52:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    '^crates/mora-testkit/src/compiler\.rs:144:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    # Where the lines differ, `common[i][j]` is the larger of the two
+    # entries the diff compares, so comparing with it picks the same side.
+    '^crates/mora-testkit/src/diff\.rs:34:87: replace \+ with \* in diff$',
     # `ALLOW` is empty, so the comparison never runs.
-    '^xtask/src/target_names\.rs:325:62: replace == with != in check$',
+    '^xtask/src/target_names\.rs:344:62: replace == with != in check$',
 
     # Not equivalent, but checked outside `cargo test`, which is all that
     # cargo-mutants runs. CI's `runtime` job covers both:
@@ -66,6 +50,6 @@ exclude_re = [
     '^crates/mora-rt/src/start\.rs:16:5: replace main -> c_int with Default::default\(\)$',
     # - Windows hosts only; the Windows legs run `cargo xtask sysroot`,
     #   which installs llvm-mingw and checks the linker it copied.
-    '^xtask/src/sysroot\.rs:265:18: replace == with != in install_llvm_mingw$',
-    '^xtask/src/sysroot\.rs:265:34: replace \|\| with && in install_llvm_mingw$',
+    '^xtask/src/sysroot\.rs:291:18: replace == with != in install_llvm_mingw$',
+    '^xtask/src/sysroot\.rs:291:34: replace \|\| with && in install_llvm_mingw$',
 ]

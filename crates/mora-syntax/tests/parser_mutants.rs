@@ -208,6 +208,10 @@ fn arrays_are_created_with_a_size() {
     ] {
         assert!(!errors(text).is_empty(), "{text}");
     }
+    // The empty brackets are the missing size, not an array element type.
+    let (tree, _) = outline("let a = new int[] { 1 };");
+    assert!(tree.contains("NewArrayExpr(PredefinedType"), "{tree}");
+    assert!(!tree.contains("ArrayType"), "{tree}");
 }
 
 // object_initializer: every member.

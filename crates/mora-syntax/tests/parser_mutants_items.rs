@@ -123,6 +123,30 @@ fn an_unclosed_index_is_not_an_array_type() {
     assert_eq!(messages(text), ["expected `]`", "expected `;`"]);
 }
 
+#[test]
+fn an_unclosed_array_suffix_ends_the_member_type() {
+    // The type of `P` is `int`, and the `=>` inside the brackets does not
+    // make a getter of it.
+    let text = "class A { P: int[x => 0; }";
+    assert!(has(text, K::FieldDecl));
+    assert!(!has(text, K::GetterDecl));
+}
+
+// `shape`: a member starts with its name.
+
+#[test]
+fn a_member_without_a_name_is_an_error() {
+    for text in [
+        "class A { (x: int): int => 0; }",
+        "class A { <T>(): int => 0; }",
+        "class A { : int => 0; }",
+    ] {
+        assert!(!has(text, K::FunctionDecl), "{text}");
+        assert!(!has(text, K::GetterDecl), "{text}");
+        assert_eq!(messages(text)[0], "expected a member", "{text}");
+    }
+}
+
 // `child_between`: the parts of `a ? b : c` are found across whitespace.
 
 #[test]

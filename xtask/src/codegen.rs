@@ -630,14 +630,16 @@ fn place(mut fields: Vec<Field>, overlap: &dyn Fn(&str, &str) -> bool) -> Vec<Fi
             continue;
         }
         let k = same.iter().position(|&j| j == i).unwrap_or(0);
+        // Each range takes in the node at its start, which carries no
+        // token kind: only the tokens between the two nodes count.
         let after = if k > 0 {
-            fields[same[k - 1] + 1..i].iter().rev().find_map(kinds)
+            fields[same[k - 1]..i].iter().rev().find_map(kinds)
         } else {
             None
         };
         let before = same
             .get(k + 1)
-            .and_then(|&next| fields[i + 1..next].iter().find_map(kinds));
+            .and_then(|&next| fields[i..next].iter().find_map(kinds));
         if let Field::Node {
             after: a,
             before: b,
@@ -656,7 +658,6 @@ fn dedupe(fields: Vec<Field>) -> Result<Vec<Field>, String> {
     let mut out: Vec<Field> = Vec::new();
     for field in fields {
         match out.iter_mut().find(|f| f.name() == field.name()) {
-            Some(existing) if *existing == field => {}
             Some(Field::Token { kinds, .. }) => {
                 let Field::Token { kinds: more, .. } = field else {
                     return Err(format!("`{}` is both a token and a node", field.name()));
@@ -709,22 +710,14 @@ fn dedupe(fields: Vec<Field>) -> Result<Vec<Field>, String> {
 
 /// The rule as `mora.ungram` would write it.
 fn show(grammar: &Grammar, rule: &Rule, nested: bool) -> String {
-    let atom = |rule: &Rule| match rule {
-        Rule::Seq(_) | Rule::Alt(_) => format!("({})", show(grammar, rule, false)),
-        _ => show(grammar, rule, true),
-    };
+    // A nested sequence or alternative brackets itself.
+    let atom = |rule: &Rule| show(grammar, rule, true);
     match rule {
         Rule::Labeled { label, rule } => format!("{label}:{}", atom(rule)),
         Rule::Node(node) => grammar[*node].name.clone(),
         Rule::Token(token) => format!("'{}'", grammar[*token].name),
         Rule::Seq(rules) => {
-            let parts: Vec<_> = rules
-                .iter()
-                .map(|r| match r {
-                    Rule::Alt(_) => atom(r),
-                    _ => show(grammar, r, true),
-                })
-                .collect();
+            let parts: Vec<_> = rules.iter().map(atom).collect();
             let text = parts.join(" ");
             if nested { format!("({text})") } else { text }
         }
