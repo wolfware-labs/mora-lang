@@ -207,6 +207,8 @@ registry! {
     MR0713 = 713: "a final composition leaves a requirement unbound",
     MR0714 = 714: "a scoped service, a scope or a lazy function for a scoped service outlives its root, or a service class value leaves its composition",
     MR0715 = 715: "an injected parameter declared `ref`, or `move` for a service that is not transient",
+    MR0716 = 716: "a host runs a generic `services` block",
+    MR0717 = 717: "a `services` block that reaches itself through its bases",
     MR2001 = 2001: "`T??` in source",
     MR2002 = 2002: "a discarded `Result`",
     MR2003 = 2003: "use of an `[Obsolete]` declaration",
