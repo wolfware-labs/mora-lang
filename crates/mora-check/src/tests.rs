@@ -763,6 +763,22 @@ fn bindings_under_not_and_or_follow_the_test() {
 }
 
 #[test]
+fn a_capture_reads_the_local_where_the_lambda_is_declared() {
+    let read = vec!["`c` is used before it is assigned".to_owned()];
+    for (text, expected) in [
+        ("var c: int;\nlet f = [move c] () => 0;\n", read.clone()),
+        ("var c: int;\nlet f = [weak c] () => 0;\n", read.clone()),
+        ("var c: int;\nlet f = [move c] () => c;\n", read.clone()),
+        ("var c: int;\nc = 1;\nlet f = [move c] () => c;\n", vec![]),
+        // Capturing a `let` does not assign it.
+        ("let c = 1;\nlet f = [move c] () => 0;\n", vec![]),
+        ("let c: int;\nlet f = [move c] () => 0;\nc = 1;\n", read),
+    ] {
+        assert_eq!(messages(text), expected, "{text}");
+    }
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),

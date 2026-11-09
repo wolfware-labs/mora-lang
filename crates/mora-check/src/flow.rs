@@ -8,8 +8,8 @@
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
-    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Expr, ExprId,
-    InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
+    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
+    ExprId, InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
     Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree,
     signature,
 };
@@ -828,6 +828,13 @@ impl Flow<'_> {
                 |flow| flow.expr(*r#else),
             ),
             Expr::Lambda(lambda) => {
+                // A capture reads its local where the lambda is declared.
+                for (index, capture) in lambda.captures.iter().enumerate() {
+                    if let CaptureTarget::Local(local) = capture.target {
+                        let at = self.map.captures.get(&(expr, index)).copied();
+                        self.read_at(at.unwrap_or_default(), local);
+                    }
+                }
                 for &(_, default) in &lambda.defaults {
                     self.expr(default);
                 }
@@ -872,6 +879,11 @@ impl Flow<'_> {
 
     /// A read of `local` at `expr`: `MR0181` when it may not be assigned.
     fn read(&mut self, expr: ExprId, local: LocalId) {
+        self.read_at(self.map.expr(expr), local);
+    }
+
+    /// A read of `local` at `at`, an expression or a capture.
+    fn read_at(&mut self, at: TextRange, local: LocalId) {
         if self.state.assigned.contains(local) || self.reported.contains(local) {
             return;
         }
@@ -902,7 +914,7 @@ impl Flow<'_> {
             Diagnostic::error(
                 codes::MR0181,
                 format!("`{name}` is used before it is assigned"),
-                Label::new(self.span(self.map.expr(expr)), label),
+                Label::new(self.span(at), label),
             )
             .with_secondary(Label::new(self.span(self.map.local(local)), declared))
             .with_note(note),

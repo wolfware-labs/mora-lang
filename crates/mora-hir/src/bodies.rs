@@ -662,7 +662,7 @@ pub struct BodySourceMap {
     /// The closing brace of each function and local function body written
     /// as a block, by the block's expression.
     pub ends: HashMap<ExprId, TextRange>,
-    /// The name of each unresolved capture, by its lambda and position.
+    /// The name of each capture, or its `this`, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
     /// [`crate::type_ref::PathRef::index`].

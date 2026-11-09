@@ -668,7 +668,7 @@ impl Lower {
                 // it is lowered before the parameters.
                 // A capture without a name declares nothing; the parser has
                 // reported it.
-                let (captures, unresolved): (Vec<_>, Vec<_>) = it
+                let (captures, names): (Vec<_>, Vec<_>) = it
                     .capture_list()
                     .iter()
                     .flat_map(|list| list.captures())
@@ -702,10 +702,8 @@ impl Lower {
                     body,
                 };
                 let id = self.alloc_expr(Expr::Lambda(lambda), range);
-                for (index, at) in unresolved.into_iter().enumerate() {
-                    if let Some(at) = at {
-                        self.map.captures.insert((id, index), at);
-                    }
+                for (index, at) in names.into_iter().enumerate() {
+                    self.map.captures.insert((id, index), at);
                 }
                 return id;
             }
@@ -844,25 +842,21 @@ impl Lower {
 
     /// A capture, and where its name is when it names no local in scope;
     /// `None` for a capture the parser recovered from.
-    fn capture(&mut self, capture: &ast::Capture) -> Option<(Capture, Option<TextRange>)> {
+    fn capture(&mut self, capture: &ast::Capture) -> Option<(Capture, TextRange)> {
         let weak = capture
             .mode()
             .is_some_and(|mode| mode.kind() == SyntaxKind::WeakKw);
-        let mut unresolved = None;
-        let target = if capture.this_token().is_some() {
-            CaptureTarget::This
-        } else {
-            let token = capture.name_ref()?.ident_token()?;
-            let name = token_name(token);
-            match self.lookup(&name) {
-                Some(local) => CaptureTarget::Local(local),
-                None => {
-                    unresolved = Some(token.text_range());
-                    CaptureTarget::Unresolved(name)
-                }
-            }
+        if let Some(this) = capture.this_token() {
+            let target = CaptureTarget::This;
+            return Some((Capture { weak, target }, this.text_range()));
+        }
+        let token = capture.name_ref()?.ident_token()?;
+        let name = token_name(token);
+        let target = match self.lookup(&name) {
+            Some(local) => CaptureTarget::Local(local),
+            None => CaptureTarget::Unresolved(name),
         };
-        Some((Capture { weak, target }, unresolved))
+        Some((Capture { weak, target }, token.text_range()))
     }
 
     fn opt_pattern(&mut self, pattern: Option<ast::Pattern>) -> PatId {
