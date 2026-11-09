@@ -717,6 +717,52 @@ fn an_is_binding_is_assigned_only_where_the_test_holds() {
 }
 
 #[test]
+fn bindings_under_not_and_or_follow_the_test() {
+    let read = |name: &str| vec![format!("`{name}` is used before it is assigned")];
+    for (test, expected) in [
+        (
+            "if (o is not int u) {\n        let x = u;\n    }",
+            read("u"),
+        ),
+        (
+            "if (o is not int u) {\n    } else {\n        let x = u;\n    }",
+            vec![],
+        ),
+        (
+            "if (!(o is not int u)) {\n        let x = u;\n    }",
+            vec![],
+        ),
+        (
+            "if (o is int a or int b) {\n        let x = a;\n    }",
+            read("a"),
+        ),
+        (
+            "if (o is int a or int b) {\n        let x = b;\n    }",
+            read("b"),
+        ),
+        (
+            "if (o is int a and > 0) {\n        let x = a;\n    }",
+            vec![],
+        ),
+        (
+            "if (o is not (int a and > 0)) {\n    } else {\n        let x = a;\n    }",
+            vec![],
+        ),
+        (
+            "if (p is (not int a, let y)) {\n        let x = a + y;\n    }",
+            read("a"),
+        ),
+        (
+            "if (p is (> 0, let y)) {\n    } else {\n        let x = y;\n    }",
+            read("y"),
+        ),
+    ] {
+        let text = format!("F(o: int, p: (int, int)) {{\n    {test}\n}}\n");
+        assert_eq!(messages(&text), expected, "{test}");
+    }
+}
+
+#[test]
 fn a_recovered_return_reports_only_the_parse_error() {
     assert_eq!(
         reported("F(): int {\n    return\n}\n"),

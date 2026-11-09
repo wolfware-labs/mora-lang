@@ -562,9 +562,7 @@ impl Flow<'_> {
             // The bindings of the pattern are assigned where it matches.
             Expr::Is { expr: value, pat } => {
                 self.expr(*value);
-                let when_false = self.state.clone();
-                self.pat(*pat);
-                (self.state.clone(), when_false)
+                self.pattern(*pat)
             }
             _ => {
                 self.expr(condition);
@@ -621,53 +619,71 @@ impl Flow<'_> {
         self.state = after;
     }
 
-    /// The expressions of a pattern; its bindings are assigned by it.
+    /// A pattern that has matched, as in a `match` arm, a `foreach` or a
+    /// deconstruction: the walk goes on where it matched.
     fn pat(&mut self, pat: PatId) {
+        self.state = self.pattern(pat).0;
+    }
+
+    /// The pattern `pat`, tested against a value: the states where it
+    /// matches and where it does not. A binding is assigned where the
+    /// pattern around it matched, so under `not` where the test fails, and
+    /// under `or` only where every alternative binds it (§7.8).
+    fn pattern(&mut self, pat: PatId) -> (State, State) {
         let body = self.body;
         match &body.pats[pat] {
-            Pat::Missing | Pat::Discard | Pat::Slice(None) => {}
+            Pat::Missing | Pat::Discard | Pat::Slice(None) | Pat::Type { binding: None, .. } => {
+                (self.state.clone(), self.state.clone())
+            }
             Pat::Bind(local) => {
                 self.depth[arena_index(*local)] = self.closure;
+                let when_false = self.state.clone();
                 self.state.assigned.insert(*local);
+                (self.state.clone(), when_false)
             }
-            Pat::Constant(expr) | Pat::Relational { value: expr, .. } => self.expr(*expr),
-            Pat::Type { binding, .. } => {
-                if let Some(binding) = binding {
-                    self.pat(*binding);
-                }
+            Pat::Constant(expr) | Pat::Relational { value: expr, .. } => {
+                self.expr(*expr);
+                (self.state.clone(), self.state.clone())
             }
-            Pat::Not(inner) | Pat::Slice(Some(inner)) => self.pat(*inner),
-            Pat::And(lhs, rhs) | Pat::Or(lhs, rhs) => {
-                self.pat(*lhs);
-                self.pat(*rhs);
+            Pat::Not(inner) => {
+                let (when_true, when_false) = self.pattern(*inner);
+                (when_false, when_true)
             }
+            Pat::Or(lhs, rhs) => {
+                let (mut when_true, when_false) = self.pattern(*lhs);
+                self.state = when_false;
+                let (rhs_true, when_false) = self.pattern(*rhs);
+                when_true.join(&rhs_true);
+                (when_true, when_false)
+            }
+            Pat::And(lhs, rhs) => self.every([*lhs, *rhs]),
+            Pat::Type {
+                binding: Some(inner),
+                ..
+            }
+            | Pat::Slice(Some(inner)) => self.every([*inner]),
             Pat::Case { path, fields } => {
                 self.expr(*path);
-                for &(_, field) in fields {
-                    self.pat(field);
-                }
+                self.every(fields.iter().map(|&(_, field)| field))
             }
-            Pat::Positional(fields) => {
-                for &(_, field) in fields {
-                    self.pat(field);
-                }
-            }
+            Pat::Positional(fields) => self.every(fields.iter().map(|&(_, field)| field)),
             Pat::Member {
                 fields, binding, ..
-            } => {
-                for &(_, field) in fields {
-                    self.pat(field);
-                }
-                if let Some(binding) = binding {
-                    self.pat(*binding);
-                }
-            }
-            Pat::List(items) => {
-                for &item in items {
-                    self.pat(item);
-                }
-            }
+            } => self.every(fields.iter().map(|&(_, field)| field).chain(*binding)),
+            Pat::List(items) => self.every(items.iter().copied()),
         }
+    }
+
+    /// A pattern that matches where each of `pats` matches, in order; it
+    /// may fail before any of them, as a type or a case test does.
+    fn every(&mut self, pats: impl IntoIterator<Item = PatId>) -> (State, State) {
+        let mut when_false = self.state.clone();
+        for pat in pats {
+            let (when_true, failed) = self.pattern(pat);
+            when_false.join(&failed);
+            self.state = when_true;
+        }
+        (self.state.clone(), when_false)
     }
 
     /// A lambda or a local function, checked where it is declared (D-138):
