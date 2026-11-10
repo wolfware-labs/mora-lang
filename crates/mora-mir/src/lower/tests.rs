@@ -1023,3 +1023,486 @@ fn mir_dump_of_a_file_without_code_is_empty() {
     let lowered = lowered("struct P {\n    public X: int;\n}\n");
     assert_eq!(mir_dump(&lowered.db, lowered.project, lowered.file), "");
 }
+
+// Control flow.
+
+#[test]
+fn short_circuit_evaluates_right_operand_only_when_needed() {
+    let lowered = lowered(
+        "F(): bool => true;\nG(a: bool): bool {\n    return a && F();\n}\nH(a: bool, b: bool, c: bool): bool => a || b && c;\n",
+    );
+    // `F` is called only in the block reached when `a` is true.
+    assert_eq!(
+        lowered.code("G"),
+        [
+            "storage_live(_2);",
+            "switch copy (*a#0) [false -> bb2] otherwise bb1;",
+            "_2 = call UsersApi.F{fn UsersApi.F}() -> bb3;",
+            "_2 = false;",
+            "goto bb4;",
+            "goto bb4;",
+            "_0 = copy _2;",
+            "storage_dead(_2);",
+            "return;",
+        ]
+    );
+    // `b && c` runs only where `a` is false, and `c` only where `b` is
+    // true; the temporary of `b && c` ends in its own branch.
+    assert_eq!(
+        lowered.code("H"),
+        [
+            "storage_live(_4);",
+            "switch copy (*a#0) [false -> bb2] otherwise bb1;",
+            "_4 = true;",
+            "goto bb3;",
+            "storage_live(_5);",
+            "switch copy (*b#1) [false -> bb5] otherwise bb4;",
+            "_0 = copy _4;",
+            "storage_dead(_4);",
+            "return;",
+            "_5 = copy (*c#2);",
+            "goto bb6;",
+            "_5 = false;",
+            "goto bb6;",
+            "_4 = copy _5;",
+            "storage_dead(_5);",
+            "goto bb3;",
+        ]
+    );
+}
+
+#[test]
+fn break_out_of_nested_scope_kills_inner_locals() {
+    let lowered = lowered(
+        "F() {\n    var i = 0;\n    while (i < 3) {\n        let x = i;\n        {\n            let y = x;\n            if (y == 2) {\n                break;\n            }\n        }\n        i++;\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(i#0);",
+            "i#0 = 0;",
+            "goto bb1;",
+            // bb1: the condition.
+            "storage_live(_4);",
+            "_4 = copy i#0 < 3;",
+            "switch copy _4 [false -> bb3] otherwise bb2;",
+            // bb2: the body.
+            "storage_dead(_4);",
+            "storage_live(x#1);",
+            "x#1 = copy i#0;",
+            "storage_live(y#2);",
+            "y#2 = copy x#1;",
+            "storage_live(_5);",
+            "_5 = copy y#2 == 2;",
+            "switch copy _5 [false -> bb6] otherwise bb5;",
+            // bb3: the condition is false.
+            "storage_dead(_4);",
+            "goto bb4;",
+            // bb4: after the loop.
+            "_0 = ();",
+            "storage_dead(i#0);",
+            "return;",
+            // bb5: `break`, innermost first.
+            "storage_dead(_5);",
+            "storage_dead(y#2);",
+            "storage_dead(x#1);",
+            "goto bb4;",
+            // bb6: no `break`; the scopes are still open.
+            "storage_dead(_5);",
+            "goto bb8;",
+            "storage_dead(y#2);",
+            "i#0 = copy i#0 + 1;",
+            "storage_dead(x#1);",
+            "goto bb1;",
+        ]
+    );
+}
+
+#[test]
+fn continue_in_for_runs_the_update() {
+    let lowered = lowered(
+        "F() {\n    var n = 0;\n    for (var i = 0; i < 3; i++) {\n        if (i == 1) {\n            continue;\n        }\n        n += i;\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(n#0);",
+            "n#0 = 0;",
+            "storage_live(i#1);",
+            "i#1 = 0;",
+            "goto bb1;",
+            "storage_live(_3);",
+            "_3 = copy i#1 < 3;",
+            "switch copy _3 [false -> bb3] otherwise bb2;",
+            "storage_dead(_3);",
+            "storage_live(_4);",
+            "_4 = copy i#1 == 1;",
+            "switch copy _4 [false -> bb7] otherwise bb6;",
+            "storage_dead(_3);",
+            "goto bb4;",
+            // bb4: after the loop, where `i` ends.
+            "storage_dead(i#1);",
+            "_0 = ();",
+            "storage_dead(n#0);",
+            "return;",
+            // bb5: the update.
+            "i#1 = copy i#1 + 1;",
+            "goto bb1;",
+            // bb6: `continue` goes to the update.
+            "storage_dead(_4);",
+            "goto bb5;",
+            "storage_dead(_4);",
+            "goto bb9;",
+            "n#0 = copy n#0 + copy i#1;",
+            "goto bb5;",
+        ]
+    );
+}
+
+#[test]
+fn return_from_nested_scope_kills_locals() {
+    let lowered = lowered(
+        "F(n: int): int {\n    let a = n;\n    while (a > 0) {\n        let b = a;\n        if (b > 1) {\n            let c = b;\n            return c;\n        }\n    }\n    return 0;\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(a#1);",
+            "a#1 = copy (*n#0);",
+            "goto bb1;",
+            "storage_live(_5);",
+            "_5 = copy a#1 > 0;",
+            "switch copy _5 [false -> bb3] otherwise bb2;",
+            "storage_dead(_5);",
+            "storage_live(b#2);",
+            "b#2 = copy a#1;",
+            "storage_live(_6);",
+            "_6 = copy b#2 > 1;",
+            "switch copy _6 [false -> bb6] otherwise bb5;",
+            "storage_dead(_5);",
+            "goto bb4;",
+            "_0 = 0;",
+            "storage_dead(a#1);",
+            "return;",
+            // bb5: `return c;` ends every local, innermost first.
+            "storage_dead(_6);",
+            "storage_live(c#3);",
+            "c#3 = copy b#2;",
+            "_0 = copy c#3;",
+            "storage_dead(c#3);",
+            "storage_dead(b#2);",
+            "storage_dead(a#1);",
+            "return;",
+            "storage_dead(_6);",
+            "goto bb8;",
+            "storage_dead(b#2);",
+            "goto bb1;",
+        ]
+    );
+}
+
+#[test]
+fn statements_after_return_go_to_an_unreachable_block() {
+    let lowered = lowered(
+        "F(): int {\n    return 1;\n    let x = 2;\n}\nG(): int {\n    Todo();\n    let y = 3;\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "_0 = 1;",
+            "return;",
+            "storage_live(x#0);",
+            "x#0 = 2;",
+            "unreachable;"
+        ]
+    );
+    assert_eq!(
+        lowered.code("G"),
+        [
+            "call Todo{external}() -> !;",
+            "storage_live(y#0);",
+            "y#0 = 3;",
+            "unreachable;"
+        ]
+    );
+}
+
+#[test]
+fn a_jump_in_unreachable_code_adds_no_terminator() {
+    let lowered = lowered(
+        "F() {\n    while (true) {\n        break;\n        continue;\n    }\n    return;\n    return;\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "goto bb1;",
+            "goto bb2;",
+            "_0 = ();",
+            "return;",
+            "_0 = ();",
+            "unreachable;"
+        ]
+    );
+}
+
+#[test]
+fn do_while_false_runs_once_shape() {
+    let lowered =
+        lowered("F() {\n    var once = 0;\n    do {\n        once++;\n    } while (false);\n}\n");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(once#0);",
+            "once#0 = 0;",
+            "goto bb1;",
+            "once#0 = copy once#0 + 1;",
+            "goto bb2;",
+            "goto bb3;",
+            "_0 = ();",
+            "storage_dead(once#0);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn do_while_tests_its_condition_after_the_body() {
+    let lowered =
+        lowered("F() {\n    var s = 0;\n    do {\n        s++;\n    } while (s < 3);\n}\n");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(s#0);",
+            "s#0 = 0;",
+            "goto bb1;",
+            "s#0 = copy s#0 + 1;",
+            "goto bb2;",
+            "storage_live(_2);",
+            "_2 = copy s#0 < 3;",
+            "switch copy _2 [false -> bb5] otherwise bb4;",
+            "_0 = ();",
+            "storage_dead(s#0);",
+            "return;",
+            "storage_dead(_2);",
+            "goto bb1;",
+            "storage_dead(_2);",
+            "goto bb3;",
+        ]
+    );
+}
+
+#[test]
+fn a_loop_whose_condition_is_true_ends_only_by_break() {
+    let lowered = lowered(
+        "F(): int {\n    var i = 0;\n    while (true) {\n        i++;\n    }\n}\nG(): int {\n    var i = 0;\n    do {\n        i++;\n    } while (true);\n}\nH() {\n    for (;;) {\n        break;\n    }\n}\nK(): int {\n    for (var i = 0; true; i++) {\n    }\n}\n",
+    );
+    // No `return` follows a loop that never ends.
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(i#0);",
+            "i#0 = 0;",
+            "goto bb1;",
+            "i#0 = copy i#0 + 1;",
+            "goto bb1;"
+        ]
+    );
+    assert_eq!(
+        lowered.code("G"),
+        [
+            "storage_live(i#0);",
+            "i#0 = 0;",
+            "goto bb1;",
+            "i#0 = copy i#0 + 1;",
+            "goto bb2;",
+            "goto bb1;"
+        ]
+    );
+    assert_eq!(
+        lowered.code("H"),
+        ["goto bb1;", "goto bb2;", "_0 = ();", "return;"]
+    );
+    assert_eq!(
+        lowered.code("K"),
+        [
+            "storage_live(i#0);",
+            "i#0 = 0;",
+            "goto bb1;",
+            "goto bb3;",
+            "i#0 = copy i#0 + 1;",
+            "goto bb1;"
+        ]
+    );
+}
+
+#[test]
+fn a_body_whose_every_path_returns_needs_no_return() {
+    let lowered = lowered(
+        "F(c: bool): int {\n    if (c) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "_0 = 1;",
+            "return;",
+            "_0 = 2;",
+            "return;"
+        ]
+    );
+}
+
+#[test]
+fn if_without_else_joins_after_the_branch() {
+    let lowered = lowered(
+        "F(c: bool) {\n    var n = 0;\n    if (c) {\n        n = 1;\n    }\n    n = 2;\n}\n",
+    );
+    let body = &lowered.mir("F").bodies[0];
+    let TerminatorKind::Switch {
+        discr,
+        targets,
+        otherwise,
+    } = &body.blocks[0].terminator.kind
+    else {
+        panic!("not a switch: {:?}", body.blocks[0].terminator);
+    };
+    assert!(matches!(discr, Operand::Copy(_)), "{discr:?}");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].0, Const::Bool(false));
+    assert_eq!((otherwise.0, targets[0].1.0), (1, 2));
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(n#1);",
+            "n#1 = 0;",
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "n#1 = 1;",
+            "goto bb3;",
+            "goto bb3;",
+            "n#1 = 2;",
+            "_0 = ();",
+            "storage_dead(n#1);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn conditional_expression_writes_one_temp() {
+    let lowered = lowered("F(c: bool): int {\n    let x = c ? 1 : 2;\n    return x;\n}\n");
+    assert_eq!(lowered.mir("F").bodies[0].locals.len(), 4);
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(x#1);",
+            "storage_live(_3);",
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "_3 = 1;",
+            "goto bb3;",
+            "_3 = 2;",
+            "goto bb3;",
+            "x#1 = copy _3;",
+            "storage_dead(_3);",
+            "_0 = copy x#1;",
+            "storage_dead(x#1);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn the_branches_of_a_conditional_end_their_own_temporaries() {
+    let lowered =
+        lowered("G(x: int): int => x;\nF(c: bool, n: int): int => n + (c ? G(n) + 1 : 0);\n");
+    let code = lowered.code("F");
+    // The temporaries open before the branch (`n` copied, the value of
+    // `?:`) end once, after the sum; those of `G(n) + 1` end in its
+    // branch.
+    assert_in_order(
+        &code,
+        &[
+            "storage_live(_3);",
+            "storage_live(_4);",
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "_4 = 0;",
+            "goto bb4;",
+            "storage_dead(_5);",
+            "goto bb4;",
+            "_0 = copy _3 + copy _4;",
+            "storage_dead(_4);",
+            "storage_dead(_3);",
+            "return;",
+        ],
+    );
+    for temp in ["storage_dead(_3);", "storage_dead(_4);"] {
+        assert_eq!(
+            code.iter().filter(|line| *line == temp).count(),
+            1,
+            "{}",
+            code.join("\n")
+        );
+    }
+}
+
+#[test]
+fn a_condition_with_temporaries_ends_them_in_both_branches() {
+    let lowered =
+        lowered("F(n: int) {\n    var m = n;\n    if (m + 1 > 2) {\n        m = 0;\n    }\n}\n");
+    let dump = lowered.dump("F");
+    assert_eq!(dump.matches("storage_dead(_").count(), 4, "{dump}");
+}
+
+#[test]
+fn locals_inside_control_flow_are_declared() {
+    let lowered = lowered(
+        "var n = 0;\nif (n > 0) { let a = 1; } else { let b = 2; }\nwhile (n < 1) { let c = 3; n++; }\ndo { let d = 4; } while (false);\nfor (var i = 0; i < 1; i++) { let e = 5; }\nunsafe { let f = 6; }\n",
+    );
+    let body = &lowered.mir("top-level").bodies[0];
+    let names: Vec<&str> = body
+        .locals
+        .iter()
+        .filter_map(|decl| decl.source.as_ref())
+        .map(|source| source.name.as_str())
+        .collect();
+    assert_eq!(names, ["n", "a", "b", "c", "d", "i", "e", "f"]);
+}
+
+#[test]
+fn diverging_calls_in_value_positions_do_not_return() {
+    let lowered = lowered(
+        "A(): int => Todo();\nB(): int {\n    return Todo();\n}\nC() {\n    let x: int = Todo();\n}\nD() => Todo();\n",
+    );
+    for name in ["A", "B", "D"] {
+        assert_eq!(
+            lowered.code(name),
+            ["call Todo{external}() -> !;"],
+            "{name}"
+        );
+    }
+    assert_eq!(
+        lowered.code("C"),
+        ["storage_live(x#0);", "call Todo{external}() -> !;"]
+    );
+}
+
+#[test]
+fn the_run_tests_in_scope_lower_and_validate() {
+    let files = [
+        include_str!("../../../../tests/run/arithmetic.mr"),
+        include_str!("../../../../tests/run/booleans.mr"),
+        include_str!("../../../../tests/run/control_flow.mr"),
+        include_str!("../../../../tests/run/float_target.mr"),
+        include_str!("../../../../tests/run/hello.mr"),
+        include_str!("../../../../tests/run/literal_values.mr"),
+        include_str!("../../../../tests/run/locals.mr"),
+        include_str!("../../../../tests/run/promotion.mr"),
+    ];
+    for text in files {
+        lowered(text).mir("top-level");
+    }
+    // A local function is lowered with its owner, later.
+    let functions = lowered(include_str!("../../../../tests/run/functions.mr"));
+    for name in ["top-level", "Fib", "Twice", "Add"] {
+        functions.mir(name);
+    }
+}

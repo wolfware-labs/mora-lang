@@ -9,8 +9,8 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
-    ExprId, InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
-    Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, is_diverging,
+    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD, Signature,
+    Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, is_diverging, is_literal_bool,
     item_tree, signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
@@ -379,9 +379,9 @@ impl Flow<'_> {
                 flow.state = end;
                 let (when_true, when_false) = flow.condition(*condition);
                 let body = flow.body;
-                let exit = (!is_bool(body, *condition, true)).then_some(when_false);
+                let exit = (!is_literal_bool(body, *condition, true)).then_some(when_false);
                 // `do { } while (false);` runs its body once.
-                let back = if is_bool(body, *condition, false) {
+                let back = if is_literal_bool(body, *condition, false) {
                     flow.unreachable()
                 } else {
                     when_true
@@ -507,7 +507,7 @@ impl Flow<'_> {
         let condition = condition?;
         let (when_true, when_false) = self.condition(condition);
         self.state = when_true;
-        (!is_bool(self.body, condition, true)).then_some(when_false)
+        (!is_literal_bool(self.body, condition, true)).then_some(when_false)
     }
 
     /// Where the end of an iteration and the paths that `continue` it meet.
@@ -1044,11 +1044,4 @@ fn note_mr0184(name: &str) -> String {
         "`{name}` returns a value, so every path through it ends in `return` with a value, \
          a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends"
     )
-}
-
-/// Whether `condition` is the literal `value`: a loop whose condition is
-/// `true` ends only by `break`, and one whose condition is `false` after its
-/// body does not go back (D-138).
-fn is_bool(body: &Body, condition: ExprId, value: bool) -> bool {
-    matches!(body.exprs[condition], Expr::Literal(Literal::Bool(literal)) if literal == value)
 }

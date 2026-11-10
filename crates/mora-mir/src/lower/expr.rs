@@ -110,6 +110,16 @@ impl Lowerer<'_> {
                 Some(place) => Operand::Copy(place),
                 None => self.ice(expr, "the call has no result"),
             },
+            Expr::Binary {
+                op: op @ (BinaryOp::And | BinaryOp::Or),
+                lhs,
+                rhs,
+            } => self.logical(expr, *op == BinaryOp::And, *lhs, *rhs),
+            Expr::Conditional {
+                condition,
+                then,
+                r#else,
+            } => self.conditional(expr, *condition, *then, *r#else),
             _ => {
                 let ty = self.ty(expr);
                 let value = self.rvalue(expr);
@@ -128,6 +138,12 @@ impl Lowerer<'_> {
         }
         let hir = self.hir;
         match &hir.exprs[expr] {
+            // A value that is a branch is stored in a temporary.
+            Expr::Binary {
+                op: BinaryOp::And | BinaryOp::Or,
+                ..
+            }
+            | Expr::Conditional { .. } => Rvalue::Use(self.operand_unconverted(expr)),
             Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs),
             Expr::Unary {
                 op: op @ (UnaryOp::Neg | UnaryOp::Not | UnaryOp::BitNot),
@@ -164,7 +180,7 @@ impl Lowerer<'_> {
     }
 
     /// The type inference gives `expr`.
-    fn ty(&self, expr: ExprId) -> Ty {
+    pub(super) fn ty(&self, expr: ExprId) -> Ty {
         match self.inference.expr(expr) {
             Some(ty) => ty.clone(),
             None => self.ice(expr, "the value has no type"),
@@ -410,7 +426,8 @@ impl Lowerer<'_> {
                 let Some(path) = self.external_path(callee) else {
                     self.ice(expr, "the call has no callee")
                 };
-                if !matches!(dest, Dest::Discard) {
+                // A call that does not return has no value to store.
+                if !matches!(dest, Dest::Discard) && !is_diverging(&path) {
                     self.reject_external(expr);
                 }
                 self.external_call(expr, path, args);
@@ -420,11 +437,14 @@ impl Lowerer<'_> {
     }
 
     /// Panics when `expr` is a call of a function of the standard library
-    /// while the library is not loaded: such a call has no result.
+    /// that returns while the library is not loaded: such a call has no
+    /// result.
     pub(super) fn reject_external_value(&self, expr: ExprId) {
         if let Expr::Call { callee, .. } = &self.hir.exprs[expr]
             && self.inference.callee(expr).is_none()
-            && self.external_path(*callee).is_some()
+            && self
+                .external_path(*callee)
+                .is_some_and(|path| !is_diverging(&path))
         {
             self.reject_external(expr);
         }

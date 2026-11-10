@@ -17,9 +17,11 @@
 //!
 //! A local of the HIR body is live from its declaration to the end of its
 //! block, and a temporary from the expression that makes it to the end of
-//! its statement; `return` ends both first. No storage is ended where
-//! control never gets, as after a `return`.
+//! its statement; `return`, `break` and `continue` end those of the scopes
+//! they leave first. No storage is ended where control never gets, as after
+//! a `return`, and no jump starts there: such code ends in `unreachable`.
 
+mod control;
 mod expr;
 
 use std::collections::HashMap;
@@ -241,9 +243,35 @@ impl Builder {
         self.switch_to(dead);
     }
 
+    /// A jump that the code after it does not follow, as `return` or
+    /// `break`: [`Builder::terminate_dead_end`] with `kind` where control
+    /// can get to, nothing where it cannot, so that unreachable code ends in
+    /// `unreachable`.
+    pub(crate) fn jump(&mut self, kind: TerminatorKind, span: Span) {
+        if self.is_reachable() {
+            self.terminate_dead_end(kind, span);
+        }
+    }
+
+    /// Ends the current block with a jump to `target` where control can get
+    /// to it, and with `unreachable` where it cannot.
+    pub(crate) fn goto(&mut self, target: BlockId, span: Span) {
+        let kind = if self.is_reachable() {
+            TerminatorKind::Goto(target)
+        } else {
+            TerminatorKind::Unreachable
+        };
+        self.terminate(kind, span);
+    }
+
     /// Whether control can get to the current block.
     pub(crate) fn is_reachable(&self) -> bool {
         self.reachable[self.current.index()]
+    }
+
+    /// How many scopes are open.
+    pub(crate) fn scope_depth(&self) -> usize {
+        self.scopes.len()
     }
 
     /// Opens a scope for the HIR locals declared next.
@@ -280,8 +308,20 @@ impl Builder {
     /// Ends the storage of the temporaries made since `mark`, the last
     /// first, at the end of their statement.
     pub(crate) fn end_temps(&mut self, mark: usize, span: Span) {
-        let temps = self.temps.split_off(mark);
-        self.storage_dead(temps.into_iter().rev(), span);
+        let temps = self.take_temps(mark);
+        self.end_storage(&temps, span);
+    }
+
+    /// The temporaries made since `mark`, which are no longer the open
+    /// statement's to end: the caller ends them with
+    /// [`Builder::end_storage`], once on each path control takes.
+    pub(crate) fn take_temps(&mut self, mark: usize) -> Vec<LocalId> {
+        self.temps.split_off(mark)
+    }
+
+    /// Ends the storage of `locals`, the last first.
+    pub(crate) fn end_storage(&mut self, locals: &[LocalId], span: Span) {
+        self.storage_dead(locals.iter().rev().copied(), span);
     }
 
     /// Ends the storage of everything that a jump out of the scopes from
@@ -376,6 +416,8 @@ pub(crate) struct Lowerer<'a> {
     locals: HashMap<mora_hir::LocalId, LocalId>,
     /// The MIR body being built.
     builder: Builder,
+    /// The loops around the statement being lowered, outermost first.
+    loops: Vec<control::Loop>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -441,6 +483,7 @@ impl<'a> Lowerer<'a> {
             resolution: body_resolution(db, project, file, owner),
             inference: infer(db, project, file, owner),
             locals: HashMap::new(),
+            loops: Vec::new(),
         };
         for (&local, ty) in hir.params.iter().zip(params) {
             let id = lowerer.builder.param(LocalDecl {
@@ -482,8 +525,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// The locals `stmts` declare, each with its initializer, in the order
-    /// of the text. A local function's locals are its own.
+    /// The locals `stmts` and the statements inside them declare, each with
+    /// its initializer, in the order of the text. A local function's locals
+    /// are its own.
     fn collect_locals(
         &self,
         stmts: &[StmtId],
@@ -493,6 +537,17 @@ impl<'a> Lowerer<'a> {
             match &self.hir.stmts[stmt] {
                 Stmt::Local { local, init } => found.push((*local, *init)),
                 Stmt::Block(inner) => self.collect_locals(inner, found),
+                Stmt::If { then, r#else, .. } => {
+                    self.collect_locals(&[*then], found);
+                    self.collect_locals(r#else.as_slice(), found);
+                }
+                Stmt::While { body, .. } | Stmt::DoWhile { body, .. } | Stmt::Unsafe(body) => {
+                    self.collect_locals(&[*body], found);
+                }
+                Stmt::For { init, body, .. } => {
+                    self.collect_locals(init, found);
+                    self.collect_locals(&[*body], found);
+                }
                 _ => {}
             }
         }
@@ -524,7 +579,9 @@ impl<'a> Lowerer<'a> {
         if *ret == Ty::UNIT {
             self.effect(root);
             self.builder.end_temps(mark, span);
-            self.return_unit(span);
+            if self.builder.is_reachable() {
+                self.return_unit(span);
+            }
         } else {
             self.expr_into(root, Place::local(LocalId::RETURN));
             self.builder.end_temps(mark, span);
@@ -590,6 +647,22 @@ impl<'a> Lowerer<'a> {
                 }
                 self.builder.end_temps(mark, span);
             }
+            Stmt::If {
+                condition,
+                then,
+                r#else,
+            } => self.r#if(stmt, *condition, *then, *r#else),
+            Stmt::While { condition, body } => self.r#while(stmt, *condition, *body),
+            Stmt::DoWhile { body, condition } => self.do_while(stmt, *body, *condition),
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body,
+            } => self.r#for(stmt, init, *condition, update, *body),
+            Stmt::Break => self.loop_jump(stmt, true),
+            Stmt::Continue => self.loop_jump(stmt, false),
+            Stmt::Unsafe(block) => self.stmt(*block),
             other => panic!(
                 "internal error lowering {}: the statement {other:?} is not lowered",
                 self.name
@@ -611,8 +684,7 @@ impl<'a> Lowerer<'a> {
     /// first. What follows goes to a block control never gets to.
     fn ret(&mut self, span: Span) {
         self.builder.exit_scopes(0, 0, span);
-        self.builder
-            .terminate_dead_end(TerminatorKind::Return, span);
+        self.builder.jump(TerminatorKind::Return, span);
     }
 
     /// The MIR local of the HIR local `local`.
@@ -632,6 +704,17 @@ impl<'a> Lowerer<'a> {
     /// The span of `expr`.
     fn span(&self, expr: ExprId) -> Span {
         Span::new(self.file.id(self.db), self.map.expr(expr))
+    }
+
+    /// The span of the statement `stmt`.
+    fn stmt_span(&self, stmt: StmtId) -> Span {
+        let Some(&range) = self.map.stmts.get(&stmt) else {
+            panic!(
+                "internal error lowering {}: a statement without its range",
+                self.name
+            );
+        };
+        Span::new(self.file.id(self.db), range)
     }
 
     /// Panics with an internal error about `expr`.

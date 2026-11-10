@@ -658,6 +658,8 @@ pub struct BodySourceMap {
     pub markers: HashMap<ExprId, TextRange>,
     /// Each `break`, `continue` and `return` statement.
     pub jumps: HashMap<StmtId, TextRange>,
+    /// Each statement but a local declaration, as written.
+    pub stmts: HashMap<StmtId, TextRange>,
     /// The `let` written right before the name of a local, which the fix
     /// of `MR0182` turns into `var`.
     pub lets: HashMap<LocalId, TextRange>,
@@ -874,6 +876,33 @@ mod tests {
                 .get(&block)
                 .map(|range| u32::from(range.start())),
             Some(24)
+        );
+    }
+
+    #[test]
+    fn a_statement_records_its_range() {
+        let db = TestDb::new();
+        let text = "var i = 0;\nwhile (i < 3) i++;\nif (i > 1) { i--; }\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let ranges: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(id, _)| map.stmts.get(&id))
+            .map(|range| &text[std::ops::Range::<usize>::from(*range)])
+            .collect();
+        // Every statement but a local declaration, inner ones first.
+        assert_eq!(
+            ranges,
+            [
+                "i++;",
+                "while (i < 3) i++;",
+                "i--;",
+                "{ i--; }",
+                "if (i > 1) { i--; }"
+            ]
         );
     }
 
