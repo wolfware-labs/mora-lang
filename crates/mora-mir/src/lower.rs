@@ -39,7 +39,7 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
-use crate::types::param_ty;
+use crate::types::{is_concrete, param_ty};
 use crate::{
     Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
     Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_mir,
@@ -588,11 +588,19 @@ impl<'a> Owner<'a> {
                 )
             }
         });
-        let params = function
-            .params
-            .iter()
-            .map(|param| param_ty(param.mode, param.ty.clone()))
-            .collect();
+        let mut params = Vec::with_capacity(function.params.len());
+        for param in &function.params {
+            if !is_concrete(&param.ty) {
+                panic!(
+                    "internal error lowering {name}: the parameter `{}` has a type that is not lowered",
+                    param.name
+                );
+            }
+            params.push(param_ty(param.mode, param.ty.clone()));
+        }
+        if !is_concrete(&function.ret) {
+            panic!("internal error lowering {name}: the return type is not lowered");
+        }
         (function.ret.clone(), this, params)
     }
 

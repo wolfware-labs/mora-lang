@@ -9,7 +9,7 @@ use mora_hir::{
 };
 use mora_span::Db;
 
-use crate::types::param_ty;
+use crate::types::{is_concrete, param_ty};
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, InterpPiece, LocalId, LocalTy,
     Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
@@ -88,6 +88,15 @@ impl Checker<'_> {
         }
         if body.blocks.is_empty() {
             self.error(&at, "no blocks");
+        }
+        for (index, decl) in body.locals.iter().enumerate() {
+            let ty = local_value_ty(&decl.ty);
+            if !is_concrete(ty) {
+                self.error(
+                    &at,
+                    format!("local _{index} has type {ty:?}, which is not a concrete type"),
+                );
+            }
         }
         for id in body.block_ids() {
             self.block(id, body.block(id));
@@ -353,6 +362,9 @@ impl Checker<'_> {
     fn assign(&mut self, at: &str, dest: &Place, rvalue: &Rvalue) {
         let dest_ty = self.place_lt(at, dest);
         let dest_value = dest_ty.as_ref().map(local_value_ty);
+        if dest_value == Some(&Ty::Never) {
+            self.error(at, "assignment to a place of the never type");
+        }
         let value_ty = self.rvalue(at, rvalue, dest_value);
         if let (Some(dest_ty), Some(value_ty)) = (dest_ty, value_ty)
             && dest_ty != value_ty
@@ -571,6 +583,9 @@ impl Checker<'_> {
             } => {
                 let args: Vec<_> = args.iter().map(|arg| self.operand_lt(at, arg)).collect();
                 let dest_ty = dest.as_ref().and_then(|dest| self.place(at, dest));
+                if dest_ty == Some(Ty::Never) {
+                    self.error(at, "call result stored in a place of the never type");
+                }
                 if let Some(next) = next {
                     self.target(at, "call", *next);
                 }
@@ -762,7 +777,7 @@ fn is_integer(ty: &Ty) -> bool {
 #[cfg(test)]
 mod tests {
     use mora_hir::test_support::{TestDb, app, file_named};
-    use mora_hir::{ItemId, Primitive, TupleElem, Ty, item_tree};
+    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported, item_tree};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
     use super::{debug_validate, validate};
@@ -1424,6 +1439,70 @@ mod tests {
     fn rejects_field_out_of_range() {
         let fx = fx();
         rejects(&fx, &field_out_of_range(&fx), true, "field 2 out of range");
+    }
+
+    #[test]
+    fn rejects_a_local_of_no_concrete_type() {
+        let fx = fx();
+        let array = Ty::Unsupported(Unsupported {
+            construct: Construct::Array,
+            item: None,
+            parts: vec![int()],
+        });
+        let pair = |ty: Ty| {
+            Ty::Tuple(vec![
+                TupleElem {
+                    name: None,
+                    ty: int(),
+                },
+                TupleElem { name: None, ty },
+            ])
+        };
+        for (decl, shown) in [
+            (val(Ty::Error), "Error"),
+            (val(array.clone()), "Unsupported"),
+            (borrow(array), "Unsupported"),
+            (val(pair(Ty::Error)), "Error"),
+        ] {
+            let mut mir = with_stmt(stmt(StatementKind::Nop));
+            mir.bodies[0].locals.push(decl);
+            let found = errors(&fx, &mir, true);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(
+                found[0].starts_with("fn F: local _7 has type ")
+                    && found[0].contains(shown)
+                    && found[0].ends_with(", which is not a concrete type"),
+                "{found:?}"
+            );
+        }
+        // The never type is concrete: a local of it is declared by a `let`
+        // whose value does not return.
+        for ty in [Ty::Never, pair(Ty::Never), pair(Ty::String)] {
+            let mut mir = with_stmt(stmt(StatementKind::Nop));
+            mir.bodies[0].locals.push(val(ty));
+            assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        }
+    }
+
+    #[test]
+    fn rejects_an_assignment_to_a_place_of_the_never_type() {
+        let fx = fx();
+        let mut mir = with_stmt(assign(place(7), Rvalue::Use(copy(8))));
+        mir.bodies[0]
+            .locals
+            .extend([val(Ty::Never), val(Ty::Never)]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb0[0]: assignment to a place of the never type"]
+        );
+        let mut call = call(Callee::Item(fx.nop), vec![], Some(place(7)));
+        call.bodies[0].locals.push(val(Ty::Never));
+        rejects(
+            &fx,
+            &call,
+            true,
+            "call result stored in a place of the never type",
+        );
     }
 
     #[test]

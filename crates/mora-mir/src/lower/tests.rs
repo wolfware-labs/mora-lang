@@ -2610,3 +2610,17 @@ mod numbering {
         );
     }
 }
+
+#[test]
+#[should_panic(expected = "the parameter `xs` has a type that is not lowered")]
+fn a_parameter_of_no_concrete_type_is_an_internal_error() {
+    let lowered = lowered("F(xs: int[]) {}\n");
+    lowered.mir("F");
+}
+
+#[test]
+#[should_panic(expected = "the return type is not lowered")]
+fn a_return_type_that_is_not_concrete_is_an_internal_error() {
+    let lowered = lowered("F(): int[] => Todo();\n");
+    lowered.mir("F");
+}

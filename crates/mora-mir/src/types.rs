@@ -484,6 +484,17 @@ impl Body {
     }
 }
 
+/// Whether MIR can hold a value of `ty`: no part of it is an error or a
+/// type whose meaning a later part of the compiler gives. The never type is
+/// concrete; a local of it is declared and never assigned.
+pub(crate) fn is_concrete(ty: &Ty) -> bool {
+    match ty {
+        Ty::Unsupported(_) | Ty::Error => false,
+        Ty::Tuple(elems) => elems.iter().all(|elem| is_concrete(&elem.ty)),
+        Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never => true,
+    }
+}
+
 /// The type of a parameter of mode `mode` and type `ty`, or of a receiver
 /// taken that way, in the callee: a borrow for `in` and `ref`, the value
 /// itself for `move` (§10.3).

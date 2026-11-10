@@ -2147,7 +2147,7 @@ Before monomorphization, types may contain type parameters. `Retain` and `Releas
 
 **M1 stand-ins.** Until the standard library is loaded (M1.15), a call whose target is a `Std` name the compiler cannot see has an `External` callee naming its path and no result, and an interpolated string is an `Interpolate` rvalue of text pieces and operands. The validator rejects both once `Std` is loaded.
 
-**Validation.** A validator checks that every place and operand is typed and consistent and that every block ends in one terminator. Debug builds of the compiler run it after lowering, and after every later pass.
+**Validation.** A validator checks that every local has a concrete type, with no part that is an error or a type MIR does not hold yet, that every place and operand is typed and consistent and that every block ends in one terminator. A local of the never type `!` is allowed: `let x = Todo();` declares one, and nothing is ever stored in it. Debug builds of the compiler run it after lowering, and after every later pass.
 
 ### 14.8 MIR checks
 
