@@ -2666,3 +2666,74 @@ fn the_dump_docs_show_a_real_body() {
         .expect("the example of the module docs");
     assert_eq!(example, lowered.dump("Clamp"));
 }
+
+#[test]
+fn a_conditional_of_assignments_is_a_statement() {
+    let lowered = lowered("F(c: bool) {\n    var x = 0;\n    c ? x = 1 : x = 2;\n}\n");
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "x#1 = 1;",
+            "goto bb3;",
+            "x#1 = 2;",
+            "goto bb3;",
+        ],
+    );
+}
+
+#[test]
+fn a_conditional_of_assignments_in_a_local_function_is_a_statement() {
+    let lowered = lowered(
+        "F(c: bool) {\n    var x = 0;\n    var y = 0;\n    G() => c ? x = 1 : y = 2;\n    G();\n}\n",
+    );
+    assert_eq!(lowered.bodies("F").len(), 2);
+    let code = body_code(&lowered, "F", 1);
+    assert!(code.iter().any(|l| l.contains("= 1;")), "{code:?}");
+    assert!(code.iter().any(|l| l.contains("= 2;")), "{code:?}");
+}
+
+#[test]
+fn a_conditional_of_writes_is_a_statement() {
+    let lowered =
+        lowered("F(c: bool) {\n    c ? Console.WriteLine(\"a\") : Console.WriteLine(\"b\");\n}\n");
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "call Console.WriteLine{external}(\"a\") -> bb3;",
+            "call Console.WriteLine{external}(\"b\") -> bb5;",
+        ],
+    );
+}
+
+#[test]
+fn a_conditional_of_calls_is_a_statement() {
+    let lowered = lowered("F(c: bool) {\n    c ? A() : B();\n}\nA() {}\nB() {}\n");
+    let code = lowered.code("F");
+    assert!(code.iter().any(|l| l.contains("UsersApi.A")), "{code:?}");
+    assert!(code.iter().any(|l| l.contains("UsersApi.B")), "{code:?}");
+}
+
+#[test]
+fn a_captured_this_is_borrowed_after_the_arguments() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    mut Inc(): int { X += 1; return X; }\n    \
+         mut Run(): int {\n        var n = 1;\n        \
+         G(k: int): int => X + k + n;\n        return G(Inc() + n++);\n    }\n}\n",
+    );
+    let code = body_code(&lowered, "Run", 0);
+    let inc = code
+        .iter()
+        .position(|l| l.contains("P.Inc"))
+        .expect("the argument call");
+    let call = code
+        .iter()
+        .position(|l| l.contains("P.Run.G"))
+        .expect("the local call");
+    let borrow = code
+        .iter()
+        .position(|l| l.ends_with("&in (*this);"))
+        .unwrap_or_else(|| panic!("{code:#?}"));
+    assert!(inc < borrow && borrow < call, "{code:#?}");
+    assert!(code[call].contains("(copy _"), "{code:#?}");
+}

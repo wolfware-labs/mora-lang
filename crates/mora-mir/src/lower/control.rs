@@ -191,6 +191,23 @@ impl Lowerer<'_> {
         Ok(Operand::Copy(result))
     }
 
+    /// `condition ? then : r#else` as a statement: each branch is an
+    /// expression statement and no value is made.
+    pub(super) fn statement_conditional(
+        &mut self,
+        expr: ExprId,
+        condition: ExprId,
+        then: ExprId,
+        r#else: ExprId,
+    ) -> Lowered<()> {
+        self.branches(
+            condition,
+            self.span(expr),
+            |this| this.effect(then),
+            |this| this.effect(r#else),
+        )
+    }
+
     /// `condition ? then : r#else` in a new temporary.
     pub(super) fn conditional(
         &mut self,

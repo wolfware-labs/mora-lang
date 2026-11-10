@@ -203,14 +203,13 @@ impl Lowerer<'_> {
         let span = self.span(expr);
         let values = arg_values(args);
         let mut operands = Vec::with_capacity(def.params.len() + function.captures.len());
-        // `this` first, then the arguments, then the locals it takes.
+        // `this` first, then the arguments, then the locals it takes; all
+        // are borrowed after the arguments are evaluated.
         let mut locals = Vec::with_capacity(function.captures.len());
+        let mut this_mode = None;
         for &(captured, mode) in function.captures {
             match captured {
-                Captured::This => {
-                    let this = Operand::Copy(self.this_place(expr));
-                    operands.push(self.pass(this, mode, span));
-                }
+                Captured::This => this_mode = Some(mode),
                 Captured::Local(local) => locals.push((local, mode)),
             }
         }
@@ -227,6 +226,11 @@ impl Lowerer<'_> {
                     def.modes[index],
                 ),
             });
+        }
+        if let Some(mode) = this_mode {
+            let this = Operand::Copy(self.this_place(expr));
+            let this = self.pass(this, mode, span);
+            operands.insert(0, this);
         }
         for (local, mode) in locals {
             let place = Operand::Copy(self.local_place(local));

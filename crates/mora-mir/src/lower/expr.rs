@@ -39,6 +39,13 @@ impl Lowerer<'_> {
             } => {
                 self.step(expr, *target, *increment)?;
             }
+            // A conditional in statement position has statements as branches;
+            // inference leaves it untyped when they assign.
+            Expr::Conditional {
+                condition,
+                then,
+                r#else,
+            } => self.statement_conditional(expr, *condition, *then, *r#else)?,
             // Anything else, a prefix step among them, is evaluated and its
             // value dropped.
             _ => {
