@@ -1,4 +1,4 @@
-//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`, and
+//! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`, and
 //! those of calls, `MR0205` to `MR0208`, in [`call`].
 
 mod call;
@@ -184,10 +184,41 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         TypeError::MissingField { expr, ty, field } => {
             struct_new::missing_field(source, *expr, ty, field)
         }
+        TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
         }
     }
+}
+
+/// `MR0185`: an assignment whose value is used. When `split` is the
+/// statement of a block that `assignment` is the value of, the fix writes it
+/// as a statement before that one.
+fn assignment_value(source: &Source<'_>, assignment: ExprId, split: Option<ExprId>) -> Diagnostic {
+    let Expr::Assign { lhs, .. } = &source.body.exprs[assignment] else {
+        unreachable!("MR0185 is reported on an assignment");
+    };
+    let diagnostic = Diagnostic::error(
+        codes::MR0185,
+        "an assignment gives no value to use here",
+        Label::new(
+            source.span(assignment),
+            "this assignment must stand as a statement of its own",
+        ),
+    )
+    .with_note("assign first, then read the variable: an assignment is only a statement");
+    let Some(statement) = split else {
+        return diagnostic;
+    };
+    let file = source.file.id(source.db);
+    let before = source.map.expr(statement).start();
+    diagnostic.with_fix(Fix::new(
+        "assign first, then use the variable",
+        vec![
+            TextEdit::insert(file, before, format!("{}; ", source.text(assignment))),
+            TextEdit::replace(source.span(assignment), source.text(*lhs)),
+        ],
+    ))
 }
 
 /// `MR0204`: an operand of `&&` or `||` that is not a `bool`.

@@ -2,7 +2,7 @@
 
 mod call;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
@@ -27,6 +27,20 @@ use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
+
+/// Whether `place` is a name, `this` or a field of one, which can be read
+/// again without a change.
+fn is_plain_place(body: &Body, place: ExprId) -> bool {
+    match &body.exprs[place] {
+        Expr::Path(_) | Expr::Local(_) | Expr::This => true,
+        Expr::Member {
+            receiver,
+            optional: false,
+            ..
+        } => is_plain_place(body, *receiver),
+        _ => false,
+    }
+}
 
 /// What the context of an expression asks of its type.
 #[derive(Clone, Copy)]
@@ -69,6 +83,9 @@ pub(super) fn infer_body(
         conversions: HashMap::new(),
         element_conversions: HashMap::new(),
         errors: Vec::new(),
+        statements: HashSet::new(),
+        splittable: HashMap::new(),
+        block_stmt: None,
         ret: None,
         scope: body_scope(project, file, owner),
         this: None,
@@ -139,7 +156,11 @@ pub(super) fn infer_body(
         check.infer(call);
     }
     if let Some(root) = body.root {
-        check.function_body(root, expected);
+        let statement = matches!(
+            body.kind,
+            BodyKind::Function | BodyKind::Constructor | BodyKind::Destructor | BodyKind::Set
+        );
+        check.function_body(root, expected, statement);
     }
     Inference {
         exprs: check.exprs,
@@ -184,6 +205,14 @@ struct Check<'a> {
     element_conversions: HashMap<(ExprId, u32), Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
+    /// The assignments written as statements of their own, whose value
+    /// nothing uses.
+    statements: HashSet<ExprId>,
+    /// The assignments that are the value of another one written as a
+    /// statement in a block, each with that statement: a fix can split them.
+    splittable: HashMap<ExprId, ExprId>,
+    /// The statement of the block being walked whose turn it is.
+    block_stmt: Option<StmtId>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
     /// Where the body's names are looked up from, which decides what is
@@ -197,7 +226,7 @@ impl Check<'_> {
     /// The body of a function, a local function or a lambda, whose
     /// `return` statements check against `ret`. An expression body is the
     /// value returned, unless the function returns `()`.
-    fn function_body(&mut self, root: ExprId, ret: Option<Ty>) {
+    fn function_body(&mut self, root: ExprId, ret: Option<Ty>, statement: bool) {
         let outer = std::mem::replace(&mut self.ret, ret);
         match &self.ret {
             // A block body gives no type, so checking it only walks its
@@ -206,7 +235,12 @@ impl Check<'_> {
                 let ret = ret.clone();
                 self.check(root, &ret);
             }
-            _ => {
+            // The expression body of a function that returns `()`, or whose
+            // return type is not checked, is a statement: nothing uses its
+            // value. A lambda's may be its result.
+            Some(_) => self.statement(root, false),
+            None if statement => self.statement(root, false),
+            None => {
                 self.infer(root);
             }
         }
@@ -278,17 +312,35 @@ impl Check<'_> {
 
     fn block(&mut self, stmts: &[StmtId]) {
         for &stmt in stmts {
+            self.block_stmt = Some(stmt);
             self.stmt(stmt);
         }
+    }
+
+    /// Checks `expr` where nothing uses its value. An assignment is only
+    /// allowed there; `in_block` when a statement can be put before it.
+    fn statement(&mut self, expr: ExprId, in_block: bool) {
+        let body = self.body;
+        if let Expr::Assign { op, lhs, rhs } = &body.exprs[expr] {
+            self.statements.insert(expr);
+            // `a ??= b` evaluates `b` only when it must, so it is not split.
+            if in_block
+                && *op != Some(BinaryOp::Coalesce)
+                && let Expr::Assign { lhs: inner, .. } = &body.exprs[*rhs]
+                && is_plain_place(body, *lhs)
+                && is_plain_place(body, *inner)
+            {
+                self.splittable.insert(*rhs, expr);
+            }
+        }
+        self.infer(expr);
     }
 
     fn stmt(&mut self, stmt: StmtId) {
         let body = self.body;
         match &body.stmts[stmt] {
             Stmt::Missing | Stmt::Break | Stmt::Continue | Stmt::Return(None) => {}
-            Stmt::Expr(expr) => {
-                self.infer(*expr);
-            }
+            Stmt::Expr(expr) => self.statement(*expr, self.block_stmt == Some(stmt)),
             Stmt::Local { local, init } => {
                 let Some(init) = *init else { return };
                 let slot = arena_index(*local);
@@ -305,7 +357,7 @@ impl Check<'_> {
                 self.defaults(&function.defaults);
                 let ret = (!function.is_async).then(|| self.resolution.return_type(function.ret));
                 if let Some(root) = function.body {
-                    self.function_body(root, ret);
+                    self.function_body(root, ret, true);
                 }
             }
             Stmt::Block(stmts) => self.block(stmts),
@@ -330,12 +382,15 @@ impl Check<'_> {
                 update,
                 body,
             } => {
-                self.block(init);
+                // Not a block: nothing can be put before an initializer.
+                for &stmt in init {
+                    self.stmt(stmt);
+                }
                 if let Some(condition) = condition {
                     self.condition(*condition);
                 }
                 for &expr in update {
-                    self.infer(expr);
+                    self.statement(expr, false);
                 }
                 self.stmt(*body);
             }
@@ -361,19 +416,25 @@ impl Check<'_> {
                 }
                 self.ret = ret;
             }
-            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms),
+            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, true),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
         }
     }
 
-    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm]) {
+    /// A `match`; `statement` when its arms are statements, whose values
+    /// nothing uses.
+    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], statement: bool) {
         self.infer(scrutinee);
         for arm in arms {
             self.pat(arm.pat);
             if let Some(guard) = arm.guard {
                 self.condition(guard);
             }
-            self.infer(arm.body);
+            if statement {
+                self.statement(arm.body, false);
+            } else {
+                self.infer(arm.body);
+            }
         }
     }
 
@@ -569,6 +630,10 @@ impl Check<'_> {
             }
             Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs),
             Expr::Assign { op, lhs, rhs } => {
+                if !self.statements.remove(&expr) {
+                    let split = self.splittable.get(&expr).copied();
+                    self.errors.push(TypeError::AssignmentValue { expr, split });
+                }
                 self.assign(expr, *op, *lhs, *rhs);
                 None
             }
@@ -584,7 +649,7 @@ impl Check<'_> {
                 None
             }
             Expr::Match { scrutinee, arms } => {
-                self.r#match(*scrutinee, arms);
+                self.r#match(*scrutinee, arms, false);
                 None
             }
             Expr::With { expr: value, inits } => {
@@ -611,7 +676,7 @@ impl Check<'_> {
             } => self.conditional(*condition, *then, *r#else, expect),
             Expr::Lambda(lambda) => {
                 self.defaults(&lambda.defaults);
-                self.function_body(lambda.body, None);
+                self.function_body(lambda.body, None, false);
                 None
             }
             Expr::New { ty, args, inits } => {

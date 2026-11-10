@@ -1,9 +1,10 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
+use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size};
 
 use crate::arena::arena_index;
 use crate::bodies::{
-    BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
+    BodyError, LocalKind, RefDefaultRanges, body, body_owners, body_resolution, body_scope,
+    body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
 use crate::inference::{Source, type_error, type_errors};
@@ -150,6 +151,41 @@ fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagn
     )
 }
 
+/// `MR0209`: the `ref` parameter `name` has a default value, with the fixes
+/// that remove the default or the `ref`.
+fn ref_default(db: &dyn Db, file: SourceFile, name: &str, written: RefDefaultRanges) -> Diagnostic {
+    let id = file.id(db);
+    // The `ref` goes with the space after it, so the name stays.
+    let text = file.text(db);
+    let after = usize::from(written.keyword.end());
+    let space = text
+        .get(after..)
+        .map_or(0, |rest| rest.len() - rest.trim_start().len());
+    let keyword = TextRange::new(
+        written.keyword.start(),
+        written.keyword.end() + to_text_size(space),
+    );
+    Diagnostic::error(
+        codes::MR0209,
+        format!(
+            "the `ref` parameter `{name}` cannot have a default value, because every call must pass a variable it can change"
+        ),
+        Label::new(
+            Span::new(id, written.value),
+            "this default cannot be passed by `ref`",
+        ),
+    )
+    .with_note("a `ref` argument is a variable the function changes, and a default is a fixed value")
+    .with_fix(Fix::new(
+        "remove the default value",
+        vec![TextEdit::replace(Span::new(id, written.default), "")],
+    ))
+    .with_fix(Fix::new(
+        "remove `ref`",
+        vec![TextEdit::replace(Span::new(id, keyword), "")],
+    ))
+}
+
 /// The errors in the bodies of a file: `MR0180`, names and types that do
 /// not resolve, and type errors. A file whose bodies did not change keeps
 /// its result.
@@ -182,6 +218,14 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                     "a local may not shadow another; a name can be used again once the first is out of scope",
                 ),
             );
+        }
+        for &local in &body.ref_defaults {
+            out.push(ref_default(
+                db,
+                file,
+                &body.locals[local].name,
+                map.ref_defaults[&local],
+            ));
         }
         for error in &body_resolution(db, project, file, owner).errors {
             out.push(match error {

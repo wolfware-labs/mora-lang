@@ -1,0 +1,23 @@
+// An assignment may only be a statement of its own; it gives no value to use (§7.11, D-141).
+var x = 0;
+var y = 0;
+
+Show(n: int) {
+    Console.WriteLine(n);
+}
+
+x = y = 5; //~ ERROR MR0185
+Show(x = 3); //~ ERROR MR0185
+let z = (x += 1); //~ ERROR MR0185
+if ((x = 2) > 1) { //~ ERROR MR0185
+    Show(x);
+}
+
+// An assignment as a statement, a loop update or an increment is fine.
+x = 4;
+x += 1;
+for (var i = 0; i < 3; i += 1) {
+    Show(i);
+}
+let w = x++;
+Show(w + z);

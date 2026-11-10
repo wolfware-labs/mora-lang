@@ -287,6 +287,10 @@ pub(crate) enum TypeError {
     /// The memberwise creation `expr` of a struct, `ty`, does not assign
     /// the field `field`, which has no initializer (`MR0143`).
     MissingField { expr: ExprId, ty: Ty, field: String },
+    /// The assignment `expr` is used as a value (`MR0185`); `split` is the
+    /// statement of a block it is the value of, when a fix can write it as a
+    /// statement before that one.
+    AssignmentValue { expr: ExprId, split: Option<ExprId> },
     /// The callee `expr` names methods of a value, none of which is visible
     /// from `from`; `item` is the first (`MR0129`).
     NotVisible {
@@ -2486,5 +2490,224 @@ mod tests {
     fn new_of_other_targets_has_no_type() {
         let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 };\nlet d = new();\n";
         assert_eq!(local_types(text), ["c: ?", "d: ?"]);
+    }
+
+    #[test]
+    fn an_assignment_used_as_a_value_is_mr0185() {
+        let head = "Show(n: int) {}\nvar x = 0;\nvar y = 0;\n";
+        for use_ in [
+            "x = y = 5;",
+            "Show(x = 3);",
+            "let z = (x += 1);",
+            "if ((x = 2) > 1) {}",
+            "while ((x -= 1) > 0) {}",
+            "Show((x = 2) + 1);",
+            "let z = x == (y = 1);",
+            "return (x = 1);",
+            "let f = () => (x = 1);",
+        ] {
+            let text = format!("{head}{use_}\n");
+            assert_eq!(reported(&text), ["MR0185"], "{use_}");
+        }
+        // Each assignment whose value is used is reported.
+        assert_eq!(
+            reported(&format!("{head}Show(x = y = 1);\n")),
+            ["MR0185", "MR0185"]
+        );
+    }
+
+    #[test]
+    fn a_coalescing_assignment_used_as_a_value_is_mr0185() {
+        let text = "Show(n: int) {}\nF(a: int?) {\n    Show(a ??= 1);\n}\n";
+        assert!(reported(text).contains(&"MR0185".to_owned()), "{text}");
+    }
+
+    #[test]
+    fn an_assignment_as_a_statement_is_not_a_value() {
+        let text = "var x = 0;\nvar y = 0;\nx = 1;\nx += 2;\nx = y;\n\
+                    for (var i = 0; i < 3; i += 1) {\n    y = i;\n}\n\
+                    for (x = 0; x < 3; x = x + 1) {}\n\
+                    {\n    x -= 1;\n}\nif (x > 0) x = 1; else y = 2;\n\
+                    while (x > 5) x = 0;\nlet w = x++;\nlet v = --y;\nx++;\n\
+                    match (x) {\n    1 => y = 2,\n    _ => y = 3,\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_assignment_message_says_what_goes_wrong() {
+        let reported = diagnostics_of("var x = 0;\nvar y = 0;\nx = y = 5;\n");
+        assert_eq!(reported.len(), 1, "{reported:#?}");
+        let d = &reported[0];
+        assert_eq!(d.message, "an assignment gives no value to use here");
+        assert_eq!(
+            d.primary.message.as_deref(),
+            Some("this assignment must stand as a statement of its own")
+        );
+        assert_eq!(
+            d.note.as_deref(),
+            Some("assign first, then read the variable: an assignment is only a statement")
+        );
+        // The label is on the inner assignment.
+        let text = "var x = 0;\nvar y = 0;\nx = y = 5;\n";
+        let at = usize::from(d.primary.span.range.start());
+        assert_eq!(&text[at..at + 5], "y = 5");
+    }
+
+    #[test]
+    fn an_assignment_in_an_assignment_splits_into_two_statements() {
+        let head = "var x = 0;\nvar y = 0;\n";
+        for (text, expected) in [
+            ("x = y = 5;", "y = 5; x = y;"),
+            ("x = y += 2;", "y += 2; x = y;"),
+        ] {
+            let source = format!("{head}var z = 0;\n{text}\n");
+            let fixed = apply_fixes(&source);
+            assert!(fixed.text.contains(expected), "{}", fixed.text);
+            assert_eq!(fixed.remaining, Vec::<String>::new(), "{}", fixed.text);
+        }
+        // The innermost of three is split in a second round.
+        let once = apply_fixes("var x = 0;\nvar y = 0;\nvar z = 0;\nx = y = z = 5;\n");
+        assert!(once.text.contains("y = z = 5; x = y;"), "{}", once.text);
+        let twice = apply_fixes(&once.text);
+        assert!(
+            twice.text.contains("z = 5; y = z; x = y;"),
+            "{}",
+            twice.text
+        );
+        let nested = apply_fixes("F() {\n    var x = 0;\n    var y = 0;\n    x = y = 5;\n}\n");
+        assert!(
+            nested.text.contains("    y = 5; x = y;\n"),
+            "{}",
+            nested.text
+        );
+    }
+
+    #[test]
+    fn an_assignment_to_a_field_splits_into_two_statements() {
+        let text = "struct P {\n    public X: int;\n    public Y: int;\n}\n\
+                    var p = new P { X = 1, Y = 2 };\np.X = p.Y = 5;\n";
+        let fixed = apply_fixes(text);
+        assert!(fixed.text.contains("p.Y = 5; p.X = p.Y;"), "{}", fixed.text);
+    }
+
+    #[test]
+    fn an_assignment_used_as_a_value_has_a_fix_only_when_it_is_mechanical() {
+        let head = "Show(n: int) {}\nvar x = 0;\nvar y = 0;\nvar a = [1, 2];\n";
+        for use_ in [
+            "Show(x = 3);",
+            "let z = (x += 1);",
+            "a[x++] = y = 5;",
+            "if ((x = 2) > 1) {}",
+            "for (x = 0; x < 3; x = y = 1) {}",
+        ] {
+            let text = format!("{head}{use_}\n");
+            for d in diagnostics_of(&text)
+                .iter()
+                .filter(|d| d.code == mora_diag::codes::MR0185)
+            {
+                assert!(d.fixes.is_empty(), "{use_}: {d:#?}");
+            }
+        }
+        let fixes = diagnostics_of(&format!("{head}x = y = 5;\n"));
+        assert_eq!(fixes[0].fixes.len(), 1);
+        assert_eq!(
+            fixes[0].fixes[0].message,
+            "assign first, then use the variable"
+        );
+    }
+
+    #[test]
+    fn a_ref_parameter_with_a_default_is_mr0209() {
+        for text in [
+            "F(ref x: int = 1) {}\n",
+            "struct S {\n    public M(ref x: int = 1) {}\n}\n",
+            "F() {\n    G(ref x: int = 1) {}\n}\n",
+            "F(a: int, ref x: int = 1, b: int = 2) {}\n",
+            "F(ref x: int = 1, ref y: int = 2) {}\n",
+        ] {
+            let found = reported(text);
+            assert!(
+                found.iter().all(|code| code == "MR0209"),
+                "{text}: {found:?}"
+            );
+            assert!(!found.is_empty(), "{text}");
+        }
+        assert_eq!(
+            reported("F(ref x: int = 1, ref y: int = 2) {}\n"),
+            ["MR0209"; 2]
+        );
+        // Other modes and parameters without a default are fine.
+        for text in [
+            "F(x: int = 1) {}\n",
+            "F(in x: int = 1) {}\n",
+            "F(ref x: int) {}\n",
+            "F(move x: string) {}\n",
+            "F() {\n    G(ref x: int, y: int = 1) {}\n}\n",
+        ] {
+            assert_eq!(reported(text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_ref_default_message_says_what_goes_wrong() {
+        let text = "F(ref x: int = 1) {}\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(reported.len(), 1, "{reported:#?}");
+        let d = &reported[0];
+        assert_eq!(
+            d.message,
+            "the `ref` parameter `x` cannot have a default value, because every call must pass a variable it can change"
+        );
+        assert_eq!(
+            d.primary.message.as_deref(),
+            Some("this default cannot be passed by `ref`")
+        );
+        let at = usize::from(d.primary.span.range.start());
+        assert_eq!(&text[at..at + 1], "1");
+        assert_eq!(
+            d.note.as_deref(),
+            Some(
+                "a `ref` argument is a variable the function changes, and a default is a fixed value"
+            )
+        );
+        let messages: Vec<_> = d.fixes.iter().map(|fix| fix.message.as_str()).collect();
+        assert_eq!(messages, ["remove the default value", "remove `ref`"]);
+    }
+
+    #[test]
+    fn the_fixes_of_a_ref_default_remove_the_default_or_ref() {
+        let text = "F(a: int, ref x: int = 1, b: int = 2) {}\n\
+                    G() {\n    H(ref  y: string  =  \"s\") {}\n}\n";
+        let diagnostics = diagnostics_of(text);
+        assert_eq!(diagnostics.len(), 2);
+        let apply = |index: usize| {
+            let mut fixed = text.to_owned();
+            let mut edits: Vec<_> = diagnostics
+                .iter()
+                .flat_map(|d| d.fixes[index].edits.clone())
+                .collect();
+            edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.range.start()));
+            for edit in edits {
+                fixed.replace_range(
+                    std::ops::Range::<usize>::from(edit.span.range),
+                    &edit.replacement,
+                );
+            }
+            fixed
+        };
+        let no_default = apply(0);
+        assert!(
+            no_default.contains("F(a: int, ref x: int, b: int = 2) {}"),
+            "{no_default}"
+        );
+        assert!(no_default.contains("H(ref  y: string) {}"), "{no_default}");
+        let no_ref = apply(1);
+        assert!(
+            no_ref.contains("F(a: int, x: int = 1, b: int = 2) {}"),
+            "{no_ref}"
+        );
+        assert!(no_ref.contains("H(y: string  =  \"s\") {}"), "{no_ref}");
+        assert_eq!(reported(&no_default), Vec::<String>::new());
+        assert_eq!(reported(&no_ref), Vec::<String>::new());
     }
 }

@@ -151,6 +151,9 @@ pub struct Body {
     /// The locals that take the name of a local in scope (`MR0180`), each
     /// with the one it would shadow.
     pub shadows: Vec<(LocalId, LocalId)>,
+    /// The `ref` parameters that have a default value (`MR0209`), in the
+    /// order of the text.
+    pub ref_defaults: Vec<LocalId>,
 }
 
 /// A local, a parameter or a pattern binding.
@@ -675,6 +678,20 @@ pub struct BodySourceMap {
     /// The segments of each path inside the body's types, indexed by
     /// [`crate::type_ref::PathRef::index`].
     pub type_paths: Vec<Vec<TextRange>>,
+    /// Where the `ref` and the default of each of [`Body::ref_defaults`] are.
+    pub ref_defaults: HashMap<LocalId, RefDefaultRanges>,
+}
+
+/// Where a parameter with `ref` and a default value is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefDefaultRanges {
+    /// The `ref` keyword.
+    pub keyword: TextRange,
+    /// The default value.
+    pub value: TextRange,
+    /// From the end of the parameter's type to the end of its default: the
+    /// `=` and the value.
+    pub default: TextRange,
 }
 
 impl BodySourceMap {

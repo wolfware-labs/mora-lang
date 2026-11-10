@@ -10,7 +10,7 @@ use mora_syntax::{SyntaxKind, SyntaxToken};
 use super::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodySourceMap, Capture, CaptureTarget, Expr, ExprId,
     InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
-    PatId, Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
+    PatId, Path, RefDefaultRanges, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
 };
 use crate::items::Written;
 use crate::name::{name_ref_of, token_name};
@@ -170,9 +170,18 @@ impl Lower {
                 self.body.params.push(local);
                 if let Some(default) = default {
                     self.body.defaults.push((local, default));
+                    if let Some(written) = ref_default_of(param) {
+                        self.record_ref_default(local, written);
+                    }
                 }
             }
         }
+    }
+
+    /// Records that the parameter `local` is `ref` and has a default.
+    fn record_ref_default(&mut self, local: LocalId, written: RefDefaultRanges) {
+        self.body.ref_defaults.push(local);
+        self.map.ref_defaults.insert(local, written);
     }
 
     /// Declares the parameters of a lambda or a local function, with their
@@ -183,23 +192,26 @@ impl Lower {
         let mut defaults = Vec::new();
         let lowered: Vec<_> = params
             .into_iter()
-            .map(|(name, ty, default, mode)| {
+            .map(|(name, ty, default, mode, written)| {
                 let default = default.map(|default| {
                     let range = default.syntax().text_range();
                     self.scoped(|this| this.expr(Some(default), range))
                 });
-                (name, ty, default, mode)
+                (name, ty, default, mode, written)
             })
             .collect();
         // A parameter whose name the parser recovered from declares no
         // local, and has no mode either.
-        for (name, ty, default, mode) in lowered {
+        for (name, ty, default, mode, written) in lowered {
             let ty = self.opt_ty(ty);
             if let Some(local) = self.declare(name, LocalKind::Param, ty) {
                 declared.push(local);
                 modes.push(mode);
                 if let Some(default) = default {
                     defaults.push((local, default));
+                    if let Some(written) = written {
+                        self.record_ref_default(local, written);
+                    }
                 }
             }
         }
@@ -442,7 +454,8 @@ impl Lower {
                 .flat_map(|list| list.params())
                 .map(|param| {
                     let mode = param_mode(&param);
-                    (param.name(), param.ty(), param.default(), mode)
+                    let written = ref_default_of(&param);
+                    (param.name(), param.ty(), param.default(), mode, written)
                 })
                 .collect();
             let LocalParams {
@@ -712,7 +725,15 @@ impl Lower {
                                 .into_iter()
                                 .flat_map(|list| list.lambda_params()),
                         )
-                        .map(|param| (param.name(), param.ty(), param.default(), ParamMode::In))
+                        .map(|param| {
+                            (
+                                param.name(),
+                                param.ty(),
+                                param.default(),
+                                ParamMode::In,
+                                None,
+                            )
+                        })
                         .collect();
                     let LocalParams {
                         params, defaults, ..
@@ -1177,13 +1198,38 @@ fn interp_values(parts: &mut [InterpPart], raw: bool) {
 }
 
 /// A parameter of a lambda or a local function as written: its name, its
-/// type, its default value and its mode.
+/// type, its default value, its mode, and where a `ref` and a default are
+/// written when it has both.
 type WrittenParam<'a> = (
     Option<ast::Name<'a>>,
     Option<ast::Type<'a>>,
     Option<ast::Expr<'a>>,
     ParamMode,
+    Option<RefDefaultRanges>,
 );
+
+/// Where the `ref` and the default of `param` are written, when it has both
+/// and a type.
+fn ref_default_of(param: &ast::Param) -> Option<RefDefaultRanges> {
+    if param_mode(param) != ParamMode::Ref {
+        return None;
+    }
+    let default = param.default()?;
+    let ty = param.ty()?;
+    let keyword = param
+        .modifiers()
+        .filter_map(|modifier| modifier.kind())
+        .filter(|token| token.kind() == SyntaxKind::RefKw)
+        .last()?;
+    Some(RefDefaultRanges {
+        keyword: keyword.text_range(),
+        value: default.syntax().text_range(),
+        default: TextRange::new(
+            ty.syntax().text_range().end(),
+            default.syntax().text_range().end(),
+        ),
+    })
+}
 
 /// The parameters of a lambda or a local function, as
 /// `Lower::local_params` declares them.

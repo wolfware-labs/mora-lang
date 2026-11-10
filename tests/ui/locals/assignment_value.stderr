@@ -1,0 +1,36 @@
+error[MR0185]: an assignment gives no value to use here
+ --> tests/ui/locals/assignment_value.mr:9:5
+  |
+9 | x = y = 5; //~ ERROR MR0185
+  |     ^^^^^ this assignment must stand as a statement of its own
+  |
+  = note: assign first, then read the variable: an assignment is only a statement
+help: assign first, then use the variable
+  |
+9 - x = y = 5; //~ ERROR MR0185
+9 + y = 5; x = y; //~ ERROR MR0185
+  |
+
+error[MR0185]: an assignment gives no value to use here
+  --> tests/ui/locals/assignment_value.mr:10:6
+   |
+10 | Show(x = 3); //~ ERROR MR0185
+   |      ^^^^^ this assignment must stand as a statement of its own
+   |
+   = note: assign first, then read the variable: an assignment is only a statement
+
+error[MR0185]: an assignment gives no value to use here
+  --> tests/ui/locals/assignment_value.mr:11:10
+   |
+11 | let z = (x += 1); //~ ERROR MR0185
+   |          ^^^^^^ this assignment must stand as a statement of its own
+   |
+   = note: assign first, then read the variable: an assignment is only a statement
+
+error[MR0185]: an assignment gives no value to use here
+  --> tests/ui/locals/assignment_value.mr:12:6
+   |
+12 | if ((x = 2) > 1) { //~ ERROR MR0185
+   |      ^^^^^ this assignment must stand as a statement of its own
+   |
+   = note: assign first, then read the variable: an assignment is only a statement
