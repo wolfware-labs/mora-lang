@@ -114,7 +114,11 @@ impl Inference {
     /// The conversion of an element of `value`, the tuple that the
     /// assignment `(a, (b, c)) = value` deconstructs, when the element
     /// changes type on its way to its place. `index` counts the places that
-    /// receive an element, depth first: `a` is 0, `b` is 1 and `c` is 2.
+    /// receive an element, depth first: `a` is 0, `b` is 1 and `c` is 2. A
+    /// discard `_` counts as a place too. When the value is a tuple literal
+    /// with a tuple in it, as in `(a, (b, c)) = (x, t)`, the nested part is
+    /// deconstructed on its own: its conversions are keyed by `t`, and its
+    /// indices restart at 0.
     pub fn element_conversion(&self, value: ExprId, index: u32) -> Option<&Conversion> {
         self.element_conversions.get(&(value, index))
     }
