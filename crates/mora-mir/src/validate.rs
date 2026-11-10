@@ -4,7 +4,9 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{Primitive, Signature, Ty, converts_implicitly, field_member, signature, this_type};
+use mora_hir::{
+    Primitive, Signature, Ty, converts_implicitly, instance_fields, signature, this_type,
+};
 use mora_span::Db;
 
 use crate::types::param_ty;
@@ -286,7 +288,7 @@ impl Checker<'_> {
     fn field_problem(&self, ty: &Ty, n: u32) -> Option<String> {
         let (len, what) = match ty {
             Ty::Struct(item) => match signature(self.db, *item) {
-                Signature::Struct(fields) => (fields.len(), "a struct of"),
+                Signature::Struct(_) => (instance_fields(self.db, *item).count(), "a struct of"),
                 _ => return Some("field of a struct type whose item is not a struct".into()),
             },
             Ty::Tuple(elems) => (elems.len(), "a tuple of"),
@@ -296,19 +298,7 @@ impl Checker<'_> {
                 ));
             }
         };
-        if n as usize >= len {
-            return Some(format!("field {n} out of range of {what} {len} fields"));
-        }
-        // A static or constant member is not stored in the value.
-        match ty {
-            Ty::Struct(item)
-                if !field_member(self.db, *item, n as usize)
-                    .is_some_and(|(_, member)| member.is_instance_field()) =>
-            {
-                Some(format!("field {n} of a struct is not an instance field"))
-            }
-            _ => None,
-        }
+        (n as usize >= len).then(|| format!("field {n} out of range of {what} {len} fields"))
     }
 
     fn operand(&mut self, at: &str, operand: &Operand) -> Option<Ty> {
@@ -403,10 +393,13 @@ impl Checker<'_> {
             }
             Rvalue::Aggregate(AggregateKind::Struct(item), operands) => {
                 let tys = self.operands(at, operands)?;
-                let Signature::Struct(fields) = signature(self.db, *item) else {
+                let Signature::Struct(_) = signature(self.db, *item) else {
                     self.error(at, "aggregate of an item that is not a struct");
                     return None;
                 };
+                let fields: Vec<&mora_hir::Field> = instance_fields(self.db, *item)
+                    .map(|(_, field)| field)
+                    .collect();
                 if fields.len() != tys.len() {
                     self.error(
                         at,
@@ -690,12 +683,12 @@ impl Checker<'_> {
                 Some((params, local_value_ty(&target.locals[0].ty).clone()))
             }
             Callee::Initializer(item, n) => {
-                let Signature::Struct(fields) = signature(self.db, *item) else {
+                let Signature::Struct(_) = signature(self.db, *item) else {
                     self.error(at, "initializer of an item that is not a struct");
                     return None;
                 };
-                match fields.get(*n as usize) {
-                    Some(field) => Some((Vec::new(), field.ty.clone())),
+                match instance_fields(self.db, *item).nth(*n as usize) {
+                    Some((_, field)) => Some((Vec::new(), field.ty.clone())),
                     None => {
                         self.error(at, format!("no field {n} to initialize"));
                         None
@@ -1434,7 +1427,9 @@ mod tests {
     }
 
     #[test]
-    fn a_field_projection_names_an_instance_field() {
+    fn a_field_projection_counts_the_instance_fields_only() {
+        // `R` stores `V` alone: its static field and its constant are not
+        // fields of a value.
         let fx = fx();
         let mut mir = with_stmt(assign(
             place(1),
@@ -1442,14 +1437,24 @@ mod tests {
         ));
         mir.bodies[0].locals.push(val(Ty::Struct(fx.r)));
         assert_eq!(validate(&fx.db, &mir, true), Ok(()));
-        for n in [1, 2] {
-            let mut bad = mir.clone();
-            bad.bodies[0].blocks[0].statements[0] = assign(
-                place(1),
-                Rvalue::Use(Operand::Copy(proj(7, vec![Projection::Field(n)]))),
-            );
-            rejects(&fx, &bad, true, "not an instance field");
-        }
+        let mut bad = mir.clone();
+        bad.bodies[0].blocks[0].statements[0] = assign(
+            place(1),
+            Rvalue::Use(Operand::Copy(proj(7, vec![Projection::Field(1)]))),
+        );
+        rejects(
+            &fx,
+            &bad,
+            true,
+            "field 1 out of range of a struct of 1 fields",
+        );
+        // An aggregate of `R` takes one operand.
+        let mut built = with_stmt(assign(
+            place(7),
+            Rvalue::Aggregate(AggregateKind::Struct(fx.r), vec![int_const(1)]),
+        ));
+        built.bodies[0].locals.push(val(Ty::Struct(fx.r)));
+        assert_eq!(validate(&fx.db, &built, true), Ok(()));
     }
 
     #[test]

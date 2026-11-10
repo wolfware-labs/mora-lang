@@ -1,7 +1,7 @@
 //! The data types of MIR (§14.7): a control-flow graph of basic blocks per
 //! body, over typed locals and places.
 
-use mora_hir::{ItemId, ParamMode, Primitive, Signature, Ty, signature};
+use mora_hir::{ItemId, ParamMode, Primitive, Signature, Ty, instance_fields, signature};
 use mora_span::{Db, Span};
 
 /// The MIR of one body owner.
@@ -154,7 +154,8 @@ impl Place {
 /// One step into a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Projection {
-    /// The field of a struct, by its position in the declaration.
+    /// The field of a struct, by its position among the instance fields
+    /// in the declaration, or the element of a tuple.
     Field(u32),
     /// The value a borrow refers to.
     Deref,
@@ -379,7 +380,8 @@ pub enum Callee {
     Item(ItemId),
     /// A local function, by its index in [`Mir::bodies`].
     Local(usize),
-    /// The initializer of a field of a struct, by its position.
+    /// The initializer of a field of a struct, by the field's position
+    /// among its instance fields.
     Initializer(ItemId, u32),
     /// A function of the standard library, by its path.
     External(Vec<String>),
@@ -451,18 +453,18 @@ impl Body {
     fn field_ty(&self, ty: &Ty, n: u32, db: &dyn Db) -> Ty {
         match ty {
             Ty::Struct(item) => {
-                let Signature::Struct(fields) = signature(db, *item) else {
+                let Signature::Struct(_) = signature(db, *item) else {
                     panic!(
                         "body {}: a struct type whose item is not a struct",
                         self.name
                     );
                 };
-                match fields.get(n as usize) {
-                    Some(field) => field.ty.clone(),
+                match instance_fields(db, *item).nth(n as usize) {
+                    Some((_, field)) => field.ty.clone(),
                     None => panic!(
-                        "body {}: field {n} out of range of a struct of {} fields",
+                        "body {}: field {n} out of range of a struct of {} instance fields",
                         self.name,
-                        fields.len()
+                        instance_fields(db, *item).count()
                     ),
                 }
             }

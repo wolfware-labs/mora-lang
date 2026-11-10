@@ -1,10 +1,13 @@
 //! Tests of lowering, each from source text through the front end.
 
 use mora_hir::test_support::{TestDb, app, codes, file_named};
-use mora_hir::{BodyOwner, body, body_owners, diagnostics, item_tree, parse};
+use mora_hir::{BodyOwner, ItemId, body, body_owners, diagnostics, item_tree, parse};
 use mora_span::{Dependency, Project, ProjectKind, SourceFile};
 
-use crate::{Callee, Const, Mir, Operand, TerminatorKind, mir, mir_dump, validate, write_mir};
+use crate::{
+    Callee, Const, Mir, Operand, Projection, Rvalue, StatementKind, TerminatorKind, mir, mir_dump,
+    validate, write_mir,
+};
 
 /// A file of an app that the front end reads and checks without an error.
 struct Lowered {
@@ -50,6 +53,20 @@ impl Lowered {
             .find(|(_, item)| item.name == name)
             .expect("the function");
         BodyOwner::Item(item)
+    }
+
+    /// The item `name` declared in the file.
+    fn item(&self, name: &str) -> ItemId {
+        let tree = item_tree(&self.db, self.file);
+        let (item, _) = tree
+            .items()
+            .find(|(_, item)| item.name == name)
+            .expect("the item");
+        ItemId {
+            project: self.project,
+            file: self.file,
+            item,
+        }
     }
 
     fn mir(&self, name: &str) -> &Mir {
@@ -2241,13 +2258,45 @@ fn a_step_of_a_field_whose_value_is_used_keeps_the_old_value() {
 }
 
 #[test]
-#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
-fn a_struct_with_a_static_field_is_not_built() {
+fn fields_are_numbered_among_the_instance_fields() {
+    // A constant and a static field belong to the type: a value holds `X`
+    // and `Y` only, as fields 0 and 1.
     let lowered = lowered(
-        "struct P {\n    public X: int;\n    public static S: int = 1;\n}\n\
-         F(): P => new P { X = 1 };\n",
+        "struct P {\n    public const K: int = 1;\n    public X: int;\n    \
+         public static S: int = 2;\n    public Y: int = 3;\n}\n\
+         F(): P => new P { X = 1 };\nG(p: P): int => p.Y;\n",
     );
-    lowered.mir("F");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_1);",
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+    let TerminatorKind::Call { callee, .. } = &lowered.mir("F").bodies[0].blocks[0].terminator.kind
+    else {
+        panic!("a call");
+    };
+    assert_eq!(*callee, Callee::Initializer(lowered.item("P"), 1));
+    let g = &lowered.mir("G").bodies[0];
+    let projections: Vec<&[Projection]> = g
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::Assign(_, Rvalue::Use(Operand::Copy(place))) => {
+                Some(place.projections.as_slice())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        projections,
+        [&[Projection::Deref, Projection::Field(1)][..]]
+    );
 }
 
 #[test]

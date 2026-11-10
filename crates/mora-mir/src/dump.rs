@@ -100,7 +100,7 @@ use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
-    Constant, Signature, Ty, arena_index, escape_char, item_text, real_text, signature, ty_name,
+    Constant, Ty, arena_index, escape_char, instance_fields, item_text, real_text, ty_name,
 };
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
@@ -320,12 +320,9 @@ impl Printer<'_> {
                 None => format!("local#{index}"),
             },
             Callee::Initializer(item, index) => {
-                let name = match signature(self.db, *item) {
-                    Signature::Struct(fields) => {
-                        fields.get(*index as usize).map(|field| field.name.clone())
-                    }
-                    _ => None,
-                };
+                let name = instance_fields(self.db, *item)
+                    .nth(*index as usize)
+                    .map(|(_, field)| field.name.clone());
                 format!(
                     "{}.{}{{init}}",
                     item_text(self.db, *item),
@@ -439,9 +436,7 @@ impl Printer<'_> {
     fn field(&self, ty: Option<&Ty>, index: u32) -> (String, Option<Ty>) {
         match ty {
             Some(Ty::Struct(item)) => {
-                if let Signature::Struct(fields) = signature(self.db, *item)
-                    && let Some(field) = fields.get(index as usize)
-                {
+                if let Some((_, field)) = instance_fields(self.db, *item).nth(index as usize) {
                     return (field.name.clone(), Some(field.ty.clone()));
                 }
             }

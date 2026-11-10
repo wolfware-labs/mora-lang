@@ -2135,7 +2135,7 @@ Terminator = Goto(b) | Switch(Operand, [(value, b)], otherwise) | Return | Call 
 
 Before monomorphization, types may contain type parameters. `Retain` and `Release` appear only after ARC insertion (§14.11); `Await` disappears in async lowering (§14.9). Every MIR statement carries a span for diagnostics and debug line tables. A textual MIR dump (`mora build --emit mir`) is stable enough to be used in snapshot tests.
 
-**Numbering.** `Field(n)` counts the fields of a struct by declaration order, from zero.
+**Numbering.** `Field(n)` counts the instance fields of a struct by declaration order, from zero: a `static` field and a constant belong to the type, not to its values, and are not counted. An aggregate of a struct takes one operand per instance field, in that order.
 
 **Arithmetic.** `Add`, `Sub`, `Mul` and unary `-` are checked by meaning: a result that does not fit its type panics. The wrapping forms `+%`, `-%` and `*%` wrap. `Div` and `Rem` include the panic for division by zero. Code generation applies the build profile (§17.2), so MIR does not depend on it.
 

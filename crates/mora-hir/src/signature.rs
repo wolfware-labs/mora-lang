@@ -37,18 +37,24 @@ pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Fi
     Some((n, fields.get(n)?))
 }
 
-/// The value member that declares the field at position `n` of
-/// [`Signature::Struct`] of `item`, with its position among the value
-/// members: the inverse of [`struct_field`].
-pub fn field_member(db: &dyn Db, item: ItemId, n: usize) -> Option<(u32, &ValueMember)> {
-    let (index, member) = item_tree(db, item.file)
+/// The instance fields of the struct `item`, the fields stored in each of
+/// its values, in the order of the declaration: each with its position
+/// among the value members. A `static` field and a constant belong to the
+/// type and are not among them. Nothing when `item` is not a struct.
+pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, &Field)> + '_ {
+    let fields = match signature(db, item) {
+        Signature::Struct(fields) => fields.as_slice(),
+        _ => &[],
+    };
+    item_tree(db, item.file)
         .item(item.item)
         .values
         .iter()
-        .enumerate()
-        .filter(|(_, member)| declares_field(member))
-        .nth(n)?;
-    Some((u32::try_from(index).ok()?, member))
+        .zip(0u32..)
+        .filter(|(member, _)| declares_field(member))
+        .zip(fields)
+        .filter(|((member, _), _)| member.is_instance_field())
+        .map(|((_, index), field)| (index, field))
 }
 
 /// Whether `member` declares a field of [`Signature::Struct`]: a field or a
@@ -482,22 +488,19 @@ mod tests {
     }
 
     #[test]
-    fn a_field_finds_the_value_member_that_declares_it() {
+    fn the_instance_fields_of_a_struct_are_in_declaration_order() {
         let db = TestDb::new();
         let text = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
-                    static S: long = 2;\n    Y: string;\n}\n";
+                    static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
-        let p = item_named(&db, project, file, "P");
-        let found = |n: usize| {
-            field_member(&db, p, n)
-                .map(|(index, member)| (index, member.name.clone(), member.is_instance_field()))
+        let fields = |name: &str| -> Vec<(u32, String)> {
+            instance_fields(&db, item_named(&db, project, file, name))
+                .map(|(index, field)| (index, field.name.clone()))
+                .collect()
         };
-        assert_eq!(found(0), Some((0, "X".to_owned(), true)));
-        assert_eq!(found(1), Some((2, "K".to_owned(), false)));
-        assert_eq!(found(2), Some((3, "S".to_owned(), false)));
-        assert_eq!(found(3), Some((4, "Y".to_owned(), true)));
-        assert_eq!(found(4), None);
+        assert_eq!(fields("P"), [(0, "X".to_owned()), (4, "Y".to_owned())]);
+        assert_eq!(fields("C"), []);
     }
 
     #[test]

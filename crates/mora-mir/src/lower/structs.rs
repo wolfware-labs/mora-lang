@@ -2,8 +2,8 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, body, field_member,
-    item_tree, signature, struct_field,
+    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, body, instance_fields,
+    item_tree, signature,
 };
 use mora_span::Db;
 
@@ -12,9 +12,9 @@ use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
 
 impl Lowerer<'_> {
-    /// `new T { F = v, ... }` for the struct `T`: every field in the order
-    /// of the declaration. The written values are evaluated in the order
-    /// of the text; a field left out then takes the value of its
+    /// `new T { F = v, ... }` for the struct `T`: every instance field in
+    /// the order of the declaration. The written values are evaluated in
+    /// the order of the text; a field left out then takes the value of its
     /// initializer, which is a body of its own.
     pub(super) fn new_struct(
         &mut self,
@@ -31,46 +31,39 @@ impl Lowerer<'_> {
                 "the creation of a value that is not a struct is not lowered",
             )
         };
-        let Signature::Struct(fields) = signature(self.owner.db, item) else {
-            self.ice(expr, "a struct type whose item is not a struct")
-        };
         let inits = inits.unwrap_or_default();
         let values: Vec<ExprId> = inits.iter().map(|&(_, value)| value).collect();
         let mut written: Vec<Option<Operand>> =
             self.operands(&values)?.into_iter().map(Some).collect();
-        let mut operands = Vec::with_capacity(fields.len());
-        for (n, field) in fields.iter().enumerate() {
-            self.instance_field(expr, item, n);
+        let mut operands = Vec::new();
+        for (n, (index, field)) in instance_fields(self.owner.db, item).enumerate() {
             let init = inits.iter().position(|(name, _)| *name == field.name);
             operands.push(match init.and_then(|init| written[init].take()) {
                 Some(operand) => operand,
-                None => self.initializer_call(expr, item, n, field)?,
+                None => self.initializer_call(expr, item, (n, index), field)?,
             });
         }
         Ok(Rvalue::Aggregate(AggregateKind::Struct(item), operands))
     }
 
-    /// The value of the initializer of `field`, the `n`-th field of the
-    /// struct `item`, which `expr` leaves out: a call of its body, into a
-    /// temporary.
+    /// The value of the initializer of `field`, which `expr` leaves out: a
+    /// call of its body, into a temporary. `n` is the field's position
+    /// among the instance fields of the struct `item`, and `index` its
+    /// position among the value members.
     fn initializer_call(
         &mut self,
         expr: ExprId,
         item: ItemId,
-        n: usize,
+        (n, index): (usize, u32),
         field: &Field,
     ) -> Lowered<Operand> {
-        let index = self.instance_field(expr, item, n);
         let owner = BodyOwner::Value(item.item, index);
         if body(self.owner.db, item.file, owner).root.is_none() {
             self.ice(expr, "a field without an initializer is left out");
         }
-        let Ok(n) = u32::try_from(n) else {
-            self.ice(expr, "a struct with more than u32::MAX fields")
-        };
         let dest = self.finish_call(
             expr,
-            Callee::Initializer(item, n),
+            Callee::Initializer(item, self.field_number(expr, n)),
             Vec::new(),
             field.ty.clone(),
             Dest::Temp,
@@ -82,41 +75,39 @@ impl Lowerer<'_> {
     }
 
     /// The place of the field `name` of the struct at `base`, which `expr`
-    /// names.
+    /// names. Static and constant members are not stored in a value, and
+    /// lowering them is for the static state of M1.11.
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
-        let field = match self.builder.body().place_ty(&base, self.owner.db) {
-            Ty::Struct(item) => match signature(self.owner.db, item) {
-                Signature::Struct(fields) => fields
-                    .iter()
-                    .position(|field| field.name == name)
-                    .map(|n| (item, n)),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some((item, n)) = field else {
+        let db = self.owner.db;
+        let Ty::Struct(item) = self.builder.body().place_ty(&base, db) else {
             self.ice(
                 expr,
                 "a member that is not a field of a struct is not lowered",
             )
         };
-        self.instance_field(expr, item, n);
-        let Ok(n) = u32::try_from(n) else {
-            self.ice(expr, "a struct with more than u32::MAX fields")
+        let Some(n) = instance_fields(db, item).position(|(_, field)| field.name == name) else {
+            let declared = match signature(db, item) {
+                Signature::Struct(fields) => fields.iter().any(|field| field.name == name),
+                _ => false,
+            };
+            if declared {
+                self.ice(expr, "a static or constant member is not lowered (M1.11)");
+            }
+            self.ice(
+                expr,
+                "a member that is not a field of a struct is not lowered",
+            )
         };
-        base.projections.push(Projection::Field(n));
+        base.projections
+            .push(Projection::Field(self.field_number(expr, n)));
         base
     }
 
-    /// The position among the value members of the struct `item` of its
-    /// `n`-th field, which `expr` uses. Static and constant members are
-    /// not stored in a value, and lowering them is for the static state
-    /// of M1.11.
-    fn instance_field(&self, expr: ExprId, item: ItemId, n: usize) -> u32 {
-        match field_member(self.owner.db, item, n) {
-            Some((index, member)) if member.is_instance_field() => index,
-            Some(_) => self.ice(expr, "a static or constant member is not lowered (M1.11)"),
-            None => self.ice(expr, "a field that is not a value member"),
+    /// The position `n` of a field, as MIR holds it.
+    fn field_number(&self, expr: ExprId, n: usize) -> u32 {
+        match u32::try_from(n) {
+            Ok(n) => n,
+            Err(_) => self.ice(expr, "a struct with more than u32::MAX fields"),
         }
     }
 
@@ -145,15 +136,10 @@ impl Lowerer<'_> {
     }
 }
 
-/// The field of the struct `item` whose initializer is the body of the
-/// value member at `index`: an instance field.
+/// The instance field of the struct `item` whose initializer is the body
+/// of the value member at `index`.
 pub(super) fn field_of_value(db: &dyn Db, item: ItemId, index: u32) -> Option<&Field> {
-    let member = item_tree(db, item.file)
-        .item(item.item)
-        .values
-        .get(index as usize)?;
-    if !member.is_instance_field() {
-        return None;
-    }
-    struct_field(db, item, index).map(|(_, field)| field)
+    instance_fields(db, item)
+        .find(|&(member, _)| member == index)
+        .map(|(_, field)| field)
 }
