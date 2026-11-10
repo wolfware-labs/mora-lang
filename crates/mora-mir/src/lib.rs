@@ -1,6 +1,7 @@
 //! MIR, lowering from HIR, move and borrow checks, async lowering, monomorphization, ARC passes and constant evaluation (§14.7 to §14.12).
 
 mod mir;
+mod validate;
 
 #[cfg(test)]
 mod tests;
@@ -10,3 +11,4 @@ pub use mir::{
     LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind, UnOp,
 };
+pub use validate::{debug_validate, validate};

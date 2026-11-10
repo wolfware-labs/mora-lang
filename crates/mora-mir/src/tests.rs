@@ -319,3 +319,17 @@ fn a_struct_type_naming_a_function_panics() {
     let body = body_of(vec![decl(LocalTy::Value(Ty::Struct(function)))], vec![], 0);
     body.place_ty(&place_of(0, vec![Projection::Field(0)]), &db);
 }
+
+#[test]
+fn block_ids_lists_every_block_in_order() {
+    let block = || Block {
+        statements: vec![],
+        terminator: ret(),
+    };
+    let body = body_of(vec![], vec![block(), block(), block()], 0);
+    assert_eq!(
+        body.block_ids().collect::<Vec<_>>(),
+        vec![BlockId(0), BlockId(1), BlockId(2)]
+    );
+    assert_eq!(body_of(vec![], vec![], 0).block_ids().count(), 0);
+}

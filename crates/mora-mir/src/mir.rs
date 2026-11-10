@@ -344,6 +344,11 @@ pub enum Callee {
 }
 
 impl Body {
+    /// The ids of the blocks, in order.
+    pub fn block_ids(&self) -> impl Iterator<Item = BlockId> + use<> {
+        (0..self.blocks.len()).map(|index| BlockId(index as u32))
+    }
+
     /// The declaration of the local.
     ///
     /// # Panics

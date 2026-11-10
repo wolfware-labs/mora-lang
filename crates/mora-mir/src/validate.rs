@@ -1,0 +1,1628 @@
+//! The MIR validator: every body is well formed and typed.
+//!
+//! [`validate`] returns every problem of a [`Mir`] instead of stopping at the
+//! first, and never panics on a malformed body: each place is checked before
+//! its type is read.
+
+use mora_hir::{ItemId, ItemKind, Primitive, Signature, Ty, item_tree, signature};
+use mora_span::Db;
+
+use crate::{
+    AggregateKind, BinOp, Block, BlockId, Body, Callee, Const, InterpPiece, LocalId, LocalTy, Mir,
+    Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
+};
+
+/// Checks every body of `mir` and returns every problem found, ordered by
+/// body, then block, then statement, with the terminator last. Each problem
+/// names its place as `fn <body> bb<block>[<statement>]`, or `[term]` for
+/// the terminator.
+///
+/// When `std_loaded` is true the standard library's code is part of the
+/// program, so a call to [`Callee::External`] and an
+/// [`Rvalue::Interpolate`] are problems: both are replaced by calls of items.
+pub fn validate(db: &dyn Db, mir: &Mir, std_loaded: bool) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for body in &mir.bodies {
+        Checker {
+            db,
+            mir,
+            body,
+            std_loaded,
+            errors: &mut errors,
+        }
+        .body();
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Runs [`validate`] and panics with every problem in debug builds; does
+/// nothing in release builds.
+///
+/// # Panics
+///
+/// In a debug build, when the MIR is invalid.
+pub fn debug_validate(db: &dyn Db, mir: &Mir, std_loaded: bool) {
+    if cfg!(debug_assertions)
+        && let Err(problems) = validate(db, mir, std_loaded)
+    {
+        panic!("invalid MIR:\n{}", problems.join("\n"));
+    }
+}
+
+/// The checks of one body.
+struct Checker<'a> {
+    db: &'a dyn Db,
+    mir: &'a Mir,
+    body: &'a Body,
+    std_loaded: bool,
+    errors: &'a mut Vec<String>,
+}
+
+impl Checker<'_> {
+    fn error(&mut self, at: &str, message: impl std::fmt::Display) {
+        self.errors.push(format!("{at}: {message}"));
+    }
+
+    fn body(&mut self) {
+        let body = self.body;
+        let at = format!("fn {}", body.name);
+        if body.locals.is_empty() {
+            self.error(&at, "no return slot _0");
+        } else if body.params >= body.locals.len() {
+            self.error(
+                &at,
+                format!(
+                    "{} parameters need {} locals but the body has {}",
+                    body.params,
+                    body.params + 1,
+                    body.locals.len()
+                ),
+            );
+        }
+        if body.blocks.is_empty() {
+            self.error(&at, "no blocks");
+        }
+        for id in body.block_ids() {
+            self.block(id, body.block(id));
+        }
+    }
+
+    fn block(&mut self, id: BlockId, block: &Block) {
+        let prefix = format!("fn {} bb{}", self.body.name, id.0);
+        for (index, statement) in block.statements.iter().enumerate() {
+            let at = format!("{prefix}[{index}]");
+            match &statement.kind {
+                StatementKind::Assign(dest, rvalue) => self.assign(&at, dest, rvalue),
+                StatementKind::StorageLive(local) | StatementKind::StorageDead(local) => {
+                    self.storage(&at, *local);
+                }
+                StatementKind::Nop => {}
+            }
+        }
+        self.terminator(&format!("{prefix}[term]"), &block.terminator.kind);
+    }
+
+    fn storage(&mut self, at: &str, local: LocalId) {
+        if local.index() >= self.body.locals.len() {
+            self.error(at, format!("no local _{}", local.0));
+        } else if local.index() <= self.body.params {
+            self.error(
+                at,
+                format!(
+                    "storage statement names _{}, which is the return slot or a parameter",
+                    local.0
+                ),
+            );
+        }
+    }
+
+    /// Reports a target that is not a block of the body.
+    fn target(&mut self, at: &str, what: &str, target: BlockId) {
+        if target.index() >= self.body.blocks.len() {
+            self.error(at, format!("{what} targets missing block bb{}", target.0));
+        }
+    }
+
+    // Places and operands.
+
+    /// The type at `place`, or `None` after reporting what is wrong with it.
+    fn place(&mut self, at: &str, place: &Place) -> Option<Ty> {
+        let Some(decl) = self.body.locals.get(place.local.index()) else {
+            self.error(at, format!("no local _{}", place.local.0));
+            return None;
+        };
+        let mut borrowed = matches!(decl.ty, LocalTy::Borrow(..));
+        let mut prefix = Place::local(place.local);
+        for projection in &place.projections {
+            match *projection {
+                Projection::Deref => {
+                    if !borrowed {
+                        self.error(
+                            at,
+                            format!("dereference of a value local _{}", place.local.0),
+                        );
+                        return None;
+                    }
+                    borrowed = false;
+                }
+                Projection::Field(n) => {
+                    if borrowed {
+                        self.error(
+                            at,
+                            format!("field of a borrow _{} without a dereference", place.local.0),
+                        );
+                        return None;
+                    }
+                    // The prefix is valid, so looking its type up is safe.
+                    let ty = self.body.place_ty(&prefix, self.db);
+                    if let Some(message) = self.field_problem(&ty, n) {
+                        self.error(at, message);
+                        return None;
+                    }
+                }
+            }
+            prefix.projections.push(*projection);
+        }
+        Some(self.body.place_ty(&prefix, self.db))
+    }
+
+    /// What is wrong with taking field `n` of `ty`.
+    fn field_problem(&self, ty: &Ty, n: u32) -> Option<String> {
+        let (len, what) = match ty {
+            Ty::Struct(item) => match signature(self.db, *item) {
+                Signature::Struct(fields) => (fields.len(), "a struct of"),
+                _ => return Some("field of a struct type whose item is not a struct".into()),
+            },
+            Ty::Tuple(elems) => (elems.len(), "a tuple of"),
+            _ => {
+                return Some(format!(
+                    "field {n} of a type that is not a struct or a tuple"
+                ));
+            }
+        };
+        (n as usize >= len).then(|| format!("field {n} out of range of {what} {len} fields"))
+    }
+
+    fn operand(&mut self, at: &str, operand: &Operand) -> Option<Ty> {
+        match operand {
+            Operand::Copy(place) | Operand::Move(place) => self.place(at, place),
+            Operand::Const(constant) => Some(const_ty(constant)),
+        }
+    }
+
+    /// The types of the operands; every operand is checked even after one
+    /// fails.
+    fn operands<'o>(
+        &mut self,
+        at: &str,
+        operands: impl IntoIterator<Item = &'o Operand>,
+    ) -> Option<Vec<Ty>> {
+        let mut tys = Some(Vec::new());
+        for operand in operands {
+            let ty = self.operand(at, operand);
+            tys = match (tys, ty) {
+                (Some(mut all), Some(ty)) => {
+                    all.push(ty);
+                    Some(all)
+                }
+                _ => None,
+            };
+        }
+        tys
+    }
+
+    // Statements.
+
+    fn assign(&mut self, at: &str, dest: &Place, rvalue: &Rvalue) {
+        let dest_ty = self.place(at, dest);
+        let value_ty = self.rvalue(at, rvalue, dest_ty.as_ref());
+        if let (Some(dest_ty), Some(value_ty)) = (dest_ty, value_ty)
+            && dest_ty != value_ty
+        {
+            self.error(
+                at,
+                format!("assignment of type {value_ty:?} to a place of type {dest_ty:?}"),
+            );
+        }
+    }
+
+    /// The type of `rvalue`. A tuple takes the element names of `dest_ty`,
+    /// since the names are not part of what its operands carry.
+    fn rvalue(&mut self, at: &str, rvalue: &Rvalue, dest_ty: Option<&Ty>) -> Option<Ty> {
+        match rvalue {
+            Rvalue::Use(operand) | Rvalue::Unary(UnOp::Neg | UnOp::Not | UnOp::BitNot, operand) => {
+                self.operand(at, operand)
+            }
+            Rvalue::Borrow(_, place) => self.place(at, place),
+            Rvalue::Binary(op, left, right) => self.binary(at, *op, left, right),
+            Rvalue::Cast(_, operand, ty) => self.operand(at, operand).map(|_| ty.clone()),
+            Rvalue::Aggregate(AggregateKind::Tuple, operands) => {
+                let tys = self.operands(at, operands)?;
+                let names = match dest_ty {
+                    Some(Ty::Tuple(elems)) if elems.len() == tys.len() => {
+                        elems.iter().map(|e| e.name.clone()).collect()
+                    }
+                    _ => vec![None; tys.len()],
+                };
+                Some(Ty::Tuple(
+                    tys.into_iter()
+                        .zip(names)
+                        .map(|(ty, name)| mora_hir::TupleElem { name, ty })
+                        .collect(),
+                ))
+            }
+            Rvalue::Aggregate(AggregateKind::Struct(item), operands) => {
+                let tys = self.operands(at, operands)?;
+                let Signature::Struct(fields) = signature(self.db, *item) else {
+                    self.error(at, "aggregate of an item that is not a struct");
+                    return None;
+                };
+                if fields.len() != tys.len() {
+                    self.error(
+                        at,
+                        format!(
+                            "struct has {} fields but {} operands",
+                            fields.len(),
+                            tys.len()
+                        ),
+                    );
+                    return None;
+                }
+                let mut fine = true;
+                for (n, (field, ty)) in fields.iter().zip(&tys).enumerate() {
+                    if field.ty != *ty {
+                        self.error(
+                            at,
+                            format!(
+                                "operand for field {n} has type {ty:?}, the field has type {:?}",
+                                field.ty
+                            ),
+                        );
+                        fine = false;
+                    }
+                }
+                fine.then_some(Ty::Struct(*item))
+            }
+            Rvalue::Interpolate(pieces) => {
+                if self.std_loaded {
+                    self.error(at, "interpolation is not lowered once std is loaded");
+                }
+                let operands = pieces.iter().filter_map(|piece| match piece {
+                    InterpPiece::Operand(operand) => Some(operand),
+                    InterpPiece::Text(_) => None,
+                });
+                self.operands(at, operands).map(|_| Ty::String)
+            }
+        }
+    }
+
+    fn binary(&mut self, at: &str, op: BinOp, left: &Operand, right: &Operand) -> Option<Ty> {
+        let left = self.operand(at, left);
+        let right = self.operand(at, right);
+        let (left, right) = (left?, right?);
+        match op {
+            BinOp::Shl | BinOp::Shr | BinOp::UShr => {
+                if !is_integer(&right) {
+                    self.error(
+                        at,
+                        format!("shift amount of type {right:?} is not an integer"),
+                    );
+                    return None;
+                }
+                Some(left)
+            }
+            _ if left != right => {
+                self.error(
+                    at,
+                    format!("operands of {op:?} have types {left:?} and {right:?}"),
+                );
+                None
+            }
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                Some(Ty::Primitive(Primitive::Bool))
+            }
+            _ => Some(left),
+        }
+    }
+
+    // Terminators.
+
+    fn terminator(&mut self, at: &str, kind: &TerminatorKind) {
+        match kind {
+            TerminatorKind::Goto(target) => self.target(at, "goto", *target),
+            TerminatorKind::Return | TerminatorKind::Unreachable => {}
+            TerminatorKind::Switch {
+                discr,
+                targets,
+                otherwise,
+            } => {
+                let discr_ty = self.operand(at, discr);
+                if let Some(ty) = &discr_ty
+                    && *ty != Ty::Primitive(Primitive::Bool)
+                    && !is_integer(ty)
+                {
+                    self.error(
+                        at,
+                        format!("switch on a value that is not a bool or an integer: {ty:?}"),
+                    );
+                }
+                for (constant, target) in targets {
+                    if let Some(ty) = &discr_ty
+                        && const_ty(constant) != *ty
+                    {
+                        self.error(
+                                at,
+                                format!(
+                                    "switch constant {constant:?} does not have the type {ty:?} of the discriminant"
+                                ),
+                            );
+                    }
+                    self.target(at, "switch", *target);
+                }
+                self.target(at, "switch", *otherwise);
+            }
+            TerminatorKind::Call {
+                callee,
+                args,
+                dest,
+                next,
+            } => {
+                self.operands(at, args);
+                let dest_ty = dest.as_ref().and_then(|dest| self.place(at, dest));
+                if let Some(next) = next {
+                    self.target(at, "call", *next);
+                }
+                self.call(at, callee, args.len(), dest.is_some(), dest_ty);
+            }
+        }
+    }
+
+    fn call(
+        &mut self,
+        at: &str,
+        callee: &Callee,
+        args: usize,
+        has_dest: bool,
+        dest_ty: Option<Ty>,
+    ) {
+        let Some((params, ret)) = self.callee_shape(at, callee) else {
+            if matches!(callee, Callee::External(_)) {
+                if self.std_loaded {
+                    self.error(at, "external call once std is loaded");
+                }
+                if has_dest {
+                    self.error(at, "external call has a destination");
+                }
+            }
+            return;
+        };
+        if args != params {
+            self.error(
+                at,
+                format!("call passes {args} arguments but the callee takes {params}"),
+            );
+        }
+        if let Some(dest_ty) = dest_ty
+            && dest_ty != ret
+        {
+            self.error(
+                at,
+                format!("call destination has type {dest_ty:?} but the callee returns {ret:?}"),
+            );
+        }
+    }
+
+    /// How many arguments the callee takes and what it returns, or `None`
+    /// for an external callee or after reporting a callee that is not valid.
+    fn callee_shape(&mut self, at: &str, callee: &Callee) -> Option<(usize, Ty)> {
+        match callee {
+            Callee::Item(item) => match signature(self.db, *item) {
+                Signature::Function(function) => Some((
+                    function.params.len() + usize::from(self.has_receiver(*item)),
+                    function.ret.clone(),
+                )),
+                _ => {
+                    self.error(at, "callee item is not a function");
+                    None
+                }
+            },
+            Callee::Local(index) => {
+                let Some(target) = self.mir.bodies.get(*index) else {
+                    self.error(at, format!("no local function {index}"));
+                    return None;
+                };
+                let Some(ret) = target.locals.first() else {
+                    self.error(at, format!("local function {index} has no return slot"));
+                    return None;
+                };
+                let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = &ret.ty;
+                Some((target.params, ty.clone()))
+            }
+            Callee::Initializer(item, n) => {
+                let Signature::Struct(fields) = signature(self.db, *item) else {
+                    self.error(at, "initializer of an item that is not a struct");
+                    return None;
+                };
+                match fields.get(*n as usize) {
+                    Some(field) => Some((0, field.ty.clone())),
+                    None => {
+                        self.error(at, format!("no field {n} to initialize"));
+                        None
+                    }
+                }
+            }
+            Callee::External(_) => None,
+        }
+    }
+
+    /// Whether a call of the function passes a receiver before its
+    /// arguments: it is declared in a type and is not `static`.
+    fn has_receiver(&self, item: ItemId) -> bool {
+        let tree = item_tree(self.db, item.file);
+        let item = tree.item(item.item);
+        item.kind == ItemKind::Function && item.parent.is_some() && !item.is_static
+    }
+}
+
+/// The type of a constant.
+fn const_ty(constant: &Const) -> Ty {
+    match constant {
+        Const::Int(_, primitive) | Const::Real(_, primitive) => Ty::Primitive(*primitive),
+        Const::Bool(_) => Ty::Primitive(Primitive::Bool),
+        Const::Char(_) => Ty::Primitive(Primitive::Char),
+        Const::String(_) => Ty::String,
+        Const::Unit => Ty::UNIT,
+    }
+}
+
+/// Whether `ty` is one of the integer types.
+fn is_integer(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Primitive(
+            Primitive::Byte
+                | Primitive::SByte
+                | Primitive::Short
+                | Primitive::UShort
+                | Primitive::Int
+                | Primitive::UInt
+                | Primitive::Long
+                | Primitive::ULong
+                | Primitive::NInt
+                | Primitive::NUInt
+        )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use mora_hir::test_support::{TestDb, app, file_named};
+    use mora_hir::{ItemId, Primitive, TupleElem, Ty, item_tree};
+    use mora_span::{FileId, Span, TextRange, TextSize};
+
+    use super::{debug_validate, validate};
+    use crate::{
+        AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const,
+        InterpPiece, LocalDecl, LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue,
+        Statement, StatementKind, Terminator, TerminatorKind, UnOp,
+    };
+
+    const SOURCE: &str = "struct P {\n    public A: int = 1;\n    public B: bool;\n}\n\
+        Add(a: int, b: int): int { return a; }\n\
+        Nop() {}\n\
+        class C {\n    M(a: int): int { return a; }\n    static S(a: int): int { return a; }\n}\n";
+
+    /// The items of [`SOURCE`].
+    struct Fx {
+        db: TestDb,
+        p: ItemId,
+        add: ItemId,
+        nop: ItemId,
+        method: ItemId,
+        static_method: ItemId,
+    }
+
+    fn fx() -> Fx {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", SOURCE)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let find = |name: &str| {
+            let (item, _) = tree
+                .items()
+                .find(|(_, item)| item.name == name)
+                .expect("the item");
+            ItemId {
+                project,
+                file,
+                item,
+            }
+        };
+        let (p, add, nop, method, static_method) =
+            (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
+        Fx {
+            db,
+            p,
+            add,
+            nop,
+            method,
+            static_method,
+        }
+    }
+
+    fn span() -> Span {
+        Span::new(FileId::new(0), TextRange::empty(TextSize::new(0)))
+    }
+
+    fn int() -> Ty {
+        Ty::Primitive(Primitive::Int)
+    }
+
+    fn boolean() -> Ty {
+        Ty::Primitive(Primitive::Bool)
+    }
+
+    fn val(ty: Ty) -> LocalDecl {
+        LocalDecl {
+            ty: LocalTy::Value(ty),
+            mutable: true,
+            source: None,
+        }
+    }
+
+    fn borrow(ty: Ty) -> LocalDecl {
+        LocalDecl {
+            ty: LocalTy::Borrow(BorrowMode::In, ty),
+            mutable: false,
+            source: None,
+        }
+    }
+
+    fn place(local: u32) -> Place {
+        Place::local(LocalId(local))
+    }
+
+    fn proj(local: u32, projections: Vec<Projection>) -> Place {
+        Place {
+            local: LocalId(local),
+            projections,
+        }
+    }
+
+    fn copy(local: u32) -> Operand {
+        Operand::Copy(place(local))
+    }
+
+    fn int_const(n: i128) -> Operand {
+        Operand::Const(Const::Int(n, Primitive::Int))
+    }
+
+    fn assign(dest: Place, rvalue: Rvalue) -> Statement {
+        Statement {
+            kind: StatementKind::Assign(dest, rvalue),
+            span: span(),
+        }
+    }
+
+    fn stmt(kind: StatementKind) -> Statement {
+        Statement { kind, span: span() }
+    }
+
+    fn term(kind: TerminatorKind) -> Terminator {
+        Terminator { kind, span: span() }
+    }
+
+    fn block(statements: Vec<Statement>, kind: TerminatorKind) -> Block {
+        Block {
+            statements,
+            terminator: term(kind),
+        }
+    }
+
+    fn body(name: &str, params: usize, locals: Vec<LocalDecl>, blocks: Vec<Block>) -> Body {
+        Body {
+            name: name.into(),
+            params,
+            locals,
+            blocks,
+            span: span(),
+        }
+    }
+
+    /// `_0: int`, `_1: int` (parameter), `_2: int`, `_3: bool`, one block.
+    fn simple(statements: Vec<Statement>, kind: TerminatorKind) -> Mir {
+        let locals = vec![val(int()), val(int()), val(int()), val(boolean())];
+        Mir {
+            bodies: vec![body("F", 1, locals, vec![block(statements, kind)])],
+        }
+    }
+
+    fn with_stmt(statement: Statement) -> Mir {
+        simple(vec![statement], TerminatorKind::Return)
+    }
+
+    fn call(callee: Callee, args: Vec<Operand>, dest: Option<Place>) -> Mir {
+        simple(
+            vec![],
+            TerminatorKind::Call {
+                callee,
+                args,
+                dest,
+                next: Some(BlockId(1)),
+            },
+        )
+        .with_block(block(vec![], TerminatorKind::Return))
+    }
+
+    impl Mir {
+        fn with_block(mut self, extra: Block) -> Mir {
+            self.bodies[0].blocks.push(extra);
+            self
+        }
+    }
+
+    fn errors(fx: &Fx, mir: &Mir, std_loaded: bool) -> Vec<String> {
+        validate(&fx.db, mir, std_loaded).expect_err("the body is invalid")
+    }
+
+    fn rejects(fx: &Fx, mir: &Mir, std_loaded: bool, needle: &str) {
+        let found = errors(fx, mir, std_loaded);
+        assert!(
+            found.iter().any(|e| e.contains(needle)),
+            "no error contains {needle:?}: {found:?}"
+        );
+    }
+
+    fn missing_target() -> Mir {
+        simple(vec![], TerminatorKind::Goto(BlockId(5)))
+    }
+
+    fn type_mismatch() -> Mir {
+        with_stmt(assign(
+            place(2),
+            Rvalue::Use(Operand::Const(Const::Bool(true))),
+        ))
+    }
+
+    fn switch_on_struct(fx: &Fx) -> Mir {
+        let locals = vec![val(int()), val(Ty::Struct(fx.p))];
+        Mir {
+            bodies: vec![body(
+                "F",
+                0,
+                locals,
+                vec![
+                    block(
+                        vec![],
+                        TerminatorKind::Switch {
+                            discr: copy(1),
+                            targets: vec![],
+                            otherwise: BlockId(1),
+                        },
+                    ),
+                    block(vec![], TerminatorKind::Return),
+                ],
+            )],
+        }
+    }
+
+    fn wrong_argument_count(fx: &Fx) -> Mir {
+        call(Callee::Item(fx.add), vec![int_const(1)], Some(place(2)))
+    }
+
+    fn deref_of_value() -> Mir {
+        with_stmt(assign(
+            place(2),
+            Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Deref]))),
+        ))
+    }
+
+    fn field_out_of_range(fx: &Fx) -> Mir {
+        let locals = vec![val(int()), val(Ty::Struct(fx.p)), val(int())];
+        Mir {
+            bodies: vec![body(
+                "F",
+                0,
+                locals,
+                vec![block(
+                    vec![assign(
+                        place(2),
+                        Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Field(2)]))),
+                    )],
+                    TerminatorKind::Return,
+                )],
+            )],
+        }
+    }
+
+    fn external() -> Mir {
+        call(
+            Callee::External(vec!["Std".into(), "Print".into()]),
+            vec![],
+            None,
+        )
+    }
+
+    fn interpolate() -> Mir {
+        with_stmt(assign(
+            place(2),
+            Rvalue::Interpolate(vec![InterpPiece::Text("x".into())]),
+        ))
+    }
+
+    fn field_on_borrow(fx: &Fx) -> Mir {
+        let locals = vec![val(int()), borrow(Ty::Struct(fx.p)), val(int())];
+        Mir {
+            bodies: vec![body(
+                "F",
+                1,
+                locals,
+                vec![block(
+                    vec![assign(
+                        place(2),
+                        Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Field(0)]))),
+                    )],
+                    TerminatorKind::Return,
+                )],
+            )],
+        }
+    }
+
+    #[test]
+    fn accepts_a_valid_body() {
+        let fx = fx();
+        let mir = simple(
+            vec![
+                stmt(StatementKind::StorageLive(LocalId(2))),
+                assign(place(2), Rvalue::Use(copy(1))),
+                assign(place(2), Rvalue::Binary(BinOp::Add, copy(1), int_const(2))),
+                assign(place(3), Rvalue::Binary(BinOp::Lt, copy(1), copy(2))),
+                assign(place(0), Rvalue::Use(copy(2))),
+                stmt(StatementKind::StorageDead(LocalId(2))),
+                stmt(StatementKind::Nop),
+            ],
+            TerminatorKind::Return,
+        );
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        debug_validate(&fx.db, &mir, true);
+        assert_eq!(validate(&fx.db, &Mir { bodies: vec![] }, true), Ok(()));
+    }
+
+    #[test]
+    fn rejects_missing_target() {
+        let fx = fx();
+        let found = errors(&fx, &missing_target(), true);
+        assert_eq!(
+            found,
+            vec!["fn F bb0[term]: goto targets missing block bb5"]
+        );
+    }
+
+    #[test]
+    fn rejects_missing_target_of_switch_and_call() {
+        let fx = fx();
+        let switch = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: copy(3),
+                targets: vec![(Const::Bool(true), BlockId(7))],
+                otherwise: BlockId(8),
+            },
+        );
+        let found = errors(&fx, &switch, true);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains("bb7") && found[1].contains("bb8"));
+        let call = simple(
+            vec![],
+            TerminatorKind::Call {
+                callee: Callee::Item(fx.nop),
+                args: vec![],
+                dest: None,
+                next: Some(BlockId(9)),
+            },
+        );
+        rejects(&fx, &call, true, "missing block bb9");
+    }
+
+    #[test]
+    fn rejects_missing_local_in_place() {
+        let fx = fx();
+        let mir = with_stmt(assign(place(2), Rvalue::Use(copy(9))));
+        let found = errors(&fx, &mir, true);
+        assert_eq!(found, vec!["fn F bb0[0]: no local _9"]);
+    }
+
+    #[test]
+    fn rejects_type_mismatch_in_assign() {
+        let fx = fx();
+        let found = errors(&fx, &type_mismatch(), true);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].starts_with("fn F bb0[0]: "), "{found:?}");
+        assert!(found[0].contains("type"), "{found:?}");
+    }
+
+    #[test]
+    fn rejects_non_bool_switch_on_struct() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &switch_on_struct(&fx),
+            true,
+            "switch on a value that is not",
+        );
+    }
+
+    #[test]
+    fn rejects_switch_constant_of_the_wrong_type() {
+        let fx = fx();
+        let mir = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: copy(1),
+                targets: vec![(Const::Bool(true), BlockId(0))],
+                otherwise: BlockId(0),
+            },
+        );
+        rejects(&fx, &mir, true, "switch constant");
+    }
+
+    #[test]
+    fn accepts_switch_on_bool_and_integer() {
+        let fx = fx();
+        let on_bool = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: copy(3),
+                targets: vec![(Const::Bool(true), BlockId(0))],
+                otherwise: BlockId(0),
+            },
+        );
+        assert_eq!(validate(&fx.db, &on_bool, true), Ok(()));
+        let on_int = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: copy(1),
+                targets: vec![(Const::Int(1, Primitive::Int), BlockId(0))],
+                otherwise: BlockId(0),
+            },
+        );
+        assert_eq!(validate(&fx.db, &on_int, true), Ok(()));
+        let on_char = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: Operand::Const(Const::Char('a')),
+                targets: vec![],
+                otherwise: BlockId(0),
+            },
+        );
+        rejects(&fx, &on_char, true, "switch on a value that is not");
+    }
+
+    #[test]
+    fn accepts_switch_on_every_integer_type() {
+        let fx = fx();
+        for primitive in [
+            Primitive::Byte,
+            Primitive::SByte,
+            Primitive::Short,
+            Primitive::UShort,
+            Primitive::Int,
+            Primitive::UInt,
+            Primitive::Long,
+            Primitive::ULong,
+            Primitive::NInt,
+            Primitive::NUInt,
+        ] {
+            let mir = simple(
+                vec![],
+                TerminatorKind::Switch {
+                    discr: Operand::Const(Const::Int(0, primitive)),
+                    targets: vec![],
+                    otherwise: BlockId(0),
+                },
+            );
+            assert_eq!(validate(&fx.db, &mir, true), Ok(()), "{primitive:?}");
+        }
+        for primitive in [Primitive::Float, Primitive::Double, Primitive::Char] {
+            let mir = simple(
+                vec![],
+                TerminatorKind::Switch {
+                    discr: Operand::Const(Const::Real(0, primitive)),
+                    targets: vec![],
+                    otherwise: BlockId(0),
+                },
+            );
+            assert!(validate(&fx.db, &mir, true).is_err(), "{primitive:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_argument_count() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &wrong_argument_count(&fx),
+            true,
+            "call passes 1 arguments but the callee takes 2",
+        );
+    }
+
+    #[test]
+    fn accepts_calls_with_matching_counts() {
+        let fx = fx();
+        let add = call(
+            Callee::Item(fx.add),
+            vec![int_const(1), int_const(2)],
+            Some(place(2)),
+        );
+        assert_eq!(validate(&fx.db, &add, true), Ok(()));
+        let nop = call(Callee::Item(fx.nop), vec![], None);
+        assert_eq!(validate(&fx.db, &nop, true), Ok(()));
+        // A call that returns int may drop its result.
+        let dropped = call(Callee::Item(fx.add), vec![int_const(1), int_const(2)], None);
+        assert_eq!(validate(&fx.db, &dropped, true), Ok(()));
+    }
+
+    #[test]
+    fn a_method_takes_its_receiver_and_a_static_method_does_not() {
+        let fx = fx();
+        let one = vec![int_const(1)];
+        let two = vec![int_const(1), int_const(2)];
+        rejects(
+            &fx,
+            &call(Callee::Item(fx.method), one.clone(), Some(place(2))),
+            true,
+            "takes 2",
+        );
+        assert_eq!(
+            validate(
+                &fx.db,
+                &call(Callee::Item(fx.method), two.clone(), Some(place(2))),
+                true
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate(
+                &fx.db,
+                &call(Callee::Item(fx.static_method), one, Some(place(2))),
+                true
+            ),
+            Ok(())
+        );
+        rejects(
+            &fx,
+            &call(Callee::Item(fx.static_method), two, Some(place(2))),
+            true,
+            "takes 1",
+        );
+    }
+
+    #[test]
+    fn rejects_call_of_a_struct_item() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &call(Callee::Item(fx.p), vec![], None),
+            true,
+            "is not a function",
+        );
+    }
+
+    #[test]
+    fn rejects_call_destination_of_the_wrong_type() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &call(
+                Callee::Item(fx.add),
+                vec![int_const(1), int_const(2)],
+                Some(place(3)),
+            ),
+            true,
+            "returns",
+        );
+        rejects(
+            &fx,
+            &call(Callee::Item(fx.nop), vec![], Some(place(2))),
+            true,
+            "returns",
+        );
+    }
+
+    #[test]
+    fn checks_local_calls() {
+        let fx = fx();
+        let callee = body(
+            "F.Inner",
+            2,
+            vec![val(boolean()), val(int()), val(int())],
+            vec![block(vec![], TerminatorKind::Return)],
+        );
+        let mut mir = call(
+            Callee::Local(1),
+            vec![int_const(1), int_const(2)],
+            Some(place(3)),
+        );
+        mir.bodies.push(callee);
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        mir.bodies[0].blocks[0].terminator = term(TerminatorKind::Call {
+            callee: Callee::Local(1),
+            args: vec![int_const(1)],
+            dest: Some(place(2)),
+            next: Some(BlockId(1)),
+        });
+        let found = errors(&fx, &mir, true);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains("passes 1 arguments but the callee takes 2"));
+        assert!(found[1].contains("returns"));
+        mir.bodies[0].blocks[0].terminator = term(TerminatorKind::Call {
+            callee: Callee::Local(4),
+            args: vec![],
+            dest: None,
+            next: None,
+        });
+        rejects(&fx, &mir, true, "no local function 4");
+    }
+
+    #[test]
+    fn checks_initializer_calls() {
+        let fx = fx();
+        assert_eq!(
+            validate(
+                &fx.db,
+                &call(Callee::Initializer(fx.p, 0), vec![], Some(place(2))),
+                true
+            ),
+            Ok(())
+        );
+        rejects(
+            &fx,
+            &call(
+                Callee::Initializer(fx.p, 0),
+                vec![int_const(1)],
+                Some(place(2)),
+            ),
+            true,
+            "takes 0",
+        );
+        rejects(
+            &fx,
+            &call(Callee::Initializer(fx.p, 0), vec![], Some(place(3))),
+            true,
+            "returns",
+        );
+        rejects(
+            &fx,
+            &call(Callee::Initializer(fx.p, 5), vec![], None),
+            true,
+            "no field 5",
+        );
+        rejects(
+            &fx,
+            &call(Callee::Initializer(fx.nop, 0), vec![], None),
+            true,
+            "is not a struct",
+        );
+    }
+
+    #[test]
+    fn rejects_deref_of_value_local() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &deref_of_value(),
+            true,
+            "dereference of a value local _1",
+        );
+    }
+
+    #[test]
+    fn rejects_field_out_of_range() {
+        let fx = fx();
+        rejects(&fx, &field_out_of_range(&fx), true, "field 2 out of range");
+    }
+
+    #[test]
+    fn rejects_field_on_borrow_without_deref() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &field_on_borrow(&fx),
+            true,
+            "field of a borrow _1 without a dereference",
+        );
+        // With the dereference it is fine.
+        let mut ok = field_on_borrow(&fx);
+        ok.bodies[0].blocks[0].statements = vec![assign(
+            place(2),
+            Rvalue::Use(Operand::Copy(proj(
+                1,
+                vec![Projection::Deref, Projection::Field(0)],
+            ))),
+        )];
+        assert_eq!(validate(&fx.db, &ok, true), Ok(()));
+    }
+
+    #[test]
+    fn rejects_field_of_a_non_aggregate_and_of_a_non_struct_item() {
+        let fx = fx();
+        let mir = with_stmt(assign(
+            place(2),
+            Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Field(0)]))),
+        ));
+        rejects(
+            &fx,
+            &mir,
+            true,
+            "field 0 of a type that is not a struct or a tuple",
+        );
+        let locals = vec![val(int()), val(Ty::Struct(fx.nop)), val(int())];
+        let mir = Mir {
+            bodies: vec![body(
+                "F",
+                0,
+                locals,
+                vec![block(
+                    vec![assign(
+                        place(2),
+                        Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Field(0)]))),
+                    )],
+                    TerminatorKind::Return,
+                )],
+            )],
+        };
+        rejects(&fx, &mir, true, "whose item is not a struct");
+    }
+
+    #[test]
+    fn tuple_fields_are_checked_and_typed() {
+        let fx = fx();
+        let tuple = Ty::Tuple(vec![
+            TupleElem {
+                name: None,
+                ty: int(),
+            },
+            TupleElem {
+                name: Some("Ok".into()),
+                ty: boolean(),
+            },
+        ]);
+        let locals = vec![val(int()), val(tuple), val(boolean())];
+        let mk = |n: u32, dest: u32| Mir {
+            bodies: vec![body(
+                "F",
+                0,
+                locals.clone(),
+                vec![block(
+                    vec![assign(
+                        place(dest),
+                        Rvalue::Use(Operand::Copy(proj(1, vec![Projection::Field(n)]))),
+                    )],
+                    TerminatorKind::Return,
+                )],
+            )],
+        };
+        assert_eq!(validate(&fx.db, &mk(1, 2), true), Ok(()));
+        assert_eq!(validate(&fx.db, &mk(0, 0), true), Ok(()));
+        rejects(&fx, &mk(2, 2), true, "field 2 out of range of a tuple of 2");
+        assert!(validate(&fx.db, &mk(0, 2), true).is_err());
+    }
+
+    #[test]
+    fn rejects_external_when_std_loaded() {
+        let fx = fx();
+        rejects(&fx, &external(), true, "external call");
+        assert_eq!(validate(&fx.db, &external(), false), Ok(()));
+    }
+
+    #[test]
+    fn rejects_interpolate_when_std_loaded() {
+        let fx = fx();
+        rejects(&fx, &interpolate_into_string(), true, "interpolation");
+        assert_eq!(validate(&fx.db, &interpolate_into_string(), false), Ok(()));
+        // Once std is loaded the rvalue is rejected whatever its type.
+        rejects(&fx, &interpolate(), true, "interpolation");
+    }
+
+    fn interpolate_into_string() -> Mir {
+        let mut mir = interpolate();
+        mir.bodies[0].locals[2] = val(Ty::String);
+        mir
+    }
+
+    #[test]
+    fn interpolate_gives_string_from_operands_of_any_type() {
+        let fx = fx();
+        let mut mir = with_stmt(assign(
+            place(2),
+            Rvalue::Interpolate(vec![
+                InterpPiece::Text("n=".into()),
+                InterpPiece::Operand(copy(1)),
+                InterpPiece::Operand(copy(3)),
+            ]),
+        ));
+        mir.bodies[0].locals[2] = val(Ty::String);
+        assert_eq!(validate(&fx.db, &mir, false), Ok(()));
+        // An int destination does not hold a string.
+        mir.bodies[0].locals[2] = val(int());
+        assert!(validate(&fx.db, &mir, false).is_err());
+        // Bad operands inside are reported.
+        let bad = with_stmt(assign(
+            place(2),
+            Rvalue::Interpolate(vec![InterpPiece::Operand(copy(9))]),
+        ));
+        rejects(&fx, &bad, false, "no local _9");
+    }
+
+    #[test]
+    fn rejects_external_call_with_dest() {
+        let fx = fx();
+        let mir = call(
+            Callee::External(vec!["Std".into(), "Print".into()]),
+            vec![],
+            Some(place(2)),
+        );
+        rejects(&fx, &mir, false, "external call has a destination");
+        let without = call(Callee::External(vec!["Std".into()]), vec![], None);
+        assert_eq!(validate(&fx.db, &without, false), Ok(()));
+    }
+
+    #[test]
+    fn storage_statements_name_non_parameter_locals() {
+        let fx = fx();
+        for local in [0, 1] {
+            for kind in [StatementKind::StorageLive, StatementKind::StorageDead] {
+                let mir = with_stmt(stmt(kind(LocalId(local))));
+                rejects(&fx, &mir, true, "storage statement names");
+            }
+        }
+        for kind in [StatementKind::StorageLive, StatementKind::StorageDead] {
+            assert_eq!(
+                validate(&fx.db, &with_stmt(stmt(kind(LocalId(2)))), true),
+                Ok(())
+            );
+            rejects(&fx, &with_stmt(stmt(kind(LocalId(9)))), true, "no local _9");
+        }
+    }
+
+    #[test]
+    fn checks_the_shape_of_a_body() {
+        let fx = fx();
+        let no_locals = Mir {
+            bodies: vec![body(
+                "F",
+                0,
+                vec![],
+                vec![block(vec![], TerminatorKind::Return)],
+            )],
+        };
+        rejects(&fx, &no_locals, true, "no return slot");
+        let too_many = Mir {
+            bodies: vec![body(
+                "F",
+                2,
+                vec![val(int()), val(int())],
+                vec![block(vec![], TerminatorKind::Return)],
+            )],
+        };
+        rejects(
+            &fx,
+            &too_many,
+            true,
+            "2 parameters need 3 locals but the body has 2",
+        );
+        let no_blocks = Mir {
+            bodies: vec![body("F", 0, vec![val(int())], vec![])],
+        };
+        rejects(&fx, &no_blocks, true, "no blocks");
+    }
+
+    #[test]
+    fn binary_operators_type_their_results() {
+        let fx = fx();
+        for op in [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::Div,
+            BinOp::Rem,
+            BinOp::WrappingAdd,
+            BinOp::WrappingSub,
+            BinOp::WrappingMul,
+            BinOp::BitAnd,
+            BinOp::BitOr,
+            BinOp::BitXor,
+        ] {
+            let ok = with_stmt(assign(place(2), Rvalue::Binary(op, copy(1), int_const(1))));
+            assert_eq!(validate(&fx.db, &ok, true), Ok(()), "{op:?}");
+            let into_bool = with_stmt(assign(place(3), Rvalue::Binary(op, copy(1), int_const(1))));
+            assert!(validate(&fx.db, &into_bool, true).is_err(), "{op:?}");
+            let unequal = with_stmt(assign(
+                place(2),
+                Rvalue::Binary(op, copy(1), Operand::Const(Const::Bool(true))),
+            ));
+            rejects(&fx, &unequal, true, "operands of");
+        }
+        for op in [
+            BinOp::Eq,
+            BinOp::Ne,
+            BinOp::Lt,
+            BinOp::Le,
+            BinOp::Gt,
+            BinOp::Ge,
+        ] {
+            let ok = with_stmt(assign(place(3), Rvalue::Binary(op, copy(1), int_const(1))));
+            assert_eq!(validate(&fx.db, &ok, true), Ok(()), "{op:?}");
+            let into_int = with_stmt(assign(place(2), Rvalue::Binary(op, copy(1), int_const(1))));
+            assert!(validate(&fx.db, &into_int, true).is_err(), "{op:?}");
+            let unequal = with_stmt(assign(
+                place(3),
+                Rvalue::Binary(op, copy(1), Operand::Const(Const::Bool(true))),
+            ));
+            rejects(&fx, &unequal, true, "operands of");
+        }
+    }
+
+    #[test]
+    fn shifts_take_any_integer_on_the_right() {
+        let fx = fx();
+        let long = Operand::Const(Const::Int(1, Primitive::Long));
+        for op in [BinOp::Shl, BinOp::Shr, BinOp::UShr] {
+            let ok = with_stmt(assign(place(2), Rvalue::Binary(op, copy(1), long.clone())));
+            assert_eq!(validate(&fx.db, &ok, true), Ok(()), "{op:?}");
+            // The result has the type of the left operand.
+            let wrong = with_stmt(assign(place(3), Rvalue::Binary(op, copy(1), long.clone())));
+            assert!(validate(&fx.db, &wrong, true).is_err(), "{op:?}");
+            let not_integer = with_stmt(assign(
+                place(2),
+                Rvalue::Binary(op, copy(1), Operand::Const(Const::Bool(true))),
+            ));
+            rejects(&fx, &not_integer, true, "shift amount");
+        }
+    }
+
+    #[test]
+    fn unary_cast_borrow_and_use_are_typed() {
+        let fx = fx();
+        for op in [UnOp::Neg, UnOp::BitNot] {
+            let ok = with_stmt(assign(place(2), Rvalue::Unary(op, copy(1))));
+            assert_eq!(validate(&fx.db, &ok, true), Ok(()));
+            let bad = with_stmt(assign(place(3), Rvalue::Unary(op, copy(1))));
+            assert!(validate(&fx.db, &bad, true).is_err());
+        }
+        let not = with_stmt(assign(place(3), Rvalue::Unary(UnOp::Not, copy(3))));
+        assert_eq!(validate(&fx.db, &not, true), Ok(()));
+        let cast = |dest: u32, ty: Ty| {
+            with_stmt(assign(
+                place(dest),
+                Rvalue::Cast(CastKind::Numeric, copy(1), ty),
+            ))
+        };
+        let long = Ty::Primitive(Primitive::Long);
+        let mut ok = cast(2, long.clone());
+        ok.bodies[0].locals[2] = val(long);
+        assert_eq!(validate(&fx.db, &ok, true), Ok(()));
+        assert!(validate(&fx.db, &cast(2, boolean()), true).is_err());
+        let moved = with_stmt(assign(place(2), Rvalue::Use(Operand::Move(place(1)))));
+        assert_eq!(validate(&fx.db, &moved, true), Ok(()));
+        let borrowed = with_stmt(assign(place(2), Rvalue::Borrow(BorrowMode::In, place(1))));
+        assert_eq!(validate(&fx.db, &borrowed, true), Ok(()));
+        let wrong = with_stmt(assign(place(3), Rvalue::Borrow(BorrowMode::In, place(1))));
+        assert!(validate(&fx.db, &wrong, true).is_err());
+        let missing = with_stmt(assign(place(2), Rvalue::Borrow(BorrowMode::In, place(9))));
+        rejects(&fx, &missing, true, "no local _9");
+        let missing_dest = with_stmt(assign(place(9), Rvalue::Use(copy(1))));
+        rejects(&fx, &missing_dest, true, "no local _9");
+        let bad_cast = with_stmt(assign(
+            place(2),
+            Rvalue::Cast(CastKind::Implicit, copy(9), int()),
+        ));
+        rejects(&fx, &bad_cast, true, "no local _9");
+        let bad_unary = with_stmt(assign(place(2), Rvalue::Unary(UnOp::Neg, copy(9))));
+        rejects(&fx, &bad_unary, true, "no local _9");
+    }
+
+    #[test]
+    fn aggregates_are_checked_against_their_parts() {
+        let fx = fx();
+        let pair = Ty::Tuple(vec![
+            TupleElem {
+                name: Some("X".into()),
+                ty: int(),
+            },
+            TupleElem {
+                name: None,
+                ty: boolean(),
+            },
+        ]);
+        let tuple = |dest_ty: Ty, ops: Vec<Operand>| {
+            let mut mir = with_stmt(assign(
+                place(2),
+                Rvalue::Aggregate(AggregateKind::Tuple, ops),
+            ));
+            mir.bodies[0].locals[2] = val(dest_ty);
+            mir
+        };
+        assert_eq!(
+            validate(&fx.db, &tuple(pair.clone(), vec![copy(1), copy(3)]), true),
+            Ok(())
+        );
+        assert!(validate(&fx.db, &tuple(pair.clone(), vec![copy(3), copy(1)]), true).is_err());
+        assert!(validate(&fx.db, &tuple(pair.clone(), vec![copy(1)]), true).is_err());
+        // Extra operands are not dropped to fit a shorter destination.
+        let single = Ty::Tuple(vec![TupleElem {
+            name: Some("X".into()),
+            ty: int(),
+        }]);
+        assert!(validate(&fx.db, &tuple(single, vec![copy(1), copy(3)]), true).is_err());
+        assert!(validate(&fx.db, &tuple(int(), vec![copy(1), copy(3)]), true).is_err());
+        assert_eq!(validate(&fx.db, &tuple(Ty::UNIT, vec![]), true), Ok(()));
+        rejects(
+            &fx,
+            &tuple(pair, vec![copy(9), copy(3)]),
+            true,
+            "no local _9",
+        );
+
+        let make = |dest_ty: Ty, ops: Vec<Operand>, item: ItemId| {
+            let mut mir = with_stmt(assign(
+                place(2),
+                Rvalue::Aggregate(AggregateKind::Struct(item), ops),
+            ));
+            mir.bodies[0].locals[2] = val(dest_ty);
+            mir
+        };
+        let p = Ty::Struct(fx.p);
+        assert_eq!(
+            validate(&fx.db, &make(p.clone(), vec![copy(1), copy(3)], fx.p), true),
+            Ok(())
+        );
+        rejects(
+            &fx,
+            &make(p.clone(), vec![copy(1)], fx.p),
+            true,
+            "2 fields but 1 operands",
+        );
+        rejects(
+            &fx,
+            &make(p.clone(), vec![copy(3), copy(3)], fx.p),
+            true,
+            "field 0",
+        );
+        assert!(validate(&fx.db, &make(int(), vec![copy(1), copy(3)], fx.p), true).is_err());
+        rejects(&fx, &make(p, vec![], fx.nop), true, "is not a struct");
+    }
+
+    #[test]
+    fn reports_every_problem_in_block_then_statement_order() {
+        let fx = fx();
+        let locals = vec![val(int()), val(int()), val(boolean())];
+        let mir = Mir {
+            bodies: vec![
+                body(
+                    "App.Max",
+                    1,
+                    locals.clone(),
+                    vec![
+                        block(
+                            vec![
+                                assign(place(2), Rvalue::Use(int_const(1))),
+                                assign(place(2), Rvalue::Use(int_const(1))),
+                            ],
+                            TerminatorKind::Goto(BlockId(4)),
+                        ),
+                        block(vec![], TerminatorKind::Return),
+                        block(
+                            vec![
+                                stmt(StatementKind::Nop),
+                                assign(place(2), Rvalue::Use(int_const(1))),
+                            ],
+                            TerminatorKind::Unreachable,
+                        ),
+                    ],
+                ),
+                body(
+                    "App.Other",
+                    0,
+                    vec![val(int())],
+                    vec![block(vec![], TerminatorKind::Goto(BlockId(3)))],
+                ),
+            ],
+        };
+        let found = errors(&fx, &mir, true);
+        assert_eq!(found.len(), 5, "{found:?}");
+        assert!(found[0].starts_with("fn App.Max bb0[0]: "));
+        assert!(found[1].starts_with("fn App.Max bb0[1]: "));
+        assert!(found[2].starts_with("fn App.Max bb0[term]: "));
+        assert!(found[3].starts_with("fn App.Max bb2[1]: "));
+        assert!(found[4].starts_with("fn App.Other bb0[term]: "));
+        assert_eq!(found, errors(&fx, &mir, true));
+    }
+
+    #[test]
+    fn a_bad_place_is_reported_once_not_twice() {
+        let fx = fx();
+        let mir = with_stmt(assign(
+            place(2),
+            Rvalue::Binary(BinOp::Add, copy(9), copy(8)),
+        ));
+        let found = errors(&fx, &mir, true);
+        assert_eq!(found.len(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn no_bad_body_panics() {
+        let fx = fx();
+        let bad: Vec<(Mir, bool)> = vec![
+            (missing_target(), true),
+            (type_mismatch(), true),
+            (switch_on_struct(&fx), true),
+            (wrong_argument_count(&fx), true),
+            (deref_of_value(), true),
+            (field_out_of_range(&fx), true),
+            (external(), true),
+            (interpolate(), true),
+            (field_on_borrow(&fx), true),
+            (
+                call(Callee::External(vec![]), vec![], Some(place(2))),
+                false,
+            ),
+            (with_stmt(assign(place(7), Rvalue::Use(copy(8)))), true),
+            (
+                with_stmt(assign(
+                    place(2),
+                    Rvalue::Use(Operand::Copy(proj(
+                        1,
+                        vec![Projection::Deref, Projection::Deref],
+                    ))),
+                )),
+                true,
+            ),
+            (
+                with_stmt(assign(
+                    place(2),
+                    Rvalue::Use(Operand::Copy(proj(
+                        1,
+                        vec![Projection::Field(0), Projection::Field(0)],
+                    ))),
+                )),
+                true,
+            ),
+            (
+                call(Callee::Local(99), vec![copy(77)], Some(place(66))),
+                true,
+            ),
+            (call(Callee::Initializer(fx.add, 3), vec![], None), true),
+            (
+                with_stmt(stmt(StatementKind::StorageLive(LocalId(40)))),
+                true,
+            ),
+            (
+                Mir {
+                    bodies: vec![body("E", 3, vec![], vec![])],
+                },
+                true,
+            ),
+        ];
+        for (index, (mir, std_loaded)) in bad.iter().enumerate() {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validate(&fx.db, mir, *std_loaded)
+            }));
+            let result = result.unwrap_or_else(|_| panic!("body {index} made validate panic"));
+            assert!(result.is_err(), "body {index} was accepted");
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "invalid MIR")]
+    fn debug_validate_panics_on_a_bad_body() {
+        let fx = fx();
+        debug_validate(&fx.db, &missing_target(), true);
+    }
+}
