@@ -906,6 +906,8 @@ let second = names.Second();
 
 As in §4.7. A type may declare `const` and `static` members, and `static class` declares a type with only static members.
 
+A `static` member belongs to the type, not to a value of it, so it has no `this`. Its body, and the body of a local function or lambda inside it, MUST NOT write `this` and MUST NOT name an instance field, getter or method of the type, which would read `this` implicitly. Each is error `MR0149`, without a fix: the member either takes the value as a parameter or stops being `static`, and only the author knows which (D-144).
+
 ### 6.11 Attributes
 
 Attributes are compile-time only (D-10). An attribute is `@` and a name, with arguments in parentheses when it takes any: `@Json`, `@Cfg(Os = "linux")`. Each attribute has its own `@`, and several may precede one declaration or statement: `@Equatable @Comparable struct Money`. The `[` that starts a collection, a list pattern or a capture list never starts an attribute (D-94). An attribute names a macro (§9), is a helper attribute that a macro reads on the declaration it processes (§9.9), or is one of these built-in attributes:
@@ -3403,6 +3405,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-141 | An assignment is accepted only where nothing uses its value: an expression statement, a `for` update, an arm of a `match` statement, the whole expression body of a function, constructor, destructor, setter, local function or lambda whose result is `()` (for a lambda, only where a function type is expected), and the branches of a conditional in such a place; used as a value, including in an interpolation hole, it is `MR0185`, with a fix that splits `x = y = 5;` into `y = 5; x = y;` where a statement fits before it, and `x++` stays allowed as a value; a `ref` parameter cannot have a default value (`MR0209`), with a fix that removes the default and one that removes `ref` | user | 7.11, 10.3 |
 | D-142 | In `new T { ... }`, the written field values run left to right, then the initializers of the omitted fields run in declaration order | user | 6.9 |
 | D-143 | In memberwise `new T { ... }`, each name is an instance field of `T` and is assigned once: a name that is no member, a getter, a `static` field or a constant is `MR0147`, suggesting the closest unassigned field, and a repeated field is `MR0148`, with a fix that removes the repetition; `new T(args) { ... }` runs a constructor and assigns the members afterwards, so these rules do not apply to it | author | 6.9 |
+| D-144 | A static member has no `this`: its body, and a local function or lambda inside it, that writes `this` or names an instance field, getter or method of the type is `MR0149`, with no fix, because passing the value as a parameter and dropping `static` both keep the program meaningful | author | 6.10 |
 
 ## 24. Open questions
 

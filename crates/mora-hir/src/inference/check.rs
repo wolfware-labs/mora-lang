@@ -1,6 +1,7 @@
 //! The walk over a body that gives each expression and local its type.
 
 mod call;
+mod static_member;
 
 use std::collections::{HashMap, HashSet};
 
@@ -174,6 +175,7 @@ pub(super) fn infer_body(
         );
         check.function_body(root, expected, statement);
     }
+    check.static_member_uses(owner);
     Inference {
         exprs: check.exprs,
         locals: check.locals,

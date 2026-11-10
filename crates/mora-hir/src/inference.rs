@@ -208,6 +208,16 @@ pub(crate) enum NotAField {
     Constant,
 }
 
+/// What a static member uses that only a value of its type has (`MR0149`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InstanceUse {
+    /// `this`.
+    This,
+    /// An instance member, found by its bare name: a `field`, a `getter` or
+    /// a `method`, as `kind` says.
+    Member { kind: &'static str, name: String },
+}
+
 /// A type error in a body, by the expression it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TypeError {
@@ -322,6 +332,9 @@ pub(crate) enum TypeError {
         ty: Ty,
         name: String,
     },
+    /// The body of a static member uses `this` or an instance member at
+    /// `expr`, which names it (`MR0149`).
+    StaticThis { expr: ExprId, used: InstanceUse },
     /// The assignment `expr` is used as a value (`MR0185`); `split` is the
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
@@ -2618,6 +2631,77 @@ mod tests {
     fn initializers_are_inferred_when_the_target_is_not_a_struct() {
         let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 + \"a\" };\n";
         assert_eq!(reported(text), ["MR0204"]);
+    }
+
+    #[test]
+    fn a_static_member_has_no_this() {
+        let head = "struct S {\n    public X: int;\n    public Y: int => X;\n    \
+                    Get(): int => X;\n";
+        for member in [
+            "public static Run(): int => X;",
+            "public static Run(): int => this.X;",
+            "public static Run(): int { return X; }",
+            "static Run(): int { G(): int => X; return G(); }",
+            "static Run(): int { var f = () => X; return f(); }",
+            "static Run(): int => Y;",
+            "static Run(): int => Get();",
+            "static Run(): int => this.Get();",
+            "static Run(): int => X.CompareTo(1);",
+            "static T: int = X;",
+        ] {
+            let text = format!("{head}    {member}\n}}\n");
+            assert_eq!(reported(&text), ["MR0149"], "{text}");
+        }
+        // A static member reads what belongs to the type, and an instance
+        // member reads its own fields.
+        let text = "struct S {\n    public X: int;\n    static N: int = 1;\n    \
+                    static Twice(k: int): int => k * 2;\n    \
+                    static Run(): int { G(): int => N + Twice(N); return G(); }\n    \
+                    Get(): int => X + N + Twice(X);\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_static_member_that_uses_this_says_what_it_uses() {
+        let head = "struct S {\n    public X: int;\n    public Y: int => X;\n    \
+                    Get(): int => X;\n";
+        let [field, getter, method, this] = [
+            ("static Run(): int => X;", "X"),
+            ("static Run(): int => Y;", "Y"),
+            ("static Run(): int => Get();", "Get"),
+            ("static Run(): S => this;", "this"),
+        ]
+        .map(|(member, used)| {
+            let text = format!("{head}    {member}\n}}\n");
+            let reported = diagnostics_of(&text);
+            assert_eq!(reported.len(), 1, "{reported:#?}");
+            let d = &reported[0];
+            let at = usize::from(d.primary.span.range.start());
+            assert_eq!(&text[at..at + used.len()], used);
+            assert_eq!(d.fixes.len(), 0);
+            assert_eq!(
+                d.note.as_deref(),
+                Some("a `static` member belongs to the type, not to a value of it")
+            );
+            (d.message.clone(), d.primary.message.clone().expect("label"))
+        });
+        assert_eq!(
+            field,
+            (
+                "a static member has no `this`, so it cannot use the instance field `X`".to_owned(),
+                "needs a value of the type".to_owned()
+            )
+        );
+        assert_eq!(
+            getter.0,
+            "a static member has no `this`, so it cannot use the instance getter `Y`"
+        );
+        assert_eq!(
+            method.0,
+            "a static member has no `this`, so it cannot use the instance method `Get`"
+        );
+        assert_eq!(this.0, "a static member has no `this`");
+        assert_eq!(this.1, "there is no value of the type here");
     }
 
     #[test]

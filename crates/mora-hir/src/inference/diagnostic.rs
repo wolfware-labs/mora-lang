@@ -1,6 +1,7 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
-//! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`].
+//! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`]. A static
+//! member that uses `this` is `MR0149`.
 
 mod call;
 mod struct_new;
@@ -8,7 +9,7 @@ mod struct_new;
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
-use super::{Context, TypeError, constant, numeric, ty_name};
+use super::{Context, InstanceUse, TypeError, constant, numeric, ty_name};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
 use crate::ty::{Primitive, Ty};
 
@@ -199,11 +200,29 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             ty,
             name,
         } => struct_new::repeated_field(source, [*first, *previous, *value], ty, name),
+        TypeError::StaticThis { expr, used } => static_this(source, *expr, used),
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
         }
     }
+}
+
+/// `MR0149`: the body of a static member uses `this`, or an instance member
+/// that it reaches through `this`, at `expr`.
+fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnostic {
+    let (message, label) = match used {
+        InstanceUse::This => (
+            "a static member has no `this`".to_owned(),
+            "there is no value of the type here",
+        ),
+        InstanceUse::Member { kind, name } => (
+            format!("a static member has no `this`, so it cannot use the instance {kind} `{name}`"),
+            "needs a value of the type",
+        ),
+    };
+    Diagnostic::error(codes::MR0149, message, Label::new(source.span(expr), label))
+        .with_note("a `static` member belongs to the type, not to a value of it")
 }
 
 /// `MR0185`: an assignment whose value is used. When `split` is the

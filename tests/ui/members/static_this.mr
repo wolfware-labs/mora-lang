@@ -1,0 +1,18 @@
+// A static member has no `this`, so it cannot use the instance members.
+public struct Counter {
+    public Count: int;
+    public Twice: int => Count * 2;
+    public static Limit: int = 10;
+
+    Value(): int => Count;
+    public static FromField(): int => Count; //~ ERROR MR0149
+    public static FromGetter(): int => Twice; //~ ERROR MR0149
+    public static FromMethod(): int => Value(); //~ ERROR MR0149
+    public static FromThis(): int => this.Count; //~ ERROR MR0149
+    public static FromLocal(): int {
+        Read(): int => Count; //~ ERROR MR0149
+        return Read();
+    }
+    public static Fine(c: Counter): int => c.Count + Limit;
+    public Own(): int => Count + Limit + Fine(this);
+}

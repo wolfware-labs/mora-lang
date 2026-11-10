@@ -1,0 +1,39 @@
+error[MR0149]: a static member has no `this`, so it cannot use the instance field `Count`
+ --> tests/ui/members/static_this.mr:8:39
+  |
+8 |     public static FromField(): int => Count; //~ ERROR MR0149
+  |                                       ^^^^^ needs a value of the type
+  |
+  = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`, so it cannot use the instance getter `Twice`
+ --> tests/ui/members/static_this.mr:9:40
+  |
+9 |     public static FromGetter(): int => Twice; //~ ERROR MR0149
+  |                                        ^^^^^ needs a value of the type
+  |
+  = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`, so it cannot use the instance method `Value`
+  --> tests/ui/members/static_this.mr:10:40
+   |
+10 |     public static FromMethod(): int => Value(); //~ ERROR MR0149
+   |                                        ^^^^^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`
+  --> tests/ui/members/static_this.mr:11:38
+   |
+11 |     public static FromThis(): int => this.Count; //~ ERROR MR0149
+   |                                      ^^^^ there is no value of the type here
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`, so it cannot use the instance field `Count`
+  --> tests/ui/members/static_this.mr:13:24
+   |
+13 |         Read(): int => Count; //~ ERROR MR0149
+   |                        ^^^^^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it
