@@ -82,6 +82,28 @@ impl std::fmt::Display for Constant {
     }
 }
 
+/// The text of a real constant of type `ty`, as it is written in code: the
+/// shortest digits that give the value back in `ty`, so a `float` that holds
+/// the nearest value to `0.1` prints `0.1`, and always with a decimal point
+/// when the value is whole, as `5.0`. Infinity and not-a-number print as
+/// `inf`, `-inf` and `NaN`.
+pub fn real_text(bits: u64, ty: Primitive) -> String {
+    let value = f64::from_bits(bits);
+    let mut text = if ty == Primitive::Float {
+        // A `float` constant is stored as the `double` that holds it exactly.
+        (value as f32).to_string()
+    } else {
+        value.to_string()
+    };
+    if text
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'-')
+    {
+        text.push_str(".0");
+    }
+    text
+}
+
 /// How a value changes type where inference converts it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConversionKind {
@@ -1485,6 +1507,22 @@ mod tests {
             ]
         );
         assert_eq!(Constant::Real(0.5f64.to_bits()).to_string(), "0.5");
+        let float = f64::from(0.1f32).to_bits();
+        assert_eq!(real_text(5f64.to_bits(), Primitive::Double), "5.0");
+        assert_eq!(real_text(float, Primitive::Float), "0.1");
+        assert_eq!(real_text(float, Primitive::Double), "0.10000000149011612");
+        assert_eq!(real_text((-0.0f64).to_bits(), Primitive::Double), "-0.0");
+        assert_eq!(real_text((-3f64).to_bits(), Primitive::Float), "-3.0");
+        assert_eq!(
+            real_text(1e21f64.to_bits(), Primitive::Double),
+            "1000000000000000000000.0"
+        );
+        assert_eq!(real_text(f64::NAN.to_bits(), Primitive::Double), "NaN");
+        assert_eq!(real_text(f64::INFINITY.to_bits(), Primitive::Float), "inf");
+        assert_eq!(
+            real_text(f64::NEG_INFINITY.to_bits(), Primitive::Double),
+            "-inf"
+        );
         let dumped = hir_dump(&db, project, file);
         assert!(
             dumped.contains("let a#0: double = 9007199254740993 - 9007199254740992{= 1};"),

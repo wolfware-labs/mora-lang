@@ -374,7 +374,56 @@ impl Builder {
         if let Some(open) = self.ended.iter().position(|ended| !ended) {
             panic!("body {}: bb{open} has no terminator", self.body.name);
         }
+        number_densely(&mut self.body);
         self.body
+    }
+}
+
+/// Drops the blocks that hold nothing and that nothing jumps to, which
+/// code after a jump leaves behind, and numbers the others in order, so
+/// the numbers have no gaps. The entry block stays first.
+fn number_densely(body: &mut Body) {
+    let mut targeted = vec![false; body.blocks.len()];
+    for block in &body.blocks {
+        for target in block.terminator.kind.successors() {
+            targeted[target.index()] = true;
+        }
+    }
+    let mut new_ids = Vec::with_capacity(body.blocks.len());
+    let mut kept = 0;
+    for (index, block) in body.blocks.iter().enumerate() {
+        let empty = block.statements.is_empty()
+            && matches!(block.terminator.kind, TerminatorKind::Unreachable);
+        if index == BlockId::ENTRY.index() || targeted[index] || !empty {
+            new_ids.push(BlockId(index_u32(kept)));
+            kept += 1;
+        } else {
+            new_ids.push(BlockId(u32::MAX));
+        }
+    }
+    let mut index = 0;
+    body.blocks.retain(|_| {
+        index += 1;
+        new_ids[index - 1].0 != u32::MAX
+    });
+    for block in &mut body.blocks {
+        match &mut block.terminator.kind {
+            TerminatorKind::Goto(target) => *target = new_ids[target.index()],
+            TerminatorKind::Switch {
+                targets, otherwise, ..
+            } => {
+                for (_, target) in targets {
+                    *target = new_ids[target.index()];
+                }
+                *otherwise = new_ids[otherwise.index()];
+            }
+            TerminatorKind::Call { next, .. } => {
+                if let Some(next) = next {
+                    *next = new_ids[next.index()];
+                }
+            }
+            TerminatorKind::Return | TerminatorKind::Unreachable => {}
+        }
     }
 }
 

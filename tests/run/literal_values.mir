@@ -6,9 +6,9 @@ fn top-level() -> () {
 
     bb0: {
         storage_live(exact#0); // 4:5
-        exact#0 = 1; // 4:21
+        exact#0 = 1.0; // 4:21
         storage_live(third#1); // 5:5
-        third#1 = 0; // 5:20
+        third#1 = 0.0; // 5:20
         storage_live(top#2); // 6:5
         top#2 = 255; // 6:17
         call Console.WriteLine{external}(copy exact#0) -> bb1; // 7:1

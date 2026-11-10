@@ -116,28 +116,28 @@ fn App.Fib(n#0: in int) -> int {
 
     bb2: {
         storage_dead(_2); // 11:9
-        goto bb4; // 11:5
+        goto bb3; // 11:5
     }
 
-    bb4: {
+    bb3: {
         storage_live(_3); // 14:16
         _3 = copy (*n#0) - 1; // 14:16
         storage_live(_4); // 14:16
         _4 = &in _3; // 14:16
         storage_live(_5); // 14:12
-        _5 = call App.Fib{fn App.Fib}(copy _4) -> bb5; // 14:12
+        _5 = call App.Fib{fn App.Fib}(copy _4) -> bb4; // 14:12
     }
 
-    bb5: {
+    bb4: {
         storage_live(_6); // 14:29
         _6 = copy (*n#0) - 2; // 14:29
         storage_live(_7); // 14:29
         _7 = &in _6; // 14:29
         storage_live(_8); // 14:25
-        _8 = call App.Fib{fn App.Fib}(copy _7) -> bb6; // 14:25
+        _8 = call App.Fib{fn App.Fib}(copy _7) -> bb5; // 14:25
     }
 
-    bb6: {
+    bb5: {
         _0 = copy _5 + copy _8; // 14:12
         storage_dead(_8); // 14:5
         storage_dead(_7); // 14:5

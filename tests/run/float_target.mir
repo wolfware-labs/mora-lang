@@ -11,13 +11,13 @@ fn top-level() -> () {
         storage_live(x#0); // 6:5
         x#0 = 1.5; // 6:16
         storage_live(y#1); // 7:5
-        y#1 = copy x#0 + 1; // 7:16
+        y#1 = copy x#0 + 1.0; // 7:16
         storage_live(z#2); // 8:5
         z#2 = 0.25; // 8:17
         storage_live(w#3); // 9:5
-        w#3 = 3; // 9:16
+        w#3 = 3.0; // 9:16
         storage_live(tenth#4); // 10:5
-        tenth#4 = 0.10000000149011612; // 10:20
+        tenth#4 = 0.1; // 10:20
         call Console.WriteLine{external}(copy x#0) -> bb1; // 11:1
     }
 
@@ -31,7 +31,7 @@ fn top-level() -> () {
 
     bb3: {
         storage_live(_6); // 14:19
-        _6 = copy w#3 / 2; // 14:19
+        _6 = copy w#3 / 2.0; // 14:19
         call Console.WriteLine{external}(copy _6) -> bb4; // 14:1
     }
 

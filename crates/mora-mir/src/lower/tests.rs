@@ -268,8 +268,8 @@ fn literals_and_inferred_constants_are_constants() {
             "s#1 = \"a\\tb\";",
             "t#2 = false;",
             "r#3 = 1.5;",
-            "f#4 = 0.10000000149011612;",
-            "d#5 = 2;",
+            "f#4 = 0.1;",
+            "d#5 = 2.0;",
             "top#6 = 255;",
             "q#7 = 0.25;",
         ],
@@ -1131,7 +1131,7 @@ fn break_out_of_nested_scope_kills_inner_locals() {
             "goto bb4;",
             // bb6: no `break`; the scopes are still open.
             "storage_dead(_5);",
-            "goto bb8;",
+            "goto bb7;",
             "storage_dead(y#2);",
             "i#0 = copy i#0 + 1;",
             "storage_dead(x#1);",
@@ -1174,7 +1174,7 @@ fn continue_in_for_runs_the_update() {
             "storage_dead(_4);",
             "goto bb5;",
             "storage_dead(_4);",
-            "goto bb9;",
+            "goto bb8;",
             "n#0 = copy n#0 + copy i#1;",
             "goto bb5;",
         ]
@@ -1216,7 +1216,7 @@ fn return_from_nested_scope_kills_locals() {
             "storage_dead(a#1);",
             "return;",
             "storage_dead(_6);",
-            "goto bb8;",
+            "goto bb7;",
             "storage_dead(b#2);",
             "goto bb1;",
         ]
@@ -1244,8 +1244,7 @@ fn UsersApi.F() -> int {
 "
     );
     let body = &lowered.mir("F").bodies[0];
-    assert_eq!(body.blocks.len(), 2);
-    assert_eq!(body.blocks[1].terminator.kind, TerminatorKind::Unreachable);
+    assert_eq!(body.blocks.len(), 1);
     assert_eq!(lowered.code("G"), ["call Todo{external}() -> !;"]);
     assert_eq!(lowered.mir("G").bodies[0].locals.len(), 1);
 }
@@ -1368,7 +1367,7 @@ fn a_loop_whose_condition_is_true_ends_only_by_break() {
             "storage_live(i#0);",
             "i#0 = 0;",
             "goto bb1;",
-            "goto bb3;",
+            "goto bb2;",
             "i#0 = copy i#0 + 1;",
             "goto bb1;"
         ]
@@ -1582,11 +1581,11 @@ fn break_from_an_inner_loop_ends_only_its_locals() {
             "goto bb1;",
             "storage_live(x#0);",
             "x#0 = 1;",
-            "goto bb3;",
+            "goto bb2;",
             "storage_live(y#1);",
             "y#1 = 2;",
             "storage_dead(y#1);",
-            "goto bb4;",
+            "goto bb3;",
             "_0 = ();",
             "storage_dead(x#0);",
             "return;",
@@ -1646,7 +1645,7 @@ fn a_diverging_call_as_an_operand_ends_its_expression() {
             "switch copy (*a#0) [false -> bb2] otherwise bb1;",
             "call Todo{external}() -> !;",
             "_2 = false;",
-            "goto bb4;",
+            "goto bb3;",
             "_0 = copy _2;",
             "storage_dead(_2);",
             "return;",
@@ -2425,7 +2424,7 @@ fn local_functions_of_one_name_get_their_own_names() {
         &body_code(&lowered, "F", 0),
         &[
             "_0 = call UsersApi.F.G() -> bb3;",
-            "_0 = call UsersApi.F.G#2() -> bb6;",
+            "_0 = call UsersApi.F.G#2() -> bb4;",
         ],
     );
 }
@@ -2442,4 +2441,123 @@ fn a_method_of_a_generic_struct_is_not_lowered() {
 fn a_call_of_a_generic_local_function_is_not_lowered() {
     let lowered = lowered("F(): int {\n    Id<T>(move x: T): T => x;\n    return Id(1);\n}\n");
     lowered.mir("F");
+}
+
+#[test]
+fn blocks_are_numbered_without_gaps() {
+    // The join of the `if` is never reached, as both arms return, so
+    // lowering drops it and the blocks after it move down.
+    let lowered = lowered(
+        "F(n: int): int {\n    if (n < 2) {\n        return 1;\n    } else {\n        return 2;\n    }\n}\n\
+         G(n: int): int {\n    if (n < 2) {\n        return 1;\n    }\n    return 2;\n}\n",
+    );
+    for name in ["F", "G"] {
+        let dump = lowered.dump(name);
+        let body = &lowered.mir(name).bodies[0];
+        for index in 0..body.blocks.len() {
+            assert!(dump.contains(&format!("bb{index}: {{")), "{dump}");
+        }
+        assert!(
+            !dump.contains(&format!("bb{}", body.blocks.len())),
+            "{dump}"
+        );
+        assert!(body.blocks.iter().all(|block| {
+            block
+                .terminator
+                .kind
+                .successors()
+                .iter()
+                .all(|target| target.index() < body.blocks.len())
+        }));
+    }
+    assert_eq!(lowered.mir("F").bodies[0].blocks.len(), 3);
+}
+
+mod numbering {
+    use mora_span::{FileId, Span, TextRange, TextSize};
+
+    use super::super::number_densely;
+    use crate::{
+        Block, BlockId, Body, Const, Operand, Statement, StatementKind, Terminator, TerminatorKind,
+    };
+
+    fn span() -> Span {
+        Span::new(FileId::new(0), TextRange::empty(TextSize::new(0)))
+    }
+
+    fn block(statements: usize, kind: TerminatorKind) -> Block {
+        Block {
+            statements: (0..statements)
+                .map(|_| Statement {
+                    kind: StatementKind::Nop,
+                    span: span(),
+                })
+                .collect(),
+            terminator: Terminator { kind, span: span() },
+        }
+    }
+
+    fn body(blocks: Vec<Block>) -> Body {
+        Body {
+            name: "F".to_owned(),
+            params: 0,
+            locals: Vec::new(),
+            blocks,
+            span: span(),
+        }
+    }
+
+    fn kinds(body: &Body) -> Vec<&TerminatorKind> {
+        body.blocks.iter().map(|b| &b.terminator.kind).collect()
+    }
+
+    #[test]
+    fn only_empty_unreachable_blocks_nothing_jumps_to_are_dropped() {
+        let switch = TerminatorKind::Switch {
+            discr: Operand::Const(Const::Bool(true)),
+            targets: vec![(Const::Bool(true), BlockId(2))],
+            otherwise: BlockId(4),
+        };
+        let mut body = body(vec![
+            block(0, switch),
+            // Holds a statement: stays.
+            block(1, TerminatorKind::Unreachable),
+            block(0, TerminatorKind::Goto(BlockId(5))),
+            // Empty, ends in `unreachable`, nothing jumps to it: dropped.
+            block(0, TerminatorKind::Unreachable),
+            // Empty and ends in `unreachable`, but a switch jumps to it.
+            block(0, TerminatorKind::Unreachable),
+            // Empty, ends in something else: stays.
+            block(0, TerminatorKind::Return),
+        ]);
+        number_densely(&mut body);
+        assert_eq!(
+            kinds(&body),
+            [
+                &TerminatorKind::Switch {
+                    discr: Operand::Const(Const::Bool(true)),
+                    targets: vec![(Const::Bool(true), BlockId(2))],
+                    otherwise: BlockId(3),
+                },
+                &TerminatorKind::Unreachable,
+                &TerminatorKind::Goto(BlockId(4)),
+                &TerminatorKind::Unreachable,
+                &TerminatorKind::Return,
+            ]
+        );
+        assert_eq!(body.blocks[1].statements.len(), 1);
+    }
+
+    #[test]
+    fn the_entry_block_stays_even_when_it_is_empty_and_unreachable() {
+        let mut body = body(vec![
+            block(0, TerminatorKind::Unreachable),
+            block(0, TerminatorKind::Return),
+        ]);
+        number_densely(&mut body);
+        assert_eq!(
+            kinds(&body),
+            [&TerminatorKind::Unreachable, &TerminatorKind::Return]
+        );
+    }
 }

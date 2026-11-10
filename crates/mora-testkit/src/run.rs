@@ -97,9 +97,9 @@ pub struct Outcome {
 }
 
 /// Checks one case of the run suite: the program must compile without
-/// errors, and its HIR and MIR are returned for the snapshots beside it. Then it runs
-/// through every backend the compiler has, as [`check`] does; while there
-/// are none, compiling is the whole test.
+/// errors, and its HIR and MIR are returned for the snapshots beside it.
+/// Then it runs through every backend the compiler has, as [`check`] does;
+/// while there are none, compiling is the whole test.
 pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
     if let Err(problem) = expected(text) {
         return Outcome {

@@ -31,7 +31,7 @@ fn top-level() -> () {
         e#4 = -copy _9; // 11:9
         storage_dead(_9); // 11:9
         storage_live(f#5); // 12:5
-        f#5 = 5 / 2; // 12:9
+        f#5 = 5.0 / 2.0; // 12:9
         call Console.WriteLine{external}(copy a#0) -> bb1; // 13:1
     }
 

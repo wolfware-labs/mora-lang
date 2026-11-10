@@ -57,7 +57,7 @@ pub use defs::{
 pub use diverging::{calls_diverging, is_diverging, is_literal_bool};
 pub use inference::{
     Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer,
-    literal_constant, ty_name,
+    literal_constant, real_text, ty_name,
 };
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,

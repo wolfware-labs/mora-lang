@@ -41,8 +41,10 @@
 //! type is written as the HIR dump writes it, with `in ` or `ref ` before
 //! the type of a borrow. A block is `bbN: {`, its statements, its
 //! terminator, and `}`, one per line, with a blank line before each block.
-//! A block with no statements that ends in `unreachable` is left out; the
-//! other blocks keep their numbers. Every statement and terminator ends in
+//! Lowering numbers a body's blocks without gaps. A block with no statements
+//! that ends in `unreachable` is left out of the dump, and the other blocks
+//! keep their numbers. A real constant is written with a decimal point, as
+//! `5.0`, in the shortest digits of its type. Every statement and terminator ends in
 //! `// line:col`, the one-based line and the one-based column, counted in
 //! characters as diagnostics count it, where its source starts, or `// ?`
 //! when the span names no position in the file (see [`write_body_in`]).
@@ -97,7 +99,9 @@
 use std::fmt::Write;
 
 use mora_diag::line_column;
-use mora_hir::{Constant, Signature, Ty, arena_index, escape_char, item_text, signature, ty_name};
+use mora_hir::{
+    Constant, Signature, Ty, arena_index, escape_char, item_text, real_text, signature, ty_name,
+};
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
@@ -502,7 +506,7 @@ fn unary_symbol(op: UnOp) -> &'static str {
 fn constant(value: &Const) -> String {
     match value {
         Const::Int(value, _) => Constant::Int(*value).to_string(),
-        Const::Real(bits, _) => Constant::Real(*bits).to_string(),
+        Const::Real(bits, ty) => real_text(*bits, *ty),
         Const::Bool(value) => value.to_string(),
         Const::Char(ch) => {
             let mut text = String::from("'");
@@ -935,14 +939,14 @@ fn Fib(n#0: int, this: in P) -> int {
             text(Const::Real(1.5f64.to_bits(), Primitive::Double)),
             "1.5"
         );
-        assert_eq!(text(Const::Real(3f64.to_bits(), Primitive::Float)), "3");
+        assert_eq!(text(Const::Real(3f64.to_bits(), Primitive::Float)), "3.0");
         assert_eq!(
             text(Const::Real(0.25f64.to_bits(), Primitive::Double)),
             "0.25"
         );
         assert_eq!(
             text(Const::Real((-0.0f64).to_bits(), Primitive::Double)),
-            "-0"
+            "-0.0"
         );
         assert_eq!(
             text(Const::Real(f64::NAN.to_bits(), Primitive::Double)),
@@ -954,7 +958,13 @@ fn Fib(n#0: int, this: in P) -> int {
         );
         assert_eq!(
             text(Const::Real(1e21f64.to_bits(), Primitive::Double)),
-            "1000000000000000000000"
+            "1000000000000000000000.0"
+        );
+        let tenth = f64::from(0.1f32).to_bits();
+        assert_eq!(text(Const::Real(tenth, Primitive::Float)), "0.1");
+        assert_eq!(
+            text(Const::Real(tenth, Primitive::Double)),
+            "0.10000000149011612"
         );
         assert_eq!(text(Const::Bool(true)), "true");
         assert_eq!(text(Const::Bool(false)), "false");
