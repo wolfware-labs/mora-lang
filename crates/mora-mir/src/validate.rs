@@ -115,7 +115,7 @@ impl Checker<'_> {
                 continue;
             };
             self.storage_walk(id, &mut live, false);
-            for target in successors(&body.block(id).terminator.kind) {
+            for target in body.block(id).terminator.kind.successors() {
                 if let Some(entry @ None) = entries.get_mut(target.index()) {
                     *entry = Some(live.clone());
                     queue.push_back(target);
@@ -134,7 +134,7 @@ impl Checker<'_> {
                     self.error(&at, format!("return while _{local} is live"));
                 }
             }
-            for target in successors(kind) {
+            for target in kind.successors() {
                 let Some(Some(entry)) = entries.get(target.index()) else {
                     continue;
                 };
@@ -698,24 +698,6 @@ enum Param {
     Exact(LocalTy),
 }
 
-/// The value type of a local type: the type itself, or the one a borrow
-/// refers to.
-/// The blocks control may go to after `kind`.
-fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
-    match kind {
-        TerminatorKind::Goto(target) => vec![*target],
-        TerminatorKind::Switch {
-            targets, otherwise, ..
-        } => targets
-            .iter()
-            .map(|(_, target)| *target)
-            .chain([*otherwise])
-            .collect(),
-        TerminatorKind::Call { next, .. } => next.iter().copied().collect(),
-        TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
-    }
-}
-
 /// The storage of a local on a path.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Storage {
@@ -736,6 +718,8 @@ fn live_locals(storage: &[Storage]) -> impl Iterator<Item = usize> + '_ {
         .map(|(local, _)| local)
 }
 
+/// The value type of a local type: the type itself, or the one a borrow
+/// refers to.
 fn local_value_ty(ty: &LocalTy) -> &Ty {
     let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = ty;
     ty

@@ -351,6 +351,26 @@ pub enum TerminatorKind {
     Unreachable,
 }
 
+impl TerminatorKind {
+    /// The blocks control may go to after this terminator, in order: a
+    /// switch's targets, then its `otherwise`; a call's `next`, which a call
+    /// that does not return has none of.
+    pub fn successors(&self) -> Vec<BlockId> {
+        match self {
+            TerminatorKind::Goto(target) => vec![*target],
+            TerminatorKind::Switch {
+                targets, otherwise, ..
+            } => targets
+                .iter()
+                .map(|(_, target)| *target)
+                .chain([*otherwise])
+                .collect(),
+            TerminatorKind::Call { next, .. } => next.iter().copied().collect(),
+            TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
+        }
+    }
+}
+
 /// What a call targets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Callee {

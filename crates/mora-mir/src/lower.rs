@@ -221,7 +221,7 @@ impl Builder {
             current.0
         );
         if self.reachable[current.index()] {
-            for target in successors(&kind) {
+            for target in kind.successors() {
                 self.reachable[target.index()] = true;
             }
         }
@@ -368,22 +368,6 @@ impl Builder {
             panic!("body {}: bb{open} has no terminator", self.body.name);
         }
         self.body
-    }
-}
-
-/// The blocks control may go to after `kind`.
-fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
-    match kind {
-        TerminatorKind::Goto(target) => vec![*target],
-        TerminatorKind::Switch {
-            targets, otherwise, ..
-        } => targets
-            .iter()
-            .map(|(_, target)| *target)
-            .chain([*otherwise])
-            .collect(),
-        TerminatorKind::Call { next, .. } => next.iter().copied().collect(),
-        TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
     }
 }
 

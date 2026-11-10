@@ -333,3 +333,43 @@ fn block_ids_lists_every_block_in_order() {
     );
     assert_eq!(body_of(vec![], vec![], 0).block_ids().count(), 0);
 }
+
+#[test]
+fn a_terminator_lists_the_blocks_control_may_go_to() {
+    let call = |next| TerminatorKind::Call {
+        callee: crate::Callee::External(vec!["Todo".to_owned()]),
+        args: vec![],
+        dest: None,
+        next,
+    };
+    let switch = TerminatorKind::Switch {
+        discr: Operand::Const(Const::Bool(true)),
+        targets: vec![
+            (Const::Bool(false), BlockId(2)),
+            (Const::Bool(true), BlockId(4)),
+        ],
+        otherwise: BlockId(1),
+    };
+    let found: Vec<Vec<BlockId>> = [
+        TerminatorKind::Goto(BlockId(3)),
+        switch,
+        call(Some(BlockId(5))),
+        call(None),
+        TerminatorKind::Return,
+        TerminatorKind::Unreachable,
+    ]
+    .iter()
+    .map(TerminatorKind::successors)
+    .collect();
+    assert_eq!(
+        found,
+        [
+            vec![BlockId(3)],
+            vec![BlockId(2), BlockId(4), BlockId(1)],
+            vec![BlockId(5)],
+            vec![],
+            vec![],
+            vec![],
+        ]
+    );
+}

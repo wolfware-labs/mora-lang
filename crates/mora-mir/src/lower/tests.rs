@@ -1547,22 +1547,24 @@ fn the_run_tests_in_scope_lower_and_validate() {
 
 #[test]
 fn a_short_circuit_in_a_loop_condition() {
-    let lowered = lowered("F(a: bool, b: bool) {\n    while (a && b) {\n    }\n}\n");
+    let lowered = lowered("H(): bool => true;\nF(a: bool) {\n    while (a && H()) {\n    }\n}\n");
+    // `H` is called only in bb2, which the switch reaches when `a` is true;
+    // the condition's temporary ends at the start of both successors.
     assert_eq!(
         lowered.code("F"),
         [
             "goto bb1;",
-            "storage_live(_3);",
+            "storage_live(_2);",
             "switch copy (*a#0) [false -> bb3] otherwise bb2;",
-            "_3 = copy (*b#1);",
-            "goto bb4;",
-            "_3 = false;",
-            "goto bb4;",
-            "switch copy _3 [false -> bb6] otherwise bb5;",
-            "storage_dead(_3);",
+            "_2 = call UsersApi.H{fn UsersApi.H}() -> bb4;",
+            "_2 = false;",
+            "goto bb5;",
+            "goto bb5;",
+            "switch copy _2 [false -> bb7] otherwise bb6;",
+            "storage_dead(_2);",
             "goto bb1;",
-            "storage_dead(_3);",
-            "goto bb7;",
+            "storage_dead(_2);",
+            "goto bb8;",
             "_0 = ();",
             "return;",
         ]

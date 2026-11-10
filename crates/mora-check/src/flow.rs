@@ -982,9 +982,16 @@ impl Flow<'_> {
     }
 
     /// Where the `break`, `continue` or `return` statement `stmt` is.
+    ///
+    /// # Panics
+    ///
+    /// When the source map has no range for it: HIR lowering records the
+    /// range of every statement but a declaration.
     fn jump_span(&self, stmt: StmtId) -> Span {
-        // Lowering records the range of every statement but a declaration.
-        self.span(self.map.stmts.get(&stmt).copied().unwrap_or_default())
+        let Some(&range) = self.map.stmts.get(&stmt) else {
+            panic!("internal error: a jump without its range");
+        };
+        self.span(range)
     }
 
     /// `MR0183` for `break` or `continue` outside a loop.
