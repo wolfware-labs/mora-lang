@@ -4,9 +4,12 @@
 //! conventions: a resolved item is `Name{kind path}`, as in
 //! `App.Fib{fn App.Fib}`, a standard-library function is
 //! `Console.WriteLine{external}`, and a type is written as code writes it.
-//! A local with a source name is `name#n` and any other is `_n`, where `n`
-//! is the local's index in the body, so `_0` is the return slot and the
-//! parameters are `_1` to the last one. The output is a pure function of
+//! A local with a source name is `name#n`, where `n` is the index of the
+//! HIR local it comes from, so it reads the same in both dumps; the
+//! receiver is `this#n`. Any other local is `_n`, where `n` is its index in
+//! the body, so `_0` is the return slot and the parameters come next. The
+//! `let` lines list the locals in the body's order, which shows the
+//! mapping. The output is a pure function of
 //! the body and the database: no map is iterated, so the same input gives
 //! the same bytes.
 //!
@@ -15,19 +18,19 @@
 //! A body is a header, one line per local, and its blocks:
 //!
 //! ```text
-//! fn Fib(n#1: int) -> int {
+//! fn Fib(n#0: int) -> int {
 //!     let _0: int;
-//!     let n#1: int;
-//!     let mut acc#2: int;
+//!     let n#0: int;
+//!     let mut acc#1: int;
 //!     let _3: bool;
 //!
 //!     bb0: {
-//!         _3 = lt(copy n#1, 2); // 3:9
+//!         _3 = copy n#0 < 2; // 3:9
 //!         switch copy _3 [true -> bb1] otherwise bb2; // 3:5
 //!     }
 //!
 //!     bb1: {
-//!         _0 = copy n#1; // 4:16
+//!         _0 = copy n#0; // 4:16
 //!         return; // 4:9
 //!     }
 //! }
@@ -52,9 +55,9 @@
 //! # Places
 //!
 //! A place is its local followed by its projections. A field of a struct is
-//! `x#1.X`, by name, and a field of a tuple is `t#2.0`, by index. A
-//! dereference is `(*this#1)`, so a field behind a borrow is
-//! `(*this#1).X`.
+//! `x#0.X`, by name, and a field of a tuple is `t#1.0`, by index. A
+//! dereference is `(*this#2)`, so a field behind a borrow is
+//! `(*this#2).X`.
 //!
 //! # Operands and constants
 //!
@@ -66,12 +69,12 @@
 //!
 //! * `copy p`, `move p` and a constant: the operand itself.
 //! * `&in p` and `&ref p`: a borrow of a place.
-//! * `add(a, b)`: a binary operation, named `add`, `sub`, `mul`, `div`,
-//!   `rem`, `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `shl`, `shr`,
-//!   `ushr`, `bit_and`, `bit_or`, `bit_xor`, `eq`, `ne`, `lt`, `le`, `gt` or
-//!   `ge`.
-//! * `neg(a)`, `not(a)` and `bit_not(a)`: a unary operation.
-//! * `cast_implicit(a, type)` and `cast_numeric(a, type)`: a conversion.
+//! * `a + b`: a binary operation, written with the operator of the
+//!   language: `+ - * / %`, `+% -% *%` for the wrapping forms,
+//!   `<< >> >>>`, `& | ^` and `== != < <= > >=`.
+//! * `-a`, `!a` and `~a`: a unary operation.
+//! * `(type)a` and `(implicit type)a`: a numeric conversion written out,
+//!   and one that keeps every value.
 //! * `App.P{struct App.P}(a, b)`: a struct built from its parts, and
 //!   `(a, b)`, or `(a,)` for one part, a tuple.
 //! * `$"text{a}text"`: an interpolated string, with `{` and `}` in the
@@ -82,28 +85,31 @@
 //! * `goto bbN;` and `return;` and `unreachable;`.
 //! * `switch operand [const -> bbN, ...] otherwise bbM;`.
 //! * `[place = ]call callee(args) -> bbN;`, with `-> !` when the call does
-//!   not return. The callee is an item as above, `local#n` for the `n`-th
-//!   body of the MIR, `Item{kind path}.X{init}` for the initializer of a
-//!   field (by index when the item has no such field), or the path of a
-//!   standard-library function with `{external}`.
+//!   not return. The callee is an item as above, the name of the body for
+//!   a local function (`Owner.Local`, from [`write_mir`]; `local#n` when
+//!   the other bodies are not known), `Item{kind path}.X{init}` for the
+//!   initializer of a field (by index when the item has no such field), or
+//!   the path of a standard-library function with `{external}`.
 
 use std::fmt::Write;
 
-use mora_hir::{Signature, Ty, item_text, signature, ty_name};
+use mora_hir::{Signature, Ty, arena_index, item_text, signature, ty_name};
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
-    LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement, StatementKind, Terminator,
-    TerminatorKind, UnOp,
+    LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind,
+    Terminator, TerminatorKind, UnOp,
 };
 
 /// Appends the text of `body` to `out`. No file is known, so every span
-/// prints as `// ?`; [`write_body_in`] prints the positions.
+/// prints as `// ?`, and a call of a local function prints its index;
+/// [`write_body_in`] prints the positions and [`write_mir`] the names.
 pub fn write_body(out: &mut String, db: &dyn Db, body: &Body) {
     Printer {
         db,
         body,
+        bodies: &[],
         lines: None,
         out,
     }
@@ -117,15 +123,37 @@ pub fn write_body_in(out: &mut String, db: &dyn Db, file: SourceFile, body: &Bod
     Printer {
         db,
         body,
+        bodies: &[],
         lines: Some((file.id(db), line_index(db, file))),
         out,
     }
     .body();
 }
 
+/// Appends the text of every body of `mir` to `out`, one blank line between
+/// them. A call of a local function prints the name of the body it targets.
+/// Spans print as in [`write_body_in`] when `file` is given, else as `// ?`.
+pub fn write_mir(out: &mut String, db: &dyn Db, file: Option<SourceFile>, mir: &Mir) {
+    for (index, body) in mir.bodies.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        Printer {
+            db,
+            body,
+            bodies: &mir.bodies,
+            lines: file.map(|file| (file.id(db), line_index(db, file))),
+            out,
+        }
+        .body();
+    }
+}
+
 struct Printer<'a> {
     db: &'a dyn Db,
     body: &'a Body,
+    /// The bodies a [`Callee::Local`] indexes, when known.
+    bodies: &'a [Body],
     lines: Option<(FileId, &'a LineIndex)>,
     out: &'a mut String,
 }
@@ -175,7 +203,7 @@ impl Printer<'_> {
 
     fn local_name(&self, id: LocalId) -> String {
         match &self.body.local(id).source {
-            Some(source) => format!("{}#{}", source.name, id.0),
+            Some(source) => format!("{}#{}", source.name, arena_index(source.hir)),
             None => format!("_{}", id.0),
         }
     }
@@ -275,7 +303,10 @@ impl Printer<'_> {
     fn callee(&self, callee: &Callee) -> String {
         match callee {
             Callee::Item(item) => item_text(self.db, *item),
-            Callee::Local(index) => format!("local#{index}"),
+            Callee::Local(index) => match self.bodies.get(*index) {
+                Some(body) => body.name.clone(),
+                None => format!("local#{index}"),
+            },
             Callee::Initializer(item, index) => {
                 let name = match signature(self.db, *item) {
                     Signature::Struct(fields) => {
@@ -298,23 +329,23 @@ impl Printer<'_> {
             Rvalue::Use(operand) => self.operand(operand),
             Rvalue::Borrow(mode, place) => format!("&{} {}", borrow_word(*mode), self.place(place)),
             Rvalue::Binary(op, left, right) => format!(
-                "{}({}, {})",
-                binary_name(*op),
+                "{} {} {}",
                 self.operand(left),
+                binary_symbol(*op),
                 self.operand(right)
             ),
             Rvalue::Unary(op, operand) => {
-                format!("{}({})", unary_name(*op), self.operand(operand))
+                format!("{}{}", unary_symbol(*op), self.operand(operand))
             }
             Rvalue::Cast(kind, operand, ty) => {
-                let kind = match kind {
-                    CastKind::Implicit => "implicit",
-                    CastKind::Numeric => "numeric",
+                let prefix = match kind {
+                    CastKind::Implicit => "implicit ",
+                    CastKind::Numeric => "",
                 };
                 format!(
-                    "cast_{kind}({}, {})",
-                    self.operand(operand),
-                    ty_name(self.db, ty)
+                    "({prefix}{}){}",
+                    ty_name(self.db, ty),
+                    self.operand(operand)
                 )
             }
             Rvalue::Aggregate(kind, parts) => {
@@ -415,36 +446,36 @@ fn borrow_word(mode: BorrowMode) -> &'static str {
     }
 }
 
-fn binary_name(op: BinOp) -> &'static str {
+fn binary_symbol(op: BinOp) -> &'static str {
     match op {
-        BinOp::Add => "add",
-        BinOp::Sub => "sub",
-        BinOp::Mul => "mul",
-        BinOp::Div => "div",
-        BinOp::Rem => "rem",
-        BinOp::WrappingAdd => "wrapping_add",
-        BinOp::WrappingSub => "wrapping_sub",
-        BinOp::WrappingMul => "wrapping_mul",
-        BinOp::Shl => "shl",
-        BinOp::Shr => "shr",
-        BinOp::UShr => "ushr",
-        BinOp::BitAnd => "bit_and",
-        BinOp::BitOr => "bit_or",
-        BinOp::BitXor => "bit_xor",
-        BinOp::Eq => "eq",
-        BinOp::Ne => "ne",
-        BinOp::Lt => "lt",
-        BinOp::Le => "le",
-        BinOp::Gt => "gt",
-        BinOp::Ge => "ge",
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Rem => "%",
+        BinOp::WrappingAdd => "+%",
+        BinOp::WrappingSub => "-%",
+        BinOp::WrappingMul => "*%",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+        BinOp::UShr => ">>>",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
     }
 }
 
-fn unary_name(op: UnOp) -> &'static str {
+fn unary_symbol(op: UnOp) -> &'static str {
     match op {
-        UnOp::Neg => "neg",
-        UnOp::Not => "not",
-        UnOp::BitNot => "bit_not",
+        UnOp::Neg => "-",
+        UnOp::Not => "!",
+        UnOp::BitNot => "~",
     }
 }
 
@@ -500,19 +531,18 @@ mod tests {
     use super::*;
     use crate::{
         AggregateKind, BinOp, Block, BlockId, BorrowMode, Callee, CastKind, Const, InterpPiece,
-        LocalDecl, LocalId, LocalSource, LocalTy, Operand, Place, Projection, Rvalue, Statement,
-        StatementKind, Terminator, TerminatorKind, UnOp,
+        LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue,
+        Statement, StatementKind, Terminator, TerminatorKind, UnOp,
     };
 
-    const SOURCE: &str =
-        "struct P {\n    public X: int;\n    public Y: bool;\n}\n\nFib(n: int): int => n;\n";
+    const SOURCE: &str = "struct P {\n    public X: int;\n    public Y: bool;\n}\n\nFib(n: int): int {\n    let a = n;\n    let b = a;\n    let c = b;\n    return c;\n}\n";
 
     struct Fx {
         db: TestDb,
         file: SourceFile,
         p: ItemId,
         fib: ItemId,
-        hir_local: mora_hir::LocalId,
+        hir: Vec<mora_hir::LocalId>,
     }
 
     fn fixture() -> Fx {
@@ -532,13 +562,18 @@ mod tests {
             }
         };
         let (p, fib) = (find("P"), find("Fib"));
-        let hir_local = body(&db, file, BodyOwner::Item(fib.item)).params[0];
+        let hir: Vec<_> = body(&db, file, BodyOwner::Item(fib.item))
+            .locals
+            .iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(hir.len(), 4);
         Fx {
             db,
             file,
             p,
             fib,
-            hir_local,
+            hir,
         }
     }
 
@@ -559,13 +594,13 @@ mod tests {
         Ty::Primitive(Primitive::Int)
     }
 
-    fn named(fx: &Fx, name: &str, ty: LocalTy, mutable: bool) -> LocalDecl {
+    fn named(fx: &Fx, name: &str, hir: usize, ty: LocalTy, mutable: bool) -> LocalDecl {
         LocalDecl {
             ty,
             mutable,
             source: Some(LocalSource {
                 name: name.into(),
-                hir: fx.hir_local,
+                hir: fx.hir[hir],
             }),
         }
     }
@@ -669,9 +704,9 @@ mod tests {
             2,
             vec![
                 temp(int()),
-                named(fx, "n", LocalTy::Value(int()), false),
-                named(fx, "this", LocalTy::Borrow(BorrowMode::In, p), false),
-                named(fx, "acc", LocalTy::Value(int()), true),
+                named(fx, "n", 0, LocalTy::Value(int()), false),
+                named(fx, "this", 2, LocalTy::Borrow(BorrowMode::In, p), false),
+                named(fx, "acc", 1, LocalTy::Value(int()), true),
                 temp(Ty::Primitive(Primitive::Bool)),
             ],
             vec![
@@ -744,27 +779,27 @@ mod tests {
     fn dump_of_hand_built_body() {
         let fx = fixture();
         let expected = "\
-fn Fib(n#1: int, this#2: in P) -> int {
+fn Fib(n#0: int, this#2: in P) -> int {
     let _0: int;
-    let n#1: int;
+    let n#0: int;
     let this#2: in P;
-    let mut acc#3: int;
+    let mut acc#1: int;
     let _4: bool;
 
     bb0: {
         storage_live(_4); // 6:5
-        _4 = lt(copy n#1, 2); // 6:5
+        _4 = copy n#0 < 2; // 6:5
         switch copy _4 [true -> bb1] otherwise bb2; // 6:1
     }
 
     bb1: {
-        acc#3 = copy (*this#2).X; // 2:12
-        _0 = move acc#3; // 2:12
+        acc#1 = copy (*this#2).X; // 2:12
+        _0 = move acc#1; // 2:12
         return; // 6:1
     }
 
     bb2: {
-        _0 = call UsersApi.Fib{fn UsersApi.Fib}(copy n#1, 1) -> bb3; // 6:5
+        _0 = call UsersApi.Fib{fn UsersApi.Fib}(copy n#0, 1) -> bb3; // 6:5
     }
 
     bb3: {
@@ -772,7 +807,7 @@ fn Fib(n#1: int, this#2: in P) -> int {
     }
 
     bb5: {
-        call Console.WriteLine{external}(copy n#1) -> bb1; // 6:1
+        call Console.WriteLine{external}(copy n#0) -> bb1; // 6:1
     }
 }
 ";
@@ -810,7 +845,13 @@ fn Fib(n#1: int, this#2: in P) -> int {
             let mut locals = vec![temp(Ty::UNIT)];
             locals.extend((1..31).map(|n| {
                 if n % 3 == 0 {
-                    named(&fx, &format!("v{n}"), LocalTy::Value(int()), n % 2 == 1)
+                    named(
+                        &fx,
+                        &format!("v{n}"),
+                        (n / 3 % 3) as usize,
+                        LocalTy::Value(int()),
+                        n % 2 == 1,
+                    )
                 } else {
                     temp(int())
                 }
@@ -834,9 +875,9 @@ fn Fib(n#1: int, this#2: in P) -> int {
         };
         let first = run();
         assert_eq!(first, run());
-        assert!(first.contains("let mut v3#3: int;"), "{first}");
-        assert!(first.contains("let v6#6: int;"), "{first}");
-        assert_eq!(first.matches("= add(").count(), 30);
+        assert!(first.contains("let mut v3#1: int;"), "{first}");
+        assert!(first.contains("let v6#2: int;"), "{first}");
+        assert_eq!(first.matches(" + ").count(), 30);
     }
 
     #[test]
@@ -904,45 +945,41 @@ fn Fib(n#1: int, this#2: in P) -> int {
     }
 
     #[test]
-    fn every_operator_has_its_name() {
+    fn every_operator_has_its_symbol() {
         let fx = fixture();
         let binary = [
-            (BinOp::Add, "add"),
-            (BinOp::Sub, "sub"),
-            (BinOp::Mul, "mul"),
-            (BinOp::Div, "div"),
-            (BinOp::Rem, "rem"),
-            (BinOp::WrappingAdd, "wrapping_add"),
-            (BinOp::WrappingSub, "wrapping_sub"),
-            (BinOp::WrappingMul, "wrapping_mul"),
-            (BinOp::Shl, "shl"),
-            (BinOp::Shr, "shr"),
-            (BinOp::UShr, "ushr"),
-            (BinOp::BitAnd, "bit_and"),
-            (BinOp::BitOr, "bit_or"),
-            (BinOp::BitXor, "bit_xor"),
-            (BinOp::Eq, "eq"),
-            (BinOp::Ne, "ne"),
-            (BinOp::Lt, "lt"),
-            (BinOp::Le, "le"),
-            (BinOp::Gt, "gt"),
-            (BinOp::Ge, "ge"),
+            (BinOp::Add, "+"),
+            (BinOp::Sub, "-"),
+            (BinOp::Mul, "*"),
+            (BinOp::Div, "/"),
+            (BinOp::Rem, "%"),
+            (BinOp::WrappingAdd, "+%"),
+            (BinOp::WrappingSub, "-%"),
+            (BinOp::WrappingMul, "*%"),
+            (BinOp::Shl, "<<"),
+            (BinOp::Shr, ">>"),
+            (BinOp::UShr, ">>>"),
+            (BinOp::BitAnd, "&"),
+            (BinOp::BitOr, "|"),
+            (BinOp::BitXor, "^"),
+            (BinOp::Eq, "=="),
+            (BinOp::Ne, "!="),
+            (BinOp::Lt, "<"),
+            (BinOp::Le, "<="),
+            (BinOp::Gt, ">"),
+            (BinOp::Ge, ">="),
         ];
-        for (op, name) in binary {
+        for (op, symbol) in binary {
             assert_eq!(
                 rvalue_text(&fx, Rvalue::Binary(op, copy(2), int_const(1))),
-                format!("{name}(copy _2, 1)")
+                format!("copy _2 {symbol} 1")
             );
         }
-        let unary = [
-            (UnOp::Neg, "neg"),
-            (UnOp::Not, "not"),
-            (UnOp::BitNot, "bit_not"),
-        ];
-        for (op, name) in unary {
+        let unary = [(UnOp::Neg, "-"), (UnOp::Not, "!"), (UnOp::BitNot, "~")];
+        for (op, symbol) in unary {
             assert_eq!(
                 rvalue_text(&fx, Rvalue::Unary(op, Operand::Move(local(2)))),
-                format!("{name}(move _2)")
+                format!("{symbol}move _2")
             );
         }
     }
@@ -963,14 +1000,14 @@ fn Fib(n#1: int, this#2: in P) -> int {
                 &fx,
                 Rvalue::Cast(CastKind::Implicit, copy(2), Ty::Primitive(Primitive::Long))
             ),
-            "cast_implicit(copy _2, long)"
+            "(implicit long)copy _2"
         );
         assert_eq!(
             rvalue_text(
                 &fx,
                 Rvalue::Cast(CastKind::Numeric, copy(2), Ty::Primitive(Primitive::Byte))
             ),
-            "cast_numeric(copy _2, byte)"
+            "(byte)copy _2"
         );
         assert_eq!(
             rvalue_text(
@@ -1049,28 +1086,29 @@ fn Fib(n#1: int, this#2: in P) -> int {
             },
         ]);
         let mut locals = vec![temp(Ty::UNIT)];
-        locals.push(named(&fx, "x", LocalTy::Value(Ty::Struct(fx.p)), false));
-        locals.push(named(&fx, "t", LocalTy::Value(pair.clone()), false));
+        locals.push(named(&fx, "x", 0, LocalTy::Value(Ty::Struct(fx.p)), false));
+        locals.push(named(&fx, "t", 1, LocalTy::Value(pair.clone()), false));
         locals.push(named(
             &fx,
             "r",
+            2,
             LocalTy::Borrow(BorrowMode::Ref, pair),
             false,
         ));
-        locals.push(named(&fx, "i", LocalTy::Value(int()), false));
+        locals.push(named(&fx, "i", 3, LocalTy::Value(int()), false));
         let place = |local: u32, projections: &[Projection]| Place {
             local: LocalId(local),
             projections: projections.to_vec(),
         };
         let places = [
-            (place(1, &[Projection::Field(0)]), "x#1.X"),
-            (place(1, &[Projection::Field(1)]), "x#1.Y"),
-            (place(2, &[Projection::Field(1)]), "t#2.1"),
+            (place(1, &[Projection::Field(0)]), "x#0.X"),
+            (place(1, &[Projection::Field(1)]), "x#0.Y"),
+            (place(2, &[Projection::Field(1)]), "t#1.1"),
             (
                 place(2, &[Projection::Field(0), Projection::Field(1)]),
-                "t#2.0.Y",
+                "t#1.0.Y",
             ),
-            (place(3, &[Projection::Deref]), "(*r#3)"),
+            (place(3, &[Projection::Deref]), "(*r#2)"),
             (
                 place(
                     3,
@@ -1080,13 +1118,13 @@ fn Fib(n#1: int, this#2: in P) -> int {
                         Projection::Field(0),
                     ],
                 ),
-                "(*r#3).0.X",
+                "(*r#2).0.X",
             ),
-            (place(1, &[Projection::Field(9)]), "x#1.9"),
-            (place(4, &[Projection::Field(0)]), "i#4.0"),
+            (place(1, &[Projection::Field(9)]), "x#0.9"),
+            (place(4, &[Projection::Field(0)]), "i#3.0"),
             (
                 place(4, &[Projection::Field(0), Projection::Field(0)]),
-                "i#4.0.0",
+                "i#3.0.0",
             ),
         ];
         let statements = places
@@ -1173,6 +1211,47 @@ fn Fib(n#1: int, this#2: in P) -> int {
     }
 
     #[test]
+    fn a_local_function_callee_prints_by_the_name_of_its_body() {
+        let fx = fixture();
+        let callee_body = |index: usize| {
+            let mut body = one_block(&fx, vec![]);
+            body.blocks[0].terminator = end(
+                TerminatorKind::Call {
+                    callee: Callee::Local(index),
+                    args: vec![],
+                    dest: None,
+                    next: Some(BlockId(0)),
+                },
+                nowhere(),
+            );
+            body
+        };
+        let mir = Mir {
+            bodies: vec![
+                callee_body(1),
+                body_of("Fib.Step", 0, vec![temp(Ty::UNIT)], vec![]),
+            ],
+        };
+        let mut out = String::new();
+        write_mir(&mut out, &fx.db, Some(fx.file), &mir);
+        assert!(out.contains("call Fib.Step() -> bb0; // ?"), "{out}");
+        // The bodies are separated by one blank line.
+        assert!(out.starts_with("fn F() -> () {"), "{out}");
+        assert!(out.contains("}\n\nfn Fib.Step() -> () {"), "{out}");
+        // An index with no body keeps the index.
+        let mut out = String::new();
+        write_mir(
+            &mut out,
+            &fx.db,
+            None,
+            &Mir {
+                bodies: vec![callee_body(5)],
+            },
+        );
+        assert!(out.contains("call local#5() -> bb0;"), "{out}");
+    }
+
+    #[test]
     fn locals_print_their_types() {
         let fx = fixture();
         let body = body_of(
@@ -1180,13 +1259,13 @@ fn Fib(n#1: int, this#2: in P) -> int {
             1,
             vec![
                 temp(Ty::UNIT),
-                named(&fx, "r", LocalTy::Borrow(BorrowMode::Ref, int()), false),
+                named(&fx, "r", 3, LocalTy::Borrow(BorrowMode::Ref, int()), false),
             ],
             vec![],
         );
         assert_eq!(
             dump(&fx, &body),
-            "fn G(r#1: ref int) -> () {\n    let _0: ();\n    let r#1: ref int;\n}\n"
+            "fn G(r#3: ref int) -> () {\n    let _0: ();\n    let r#3: ref int;\n}\n"
         );
         let empty = body_of("H", 0, vec![temp(int())], vec![]);
         assert_eq!(dump(&fx, &empty), "fn H() -> int {\n    let _0: int;\n}\n");

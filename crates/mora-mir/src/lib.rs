@@ -7,7 +7,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-pub use dump::{write_body, write_body_in};
+pub use dump::{write_body, write_body_in, write_mir};
 pub use mir::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
     LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
