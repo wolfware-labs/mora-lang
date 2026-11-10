@@ -18,32 +18,50 @@
 //! A body is a header, one line per local, and its blocks:
 //!
 //! ```text
-//! fn Fib(n#0: int) -> int {
+//! fn UsersApi.Clamp(n#0: in int) -> int {
 //!     let _0: int;
-//!     let n#0: int;
+//!     let n#0: in int;
 //!     let mut acc#1: int;
 //!     let _3: bool;
 //!
 //!     bb0: {
-//!         _3 = copy n#0 < 2; // 3:9
-//!         switch copy _3 [true -> bb1] otherwise bb2; // 3:5
+//!         storage_live(acc#1); // 2:9
+//!         acc#1 = copy (*n#0); // 2:15
+//!         storage_live(_3); // 3:9
+//!         _3 = copy acc#1 < 0; // 3:9
+//!         switch copy _3 [false -> bb2] otherwise bb1; // 3:9
 //!     }
 //!
 //!     bb1: {
-//!         _0 = copy n#0; // 4:16
-//!         return; // 4:9
+//!         storage_dead(_3); // 3:9
+//!         acc#1 = 0; // 4:15
+//!         goto bb3; // 3:5
+//!     }
+//!
+//!     bb2: {
+//!         storage_dead(_3); // 3:9
+//!         goto bb3; // 3:5
+//!     }
+//!
+//!     bb3: {
+//!         _0 = copy acc#1; // 6:12
+//!         storage_dead(acc#1); // 6:5
+//!         return; // 6:5
 //!     }
 //! }
 //! ```
+//!
+//! That is the body of `Clamp(n: int): int { var acc = n; if (acc < 0) {
+//! acc = 0; } return acc; }`, written over six lines, in a file whose
+//! namespace is `UsersApi`.
 //!
 //! The header is `fn name(params) -> ret {`, each parameter as `local: type`
 //! and `ret` the type of `_0`. A local line is `let [mut] local: type;`. A
 //! type is written as the HIR dump writes it, with `in ` or `ref ` before
 //! the type of a borrow. A block is `bbN: {`, its statements, its
 //! terminator, and `}`, one per line, with a blank line before each block.
-//! Lowering numbers a body's blocks without gaps. A block with no statements
-//! that ends in `unreachable` is left out of the dump, and the other blocks
-//! keep their numbers. A real constant is written with a decimal point, as
+//! Every block is written; lowering numbers a body's blocks without gaps
+//! and drops the empty ones that nothing jumps to. A real constant is written with a decimal point, as
 //! `5.0`, in the shortest digits of its type. Every statement and terminator ends in
 //! `// line:col`, the one-based line and the one-based column, counted in
 //! characters as diagnostics count it, where its source starts, or `// ?`
@@ -77,7 +95,8 @@
 //! * `-a`, `!a` and `~a`: a unary operation.
 //! * `(type)a` and `(implicit type)a`: a numeric conversion written out,
 //!   and one that keeps every value.
-//! * `App.P{struct App.P}(a, b)`: a struct built from its parts, and
+//! * `App.P{struct App.P}(a, b)`: a struct built from the values of its
+//!   instance fields, in the order of the declaration, and
 //!   `(a, b)`, or `(a,)` for one part, a tuple.
 //! * `$"text{a}text"`: an interpolated string, with `{` and `}` in the
 //!   text doubled.
@@ -93,7 +112,8 @@
 //!   same body, in blocks side by side, are `Owner.Local`, then
 //!   `Owner.Local#2` and so on in the order of the text. The callee is
 //!   `Item{kind path}.X{init}` for the
-//!   initializer of a field (by index when the item has no such field), or
+//!   initializer of a field (by its index among the instance fields when
+//!   the item has no such field), or
 //!   the path of a standard-library function with `{external}`.
 
 use std::fmt::Write;
@@ -105,9 +125,9 @@ use mora_hir::{
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
-    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
-    LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind, UnOp,
+    AggregateKind, BinOp, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece, LocalId,
+    LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind,
+    Terminator, TerminatorKind, UnOp,
 };
 
 /// Appends the text of `body` to `out`. No file is known, so every span
@@ -196,9 +216,6 @@ impl Printer<'_> {
         }
         for id in body.block_ids() {
             let block = body.block(id);
-            if is_empty_unreachable(block) {
-                continue;
-            }
             let _ = write!(self.out, "\n    bb{}: {{\n", id.0);
             for statement in &block.statements {
                 self.statement(statement);
@@ -449,12 +466,6 @@ impl Printer<'_> {
         }
         (index.to_string(), None)
     }
-}
-
-/// A block with no statement that ends in `unreachable`; the dump leaves it
-/// out.
-fn is_empty_unreachable(block: &Block) -> bool {
-    block.statements.is_empty() && matches!(block.terminator.kind, TerminatorKind::Unreachable)
 }
 
 fn borrow_word(mode: BorrowMode) -> &'static str {
@@ -812,6 +823,10 @@ fn Fib(n#0: int, this: in P) -> int {
         goto bb1; // 6:1
     }
 
+    bb4: {
+        unreachable; // 6:1
+    }
+
     bb5: {
         call Console.WriteLine{external}(copy n#0) -> bb1; // 6:1
     }
@@ -821,25 +836,14 @@ fn Fib(n#0: int, this: in P) -> int {
     }
 
     #[test]
-    fn dump_omits_empty_unreachable_blocks() {
+    fn dump_shows_every_block() {
         let fx = fixture();
         let text = dump_in(&fx, &hand_built(&fx));
-        assert!(!text.contains("bb4"), "{text}");
-        assert!(!text.contains("unreachable"), "{text}");
-        // A block that is unreachable but holds a statement stays.
-        let kept = one_block(
-            &fx,
-            vec![Statement {
-                kind: StatementKind::Nop,
-                span: nowhere(),
-            }],
+        assert!(
+            text.contains("bb4: {\n        unreachable; // 6:1\n    }"),
+            "{text}"
         );
-        let mut kept = kept;
-        kept.blocks[0].terminator.kind = TerminatorKind::Unreachable;
-        let text = dump(&fx, &kept);
-        assert!(text.contains("nop; // ?"), "{text}");
-        assert!(text.contains("unreachable; // ?"), "{text}");
-        // An empty block that does not end in unreachable stays too.
+        // An empty block that does not end in unreachable is shown too.
         let empty = one_block(&fx, vec![]);
         assert!(dump(&fx, &empty).contains("bb0: {\n        return; // ?"));
     }

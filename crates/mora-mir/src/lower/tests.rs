@@ -2661,3 +2661,22 @@ fn a_call_reads_the_body_of_its_callee_only_for_a_default() {
     // default value.
     assert_eq!(lowered.len(), 1, "{lowered:?}");
 }
+
+#[test]
+fn the_dump_docs_show_a_real_body() {
+    let lowered = lowered(
+        "Clamp(n: int): int {\n    var acc = n;\n    if (acc < 0) {\n        acc = 0;\n    }\n    \
+         return acc;\n}\n",
+    );
+    let docs: String = include_str!("../dump.rs")
+        .lines()
+        .map_while(|line| line.strip_prefix("//!"))
+        .map(|line| format!("{}\n", line.strip_prefix(' ').unwrap_or(line)))
+        .collect();
+    let example = docs
+        .split_once("```text\n")
+        .and_then(|(_, rest)| rest.split_once("```"))
+        .map(|(example, _)| example)
+        .expect("the example of the module docs");
+    assert_eq!(example, lowered.dump("Clamp"));
+}
