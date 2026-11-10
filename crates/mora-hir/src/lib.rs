@@ -52,7 +52,7 @@ pub use bodies::{
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
-pub use diverging::{is_diverging, is_literal_bool};
+pub use diverging::{calls_diverging, is_diverging, is_literal_bool};
 pub use inference::{
     Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer,
     literal_constant, ty_name,

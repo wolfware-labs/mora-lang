@@ -24,7 +24,7 @@
 mod control;
 mod expr;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mora_diag::line_column;
 use mora_hir::{
@@ -395,6 +395,15 @@ fn index_u32(index: usize) -> u32 {
     }
 }
 
+/// What lowering an expression gives when the expression calls a function
+/// that does not return: nothing more of the expression is lowered, and
+/// lowering goes on in a block that control never gets to.
+#[derive(Debug)]
+pub(crate) struct Diverged;
+
+/// The result of lowering part of an expression.
+pub(crate) type Lowered<T> = Result<T, Diverged>;
+
 /// The lowering of one body: what the front end knows about it, and the
 /// body being built.
 pub(crate) struct Lowerer<'a> {
@@ -421,8 +430,35 @@ pub(crate) struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    /// The MIR body of `owner`.
+    /// The MIR body of `owner`. A local whose declaration control never
+    /// gets to is not declared: the body is lowered again without it.
     fn lower(db: &'a dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Body {
+        let (body, declared) = Self::lower_declaring(db, project, file, owner, None);
+        let lowered: HashSet<mora_hir::LocalId> = body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match statement.kind {
+                StatementKind::StorageLive(local) => body.local(local).source.as_ref(),
+                _ => None,
+            })
+            .map(|source| source.hir)
+            .collect();
+        if lowered.len() == declared {
+            return body;
+        }
+        Self::lower_declaring(db, project, file, owner, Some(&lowered)).0
+    }
+
+    /// The MIR body of `owner`, with the locals of `only` declared, or with
+    /// every local of the body; and how many locals of the body it declares.
+    fn lower_declaring(
+        db: &'a dyn Db,
+        project: Project,
+        file: SourceFile,
+        owner: BodyOwner,
+        only: Option<&HashSet<mora_hir::LocalId>>,
+    ) -> (Body, usize) {
         let hir = body(db, file, owner);
         let map = body_source_map(db, file, owner);
         let name = owner_name(db, project, file, owner);
@@ -493,18 +529,21 @@ impl<'a> Lowerer<'a> {
             });
             lowerer.locals.insert(local, id);
         }
-        lowerer.declare_locals(root);
+        let declared = lowerer.declare_locals(root, only);
         lowerer.root(root, &ret);
         let end = lowerer.end_span(root);
-        lowerer.builder.finish(end)
+        (lowerer.builder.finish(end), declared)
     }
 
-    /// Declares the locals of the HIR body, in the order of the text.
-    fn declare_locals(&mut self, root: ExprId) {
+    /// Declares the locals of the HIR body that are in `only`, or all of
+    /// them, in the order of the text, and returns how many it declared.
+    fn declare_locals(&mut self, root: ExprId, only: Option<&HashSet<mora_hir::LocalId>>) -> usize {
         let mut found = Vec::new();
         if let mora_hir::Expr::Block(stmts) = &self.hir.exprs[root] {
             self.collect_locals(stmts, &mut found);
         }
+        found.retain(|(local, _)| only.is_none_or(|only| only.contains(local)));
+        let declared = found.len();
         for (local, init) in found {
             let Some(ty) = self.inference.local(local) else {
                 if let Some(init) = init {
@@ -523,6 +562,7 @@ impl<'a> Lowerer<'a> {
             let id = self.builder.local(decl);
             self.locals.insert(local, id);
         }
+        declared
     }
 
     /// The locals `stmts` and the statements inside them declare, each with
@@ -577,15 +617,17 @@ impl<'a> Lowerer<'a> {
         let span = self.span(root);
         let mark = self.builder.temp_mark();
         if *ret == Ty::UNIT {
-            self.effect(root);
+            let effect = self.effect(root);
             self.builder.end_temps(mark, span);
-            if self.builder.is_reachable() {
+            if effect.is_ok() {
                 self.return_unit(span);
             }
         } else {
-            self.expr_into(root, Place::local(LocalId::RETURN));
+            let value = self.expr_into(root, Place::local(LocalId::RETURN));
             self.builder.end_temps(mark, span);
-            self.ret(span);
+            if value.is_ok() {
+                self.ret(span);
+            }
         }
     }
 
@@ -599,8 +641,14 @@ impl<'a> Lowerer<'a> {
         Span::new(self.file.id(self.db), range)
     }
 
+    /// The statements `stmts`, up to the first that control cannot get to:
+    /// code after a `return`, `break`, `continue` or a call that does not
+    /// return is not lowered.
     fn stmts(&mut self, stmts: &[StmtId]) {
         for &stmt in stmts {
+            if !self.builder.is_reachable() {
+                return;
+            }
             self.stmt(stmt);
         }
     }
@@ -609,7 +657,9 @@ impl<'a> Lowerer<'a> {
         match &self.hir.stmts[stmt] {
             Stmt::Expr(expr) => {
                 let mark = self.builder.temp_mark();
-                self.effect(*expr);
+                // A call that does not return ends the statement, and the
+                // code after it is not lowered.
+                let _ = self.effect(*expr);
                 self.builder.end_temps(mark, self.span(*expr));
             }
             Stmt::Local { local, init } => {
@@ -618,7 +668,7 @@ impl<'a> Lowerer<'a> {
                 self.builder.storage_live(id, at);
                 if let Some(init) = *init {
                     let mark = self.builder.temp_mark();
-                    self.expr_into(init, Place::local(id));
+                    let _ = self.expr_into(init, Place::local(id));
                     self.builder.end_temps(mark, self.span(init));
                 }
             }
@@ -635,13 +685,13 @@ impl<'a> Lowerer<'a> {
                     .leave_scope(Span::new(self.file.id(self.db), end));
             }
             Stmt::Return(value) => {
-                let range = self.map.jumps.get(&stmt).copied().unwrap_or_default();
-                let span = Span::new(self.file.id(self.db), range);
+                let span = self.stmt_span(stmt);
                 let mark = self.builder.temp_mark();
                 match *value {
                     Some(value) => {
-                        self.expr_into(value, Place::local(LocalId::RETURN));
-                        self.ret(span);
+                        if self.expr_into(value, Place::local(LocalId::RETURN)).is_ok() {
+                            self.ret(span);
+                        }
                     }
                     None => self.return_unit(span),
                 }

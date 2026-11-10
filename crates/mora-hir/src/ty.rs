@@ -16,6 +16,9 @@ pub enum Ty {
     Unsupported(Unsupported),
     /// A type that could not be lowered; a diagnostic says why.
     Error,
+    /// The never type of §11.4: the type of a call that does not return
+    /// (D-138). It converts to every type and cannot be written.
+    Never,
 }
 
 impl Ty {

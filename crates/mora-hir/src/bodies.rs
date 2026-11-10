@@ -656,8 +656,6 @@ pub struct BodySourceMap {
     /// The marker of each argument written with one, by the argument's
     /// expression.
     pub markers: HashMap<ExprId, TextRange>,
-    /// Each `break`, `continue` and `return` statement.
-    pub jumps: HashMap<StmtId, TextRange>,
     /// Each statement but a local declaration, as written.
     pub stmts: HashMap<StmtId, TextRange>,
     /// The `let` written right before the name of a local, which the fix
@@ -876,6 +874,14 @@ mod tests {
                 .get(&block)
                 .map(|range| u32::from(range.start())),
             Some(24)
+        );
+    }
+
+    #[test]
+    fn the_dump_shows_the_never_type_as_an_exclamation_mark() {
+        assert_eq!(
+            dump("let x = Todo();\n"),
+            "top-level {\n    let x#0: ! = Todo{external}();\n}\n"
         );
     }
 
@@ -1534,10 +1540,13 @@ get extension#0.Empty(items#0) => items#0[0];
         let file = file_named(&db, project, "src/Program.mr");
         let text = file.text(&db);
         let map = body_source_map(&db, file, BodyOwner::TopLevel);
-        let mut jumps: Vec<_> = map.jumps.values().map(|&range| &text[range]).collect();
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let mut jumps: Vec<_> = jump_ranges(body, map)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
         jumps.sort_unstable();
         assert_eq!(jumps, ["break;", "continue;"]);
-        let body = body(&db, file, BodyOwner::TopLevel);
         let mut lets: Vec<_> = map
             .lets
             .iter()
@@ -1555,8 +1564,20 @@ get extension#0.Empty(items#0) => items#0[0];
         let end = mora_span::TextSize::of(text.trim_end()) - mora_span::TextSize::of('}');
         let ends: Vec<_> = function.ends.values().map(|range| range.start()).collect();
         assert_eq!(ends, [end]);
-        let jumps: Vec<_> = function.jumps.values().map(|&range| &text[range]).collect();
+        let jumps: Vec<_> = jump_ranges(crate::body(&db, file, owner), function)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
         assert_eq!(jumps, ["return 1;"]);
+    }
+
+    /// The ranges of the `break`, `continue` and `return` statements.
+    fn jump_ranges(body: &Body, map: &BodySourceMap) -> Vec<mora_span::TextRange> {
+        body.stmts
+            .iter()
+            .filter(|(_, stmt)| matches!(stmt, Stmt::Break | Stmt::Continue | Stmt::Return(_)))
+            .map(|(id, _)| map.stmts[&id])
+            .collect()
     }
 
     #[test]

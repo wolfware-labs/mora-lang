@@ -90,6 +90,117 @@ impl Checker<'_> {
         for id in body.block_ids() {
             self.block(id, body.block(id));
         }
+        self.storage_pairs();
+    }
+
+    // Storage markers on every path.
+
+    /// Checks that the storage markers pair on every path from the entry
+    /// block: a local is made live only when it is not, ended only when it
+    /// is, nothing is live at `return`, and every path into a block brings
+    /// the same live locals. A block's live locals are those of the first
+    /// path that gets there, in breadth-first order from the entry; each
+    /// other path into it is compared with them. Blocks no path gets to are
+    /// not checked.
+    fn storage_pairs(&mut self) {
+        let body = self.body;
+        if body.blocks.is_empty() {
+            return;
+        }
+        let mut entries: Vec<Option<Vec<Storage>>> = vec![None; body.blocks.len()];
+        entries[0] = Some(vec![Storage::Unborn; body.locals.len()]);
+        let mut queue = std::collections::VecDeque::from([BlockId::ENTRY]);
+        while let Some(id) = queue.pop_front() {
+            let Some(mut live) = entries[id.index()].clone() else {
+                continue;
+            };
+            self.storage_walk(id, &mut live, false);
+            for target in successors(&body.block(id).terminator.kind) {
+                if let Some(entry @ None) = entries.get_mut(target.index()) {
+                    *entry = Some(live.clone());
+                    queue.push_back(target);
+                }
+            }
+        }
+        for id in body.block_ids() {
+            let Some(mut live) = entries[id.index()].clone() else {
+                continue;
+            };
+            self.storage_walk(id, &mut live, true);
+            let at = format!("fn {} bb{}[term]", body.name, id.0);
+            let kind = &body.block(id).terminator.kind;
+            if matches!(kind, TerminatorKind::Return) {
+                for local in live_locals(&live) {
+                    self.error(&at, format!("return while _{local} is live"));
+                }
+            }
+            for target in successors(kind) {
+                let Some(Some(entry)) = entries.get(target.index()) else {
+                    continue;
+                };
+                let here: Vec<String> = live_locals(&live)
+                    .filter(|&local| entry[local] != Storage::Live)
+                    .map(|local| format!("_{local}"))
+                    .collect();
+                let there: Vec<String> = live_locals(entry)
+                    .filter(|&local| live[local] != Storage::Live)
+                    .map(|local| format!("_{local}"))
+                    .collect();
+                if here.is_empty() && there.is_empty() {
+                    continue;
+                }
+                let mut parts = Vec::new();
+                if !here.is_empty() {
+                    parts.push(format!(
+                        "{} live here but not on another path",
+                        here.join(", ")
+                    ));
+                }
+                if !there.is_empty() {
+                    parts.push(format!(
+                        "{} live on another path but not here",
+                        there.join(", ")
+                    ));
+                }
+                self.error(
+                    &at,
+                    format!("bb{} is entered with {}", target.0, parts.join(", and ")),
+                );
+            }
+        }
+    }
+
+    /// Applies the storage markers of block `id` to `live`, reporting each
+    /// one that does not pair when `report` is set.
+    fn storage_walk(&mut self, id: BlockId, live: &mut [Storage], report: bool) {
+        let body = self.body;
+        for (index, statement) in body.block(id).statements.iter().enumerate() {
+            let (local, starts) = match statement.kind {
+                StatementKind::StorageLive(local) => (local, true),
+                StatementKind::StorageDead(local) => (local, false),
+                _ => continue,
+            };
+            // A marker on a local that is not one of the body's, or on the
+            // return slot or a parameter, is reported by `storage`.
+            if local.index() >= live.len() || local.index() <= body.params {
+                continue;
+            }
+            let problem = match (starts, live[local.index()]) {
+                (true, Storage::Live) => Some("storage_live of {}, which is already live"),
+                (false, Storage::Ended) => Some("storage_dead of {}, which is already dead"),
+                (false, Storage::Unborn) => Some("storage_dead of {}, which is not live"),
+                _ => None,
+            };
+            if report && let Some(problem) = problem {
+                let at = format!("fn {} bb{}[{index}]", body.name, id.0);
+                self.error(&at, problem.replace("{}", &format!("_{}", local.0)));
+            }
+            live[local.index()] = if starts {
+                Storage::Live
+            } else {
+                Storage::Ended
+            };
+        }
     }
 
     fn block(&mut self, id: BlockId, block: &Block) {
@@ -589,6 +700,42 @@ enum Param {
 
 /// The value type of a local type: the type itself, or the one a borrow
 /// refers to.
+/// The blocks control may go to after `kind`.
+fn successors(kind: &TerminatorKind) -> Vec<BlockId> {
+    match kind {
+        TerminatorKind::Goto(target) => vec![*target],
+        TerminatorKind::Switch {
+            targets, otherwise, ..
+        } => targets
+            .iter()
+            .map(|(_, target)| *target)
+            .chain([*otherwise])
+            .collect(),
+        TerminatorKind::Call { next, .. } => next.iter().copied().collect(),
+        TerminatorKind::Return | TerminatorKind::Unreachable => Vec::new(),
+    }
+}
+
+/// The storage of a local on a path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Storage {
+    /// Not started yet.
+    Unborn,
+    /// Started and not ended.
+    Live,
+    /// Started, then ended.
+    Ended,
+}
+
+/// The locals that `storage` marks live.
+fn live_locals(storage: &[Storage]) -> impl Iterator<Item = usize> + '_ {
+    storage
+        .iter()
+        .enumerate()
+        .filter(|&(_, &state)| state == Storage::Live)
+        .map(|(local, _)| local)
+}
+
 fn local_value_ty(ty: &LocalTy) -> &Ty {
     let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = ty;
     ty
@@ -1470,11 +1617,15 @@ mod tests {
                 rejects(&fx, &mir, true, "storage statement names");
             }
         }
+        let paired = simple(
+            vec![
+                stmt(StatementKind::StorageLive(LocalId(2))),
+                stmt(StatementKind::StorageDead(LocalId(2))),
+            ],
+            TerminatorKind::Return,
+        );
+        assert_eq!(validate(&fx.db, &paired, true), Ok(()));
         for kind in [StatementKind::StorageLive, StatementKind::StorageDead] {
-            assert_eq!(
-                validate(&fx.db, &with_stmt(stmt(kind(LocalId(2)))), true),
-                Ok(())
-            );
             rejects(&fx, &with_stmt(stmt(kind(LocalId(9)))), true, "no local _9");
         }
     }
@@ -2117,5 +2268,107 @@ mod tests {
     fn debug_validate_panics_on_a_bad_body() {
         let fx = fx();
         debug_validate(&fx.db, &missing_target(), true);
+    }
+
+    // Storage markers.
+
+    fn live(local: u32) -> Statement {
+        stmt(StatementKind::StorageLive(LocalId(local)))
+    }
+
+    fn dead(local: u32) -> Statement {
+        stmt(StatementKind::StorageDead(LocalId(local)))
+    }
+
+    /// `simple`'s locals with `blocks`.
+    fn blocks(blocks: Vec<Block>) -> Mir {
+        let mut mir = simple(vec![], TerminatorKind::Return);
+        mir.bodies[0].blocks = blocks;
+        mir
+    }
+
+    #[test]
+    fn rejects_storage_dead_of_a_local_never_live() {
+        let fx = fx();
+        let mir = simple(vec![dead(2)], TerminatorKind::Return);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb0[0]: storage_dead of _2, which is not live"]
+        );
+    }
+
+    #[test]
+    fn rejects_storage_dead_twice() {
+        let fx = fx();
+        let mir = simple(vec![live(2), dead(2), dead(2)], TerminatorKind::Return);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb0[2]: storage_dead of _2, which is already dead"]
+        );
+    }
+
+    #[test]
+    fn rejects_storage_live_twice() {
+        let fx = fx();
+        let mir = simple(vec![live(2), live(2), dead(2)], TerminatorKind::Return);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb0[1]: storage_live of _2, which is already live"]
+        );
+    }
+
+    #[test]
+    fn rejects_paths_that_join_with_different_live_locals() {
+        let fx = fx();
+        let mir = blocks(vec![
+            block(
+                vec![],
+                TerminatorKind::Switch {
+                    discr: copy(3),
+                    targets: vec![(Const::Bool(false), BlockId(2))],
+                    otherwise: BlockId(1),
+                },
+            ),
+            block(vec![live(2)], TerminatorKind::Goto(BlockId(3))),
+            block(vec![], TerminatorKind::Goto(BlockId(3))),
+            block(vec![], TerminatorKind::Return),
+        ]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb1[term]: bb3 is entered with _2 live here but not on another path"]
+        );
+    }
+
+    #[test]
+    fn rejects_a_local_live_at_return() {
+        let fx = fx();
+        let mir = simple(vec![live(2)], TerminatorKind::Return);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb0[term]: return while _2 is live"]
+        );
+    }
+
+    #[test]
+    fn accepts_paired_markers_on_every_path() {
+        let fx = fx();
+        // A loop that makes `_2` live and ends it each time round, and a
+        // join where both paths end it; a block nothing reaches is not
+        // checked.
+        let mir = blocks(vec![
+            block(vec![], TerminatorKind::Goto(BlockId(1))),
+            block(
+                vec![live(2)],
+                TerminatorKind::Switch {
+                    discr: copy(3),
+                    targets: vec![(Const::Bool(false), BlockId(3))],
+                    otherwise: BlockId(2),
+                },
+            ),
+            block(vec![dead(2)], TerminatorKind::Goto(BlockId(1))),
+            block(vec![dead(2)], TerminatorKind::Return),
+            block(vec![dead(2), dead(2)], TerminatorKind::Return),
+        ]);
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
     }
 }

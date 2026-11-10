@@ -355,7 +355,7 @@ pub(crate) fn type_errors(
 /// about it: an unsupported type or an error inside it makes it unknown.
 pub(crate) fn is_known(ty: &Ty) -> bool {
     match ty {
-        Ty::Primitive(_) | Ty::String | Ty::Struct(_) => true,
+        Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never => true,
         Ty::Tuple(elems) => elems.iter().all(|elem| is_known(&elem.ty)),
         Ty::Unsupported(_) | Ty::Error => false,
     }
@@ -372,9 +372,11 @@ fn same(a: &Ty, b: &Ty) -> bool {
 }
 
 /// Whether a value of `from` converts implicitly to `to` (§5.10): the same
-/// type, or one of the numeric rows.
+/// type, one of the numeric rows, or the never type, which converts to
+/// every type (§11.4).
 pub(crate) fn converts(from: &Ty, to: &Ty) -> bool {
     match (from, to) {
+        (Ty::Never, _) => true,
         (Ty::Primitive(from), Ty::Primitive(to)) => numeric::converts(*from, *to),
         _ => same(from, to),
     }
@@ -409,6 +411,7 @@ pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
         }
         Ty::Struct(item) => item_data(db, *item).name.clone(),
         Ty::Unsupported(_) | Ty::Error => "_".to_owned(),
+        Ty::Never => "!".to_owned(),
     }
 }
 
@@ -1764,6 +1767,38 @@ mod tests {
         );
         assert_eq!(super::ty_name(&db, &Ty::Tuple(vec![int])), "(int,)");
         assert_eq!(super::ty_name(&db, &Ty::Error), "_");
+        assert_eq!(super::ty_name(&db, &Ty::Never), "!");
+    }
+
+    #[test]
+    fn the_never_type_converts_to_every_type_and_nothing_to_it() {
+        let int = Ty::Primitive(Primitive::Int);
+        for to in [int.clone(), Ty::String, Ty::UNIT, Ty::Never] {
+            assert!(super::converts(&Ty::Never, &to), "{to:?}");
+        }
+        assert!(!super::converts(&int, &Ty::Never));
+        assert!(!super::converts(&Ty::String, &Ty::Never));
+        assert!(super::is_known(&Ty::Never));
+    }
+
+    #[test]
+    fn a_diverging_call_has_the_never_type() {
+        let text = "let c = 1 < 2;\nlet x = Todo();\nlet y: int = panic(\"no\");\n\
+                    let a = c && Todo();\nlet b = Unreachable() || c;\nlet n = 1 + Todo();\n\
+                    let k = c ? 1 : Todo();\nlet j = c ? Todo() : 2L;\nlet m = !Todo();\n\
+                    let s = Std.Todo();\nlet t = -Todo();\nlet u = Todo() << 1;\n\
+                    let w = Todo() == 1;\nlet v = Console.Todo();\n\
+                    let p = Todo() == Todo();\nlet q = Todo() + Todo();\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            local_types(text),
+            [
+                "c: bool", "x: !", "y: int", "a: bool", "b: bool", "n: int", "k: int", "j: long",
+                "m: bool", "s: !", "t: !", "u: !", "w: bool", "v: ?", "p: bool", "q: !",
+            ]
+        );
+        // A value that never exists is never converted.
+        assert_eq!(conversions(text), Vec::<String>::new());
     }
 
     #[test]

@@ -265,12 +265,8 @@ impl Lower {
             ast::Stmt::AttributedStmt(it) => return self.opt_stmt(it.stmt()),
             _ => self.scoped(|this| this.scoped_stmt(stmt)),
         };
-        let jump = matches!(lowered, Stmt::Break | Stmt::Continue | Stmt::Return(_));
         let id = self.alloc_stmt(lowered);
         self.map.stmts.insert(id, stmt.syntax().text_range());
-        if jump {
-            self.map.jumps.insert(id, stmt.syntax().text_range());
-        }
         if let ast::Stmt::Block(block) = stmt
             && let Some(brace) = block.r_brace_token()
         {

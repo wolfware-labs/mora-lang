@@ -245,7 +245,8 @@ impl Check<'_> {
     /// Records that `expr`, of type `from`, converts to `to` where it is
     /// used, when the types differ.
     fn widen(&mut self, expr: ExprId, from: &Ty, to: &Ty) {
-        if !same(from, to) {
+        // A value of the never type does not exist, so it is not converted.
+        if !same(from, to) && *from != Ty::Never {
             self.convert(expr, to.clone(), ConversionKind::Implicit);
         }
     }
@@ -812,7 +813,7 @@ impl Check<'_> {
                 if is_struct(&found) {
                     return None;
                 }
-                if found != BOOL {
+                if found != BOOL && found != Ty::Never {
                     self.errors.push(TypeError::Unary {
                         expr,
                         op,
@@ -831,6 +832,9 @@ impl Check<'_> {
                 let found = self.infer(operand)?;
                 if is_struct(&found) {
                     return None;
+                }
+                if found == Ty::Never {
+                    return Some(Ty::Never);
                 }
                 let result = match numeric::as_numeric(&found) {
                     Some(ty) => match (op, ty) {
@@ -930,7 +934,7 @@ impl Check<'_> {
                 let mut known = true;
                 for operand in [lhs, rhs] {
                     match self.infer(operand).filter(is_known) {
-                        Some(ty) if ty != BOOL => {
+                        Some(ty) if ty != BOOL && ty != Ty::Never => {
                             self.errors.push(TypeError::Logical { op, operand, ty });
                         }
                         Some(_) => {}
@@ -953,6 +957,9 @@ impl Check<'_> {
                 }
                 self.coerce(rhs, count.as_ref(), &INT, Context::Value);
                 let value = value?;
+                if value == Ty::Never {
+                    return Some(Ty::Never);
+                }
                 return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
                     Some(ty) => {
                         let widened = Ty::Primitive(numeric::widen_small(ty));
@@ -987,6 +994,16 @@ impl Check<'_> {
         if !is_known(&l) || !is_known(&r) {
             return None;
         }
+        // An operand of the never type takes the other's type; with two, the
+        // operation is of the never type too, a comparison aside (§11.4).
+        let (found_l, found_r) = (l.clone(), r.clone());
+        let (l, r) = match (l, r) {
+            (Ty::Never, Ty::Never) if comparison => return Some(BOOL),
+            (Ty::Never, Ty::Never) => return Some(Ty::Never),
+            (Ty::Never, r) => (r.clone(), r),
+            (l, Ty::Never) => (l.clone(), l),
+            (l, r) => (l, r),
+        };
         // A struct may declare its arithmetic, bitwise and shift operators
         // (§6.9), which this milestone does not look up.
         if !comparison && (is_struct(&l) || is_struct(&r)) {
@@ -1008,8 +1025,8 @@ impl Check<'_> {
                     && let Some(promoted) = numeric::promote(a, b)
                 {
                     let promoted = Ty::Primitive(promoted);
-                    self.widen(lhs, &l, &promoted);
-                    self.widen(rhs, &r, &promoted);
+                    self.widen(lhs, &found_l, &promoted);
+                    self.widen(rhs, &found_r, &promoted);
                 }
                 Some(ty)
             }
@@ -1123,7 +1140,7 @@ impl Check<'_> {
                     found: found.clone(),
                     context: Context::Value,
                 });
-            } else if !same(found, places) {
+            } else if !same(found, places) && *found != Ty::Never {
                 let conversion = Conversion {
                     to: places.clone(),
                     kind: ConversionKind::Implicit,
@@ -1148,7 +1165,8 @@ impl Check<'_> {
                     context: Context::Value,
                 });
             }
-            (_, Ty::Unsupported(_) | Ty::Error) => {}
+            // A value of the never type deconstructs to anything (§11.4).
+            (_, Ty::Unsupported(_) | Ty::Error | Ty::Never) => {}
         }
     }
 

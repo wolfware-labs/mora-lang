@@ -3,13 +3,13 @@
 
 use mora_hir::{
     Arg, BinaryOp, BodyOwner, Constant, ConversionKind, Expr, ExprId, Inference, InterpPart,
-    ItemId, Literal, ParamMode, Resolved, Signature, Target, Ty, UnaryOp, body, infer,
-    is_diverging, literal_constant, signature,
+    ItemId, Literal, ParamMode, Resolved, Signature, Target, Ty, UnaryOp, body, calls_diverging,
+    infer, literal_constant, signature,
 };
 use mora_span::Span;
 use mora_syntax::lexer::literal::{char_value, string_value};
 
-use super::Lowerer;
+use super::{Diverged, Lowered, Lowerer};
 use crate::types::has_receiver;
 use crate::{
     AggregateKind, BinOp, BorrowMode, Callee, CastKind, Const, InterpPiece, LocalTy, Operand,
@@ -28,13 +28,13 @@ pub(super) enum Dest {
 
 impl Lowerer<'_> {
     /// `expr` as an expression statement: its effects, its value dropped.
-    pub(super) fn effect(&mut self, expr: ExprId) {
+    pub(super) fn effect(&mut self, expr: ExprId) -> Lowered<()> {
         let hir = self.hir;
         match &hir.exprs[expr] {
             Expr::Call { callee, args } => {
-                self.call(expr, *callee, args, Dest::Discard);
+                self.call(expr, *callee, args, Dest::Discard)?;
             }
-            Expr::Assign { op, lhs, rhs } => self.assign(expr, *op, *lhs, *rhs),
+            Expr::Assign { op, lhs, rhs } => self.assign(expr, *op, *lhs, *rhs)?,
             Expr::Postfix {
                 increment,
                 expr: target,
@@ -44,41 +44,43 @@ impl Lowerer<'_> {
             // Anything else, a prefix step among them, is evaluated and its
             // value dropped.
             _ => {
-                self.operand(expr);
+                self.operand(expr)?;
             }
         }
+        Ok(())
     }
 
     /// Stores the value of `expr`, converted as inference records, in
     /// `dest`.
-    pub(super) fn expr_into(&mut self, expr: ExprId, dest: Place) {
+    pub(super) fn expr_into(&mut self, expr: ExprId, dest: Place) -> Lowered<()> {
         let hir = self.hir;
         if let Expr::Call { callee, args } = &hir.exprs[expr]
             && self.inference.conversion(expr).is_none()
         {
-            self.call(expr, *callee, args, Dest::Place(dest));
-            return;
+            self.call(expr, *callee, args, Dest::Place(dest))?;
+            return Ok(());
         }
-        let value = self.converted_rvalue(expr);
+        let value = self.converted_rvalue(expr)?;
         self.builder.assign(dest, value, self.span(expr));
+        Ok(())
     }
 
     /// The computation of the value of `expr`, converted as inference
     /// records.
-    fn converted_rvalue(&mut self, expr: ExprId) -> Rvalue {
-        match self.inference.conversion(expr) {
+    fn converted_rvalue(&mut self, expr: ExprId) -> Lowered<Rvalue> {
+        Ok(match self.inference.conversion(expr) {
             Some(conversion) => {
-                let value = self.operand_unconverted(expr);
+                let value = self.operand_unconverted(expr)?;
                 Rvalue::Cast(cast_kind(conversion.kind), value, conversion.to.clone())
             }
-            None => self.rvalue(expr),
-        }
+            None => self.rvalue(expr)?,
+        })
     }
 
     /// The value of `expr`, converted as inference records.
-    pub(super) fn operand(&mut self, expr: ExprId) -> Operand {
-        let value = self.operand_unconverted(expr);
-        match self.inference.conversion(expr) {
+    pub(super) fn operand(&mut self, expr: ExprId) -> Lowered<Operand> {
+        let value = self.operand_unconverted(expr)?;
+        Ok(match self.inference.conversion(expr) {
             Some(conversion) => self.cast_to_temp(
                 cast_kind(conversion.kind),
                 value,
@@ -86,17 +88,17 @@ impl Lowerer<'_> {
                 self.span(expr),
             ),
             None => value,
-        }
+        })
     }
 
     /// The value of `expr` before any conversion: a constant, a place that
     /// holds it, or a temporary that it is stored in.
-    fn operand_unconverted(&mut self, expr: ExprId) -> Operand {
+    fn operand_unconverted(&mut self, expr: ExprId) -> Lowered<Operand> {
         if let Some(constant) = self.constant(expr) {
-            return Operand::Const(constant);
+            return Ok(Operand::Const(constant));
         }
         let hir = self.hir;
-        match &hir.exprs[expr] {
+        Ok(match &hir.exprs[expr] {
             Expr::Local(local) => Operand::Copy(self.local_place(*local)),
             Expr::Unary {
                 op: op @ (UnaryOp::PreIncrement | UnaryOp::PreDecrement),
@@ -106,7 +108,7 @@ impl Lowerer<'_> {
                 increment,
                 expr: target,
             } => self.postfix(expr, *target, *increment),
-            Expr::Call { callee, args } => match self.call(expr, *callee, args, Dest::Temp) {
+            Expr::Call { callee, args } => match self.call(expr, *callee, args, Dest::Temp)? {
                 Some(place) => Operand::Copy(place),
                 None => self.ice(expr, "the call has no result"),
             },
@@ -114,37 +116,37 @@ impl Lowerer<'_> {
                 op: op @ (BinaryOp::And | BinaryOp::Or),
                 lhs,
                 rhs,
-            } => self.logical(expr, *op == BinaryOp::And, *lhs, *rhs),
+            } => self.logical(expr, *op == BinaryOp::And, *lhs, *rhs)?,
             Expr::Conditional {
                 condition,
                 then,
                 r#else,
-            } => self.conditional(expr, *condition, *then, *r#else),
+            } => self.conditional(expr, *condition, *then, *r#else)?,
             _ => {
                 let ty = self.ty(expr);
-                let value = self.rvalue(expr);
+                let value = self.rvalue(expr)?;
                 let span = self.span(expr);
                 let temp = self.builder.temp(LocalTy::Value(ty), span);
                 self.builder.assign(Place::local(temp), value, span);
                 Operand::Copy(Place::local(temp))
             }
-        }
+        })
     }
 
     /// The computation of the value of `expr`, before any conversion.
-    fn rvalue(&mut self, expr: ExprId) -> Rvalue {
+    fn rvalue(&mut self, expr: ExprId) -> Lowered<Rvalue> {
         if let Some(constant) = self.constant(expr) {
-            return Rvalue::Use(Operand::Const(constant));
+            return Ok(Rvalue::Use(Operand::Const(constant)));
         }
         let hir = self.hir;
-        match &hir.exprs[expr] {
+        Ok(match &hir.exprs[expr] {
             // A value that is a branch is stored in a temporary.
             Expr::Binary {
                 op: BinaryOp::And | BinaryOp::Or,
                 ..
             }
-            | Expr::Conditional { .. } => Rvalue::Use(self.operand_unconverted(expr)),
-            Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs),
+            | Expr::Conditional { .. } => Rvalue::Use(self.operand_unconverted(expr)?),
+            Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs)?,
             Expr::Unary {
                 op: op @ (UnaryOp::Neg | UnaryOp::Not | UnaryOp::BitNot),
                 expr: operand,
@@ -154,7 +156,7 @@ impl Lowerer<'_> {
                     UnaryOp::Not => UnOp::Not,
                     _ => UnOp::BitNot,
                 };
-                Rvalue::Unary(op, self.operand(*operand))
+                Rvalue::Unary(op, self.operand(*operand)?)
             }
             // A written cast is the conversion inference records on its
             // operand.
@@ -162,11 +164,11 @@ impl Lowerer<'_> {
             | Expr::Unary {
                 op: UnaryOp::Plus,
                 expr: inner,
-            } => self.converted_rvalue(*inner),
-            Expr::Interpolated(parts) => self.interpolate(expr, parts),
+            } => self.converted_rvalue(*inner)?,
+            Expr::Interpolated(parts) => self.interpolate(expr, parts)?,
             Expr::Tuple(elems) => {
                 let values: Vec<ExprId> = elems.iter().map(|&(_, elem)| elem).collect();
-                Rvalue::Aggregate(AggregateKind::Tuple, self.operands(&values))
+                Rvalue::Aggregate(AggregateKind::Tuple, self.operands(&values)?)
             }
             Expr::Local(_)
             | Expr::Call { .. }
@@ -174,9 +176,9 @@ impl Lowerer<'_> {
             | Expr::Unary {
                 op: UnaryOp::PreIncrement | UnaryOp::PreDecrement,
                 ..
-            } => Rvalue::Use(self.operand_unconverted(expr)),
+            } => Rvalue::Use(self.operand_unconverted(expr)?),
             _ => self.ice(expr, "the expression is not lowered"),
-        }
+        })
     }
 
     /// The type inference gives `expr`.
@@ -237,13 +239,13 @@ impl Lowerer<'_> {
     // Operands in order.
 
     /// The values of `exprs`, evaluated from left to right.
-    fn operands(&mut self, exprs: &[ExprId]) -> Vec<Operand> {
+    fn operands(&mut self, exprs: &[ExprId]) -> Lowered<Vec<Operand>> {
         let mut operands = Vec::with_capacity(exprs.len());
         for (index, &expr) in exprs.iter().enumerate() {
-            let operand = self.operand(expr);
+            let operand = self.operand(expr)?;
             operands.push(self.stable(operand, &exprs[index + 1..], self.span(expr)));
         }
-        operands
+        Ok(operands)
     }
 
     /// `operand`, read now: a place that one of the expressions evaluated
@@ -282,24 +284,29 @@ impl Lowerer<'_> {
 
     // Operators and assignments.
 
-    fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Rvalue {
+    fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Lowered<Rvalue> {
         let Some(op) = bin_op(op) else {
             self.ice(expr, "the operator is not lowered")
         };
-        let left = self.operand(lhs);
+        let left = self.operand(lhs)?;
         let left = self.stable(left, &[rhs], self.span(lhs));
-        let right = self.operand(rhs);
-        Rvalue::Binary(op, left, right)
+        let right = self.operand(rhs)?;
+        Ok(Rvalue::Binary(op, left, right))
     }
 
     /// `lhs = rhs`, or `lhs op= rhs`: `lhs = (T)(lhs op rhs)`, its place
     /// evaluated once, with the cast back to the type `T` of the place
     /// that inference records on the assignment (§7.12).
-    fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
+    fn assign(
+        &mut self,
+        expr: ExprId,
+        op: Option<BinaryOp>,
+        lhs: ExprId,
+        rhs: ExprId,
+    ) -> Lowered<()> {
         let place = self.place(lhs);
         let Some(op) = op else {
-            self.expr_into(rhs, place);
-            return;
+            return self.expr_into(rhs, place);
         };
         let Some(op) = bin_op(op) else {
             self.ice(expr, "the operator is not lowered")
@@ -317,7 +324,7 @@ impl Lowerer<'_> {
         };
         let result_ty = self.operand_ty(&read);
         let read = self.stable(read, &[rhs], self.span(lhs));
-        let right = self.operand(rhs);
+        let right = self.operand(rhs)?;
         let value = Rvalue::Binary(op, read, right);
         let span = self.span(expr);
         match self.inference.conversion(expr) {
@@ -333,6 +340,7 @@ impl Lowerer<'_> {
             }
             None => self.builder.assign(place, value, span),
         }
+        Ok(())
     }
 
     /// `++` or `--` on the place `target` names: `target = target ± 1` in
@@ -372,7 +380,7 @@ impl Lowerer<'_> {
 
     /// An interpolated string as [`Rvalue::Interpolate`], which stands in
     /// until the standard library formats values.
-    fn interpolate(&mut self, expr: ExprId, parts: &[InterpPart]) -> Rvalue {
+    fn interpolate(&mut self, expr: ExprId, parts: &[InterpPart]) -> Lowered<Rvalue> {
         // Each hole's value, then its alignment, from left to right.
         let mut values = Vec::new();
         for part in parts {
@@ -384,7 +392,7 @@ impl Lowerer<'_> {
                 values.extend(alignment);
             }
         }
-        let mut operands = self.operands(&values).into_iter();
+        let mut operands = self.operands(&values)?.into_iter();
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             pieces.push(match part {
@@ -409,14 +417,20 @@ impl Lowerer<'_> {
                 }
             });
         }
-        Rvalue::Interpolate(pieces)
+        Ok(Rvalue::Interpolate(pieces))
     }
 
     // Calls.
 
     /// The call `expr` of `callee` with `args`, its result going to `dest`.
     /// Returns the place the result went to.
-    fn call(&mut self, expr: ExprId, callee: ExprId, args: &[Arg], dest: Dest) -> Option<Place> {
+    fn call(
+        &mut self,
+        expr: ExprId,
+        callee: ExprId,
+        args: &[Arg],
+        dest: Dest,
+    ) -> Lowered<Option<Place>> {
         match self.inference.callee(expr) {
             Some(mora_hir::Callee::Item(item)) => self.item_call(expr, item, args, dest),
             Some(mora_hir::Callee::Local(_)) => {
@@ -427,11 +441,12 @@ impl Lowerer<'_> {
                     self.ice(expr, "the call has no callee")
                 };
                 // A call that does not return has no value to store.
-                if !matches!(dest, Dest::Discard) && !is_diverging(&path) {
+                let diverges = calls_diverging(self.hir, self.resolution, callee);
+                if !matches!(dest, Dest::Discard) && !diverges {
                     self.reject_external(expr);
                 }
-                self.external_call(expr, path, args);
-                None
+                self.external_call(expr, path, args, diverges)?;
+                Ok(None)
             }
         }
     }
@@ -442,9 +457,8 @@ impl Lowerer<'_> {
     pub(super) fn reject_external_value(&self, expr: ExprId) {
         if let Expr::Call { callee, .. } = &self.hir.exprs[expr]
             && self.inference.callee(expr).is_none()
-            && self
-                .external_path(*callee)
-                .is_some_and(|path| !is_diverging(&path))
+            && self.external_path(*callee).is_some()
+            && !calls_diverging(self.hir, self.resolution, *callee)
         {
             self.reject_external(expr);
         }
@@ -480,12 +494,17 @@ impl Lowerer<'_> {
 
     /// A call of a function of the standard library, whose arguments are
     /// passed as values and whose result is dropped. A function that never
-    /// returns ends the block (D-138).
-    fn external_call(&mut self, expr: ExprId, path: Vec<String>, args: &[Arg]) {
+    /// returns, as `diverges` says, ends the block (D-138).
+    fn external_call(
+        &mut self,
+        expr: ExprId,
+        path: Vec<String>,
+        args: &[Arg],
+        diverges: bool,
+    ) -> Lowered<()> {
         let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
-        let args = self.operands(&values);
+        let args = self.operands(&values)?;
         let span = self.span(expr);
-        let diverges = is_diverging(&path);
         let call = |next| TerminatorKind::Call {
             callee: Callee::External(path),
             args,
@@ -494,17 +513,24 @@ impl Lowerer<'_> {
         };
         if diverges {
             self.builder.terminate_dead_end(call(None), span);
-        } else {
-            let next = self.builder.new_block();
-            self.builder.terminate(call(Some(next)), span);
-            self.builder.switch_to(next);
+            return Err(Diverged);
         }
+        let next = self.builder.new_block();
+        self.builder.terminate(call(Some(next)), span);
+        self.builder.switch_to(next);
+        Ok(())
     }
 
     /// A call of the function `item`. The arguments are evaluated in the
     /// order they are written and passed in the order of the parameters,
     /// each omitted one as its default value.
-    fn item_call(&mut self, expr: ExprId, item: ItemId, args: &[Arg], dest: Dest) -> Option<Place> {
+    fn item_call(
+        &mut self,
+        expr: ExprId,
+        item: ItemId,
+        args: &[Arg],
+        dest: Dest,
+    ) -> Lowered<Option<Place>> {
         let Signature::Function(function) = signature(self.db, item) else {
             self.ice(expr, "the callee is not a function")
         };
@@ -523,7 +549,7 @@ impl Lowerer<'_> {
         let mut passed: Vec<Option<Operand>> = vec![None; function.params.len()];
         for (index, (&value, &param)) in values.iter().zip(bound).enumerate() {
             let mode = function.params[param].mode;
-            passed[param] = Some(self.argument(value, mode, &values[index + 1..]));
+            passed[param] = Some(self.argument(value, mode, &values[index + 1..])?);
         }
         let span = self.span(expr);
         let mut operands = Vec::with_capacity(passed.len());
@@ -552,21 +578,21 @@ impl Lowerer<'_> {
         };
         self.builder.terminate(call, span);
         self.builder.switch_to(next);
-        dest
+        Ok(dest)
     }
 
     /// The argument `value` for a parameter of mode `mode`, before the
     /// arguments `later`: a borrow for `in` and `ref`, a value for `move`
     /// (§10.3).
-    fn argument(&mut self, value: ExprId, mode: ParamMode, later: &[ExprId]) -> Operand {
+    fn argument(&mut self, value: ExprId, mode: ParamMode, later: &[ExprId]) -> Lowered<Operand> {
         let span = self.span(value);
         if mode == ParamMode::Ref {
             let place = self.place(value);
-            return self.borrow(BorrowMode::Ref, place, span);
+            return Ok(self.borrow(BorrowMode::Ref, place, span));
         }
-        let operand = self.operand(value);
+        let operand = self.operand(value)?;
         let operand = self.stable(operand, later, span);
-        self.pass(operand, mode, span)
+        Ok(self.pass(operand, mode, span))
     }
 
     /// `operand` passed to a parameter of mode `mode`: a borrow of the

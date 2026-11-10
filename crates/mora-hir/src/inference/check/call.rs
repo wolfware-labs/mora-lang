@@ -9,6 +9,7 @@ use super::Check;
 use crate::arena::arena_index;
 use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
 use crate::defs::ItemId;
+use crate::diverging::calls_diverging;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
     Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
@@ -119,6 +120,12 @@ impl<'a> Check<'a> {
         // calling only what can be called.
         let ordered = self.named_arguments_in_order(args);
         let candidates = match self.callees(callee) {
+            // A function of the standard library that never returns has the
+            // never type (§11.4); nothing else is known of the library.
+            Callees::Unknown if calls_diverging(self.body, self.resolution, callee) => {
+                self.unchecked_call(args);
+                return Some(Ty::Never);
+            }
             Callees::Unknown => return self.unchecked_call(args),
             Callees::NotCallable(ty) => {
                 self.errors

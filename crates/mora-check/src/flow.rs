@@ -9,9 +9,9 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
-    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD, Signature,
-    Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, is_diverging, is_literal_bool,
-    item_tree, signature,
+    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Signature, Stmt, StmtId,
+    Ty, UnaryOp, arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree,
+    signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
@@ -852,28 +852,9 @@ impl Flow<'_> {
         }
     }
 
-    /// Whether a call of `callee` never returns: a call of `panic`,
-    /// `Unreachable` or `Todo` of the standard library, by its name or as
-    /// `Std.panic` (§11.4, D-138).
+    /// Whether a call of `callee` never returns (D-138).
     fn diverges(&self, callee: ExprId) -> bool {
-        let body = self.body;
-        // The path that has to name the standard library: the function's own
-        // name, or `Std` before it.
-        let (name, path) = match &body.exprs[callee] {
-            Expr::Path(path) => match path.segments.as_slice() {
-                [name] => (name, callee),
-                _ => return false,
-            },
-            Expr::Member { receiver, name, .. } => match &body.exprs[*receiver] {
-                Expr::Path(path) if path.segments == [STD] => (name, *receiver),
-                _ => return false,
-            },
-            _ => return false,
-        };
-        is_diverging(std::slice::from_ref(name))
-            && self.resolution.paths.get(&path).is_some_and(|resolution| {
-                matches!(resolution.target, Target::Item(Resolved::External))
-            })
+        calls_diverging(self.body, self.resolution, callee)
     }
 
     /// A read of `local` at `expr`: `MR0181` when it may not be assigned.
@@ -1002,8 +983,8 @@ impl Flow<'_> {
 
     /// Where the `break`, `continue` or `return` statement `stmt` is.
     fn jump_span(&self, stmt: StmtId) -> Span {
-        // Lowering records the range of every jump.
-        self.span(self.map.jumps.get(&stmt).copied().unwrap_or_default())
+        // Lowering records the range of every statement but a declaration.
+        self.span(self.map.stmts.get(&stmt).copied().unwrap_or_default())
     }
 
     /// `MR0183` for `break` or `continue` outside a loop.

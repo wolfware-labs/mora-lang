@@ -5,12 +5,13 @@
 //! block where the value is `true` as `otherwise`. The temporaries of a
 //! condition live until the `switch` and end at the start of both blocks
 //! it goes to. A loop whose condition is the literal `true`, or that has
-//! none, has no `switch`: only `break` leaves it (D-138).
+//! none, has no `switch`: only `break` leaves it (D-138). A condition that
+//! calls a function that does not return ends the statement there.
 
 use mora_hir::{ExprId, StmtId, is_literal_bool};
 use mora_span::{Span, TextRange};
 
-use super::Lowerer;
+use super::{Diverged, Lowered, Lowerer};
 use crate::{BlockId, Const, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
 /// A loop around the statement being lowered.
@@ -33,14 +34,19 @@ impl Lowerer<'_> {
         then: StmtId,
         r#else: Option<StmtId>,
     ) {
-        self.branches(
+        // A condition that does not return ends the statement.
+        let _ = self.branches(
             condition,
             self.stmt_span(stmt),
-            |this| this.stmt(then),
+            |this| {
+                this.stmt(then);
+                Ok(())
+            },
             |this| {
                 if let Some(r#else) = r#else {
                     this.stmt(r#else);
                 }
+                Ok(())
             },
         );
     }
@@ -52,7 +58,9 @@ impl Lowerer<'_> {
         let head = self.builder.new_block();
         self.builder.goto(head, span);
         self.builder.switch_to(head);
-        let (start, exit) = self.loop_condition(Some(condition), head);
+        let Ok((start, exit)) = self.loop_condition(Some(condition), head) else {
+            return;
+        };
         let after = self.builder.new_block();
         self.loop_body(body, after, head, start, span);
         self.leave_loop(exit, after, span);
@@ -60,7 +68,7 @@ impl Lowerer<'_> {
 
     /// `do body while (condition);`: the body, then the condition, which
     /// goes back to the body. A condition that is the literal `false` does
-    /// not go back.
+    /// not go back; one that control never gets to is not lowered.
     pub(super) fn do_while(&mut self, stmt: StmtId, body: StmtId, condition: ExprId) {
         let span = self.stmt_span(stmt);
         let start = self.builder.new_block();
@@ -69,13 +77,18 @@ impl Lowerer<'_> {
         let after = self.builder.new_block();
         self.loop_body(body, after, next, start, span);
         self.builder.switch_to(next);
-        if is_literal_bool(self.hir, condition, false) {
+        if !self.builder.is_reachable() || is_literal_bool(self.hir, condition, false) {
             self.builder.goto(after, span);
-        } else {
-            let (back, exit) = self.loop_condition(Some(condition), next);
+        } else if let Ok((back, exit)) = self.loop_condition(Some(condition), next) {
             self.builder.switch_to(back);
             self.builder.goto(start, span);
-            self.leave_loop(exit, after, span);
+            if let Some(exit) = exit {
+                self.builder.switch_to(exit);
+                self.builder.goto(after, span);
+            }
+        } else {
+            // The condition does not return; `break` still gets to `after`.
+            self.builder.goto(after, span);
         }
         self.builder.switch_to(after);
     }
@@ -91,25 +104,37 @@ impl Lowerer<'_> {
         body: StmtId,
     ) {
         let span = self.stmt_span(stmt);
+        let end = self.stmt_end(body);
         self.builder.enter_scope();
         self.stmts(init);
+        if self.builder.is_reachable() {
+            self.for_loop(condition, update, body, span);
+        }
+        self.builder.leave_scope(end);
+    }
+
+    /// The loop of a `for`, after its `init`.
+    fn for_loop(&mut self, condition: Option<ExprId>, update: &[ExprId], body: StmtId, span: Span) {
         let head = self.builder.new_block();
         self.builder.goto(head, span);
         self.builder.switch_to(head);
-        let (start, exit) = self.loop_condition(condition, head);
+        let Ok((start, exit)) = self.loop_condition(condition, head) else {
+            return;
+        };
         let after = self.builder.new_block();
         let next = self.builder.new_block();
         self.loop_body(body, after, next, start, span);
         self.builder.switch_to(next);
         for &expr in update {
+            if !self.builder.is_reachable() {
+                break;
+            }
             let mark = self.builder.temp_mark();
-            self.effect(expr);
+            let _ = self.effect(expr);
             self.builder.end_temps(mark, self.span(expr));
         }
         self.builder.goto(head, span);
         self.leave_loop(exit, after, span);
-        let end = self.stmt_end(body);
-        self.builder.leave_scope(end);
     }
 
     /// `break` or `continue`: the storage of the locals of every scope
@@ -134,21 +159,28 @@ impl Lowerer<'_> {
 
     /// `lhs && rhs` (`and`) or `lhs || rhs` in a new temporary: `rhs` is
     /// evaluated only where `lhs` does not decide the value.
-    pub(super) fn logical(&mut self, expr: ExprId, and: bool, lhs: ExprId, rhs: ExprId) -> Operand {
+    pub(super) fn logical(
+        &mut self,
+        expr: ExprId,
+        and: bool,
+        lhs: ExprId,
+        rhs: ExprId,
+    ) -> Lowered<Operand> {
         let span = self.span(expr);
         let ty = self.ty(expr);
         let result = Place::local(self.builder.temp(LocalTy::Value(ty), span));
         let decided = |this: &mut Self| {
             let value = Rvalue::Use(Operand::Const(Const::Bool(!and)));
             this.builder.assign(result.clone(), value, span);
+            Ok(())
         };
         let rest = |this: &mut Self| this.value_into(rhs, result.clone());
         if and {
-            self.branches(lhs, span, rest, decided);
+            self.branches(lhs, span, rest, decided)?;
         } else {
-            self.branches(lhs, span, decided, rest);
+            self.branches(lhs, span, decided, rest)?;
         }
-        Operand::Copy(result)
+        Ok(Operand::Copy(result))
     }
 
     /// `condition ? then : r#else` in a new temporary.
@@ -158,7 +190,7 @@ impl Lowerer<'_> {
         condition: ExprId,
         then: ExprId,
         r#else: ExprId,
-    ) -> Operand {
+    ) -> Lowered<Operand> {
         let span = self.span(expr);
         let ty = self.ty(expr);
         let result = Place::local(self.builder.temp(LocalTy::Value(ty), span));
@@ -167,46 +199,56 @@ impl Lowerer<'_> {
             span,
             |this| this.value_into(then, result.clone()),
             |this| this.value_into(r#else, result.clone()),
-        );
-        Operand::Copy(result)
+        )?;
+        Ok(Operand::Copy(result))
     }
 
     /// Stores the value of `expr` in `dest` inside a branch, whose own
     /// temporaries end there.
-    fn value_into(&mut self, expr: ExprId, dest: Place) {
+    fn value_into(&mut self, expr: ExprId, dest: Place) -> Lowered<()> {
         let mark = self.builder.temp_mark();
-        self.expr_into(expr, dest);
+        let value = self.expr_into(expr, dest);
         self.builder.end_temps(mark, self.span(expr));
+        value
     }
 
     /// `then` where `condition` is true and `r#else` where it is false; both
-    /// go on in the block after them.
+    /// go on in the block after them. [`Diverged`] when the condition does
+    /// not return, or neither branch gets to that block.
     fn branches(
         &mut self,
         condition: ExprId,
         span: Span,
-        then: impl FnOnce(&mut Self),
-        r#else: impl FnOnce(&mut Self),
-    ) {
-        let (when_true, when_false) = self.branch(condition);
+        then: impl FnOnce(&mut Self) -> Lowered<()>,
+        r#else: impl FnOnce(&mut Self) -> Lowered<()>,
+    ) -> Lowered<()> {
+        let (when_true, when_false) = self.branch(condition)?;
         self.builder.switch_to(when_true);
-        then(self);
+        // A branch that does not return ends in a block control never gets
+        // to, which the jump to the join turns into `unreachable`.
+        let _ = then(self);
         let join = self.builder.new_block();
         self.builder.goto(join, span);
         self.builder.switch_to(when_false);
-        r#else(self);
+        let _ = r#else(self);
         self.builder.goto(join, span);
         self.builder.switch_to(join);
+        if self.builder.is_reachable() {
+            Ok(())
+        } else {
+            Err(Diverged)
+        }
     }
 
     /// Evaluates `condition` and switches on it. Returns the block where it
     /// is true and the block where it is false, each of which first ends
     /// the condition's temporaries.
-    fn branch(&mut self, condition: ExprId) -> (BlockId, BlockId) {
+    fn branch(&mut self, condition: ExprId) -> Lowered<(BlockId, BlockId)> {
         let span = self.span(condition);
         let mark = self.builder.temp_mark();
         let value = self.operand(condition);
         let temps = self.builder.take_temps(mark);
+        let value = value?;
         let when_true = self.builder.new_block();
         let when_false = self.builder.new_block();
         self.builder.terminate(
@@ -221,7 +263,7 @@ impl Lowerer<'_> {
             self.builder.switch_to(block);
             self.builder.end_storage(&temps, span);
         }
-        (when_true, when_false)
+        Ok((when_true, when_false))
     }
 
     /// The condition of a loop, lowered in the current block `head`.
@@ -231,13 +273,13 @@ impl Lowerer<'_> {
         &mut self,
         condition: Option<ExprId>,
         head: BlockId,
-    ) -> (BlockId, Option<BlockId>) {
+    ) -> Lowered<(BlockId, Option<BlockId>)> {
         match condition {
             Some(condition) if !is_literal_bool(self.hir, condition, true) => {
-                let (when_true, when_false) = self.branch(condition);
-                (when_true, Some(when_false))
+                let (when_true, when_false) = self.branch(condition)?;
+                Ok((when_true, Some(when_false)))
             }
-            _ => (head, None),
+            _ => Ok((head, None)),
         }
     }
 

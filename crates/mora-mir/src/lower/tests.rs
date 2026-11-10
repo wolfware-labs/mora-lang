@@ -1202,29 +1202,54 @@ fn return_from_nested_scope_kills_locals() {
 }
 
 #[test]
-fn statements_after_return_go_to_an_unreachable_block() {
+fn statements_after_return_are_not_lowered() {
     let lowered = lowered(
         "F(): int {\n    return 1;\n    let x = 2;\n}\nG(): int {\n    Todo();\n    let y = 3;\n}\n",
     );
+    // The block after the jump stays empty and ends in `unreachable`, and a
+    // local declared only after it is not declared.
     assert_eq!(
-        lowered.code("F"),
-        [
-            "_0 = 1;",
-            "return;",
-            "storage_live(x#0);",
-            "x#0 = 2;",
-            "unreachable;"
-        ]
+        lowered.dump("F"),
+        "\
+fn UsersApi.F() -> int {
+    let _0: int;
+
+    bb0: {
+        _0 = 1; // 2:12
+        return; // 2:5
+    }
+}
+"
+    );
+    let body = &lowered.mir("F").bodies[0];
+    assert_eq!(body.blocks.len(), 2);
+    assert_eq!(body.blocks[1].terminator.kind, TerminatorKind::Unreachable);
+    assert_eq!(lowered.code("G"), ["call Todo{external}() -> !;"]);
+    assert_eq!(lowered.mir("G").bodies[0].locals.len(), 1);
+}
+
+#[test]
+fn dead_branches_and_loops_leave_no_blocks() {
+    let lowered = lowered(
+        "F(c: bool) {\n    return;\n    if (c) {\n        let a = 1;\n    }\n    while (c) {\n        let d = 3;\n    }\n}\n\
+         G(c: bool) {\n    do {\n        return;\n    } while (c);\n}\n",
     );
     assert_eq!(
-        lowered.code("G"),
-        [
-            "call Todo{external}() -> !;",
-            "storage_live(y#0);",
-            "y#0 = 3;",
-            "unreachable;"
-        ]
+        lowered.dump("F"),
+        "\
+fn UsersApi.F(c#0: in bool) -> () {
+    let _0: ();
+    let c#0: in bool;
+
+    bb0: {
+        _0 = (); // 2:5
+        return; // 2:5
+    }
+}
+"
     );
+    // The condition of a `do` whose body always returns is not lowered.
+    assert_eq!(lowered.code("G"), ["goto bb1;", "_0 = ();", "return;"]);
 }
 
 #[test]
@@ -1234,14 +1259,7 @@ fn a_jump_in_unreachable_code_adds_no_terminator() {
     );
     assert_eq!(
         lowered.code("F"),
-        [
-            "goto bb1;",
-            "goto bb2;",
-            "_0 = ();",
-            "return;",
-            "_0 = ();",
-            "unreachable;"
-        ]
+        ["goto bb1;", "goto bb2;", "_0 = ();", "return;",]
     );
 }
 
@@ -1448,8 +1466,28 @@ fn the_branches_of_a_conditional_end_their_own_temporaries() {
 fn a_condition_with_temporaries_ends_them_in_both_branches() {
     let lowered =
         lowered("F(n: int) {\n    var m = n;\n    if (m + 1 > 2) {\n        m = 0;\n    }\n}\n");
-    let dump = lowered.dump("F");
-    assert_eq!(dump.matches("storage_dead(_").count(), 4, "{dump}");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(m#1);",
+            "m#1 = copy (*n#0);",
+            "storage_live(_3);",
+            "_3 = copy m#1 + 1;",
+            "storage_live(_4);",
+            "_4 = copy _3 > 2;",
+            "switch copy _4 [false -> bb2] otherwise bb1;",
+            "storage_dead(_4);",
+            "storage_dead(_3);",
+            "m#1 = 0;",
+            "goto bb3;",
+            "storage_dead(_4);",
+            "storage_dead(_3);",
+            "goto bb3;",
+            "_0 = ();",
+            "storage_dead(m#1);",
+            "return;",
+        ]
+    );
 }
 
 #[test]
@@ -1505,4 +1543,129 @@ fn the_run_tests_in_scope_lower_and_validate() {
     for name in ["top-level", "Fib", "Twice", "Add"] {
         functions.mir(name);
     }
+}
+
+#[test]
+fn a_short_circuit_in_a_loop_condition() {
+    let lowered = lowered("F(a: bool, b: bool) {\n    while (a && b) {\n    }\n}\n");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "goto bb1;",
+            "storage_live(_3);",
+            "switch copy (*a#0) [false -> bb3] otherwise bb2;",
+            "_3 = copy (*b#1);",
+            "goto bb4;",
+            "_3 = false;",
+            "goto bb4;",
+            "switch copy _3 [false -> bb6] otherwise bb5;",
+            "storage_dead(_3);",
+            "goto bb1;",
+            "storage_dead(_3);",
+            "goto bb7;",
+            "_0 = ();",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn break_from_an_inner_loop_ends_only_its_locals() {
+    let lowered = lowered(
+        "F() {\n    while (true) {\n        let x = 1;\n        while (true) {\n            let y = 2;\n            break;\n        }\n        return;\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "goto bb1;",
+            "storage_live(x#0);",
+            "x#0 = 1;",
+            "goto bb3;",
+            "storage_live(y#1);",
+            "y#1 = 2;",
+            "storage_dead(y#1);",
+            "goto bb4;",
+            "_0 = ();",
+            "storage_dead(x#0);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn return_from_a_for_body_ends_the_init_local() {
+    let lowered = lowered("F() {\n    for (var i = 0; i < 3; i++) {\n        return;\n    }\n}\n");
+    // The update, which nothing reaches, is not lowered.
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(i#0);",
+            "i#0 = 0;",
+            "goto bb1;",
+            "storage_live(_2);",
+            "_2 = copy i#0 < 3;",
+            "switch copy _2 [false -> bb3] otherwise bb2;",
+            "storage_dead(_2);",
+            "_0 = ();",
+            "storage_dead(i#0);",
+            "return;",
+            "storage_dead(_2);",
+            "goto bb4;",
+            "storage_dead(i#0);",
+            "_0 = ();",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn a_diverging_call_as_an_operand_ends_its_expression() {
+    let lowered = lowered(
+        "G(x: int): int => x;\nA(): int => G(Todo());\nB(): int => 1 + Todo();\n\
+         C() {\n    Console.WriteLine(Todo());\n}\nD() {\n    if (Todo()) {\n    }\n}\n\
+         E() {\n    while (Todo()) {\n    }\n}\nF(a: bool): bool => a && Todo();\n\
+         H(a: bool): bool => Todo() && a;\nK() {\n    let x = Todo();\n}\n",
+    );
+    for name in ["A", "B", "C", "D"] {
+        assert_eq!(
+            lowered.code(name),
+            ["call Todo{external}() -> !;"],
+            "{name}"
+        );
+    }
+    assert_eq!(
+        lowered.code("E"),
+        ["goto bb1;", "call Todo{external}() -> !;"]
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_2);",
+            "switch copy (*a#0) [false -> bb2] otherwise bb1;",
+            "call Todo{external}() -> !;",
+            "_2 = false;",
+            "goto bb4;",
+            "_0 = copy _2;",
+            "storage_dead(_2);",
+            "return;",
+        ]
+    );
+    assert_eq!(
+        lowered.code("H"),
+        ["storage_live(_2);", "call Todo{external}() -> !;"]
+    );
+    assert_eq!(
+        lowered.dump("K"),
+        "\
+fn UsersApi.K() -> () {
+    let _0: ();
+    let x#0: !;
+
+    bb0: {
+        storage_live(x#0); // 18:9
+        call Todo{external}() -> !; // 18:13
+    }
+}
+"
+    );
 }
