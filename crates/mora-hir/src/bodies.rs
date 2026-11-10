@@ -346,7 +346,8 @@ pub enum InterpPart {
     /// Text: as written, and its value, `None` when the lexer reported
     /// that it has none.
     Text { text: String, value: Option<String> },
-    /// `{value,alignment:format}`.
+    /// `{value,alignment:format}`; the format as written after the
+    /// colon.
     Hole {
         value: ExprId,
         alignment: Option<ExprId>,

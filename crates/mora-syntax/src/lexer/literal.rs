@@ -144,26 +144,8 @@ fn regular_value(body: &str) -> Option<String> {
 fn raw_value(text: &str) -> Option<String> {
     let quotes = run(text, b'`');
     let content = text.get(quotes..text.len().checked_sub(quotes)?)?;
-    if !content.contains('\n') {
-        return Some(content.to_owned());
-    }
-    let first_break = content.find('\n')? + 1;
-    let last_break = content.rfind('\n')?;
-    let indent = &content[last_break + 1..];
-    // With no content lines, the opening and closing lines share one break.
-    let body = content.get(first_break..last_break).unwrap_or_default();
-    let mut value = String::with_capacity(body.len());
-    for line in body.split_inclusive('\n') {
-        value.push_str(
-            line.strip_prefix(indent)
-                .unwrap_or(line.trim_start_matches([' ', '\t'])),
-        );
-    }
-    // The break before the closing line is not part of the value.
-    if value.ends_with('\r') {
-        value.pop();
-    }
-    Some(value)
+    // A raw string is a raw interpolated string without holes.
+    raw_interp_text_values(&[Some(content)])?.pop()
 }
 
 #[cfg(test)]

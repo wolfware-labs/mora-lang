@@ -526,9 +526,11 @@ impl Lower {
                             InterpPart::Hole {
                                 value: self.expr(hole.value(), at),
                                 alignment: hole.alignment().map(|e| self.expr(Some(e), at)),
-                                format: hole
-                                    .hole_format_token()
-                                    .map(|token| token.text().to_owned()),
+                                // The token holds the colon before the format.
+                                format: hole.hole_format_token().map(|token| {
+                                    let text = token.text();
+                                    text.strip_prefix(':').unwrap_or(text).to_owned()
+                                }),
                             }
                         }
                     })

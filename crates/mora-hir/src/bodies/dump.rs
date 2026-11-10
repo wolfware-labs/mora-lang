@@ -422,6 +422,7 @@ impl Printer<'_> {
                                 self.expr(*alignment);
                             }
                             if let Some(format) = format {
+                                self.out.push(':');
                                 self.out.push_str(format);
                             }
                             self.out.push('}');

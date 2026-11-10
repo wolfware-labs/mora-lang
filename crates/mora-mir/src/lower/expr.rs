@@ -388,9 +388,7 @@ impl Lowerer<'_> {
                     InterpPiece::Operand {
                         value,
                         alignment,
-                        format: format
-                            .as_deref()
-                            .map(|format| format.strip_prefix(':').unwrap_or(format).to_owned()),
+                        format: format.clone(),
                     }
                 }
             });
