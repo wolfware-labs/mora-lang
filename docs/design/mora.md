@@ -2135,19 +2135,19 @@ Terminator = Goto(b) | Switch(Operand, [(value, b)], otherwise) | Return | Call 
 
 Before monomorphization, types may contain type parameters. `Retain` and `Release` appear only after ARC insertion (§14.11); `Await` disappears in async lowering (§14.9). Every MIR statement carries a span for diagnostics and debug line tables. A textual MIR dump (`mora build --emit mir`) is stable enough to be used in snapshot tests.
 
-**Numbering.** In the first compiler, `Field(n)` counts the fields of a struct by declaration order, from zero.
+**Numbering.** `Field(n)` counts the fields of a struct by declaration order, from zero.
 
 **Arithmetic.** `Add`, `Sub`, `Mul` and unary `-` are checked by meaning: a result that does not fit its type panics. The wrapping forms `+%`, `-%` and `*%` wrap. `Div` and `Rem` include the panic for division by zero. Code generation applies the build profile (§17.2), so MIR does not depend on it.
 
 **Conversions.** Every conversion that inference applies is a `Cast` of kind `Implicit`. A written cast, and the cast back that a compound assignment applies to its result (§7.12), is a `Cast` of kind `Numeric`.
 
-**Parameter modes.** An `in` or `ref` argument, and `this`, is passed as a borrow: a `Borrow` rvalue stores it in a temporary and the call takes that temporary. A parameter of those modes holds a borrow, and its value is reached through `Deref`. A local function's captures are passed as `in` and `ref` parameters, before its own parameters; a captured `this` is `ref` when the local function writes through it and `in` otherwise.
+**Parameter modes.** An `in` or `ref` argument, and `this`, is passed as a borrow: a `Borrow` rvalue stores it in a temporary and the call takes that temporary. A parameter of those modes holds a borrow, and its value is reached through `Deref`. A local function's captured locals are passed as `in` and `ref` parameters after its own parameters. A captured `this` comes before them all, and is `ref` when the local function writes through it and `in` otherwise.
 
-**Diverging calls.** A `Call` with no `next` does not return, as a call of a function that never returns does (D-138). The block after the call is unreachable, so lowering emits none for it.
+**Diverging calls.** A `Call` with no `next` does not return: it calls a function that never returns (D-138). The block after the call is unreachable, so lowering emits none for it.
 
 **M1 stand-ins.** Until the standard library is loaded (M1.15), a call whose target is a `Std` name the compiler cannot see has an `External` callee naming its path and no result, and an interpolated string is an `Interpolate` rvalue of text pieces and operands. The validator rejects both once `Std` is loaded.
 
-**Validation.** A validator checks that every place and operand is typed and consistent and that every block ends in one terminator. Debug builds of the compiler run it after every pass.
+**Validation.** A validator checks that every place and operand is typed and consistent and that every block ends in one terminator. Debug builds of the compiler run it after lowering, and after every later pass.
 
 ### 14.8 MIR checks
 

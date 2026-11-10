@@ -264,9 +264,9 @@ pub enum BinOp {
     Sub,
     /// `*`, checked.
     Mul,
-    /// `/`.
+    /// `/`; an integer division by zero panics.
     Div,
-    /// `%`.
+    /// `%`; an integer remainder by zero panics.
     Rem,
     /// `+` that wraps around.
     WrappingAdd,
@@ -303,7 +303,7 @@ pub enum BinOp {
 /// A unary operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnOp {
-    /// `-`.
+    /// `-`, checked.
     Neg,
     /// `!`.
     Not,
