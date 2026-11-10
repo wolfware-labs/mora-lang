@@ -72,6 +72,21 @@ impl BodyResolution {
     pub fn return_type(&self, ret: Option<TypeId>) -> Ty {
         ret.map_or(Ty::UNIT, |ty| self.written(ty))
     }
+
+    /// The value member the path `path` names, when it names one.
+    pub fn value_member<'db>(&self, db: &'db dyn Db, path: ExprId) -> Option<&'db ValueMember> {
+        self.paths.get(&path)?.member(db)
+    }
+}
+
+impl PathResolution {
+    /// The value member the path names, when it names one.
+    pub fn member<'db>(&self, db: &'db dyn Db) -> Option<&'db ValueMember> {
+        match self.target {
+            Target::Value(value) => value.member(db),
+            Target::Item(_) | Target::Error => None,
+        }
+    }
 }
 
 impl ValueRef {

@@ -202,11 +202,8 @@ impl Lowerer<'_> {
         let def = function.def;
         let span = self.span(expr);
         let values = arg_values(args);
-        let mut operands = Vec::with_capacity(def.params.len() + function.captures.len());
-        // `this` first, then the arguments, then the locals it takes; all
-        // are borrowed after the arguments are evaluated.
-        let mut locals = Vec::with_capacity(function.captures.len());
         let mut this_mode = None;
+        let mut locals = Vec::with_capacity(function.captures.len());
         for &(captured, mode) in function.captures {
             match captured {
                 Captured::This => this_mode = Some(mode),
@@ -214,8 +211,9 @@ impl Lowerer<'_> {
             }
         }
         let passed = self.arguments(expr, &values, &def.modes)?;
+        let mut arguments = Vec::with_capacity(passed.len());
         for (index, operand) in passed.into_iter().enumerate() {
-            operands.push(match operand {
+            arguments.push(match operand {
                 Some(operand) => operand,
                 None => self.default_argument(
                     expr,
@@ -227,11 +225,15 @@ impl Lowerer<'_> {
                 ),
             });
         }
+        // `this` goes first, then the arguments, then the locals it takes;
+        // `this` and the locals are borrowed once the arguments are
+        // evaluated, so an argument may still change them.
+        let mut operands = Vec::with_capacity(def.params.len() + function.captures.len());
         if let Some(mode) = this_mode {
             let this = Operand::Copy(self.this_place(expr));
-            let this = self.pass(this, mode, span);
-            operands.insert(0, this);
+            operands.push(self.pass(this, mode, span));
         }
+        operands.extend(arguments);
         for (local, mode) in locals {
             let place = Operand::Copy(self.local_place(local));
             operands.push(self.pass(place, mode, span));

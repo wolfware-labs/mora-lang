@@ -2745,6 +2745,26 @@ fn a_conditional_of_writes_is_a_statement() {
 }
 
 #[test]
+fn a_conditional_statement_ends_the_temporaries_of_each_branch() {
+    let lowered = lowered(
+        "F(c: bool) {\n    c ? A(G() + 1) : B();\n}\nA(x: int) {}\nB() {}\nG(): int => 1;\n",
+    );
+    // The `then` branch ends its own temporaries before the join; the
+    // `else` branch made none, and the validator accepts the join.
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "storage_live(_2);",
+            "call UsersApi.A{fn UsersApi.A}(copy _4) -> bb4;",
+            "storage_dead(_4);",
+            "storage_dead(_3);",
+            "storage_dead(_2);",
+            "goto bb5;",
+        ],
+    );
+}
+
+#[test]
 fn a_conditional_of_calls_is_a_statement() {
     let lowered = lowered("F(c: bool) {\n    c ? A() : B();\n}\nA() {}\nB() {}\n");
     let code = lowered.code("F");

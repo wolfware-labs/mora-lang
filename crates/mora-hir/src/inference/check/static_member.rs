@@ -2,9 +2,9 @@
 //! what they may not use (`MR0149`, `MR0152`).
 
 use super::Check;
-use crate::bodies::{BodyOwner, Expr, ExprId, Target};
-use crate::inference::{Callee, InstanceUse, TypeError};
-use crate::items::{ItemKind, item_tree};
+use crate::bodies::{BodyOwner, Expr, ExprId};
+use crate::inference::{Callee, InstanceMember, InstanceUse, TypeError};
+use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::resolve::item_data;
 use crate::signature::signature;
 use crate::ty::Signature;
@@ -70,17 +70,18 @@ impl Check<'_> {
 
     /// The instance field or getter the path `path` names, if it does.
     fn instance_value(&self, path: ExprId) -> Option<InstanceUse> {
-        let resolution = self.resolution.paths.get(&path)?;
-        let Target::Value(value) = &resolution.target else {
+        let member = self.resolution.value_member(self.db, path)?;
+        if member.is_static {
             return None;
+        }
+        let kind = match member.kind {
+            ValueKind::Field => InstanceMember::Field,
+            ValueKind::Getter => InstanceMember::Getter,
+            // These belong to the type, and are `static` already.
+            ValueKind::Const | ValueKind::EnumMember | ValueKind::UnionCase => return None,
         };
-        let member = value.member(self.db)?;
-        (!member.is_static).then(|| InstanceUse::Member {
-            kind: if member.is_instance_field() {
-                "field"
-            } else {
-                "getter"
-            },
+        Some(InstanceUse::Member {
+            kind,
             name: member.name.clone(),
         })
     }
@@ -100,7 +101,7 @@ impl Check<'_> {
         function.receiver?;
         let data = item_data(self.db, item);
         (data.kind == ItemKind::Function).then(|| InstanceUse::Member {
-            kind: "method",
+            kind: InstanceMember::Method,
             name: data.name.clone(),
         })
     }

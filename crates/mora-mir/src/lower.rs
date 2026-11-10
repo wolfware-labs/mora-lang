@@ -794,14 +794,12 @@ impl<'a> Lowerer<'a> {
             return;
         }
         let span = self.span(root);
-        let mark = self.builder.temp_mark();
         if *ret == Ty::UNIT {
-            let effect = self.effect(root);
-            self.builder.end_temps(mark, span);
-            if effect.is_ok() {
+            if self.expr_statement(root).is_ok() {
                 self.return_unit(span);
             }
         } else {
+            let mark = self.builder.temp_mark();
             let value = self.expr_into(root, Place::local(LocalId::RETURN));
             self.builder.end_temps(mark, span);
             if value.is_ok() {
@@ -835,11 +833,9 @@ impl<'a> Lowerer<'a> {
     fn stmt(&mut self, stmt: StmtId) {
         match &self.owner.hir.stmts[stmt] {
             Stmt::Expr(expr) => {
-                let mark = self.builder.temp_mark();
                 // A call that does not return ends the statement, and the
                 // code after it is not lowered.
-                let _ = self.effect(*expr);
-                self.builder.end_temps(mark, self.span(*expr));
+                let _ = self.expr_statement(*expr);
             }
             Stmt::Local { local, init } => {
                 let id = self.local(*local);

@@ -214,9 +214,30 @@ pub(crate) enum NotAField {
 pub(crate) enum InstanceUse {
     /// `this`.
     This,
-    /// An instance member, found by its bare name: a `field`, a `getter` or
-    /// a `method`, as `kind` says.
-    Member { kind: &'static str, name: String },
+    /// An instance member of the type, found by its bare name.
+    Member { kind: InstanceMember, name: String },
+}
+
+/// What kind of instance member an [`InstanceUse::Member`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstanceMember {
+    /// A field stored in each value.
+    Field,
+    /// A getter.
+    Getter,
+    /// A method.
+    Method,
+}
+
+impl InstanceMember {
+    /// What a message calls it.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            InstanceMember::Field => "field",
+            InstanceMember::Getter => "getter",
+            InstanceMember::Method => "method",
+        }
+    }
 }
 
 /// A type error in a body, by the expression it is about.
@@ -1133,11 +1154,27 @@ mod tests {
         diagnostics(&db, project).clone()
     }
 
+    /// The one diagnostic `text` reports.
+    fn only_diagnostic(text: &str) -> mora_diag::Diagnostic {
+        let mut reported = diagnostics_of(text);
+        assert_eq!(reported.len(), 1, "{text}: {reported:#?}");
+        reported.remove(0)
+    }
+
     /// The note of the one diagnostic `text` reports.
     fn note(text: &str) -> String {
-        let reported = diagnostics_of(text);
-        assert_eq!(reported.len(), 1, "{text}: {reported:#?}");
-        reported[0].note.clone().unwrap_or_default()
+        only_diagnostic(text).note.unwrap_or_default()
+    }
+
+    /// The one diagnostic `text` reports, which points at `used`, the
+    /// first text of the instance member or `this` it is about, and offers
+    /// no fix (`MR0149`, `MR0152`).
+    fn instance_use(text: &str, used: &str) -> mora_diag::Diagnostic {
+        let d = only_diagnostic(text);
+        let at = usize::from(d.primary.span.range.start());
+        assert_eq!(&text[at..at + used.len()], used);
+        assert_eq!(d.fixes.len(), 0);
+        d
     }
 
     /// Each expression of the top-level statements of `text`, as written,
@@ -2680,18 +2717,12 @@ mod tests {
             ("static Run(): S => this;", "this"),
         ]
         .map(|(member, used)| {
-            let text = format!("{head}    {member}\n}}\n");
-            let reported = diagnostics_of(&text);
-            assert_eq!(reported.len(), 1, "{reported:#?}");
-            let d = &reported[0];
-            let at = usize::from(d.primary.span.range.start());
-            assert_eq!(&text[at..at + used.len()], used);
-            assert_eq!(d.fixes.len(), 0);
+            let d = instance_use(&format!("{head}    {member}\n}}\n"), used);
             assert_eq!(
                 d.note.as_deref(),
                 Some("a `static` member belongs to the type, not to a value of it")
             );
-            (d.message.clone(), d.primary.message.clone().expect("label"))
+            (d.message, d.primary.message.expect("label"))
         });
         assert_eq!(
             field,
@@ -2751,13 +2782,7 @@ mod tests {
             ("public Z: S = this;", "this"),
         ]
         .map(|(member, used)| {
-            let text = format!("{head}    {member}\n}}\n");
-            let reported = diagnostics_of(&text);
-            assert_eq!(reported.len(), 1, "{reported:#?}");
-            let d = &reported[0];
-            let at = usize::from(d.primary.span.range.start());
-            assert_eq!(&text[at..at + used.len()], used);
-            assert_eq!(d.fixes.len(), 0);
+            let d = instance_use(&format!("{head}    {member}\n}}\n"), used);
             assert_eq!(
                 d.note.as_deref(),
                 Some(
@@ -2765,7 +2790,7 @@ mod tests {
                      no `this`; it may use constants and `static` members"
                 )
             );
-            (d.message.clone(), d.primary.message.clone().expect("label"))
+            (d.message, d.primary.message.expect("label"))
         });
         assert_eq!(
             field,
@@ -2913,9 +2938,7 @@ mod tests {
 
     #[test]
     fn an_assignment_message_says_what_goes_wrong() {
-        let reported = diagnostics_of("var x = 0;\nvar y = 0;\nx = y = 5;\n");
-        assert_eq!(reported.len(), 1, "{reported:#?}");
-        let d = reported.first().expect("one diagnostic");
+        let d = only_diagnostic("var x = 0;\nvar y = 0;\nx = y = 5;\n");
         assert_eq!(d.message, "an assignment gives no value to use here");
         assert_eq!(
             d.primary.message.as_deref(),
@@ -2986,8 +3009,7 @@ mod tests {
                 assert!(d.fixes.is_empty(), "{use_}: {d:#?}");
             }
         }
-        let found = diagnostics_of(&format!("{head}x = y = 5;\n"));
-        let found = found.first().expect("one diagnostic");
+        let found = only_diagnostic(&format!("{head}x = y = 5;\n"));
         assert_eq!(found.fixes.len(), 1);
         assert_eq!(
             found.fixes[0].message,
@@ -3030,9 +3052,7 @@ mod tests {
     #[test]
     fn a_ref_default_message_says_what_goes_wrong() {
         let text = "F(ref x: int = 1) {}\n";
-        let reported = diagnostics_of(text);
-        assert_eq!(reported.len(), 1, "{reported:#?}");
-        let d = reported.first().expect("one diagnostic");
+        let d = only_diagnostic(text);
         assert_eq!(
             d.message,
             "the `ref` parameter `x` cannot have a default value, because every call must pass a variable it can change"

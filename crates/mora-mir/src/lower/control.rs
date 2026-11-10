@@ -138,9 +138,7 @@ impl Lowerer<'_> {
             if !self.builder.is_reachable() {
                 break;
             }
-            let mark = self.builder.temp_mark();
-            let _ = self.effect(expr);
-            self.builder.end_temps(mark, self.span(expr));
+            let _ = self.expr_statement(expr);
         }
         self.builder.goto(head, span);
         self.leave_loop(exit, after, span);
@@ -191,8 +189,9 @@ impl Lowerer<'_> {
         Ok(Operand::Copy(result))
     }
 
-    /// `condition ? then : r#else` as a statement: each branch is an
-    /// expression statement and no value is made.
+    /// `condition ? then : r#else` as a statement: each branch is a
+    /// statement of its own, whose temporaries end there, and no value is
+    /// made.
     pub(super) fn statement_conditional(
         &mut self,
         expr: ExprId,
@@ -203,8 +202,8 @@ impl Lowerer<'_> {
         self.branches(
             condition,
             self.span(expr),
-            |this| this.effect(then),
-            |this| this.effect(r#else),
+            |this| this.expr_statement(then),
+            |this| this.expr_statement(r#else),
         )
     }
 

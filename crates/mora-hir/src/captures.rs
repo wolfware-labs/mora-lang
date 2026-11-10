@@ -14,9 +14,10 @@ use mora_span::{Db, Project, SourceFile};
 
 use crate::bodies::{
     ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, InterpPart, LocalId,
-    LocalKind, Pat, PatId, Stmt, StmtId, Target, UnaryOp, body, body_resolution,
+    LocalKind, Pat, PatId, Stmt, StmtId, UnaryOp, body, body_resolution,
 };
 use crate::inference::{Callee, Inference, infer};
+use crate::items::ValueMember;
 use crate::signature::signature;
 use crate::ty::{ParamMode, Signature};
 
@@ -184,14 +185,8 @@ impl Walk<'_> {
     /// Whether the path `path` names a field of `this`.
     fn names_field(&self, path: ExprId) -> bool {
         self.resolution
-            .paths
-            .get(&path)
-            .is_some_and(|resolution| match resolution.target {
-                Target::Value(value) => value
-                    .member(self.db)
-                    .is_some_and(|member| member.is_instance_field()),
-                _ => false,
-            })
+            .value_member(self.db, path)
+            .is_some_and(ValueMember::is_instance_field)
     }
 
     fn stmts(&mut self, stmts: &[StmtId]) {

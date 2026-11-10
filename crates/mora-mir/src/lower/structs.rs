@@ -2,14 +2,17 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, body, instance_fields,
-    signature,
+    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Ty, body, instance_fields, signature,
 };
 use mora_span::Db;
 
 use super::expr::Dest;
 use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
+
+/// The internal error for a static or constant member, which the static
+/// state of M1.11 lowers.
+const STATIC_MEMBER: &str = "a static or constant member is not lowered (M1.11)";
 
 impl Lowerer<'_> {
     /// `new T { F = v, ... }` for the struct `T`: every instance field in
@@ -95,7 +98,7 @@ impl Lowerer<'_> {
                 _ => false,
             };
             if declared {
-                self.ice(expr, "a static or constant member is not lowered (M1.11)");
+                self.ice(expr, STATIC_MEMBER);
             }
             self.ice(
                 expr,
@@ -110,24 +113,19 @@ impl Lowerer<'_> {
     /// other segments name.
     pub(super) fn path_place(&self, expr: ExprId, path: &Path) -> Place {
         let resolution = self.owner.resolution.paths.get(&expr);
-        let field = resolution.and_then(|resolution| match resolution.target {
-            Target::Value(value) => {
-                let member = value.member(self.owner.db)?;
-                Some((
-                    member.name.clone(),
-                    resolution.segments.max(1),
-                    member.is_static,
-                ))
-            }
-            _ => None,
+        let field = resolution.and_then(|resolution| {
+            Some((
+                resolution.member(self.owner.db)?,
+                resolution.segments.max(1),
+            ))
         });
-        let Some((name, named, is_static)) = field else {
+        let Some((member, named)) = field else {
             self.ice(expr, "a name that is not a field of `this` is not lowered")
         };
-        if is_static {
-            self.ice(expr, "a static or constant member is not lowered (M1.11)");
+        if member.is_static {
+            self.ice(expr, STATIC_MEMBER);
         }
-        let mut place = self.field_place(expr, self.this_place(expr), &name);
+        let mut place = self.field_place(expr, self.this_place(expr), &member.name);
         for segment in path.segments.iter().skip(named) {
             place = self.field_place(expr, place, segment);
         }

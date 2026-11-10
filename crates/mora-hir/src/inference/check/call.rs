@@ -606,10 +606,10 @@ impl<'a> Check<'a> {
             | Expr::Index {
                 optional: false, ..
             } => true,
-            Expr::Path(_) => self.resolution.paths.get(&expr).is_some_and(|resolution| {
-                matches!(&resolution.target, Target::Value(value)
-                    if value.member(self.db).is_some_and(|member| member.kind == ValueKind::Field))
-            }),
+            Expr::Path(_) => self
+                .resolution
+                .value_member(self.db, expr)
+                .is_some_and(|member| member.kind == ValueKind::Field),
             _ => false,
         }
     }

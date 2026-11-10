@@ -26,7 +26,7 @@ pub(super) enum Dest {
 
 impl Lowerer<'_> {
     /// `expr` as an expression statement: its effects, its value dropped.
-    pub(super) fn effect(&mut self, expr: ExprId) -> Lowered<()> {
+    fn effect(&mut self, expr: ExprId) -> Lowered<()> {
         let hir = self.owner.hir;
         match &hir.exprs[expr] {
             Expr::Call { callee, args } => {
@@ -53,6 +53,15 @@ impl Lowerer<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `expr` as a statement of its own: its effects, then the end of the
+    /// temporaries it made.
+    pub(super) fn expr_statement(&mut self, expr: ExprId) -> Lowered<()> {
+        let mark = self.builder.temp_mark();
+        let effect = self.effect(expr);
+        self.builder.end_temps(mark, self.span(expr));
+        effect
     }
 
     /// Stores the value of `expr`, converted as inference records, in

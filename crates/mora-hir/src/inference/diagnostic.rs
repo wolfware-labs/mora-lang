@@ -1,8 +1,8 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
 //! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`]. A static
-//! member that uses `this` is `MR0149`, and
-//! an instance field's initializer that does is `MR0152`.
+//! member that uses `this` is `MR0149`, and an instance field's initializer
+//! that does is `MR0152`.
 
 mod call;
 mod struct_new;
@@ -221,7 +221,10 @@ fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnos
             "there is no value of the type here",
         ),
         InstanceUse::Member { kind, name } => (
-            format!("a static member has no `this`, so it cannot use the instance {kind} `{name}`"),
+            format!(
+                "a static member has no `this`, so it cannot use the instance {} `{name}`",
+                kind.word()
+            ),
             "needs a value of the type",
         ),
     };
