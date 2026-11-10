@@ -53,7 +53,9 @@ pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
 pub use diverging::is_diverging;
-pub use inference::{Callee, Constant, Conversion, ConversionKind, Inference, infer};
+pub use inference::{
+    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer,
+};
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
     ValueMember, Visibility, item_source_map, item_tree, parse,

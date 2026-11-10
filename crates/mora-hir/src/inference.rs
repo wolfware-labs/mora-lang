@@ -357,6 +357,15 @@ pub(crate) fn converts(from: &Ty, to: &Ty) -> bool {
     }
 }
 
+/// Whether a value of the primitive type `from` converts implicitly to `to`
+/// (§5.10): the same type, an integer type to a wider one of the same
+/// signedness or a wider signed one, an integer type to `float` or `double`
+/// where every value is exact, and `float` to `double`. Nothing converts to
+/// or from `nint` or `nuint` but themselves.
+pub fn converts_implicitly(from: Primitive, to: Primitive) -> bool {
+    numeric::converts(from, to)
+}
+
 /// `ty` as code writes it, as messages and the HIR dump show it.
 pub(crate) fn ty_name(db: &dyn Db, ty: &Ty) -> String {
     match ty {

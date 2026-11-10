@@ -167,6 +167,19 @@ pub(crate) fn is_signed(ty: Primitive) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn converts_implicitly_is_the_table_and_leaves_native_integers_out() {
+        use crate::ty::Primitive::{Byte, Double, Float, Int, Long, NInt, NUInt};
+        assert!(crate::converts_implicitly(Byte, Int));
+        assert!(crate::converts_implicitly(Int, Double));
+        assert!(crate::converts_implicitly(Float, Double));
+        assert!(!crate::converts_implicitly(Int, Byte));
+        assert!(!crate::converts_implicitly(Long, Double));
+        assert!(!crate::converts_implicitly(NInt, Int));
+        assert!(!crate::converts_implicitly(Int, NInt));
+        assert!(!crate::converts_implicitly(NUInt, Long));
+    }
+
     use super::*;
     use Primitive::*;
 

@@ -4,7 +4,10 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{ItemId, ItemKind, ParamMode, Primitive, Signature, Ty, item_tree, signature};
+use mora_hir::{
+    ItemId, ItemKind, ParamMode, Primitive, Signature, Ty, converts_implicitly, item_tree,
+    signature,
+};
 use mora_span::Db;
 
 use crate::{
@@ -348,8 +351,12 @@ impl Checker<'_> {
             _ => {}
         }
         let fits = match op {
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                return Some(Ty::Primitive(Primitive::Bool));
+            BinOp::Eq | BinOp::Ne => return Some(Ty::Primitive(Primitive::Bool)),
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                if is_numeric(&left) || left == Ty::Primitive(Primitive::Char) {
+                    return Some(Ty::Primitive(Primitive::Bool));
+                }
+                false
             }
             BinOp::Add => is_numeric(&left) || left == Ty::String,
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
@@ -598,52 +605,12 @@ fn is_numeric(ty: &Ty) -> bool {
     is_integer(ty) || matches!(ty, Ty::Primitive(Primitive::Float | Primitive::Double))
 }
 
-/// Whether `from` converts to `to` by an implicit widening (§5.10): an
-/// integer to a wider integer of the same signedness or to a wider signed
-/// one, a type that fits exactly to a floating-point type, and `float` to
-/// `double`. The native integers have no fixed width: as a source they count
-/// as 64 bits and as a target as 32, so only types of up to 16 bits widen to
-/// them.
+/// Whether `from` converts implicitly to `to`, by the rule inference uses.
 fn widens(from: &Ty, to: &Ty) -> bool {
-    let (Ty::Primitive(from), Ty::Primitive(to)) = (from, to) else {
-        return false;
-    };
-    use Primitive::{Double, Float};
-    if (*from, *to) == (Float, Double) {
-        return true;
+    match (from, to) {
+        (Ty::Primitive(from), Ty::Primitive(to)) => converts_implicitly(*from, *to),
+        _ => false,
     }
-    let Some((signed, bits)) = int_shape(*from, true) else {
-        return false;
-    };
-    match to {
-        Double => bits <= 32,
-        Float => bits <= 16,
-        _ => {
-            let Some((to_signed, to_bits)) = int_shape(*to, false) else {
-                return false;
-            };
-            to_bits > bits && (to_signed || !signed)
-        }
-    }
-}
-
-/// Whether an integer type is signed, and its width in bits; the width of a
-/// native integer is taken for a source or for a target.
-fn int_shape(ty: Primitive, source: bool) -> Option<(bool, u32)> {
-    let native = if source { 64 } else { 32 };
-    Some(match ty {
-        Primitive::Byte => (false, 8),
-        Primitive::SByte => (true, 8),
-        Primitive::Short => (true, 16),
-        Primitive::UShort => (false, 16),
-        Primitive::Int => (true, 32),
-        Primitive::UInt => (false, 32),
-        Primitive::Long => (true, 64),
-        Primitive::ULong => (false, 64),
-        Primitive::NInt => (true, native),
-        Primitive::NUInt => (false, native),
-        _ => return None,
-    })
 }
 
 /// Whether `ty` is one of the integer types.
@@ -1558,6 +1525,36 @@ mod tests {
     }
 
     #[test]
+    fn ordering_comparisons_need_numeric_or_char_operands() {
+        let fx = fx();
+        let s = || Operand::Const(Const::String("a".into()));
+        let b = || Operand::Const(Const::Bool(true));
+        let c = || Operand::Const(Const::Char('a'));
+        let f = || Operand::Const(Const::Real(0, Primitive::Double));
+        let cmp = |op: BinOp, l: Operand, r: Operand| {
+            validate(
+                &fx.db,
+                &with_stmt(assign(place(3), Rvalue::Binary(op, l, r))),
+                true,
+            )
+        };
+        for op in [BinOp::Lt, BinOp::Le, BinOp::Gt, BinOp::Ge] {
+            assert_eq!(cmp(op, int_const(1), int_const(2)), Ok(()), "{op:?}");
+            assert_eq!(cmp(op, f(), f()), Ok(()), "{op:?}");
+            assert_eq!(cmp(op, c(), c()), Ok(()), "{op:?}");
+            assert!(cmp(op, b(), b()).is_err(), "{op:?}");
+            assert!(cmp(op, s(), s()).is_err(), "{op:?}");
+            assert!(cmp(op, copy(4), copy(4)).is_ok(), "{op:?}");
+        }
+        // Equality is open to any equal types.
+        for op in [BinOp::Eq, BinOp::Ne] {
+            assert_eq!(cmp(op, b(), b()), Ok(()), "{op:?}");
+            assert_eq!(cmp(op, s(), s()), Ok(()), "{op:?}");
+            assert_eq!(cmp(op, c(), c()), Ok(()), "{op:?}");
+        }
+    }
+
+    #[test]
     fn shifts_take_any_integer_on_the_right() {
         let fx = fx();
         let long = Operand::Const(Const::Int(1, Primitive::Long));
@@ -2037,8 +2034,6 @@ mod tests {
             (Int, Double),
             (UInt, Double),
             (Float, Double),
-            (Short, NInt),
-            (Byte, NUInt),
         ] {
             assert!(cast(Implicit, from, to), "{from:?} to {to:?}");
         }
@@ -2049,7 +2044,6 @@ mod tests {
             (Int, UInt),
             (SByte, Byte),
             (Short, UShort),
-            (Int, Int),
             (Int, Float),
             (Long, Double),
             (Double, Float),
@@ -2060,10 +2054,15 @@ mod tests {
             (Int, Char),
             (ULong, Long),
             (NInt, Long),
+            (NInt, Int),
             (Int, NInt),
+            (Short, NInt),
+            (Byte, NUInt),
+            (NUInt, ULong),
         ] {
             assert!(!cast(Implicit, from, to), "{from:?} to {to:?}");
         }
+        assert!(cast(Implicit, Byte, Int));
         // Numeric casts go between any two numeric types, and only those.
         assert!(cast(Numeric, Long, Short));
         assert!(cast(Numeric, Double, Int));
