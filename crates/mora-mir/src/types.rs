@@ -344,7 +344,9 @@ pub enum TerminatorKind {
         /// The arguments, in order. A borrowed argument is a copy of a
         /// temporary that holds the borrow.
         args: Vec<Operand>,
-        /// Where the result goes, `None` when it is dropped.
+        /// Where the result goes, `None` when it is dropped. It is written
+        /// after the callee returns, so it may overlap a place an argument
+        /// borrows.
         dest: Option<Place>,
         /// The block after the call; `None` when the call does not return.
         next: Option<BlockId>,
