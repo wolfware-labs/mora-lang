@@ -48,6 +48,9 @@ pub struct Inference {
     constants: HashMap<ExprId, Constant>,
     /// The conversion applied to each expression that changes type.
     conversions: HashMap<ExprId, Conversion>,
+    /// The conversion applied to an element of a value that an assignment
+    /// deconstructs, by the value and the element's position.
+    element_conversions: HashMap<(ExprId, u32), Conversion>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
 }
@@ -98,8 +101,22 @@ impl Inference {
     /// to the type its context expects, to the promoted type of its
     /// operation, or by a cast. A compound assignment carries the cast
     /// back of its result to the type of its place.
+    ///
+    /// An expression has at most one record. A written cast `(T)x` always
+    /// records `x`, even when `x` has type `T`. In `x op= y`, the record on
+    /// `x` applies to reading `x`, never to the place that is stored. A
+    /// tuple is never recorded as a whole: the elements of a value that an
+    /// assignment deconstructs are in [`Inference::element_conversion`].
     pub fn conversion(&self, expr: ExprId) -> Option<&Conversion> {
         self.conversions.get(&expr)
+    }
+
+    /// The conversion of an element of `value`, the tuple that the
+    /// assignment `(a, (b, c)) = value` deconstructs, when the element
+    /// changes type on its way to its place. `index` counts the places that
+    /// receive an element, depth first: `a` is 0, `b` is 1 and `c` is 2.
+    pub fn element_conversion(&self, value: ExprId, index: u32) -> Option<&Conversion> {
+        self.element_conversions.get(&(value, index))
     }
 
     /// What the call `call` calls, when the call is checked: the overload
@@ -421,6 +438,58 @@ mod tests {
                 ))
             })
             .collect()
+    }
+
+    /// The conversions of the elements of the value `pair` that the
+    /// assignment in `text` deconstructs, by leaf position, and the
+    /// conversion of the value itself.
+    fn element_conversions(text: &str, leaves: u32) -> (Vec<Option<String>>, Option<Conversion>) {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        assert_eq!(diagnostics(&db, project), &[]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let value = body
+            .exprs
+            .iter()
+            .find_map(|(_, expr)| match expr {
+                Expr::Assign { op: None, rhs, .. } => Some(*rhs),
+                _ => None,
+            })
+            .unwrap();
+        let elements = (0..leaves)
+            .map(|index| {
+                inference
+                    .element_conversion(value, index)
+                    .map(|conversion| {
+                        assert_eq!(conversion.kind, ConversionKind::Implicit);
+                        super::ty_name(&db, &conversion.to)
+                    })
+            })
+            .collect();
+        (elements, inference.conversion(value).cloned())
+    }
+
+    #[test]
+    fn records_deconstructed_elements_one_by_one() {
+        let text = "let a: long = 0;\nlet b: int = 0;\nlet pair: (int, int) = (1, 2);\n\
+                    (a, b) = pair;\n";
+        let (elements, whole) = element_conversions(text, 2);
+        assert_eq!(elements, [Some("long".to_owned()), None]);
+        assert_eq!(whole, None);
+    }
+
+    #[test]
+    fn records_nested_deconstructed_elements_by_leaf() {
+        let text = "let a: int = 0;\nlet b: long = 0;\nlet c: double = 0.0;\n\
+                    let t: (int, (int, int)) = (1, (2, 3));\n(a, (b, c)) = t;\n";
+        let (elements, whole) = element_conversions(text, 3);
+        assert_eq!(
+            elements,
+            [None, Some("long".to_owned()), Some("double".to_owned())]
+        );
+        assert_eq!(whole, None);
     }
 
     #[test]

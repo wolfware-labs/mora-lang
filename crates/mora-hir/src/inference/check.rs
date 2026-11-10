@@ -64,6 +64,7 @@ pub(super) fn infer_body(
         local_functions: None,
         constants: HashMap::new(),
         conversions: HashMap::new(),
+        element_conversions: HashMap::new(),
         errors: Vec::new(),
         ret: None,
         scope: body_scope(project, file, owner),
@@ -126,6 +127,7 @@ pub(super) fn infer_body(
         calls: check.calls,
         constants: check.constants,
         conversions: check.conversions,
+        element_conversions: check.element_conversions,
         errors: check.errors,
     }
 }
@@ -152,6 +154,8 @@ struct Check<'a> {
     constants: HashMap<ExprId, Constant>,
     /// The conversions applied so far.
     conversions: HashMap<ExprId, Conversion>,
+    /// The conversions of deconstructed elements so far.
+    element_conversions: HashMap<(ExprId, u32), Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
@@ -239,7 +243,8 @@ impl Check<'_> {
 
     /// Records the conversion of `expr` to `to`.
     fn convert(&mut self, expr: ExprId, to: Ty, kind: ConversionKind) {
-        self.conversions.insert(expr, Conversion { to, kind });
+        let previous = self.conversions.insert(expr, Conversion { to, kind });
+        debug_assert!(previous.is_none(), "an expression is recorded once");
     }
 
     fn block(&mut self, stmts: &[StmtId]) {
@@ -1057,7 +1062,7 @@ impl Check<'_> {
             }
             (Expr::Tuple(_), ..) => {
                 if let Some(found) = self.infer(value) {
-                    self.deconstruct_type(place, places, value, &found);
+                    self.deconstruct_type(place, places, value, &found, &mut 0);
                 }
             }
             // One place takes a value of its type; `_`, a discarded element or
@@ -1070,16 +1075,45 @@ impl Check<'_> {
     /// the type of `value`: a tuple of places takes a tuple of as many
     /// elements, each stored in its place, or a positional struct, whose
     /// deconstruction is not checked yet, as in a declaration (D-139).
-    fn deconstruct_type(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
+    ///
+    /// `leaf` counts the places that take an element, depth first, which is
+    /// the position an element's conversion is recorded at.
+    fn deconstruct_type(
+        &mut self,
+        place: ExprId,
+        places: &Ty,
+        value: ExprId,
+        found: &Ty,
+        leaf: &mut u32,
+    ) {
         let body = self.body;
         let Expr::Tuple(inner) = &body.exprs[place] else {
-            self.coerce(value, Some(found), places, Context::Value);
+            let index = *leaf;
+            *leaf += 1;
+            if !is_known(found) || !is_known(places) {
+                return;
+            }
+            if !Context::Value.accepts(found, places) {
+                self.errors.push(TypeError::Mismatch {
+                    expr: value,
+                    expected: places.clone(),
+                    found: found.clone(),
+                    context: Context::Value,
+                });
+            } else if !same(found, places) {
+                let conversion = Conversion {
+                    to: places.clone(),
+                    kind: ConversionKind::Implicit,
+                };
+                let previous = self.element_conversions.insert((value, index), conversion);
+                debug_assert!(previous.is_none(), "an element is recorded once");
+            }
             return;
         };
         match (places, found) {
             (Ty::Tuple(types), Ty::Tuple(elems)) if elems.len() == inner.len() => {
                 for ((&(_, place), ty), elem) in inner.iter().zip(types).zip(elems) {
-                    self.deconstruct_type(place, &ty.ty, value, &elem.ty);
+                    self.deconstruct_type(place, &ty.ty, value, &elem.ty, leaf);
                 }
             }
             (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
