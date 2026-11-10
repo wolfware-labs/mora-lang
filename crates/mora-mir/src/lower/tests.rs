@@ -2624,3 +2624,40 @@ fn a_return_type_that_is_not_concrete_is_an_internal_error() {
     let lowered = lowered("F(): int[] => Todo();\n");
     lowered.mir("F");
 }
+
+#[test]
+fn a_call_reads_the_body_of_its_callee_only_for_a_default() {
+    use salsa::Setter;
+
+    let mut db = TestDb::new();
+    let callee = |n: u32| format!("G(x: int, y: int = 2): int => x + {n};\n");
+    let project = app(
+        &db,
+        &[
+            (
+                "src/Program.mr",
+                "F(): int => G(1, 2);\nH(): int => G(1);\n",
+            ),
+            ("src/Other.mr", &callee(1)),
+        ],
+    );
+    let (f, h, file) = {
+        let lowered = in_project(db.clone(), project);
+        (lowered.owner("F"), lowered.owner("H"), lowered.file)
+    };
+    let other = file_named(&db, project, "src/Other.mr");
+    mir(&db, project, file, f);
+    mir(&db, project, file, h);
+    db.take_executed();
+    other.set_text(&mut db).to(callee(12345));
+    mir(&db, project, file, f);
+    mir(&db, project, file, h);
+    let lowered: Vec<String> = db
+        .take_executed()
+        .into_iter()
+        .filter(|key| key.starts_with("mir("))
+        .collect();
+    // An edit inside `G` lowers again only the caller that reads its
+    // default value.
+    assert_eq!(lowered.len(), 1, "{lowered:?}");
+}

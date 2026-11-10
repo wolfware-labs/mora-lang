@@ -150,20 +150,30 @@ impl Lowerer<'_> {
         }
         let modes: Vec<ParamMode> = function.params.iter().map(|param| param.mode).collect();
         let passed = self.arguments(expr, &values, &modes)?;
+        // The callee's body is read only for a default value, so an edit
+        // inside it lowers again only the callers that use one.
         let owner = BodyOwner::Item(item.item);
-        let callee_body = body(self.owner.db, item.file, owner);
-        let inference = infer(self.owner.db, item.project, item.file, owner);
+        let db = self.owner.db;
+        let mut callee_hir = None;
         for (index, operand) in passed.into_iter().enumerate() {
             operands.push(match operand {
                 Some(operand) => operand,
-                None => self.default_argument(
-                    expr,
-                    callee_body,
-                    inference,
-                    callee_body.params.get(index).copied(),
-                    &callee_body.defaults,
-                    modes[index],
-                ),
+                None => {
+                    let (callee_body, inference) = *callee_hir.get_or_insert_with(|| {
+                        (
+                            body(db, item.file, owner),
+                            infer(db, item.project, item.file, owner),
+                        )
+                    });
+                    self.default_argument(
+                        expr,
+                        callee_body,
+                        inference,
+                        callee_body.params.get(index).copied(),
+                        &callee_body.defaults,
+                        modes[index],
+                    )
+                }
             });
         }
         Ok(self.finish_call(
