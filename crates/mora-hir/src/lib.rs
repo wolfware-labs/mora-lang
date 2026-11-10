@@ -45,9 +45,9 @@ pub mod test_support;
 pub use arena::arena_index;
 pub use bodies::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
-    CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
-    LocalKind, MatchArm, Pat, PatId, Path, PathResolution, RefDefaultRanges, ScopeData, ScopeId,
-    Stmt, StmtId, Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution,
+    CaptureTarget, Expr, ExprId, InitRanges, InterpPart, Lambda, Literal, Local, LocalFunction,
+    LocalId, LocalKind, MatchArm, Pat, PatId, Path, PathResolution, RefDefaultRanges, ScopeData,
+    ScopeId, Stmt, StmtId, Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution,
     body_source_map, escape_char, hir_dump, item_text, owner_name,
 };
 pub use captures::{Captured, LocalFunctionCaptures, local_functions};

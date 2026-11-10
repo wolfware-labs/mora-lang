@@ -680,6 +680,19 @@ pub struct BodySourceMap {
     pub type_paths: Vec<Vec<TextRange>>,
     /// Where the `ref` and the default of each of [`Body::ref_defaults`] are.
     pub ref_defaults: HashMap<LocalId, RefDefaultRanges>,
+    /// Where each member initializer `F = v` of a `new` or `with`
+    /// expression is written, by the expression of its value, when it has
+    /// a name.
+    pub inits: HashMap<ExprId, InitRanges>,
+}
+
+/// Where a member initializer `F = v` is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitRanges {
+    /// The name of the member.
+    pub name: TextRange,
+    /// The whole initializer, from the name to the end of the value.
+    pub init: TextRange,
 }
 
 /// Where a parameter with `ref` and a default value is written.

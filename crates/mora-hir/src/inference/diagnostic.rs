@@ -1,5 +1,6 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
-//! and those of calls, `MR0205` to `MR0208`, in [`call`].
+//! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
+//! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`].
 
 mod call;
 mod struct_new;
@@ -184,6 +185,20 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         TypeError::MissingField { expr, ty, field } => {
             struct_new::missing_field(source, *expr, ty, field)
         }
+        TypeError::NotAField {
+            value,
+            ty,
+            name,
+            member,
+            suggestion,
+        } => struct_new::not_a_field(source, *value, ty, name, *member, suggestion.as_deref()),
+        TypeError::RepeatedField {
+            value,
+            first,
+            previous,
+            ty,
+            name,
+        } => struct_new::repeated_field(source, [*first, *previous, *value], ty, name),
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)

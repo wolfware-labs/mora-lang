@@ -9,8 +9,9 @@ use mora_syntax::{SyntaxKind, SyntaxToken};
 
 use super::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodySourceMap, Capture, CaptureTarget, Expr, ExprId,
-    InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
-    PatId, Path, RefDefaultRanges, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
+    InitRanges, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered,
+    MatchArm, Pat, PatId, Path, RefDefaultRanges, ScopeData, ScopeId, Stmt, StmtId, TypeId,
+    UnaryOp,
 };
 use crate::items::Written;
 use crate::name::{name_ref_of, token_name};
@@ -885,8 +886,17 @@ impl Lower {
             list.member_inits()
                 .map(|init| {
                     let range = init.syntax().text_range();
-                    let name = name_ref_of(init.name_ref()).unwrap_or_default();
-                    (name, self.expr(init.expr(), range))
+                    let name_ref = init.name_ref();
+                    let written = name_ref.as_ref().map(|name| InitRanges {
+                        name: name.syntax().text_range(),
+                        init: range,
+                    });
+                    let name = name_ref_of(name_ref).unwrap_or_default();
+                    let value = self.expr(init.expr(), range);
+                    if let Some(written) = written {
+                        self.map.inits.insert(value, written);
+                    }
+                    (name, value)
                 })
                 .collect(),
         )

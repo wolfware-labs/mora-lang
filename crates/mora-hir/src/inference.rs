@@ -194,6 +194,20 @@ impl Inference {
     }
 }
 
+/// What a name that memberwise creation assigns names instead of an
+/// instance field (`MR0147`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotAField {
+    /// No member of the struct.
+    Unknown,
+    /// A getter.
+    Getter,
+    /// A `static` field.
+    Static,
+    /// A constant.
+    Constant,
+}
+
 /// A type error in a body, by the expression it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TypeError {
@@ -287,6 +301,27 @@ pub(crate) enum TypeError {
     /// The memberwise creation `expr` of a struct, `ty`, does not assign
     /// the field `field`, which has no initializer (`MR0143`).
     MissingField { expr: ExprId, ty: Ty, field: String },
+    /// The memberwise creation of the struct `ty` assigns `value` to
+    /// `name`, which is not an instance field of it but `member`; for a
+    /// name that is no member, `suggestion` is the closest field not
+    /// assigned (`MR0147`).
+    NotAField {
+        value: ExprId,
+        ty: Ty,
+        name: String,
+        member: NotAField,
+        suggestion: Option<String>,
+    },
+    /// The memberwise creation of the struct `ty` assigns `value` to the
+    /// field `name` again: `first` is the value of its first assignment,
+    /// and `previous` the value written just before `value` (`MR0148`).
+    RepeatedField {
+        value: ExprId,
+        first: ExprId,
+        previous: ExprId,
+        ty: Ty,
+        name: String,
+    },
     /// The assignment `expr` is used as a value (`MR0185`); `split` is the
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
@@ -2426,6 +2461,111 @@ mod tests {
         assert_eq!(local_types(text), ["s: S"]);
     }
 
+    /// A struct with an instance field of each kind of initializer, a
+    /// getter, a static field and a constant.
+    const SHAPE: &str = "struct Shape {\n    public Width: int;\n    public Height: int = 1;\n    \
+                         public Area: int => Width * Height;\n    public static Count: int = 0;\n    \
+                         public const Sides: int = 4;\n}\n";
+
+    /// The diagnostics of `new Shape { inits }` after [`SHAPE`].
+    fn shape_new(inits: &str) -> (String, Vec<mora_diag::Diagnostic>) {
+        let text = format!("{SHAPE}let s = new Shape {{ {inits} }};\n");
+        let found = diagnostics_of(&text);
+        (text, found)
+    }
+
+    #[test]
+    fn a_name_that_is_not_an_instance_field_is_mr0147() {
+        for (inits, name, message, label) in [
+            (
+                "Width = 1, Depth = 2",
+                "Depth",
+                "`Shape` has no field named `Depth`",
+                "not a field of `Shape`",
+            ),
+            (
+                "Width = 1, Area = 2",
+                "Area",
+                "`Area` is a getter of `Shape` and cannot be assigned",
+                "a getter computes its value",
+            ),
+            (
+                "Width = 1, Count = 2",
+                "Count",
+                "`Count` is a static field of `Shape`, not a field of its values",
+                "belongs to the type",
+            ),
+            (
+                "Width = 1, Sides = 2",
+                "Sides",
+                "`Sides` is a constant of `Shape`, not a field of its values",
+                "belongs to the type",
+            ),
+        ] {
+            let (text, found) = shape_new(inits);
+            assert_eq!(codes(&found), ["MR0147"], "{inits}");
+            let d = &found[0];
+            assert_eq!(d.message, message);
+            assert_eq!(d.primary.message.as_deref(), Some(label));
+            assert_eq!(&text[d.primary.span.range], name);
+            assert_eq!(
+                d.note.as_deref(),
+                Some("`new Shape { ... }` assigns the fields that each value holds")
+            );
+            assert!(d.fixes.is_empty(), "{inits}: {d:#?}");
+        }
+        // The value is still checked against nothing and inferred.
+        let text = format!("{SHAPE}let s = new Shape {{ Width = 1, Depth = \"a\" }};\n");
+        assert_eq!(reported(&text), ["MR0147"]);
+    }
+
+    #[test]
+    fn a_misspelled_field_suggests_an_unassigned_field() {
+        let (text, found) = shape_new("Width = 1, Heigth = 2");
+        assert_eq!(codes(&found), ["MR0147"]);
+        assert_eq!(found[0].fixes.len(), 1);
+        assert_eq!(found[0].fixes[0].message, "did you mean `Height`?");
+        let fixed = apply_fixes(&text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert!(fixed.text.contains("new Shape { Width = 1, Height = 2 }"));
+        // A field already assigned is not suggested.
+        let (_, found) = shape_new("Widht = 1, Width = 2");
+        assert_eq!(codes(&found), ["MR0147"]);
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn a_field_assigned_twice_is_mr0148() {
+        let (text, found) = shape_new("Height = 1, Width = 2, Height = 3");
+        assert_eq!(codes(&found), ["MR0148"]);
+        let d = &found[0];
+        assert_eq!(d.message, "`new Shape { ... }` assigns `Height` twice");
+        assert_eq!(d.primary.message.as_deref(), Some("assigned again here"));
+        let at = text.rfind("Height").expect("the second name");
+        assert_eq!(usize::from(d.primary.span.range.start()), at);
+        assert_eq!(d.secondary.len(), 1);
+        assert_eq!(
+            d.secondary[0].message.as_deref(),
+            Some("first assigned here")
+        );
+        assert_eq!(&text[d.secondary[0].span.range], "Height");
+        assert!(d.secondary[0].span.range.start() < d.primary.span.range.start());
+        assert_eq!(d.fixes.len(), 1);
+        assert_eq!(d.fixes[0].message, "remove the repeated assignment");
+        let fixed = apply_fixes(&text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert!(fixed.text.contains("new Shape { Height = 1, Width = 2 }"));
+        // Each repetition is reported, and its value still checked.
+        let (_, found) = shape_new("Width = 1, Width = 2, Width = \"a\"");
+        assert_eq!(codes(&found), ["MR0148", "MR0148", "MR0203"]);
+    }
+
+    #[test]
+    fn a_constructor_call_does_not_check_the_names_it_assigns() {
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S(1) { N = 1, N = 2, M = 3 };\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
     #[test]
     fn missing_field_without_initializer_is_mr0143() {
         let text = format!("{POINT}let p = new Point {{ X = 3 }};\n");
@@ -2470,7 +2610,7 @@ mod tests {
     #[test]
     fn initializers_are_inferred_when_the_name_is_unknown() {
         let text = "struct S {\n    public L: int;\n}\nlet s = new S { L = 1, M = 1 + \"a\" };\n";
-        assert_eq!(reported(text), ["MR0204"]);
+        assert_eq!(reported(text), ["MR0147", "MR0204"]);
     }
 
     #[test]

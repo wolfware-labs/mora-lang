@@ -11,8 +11,8 @@ use mora_syntax::lexer::number::{
 
 use super::constant::Value;
 use super::{
-    Callee, Constant, Context, Conversion, ConversionKind, Inference, TypeError, constant,
-    converts, is_known, numeric, same,
+    Callee, Constant, Context, Conversion, ConversionKind, Inference, NotAField, TypeError,
+    constant, converts, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -21,8 +21,10 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
+use crate::items::{ValueKind, item_tree};
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::signature::{signature, struct_field, this_type};
+use crate::signature::{instance_fields, signature, struct_field, this_type};
+use crate::suggest::closest;
 use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
@@ -1288,11 +1290,12 @@ impl Check<'_> {
         }
     }
 
-    /// `new T(args) { F = v }`. For a struct built memberwise, each
-    /// initializer is checked against its field's type and every field
-    /// without an initializer of its own must be assigned (§6.2); its type
-    /// is the struct; a call with arguments runs a constructor, which
-    /// assigns the fields. Other targets have no type yet.
+    /// `new T(args) { F = v }`. For a struct built memberwise, each name
+    /// is an instance field, assigned once, whose value is checked against
+    /// its type, and every field without an initializer of its own must be
+    /// assigned (§6.9); its type is the struct. A call with arguments runs
+    /// a constructor, which assigns the fields. Other targets have no type
+    /// yet.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1305,34 +1308,37 @@ impl Check<'_> {
             self.args(args);
         }
         let written = ty.map(|ty| self.resolution.written(ty));
-        let fields = match &written {
-            Some(Ty::Struct(item)) => match signature(self.db, *item) {
-                Signature::Struct(fields) => Some(fields),
-                _ => None,
-            },
+        let item = match &written {
+            Some(Ty::Struct(item)) if matches!(signature(self.db, *item), Signature::Struct(_)) => {
+                Some(*item)
+            }
             _ => None,
         };
-        let (Some(written), Some(fields)) = (written, fields) else {
+        let (Some(written), Some(item)) = (written, item) else {
             for &(_, init) in inits.into_iter().flatten() {
                 self.infer(init);
             }
             return None;
         };
         let inits = inits.unwrap_or_default();
-        for (name, init) in inits {
-            match fields.iter().find(|field| field.name == *name) {
-                Some(field) => self.check(*init, &field.ty),
+        for (position, (name, init)) in inits.iter().enumerate() {
+            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
+                Some((_, field)) => self.check(*init, &field.ty),
                 None => {
                     self.infer(*init);
                 }
             }
+            // A constructor call assigns the members as plain assignments.
+            if !has_args && let Some(error) = self.init_name(item, &written, inits, position) {
+                self.errors.push(error);
+            }
         }
-        // A constructor call sets the fields itself.
-        let missing = fields
-            .iter()
+        let missing = instance_fields(self.db, item)
             .filter(|_| !has_args)
-            .find(|field| field.needs_init && !inits.iter().any(|(name, _)| *name == field.name));
-        if let Some(missing) = missing {
+            .find(|(_, field)| {
+                field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
+            });
+        if let Some((_, missing)) = missing {
             self.errors.push(TypeError::MissingField {
                 expr,
                 ty: written.clone(),
@@ -1340,6 +1346,63 @@ impl Check<'_> {
             });
         }
         Some(written)
+    }
+
+    /// What is wrong with the name of the initializer at `position` of
+    /// `inits`, the memberwise creation of the struct `item` of type `ty`:
+    /// a name that is not an instance field, or one assigned before.
+    fn init_name(
+        &self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        position: usize,
+    ) -> Option<TypeError> {
+        let (name, value) = &inits[position];
+        // An initializer without a name is a syntax error.
+        if name.is_empty() {
+            return None;
+        }
+        if instance_fields(self.db, item).any(|(_, field)| field.name == *name) {
+            let (_, first) = inits[..position]
+                .iter()
+                .find(|(earlier, _)| earlier == name)?;
+            return Some(TypeError::RepeatedField {
+                value: *value,
+                first: *first,
+                previous: inits[position - 1].1,
+                ty: ty.clone(),
+                name: name.clone(),
+            });
+        }
+        let member = item_tree(self.db, item.file)
+            .item(item.item)
+            .values
+            .iter()
+            .find(|member| member.name == *name)
+            .map_or(NotAField::Unknown, |member| match member.kind {
+                ValueKind::Getter => NotAField::Getter,
+                ValueKind::Const => NotAField::Constant,
+                // A field that is not an instance field is `static`.
+                ValueKind::Field => NotAField::Static,
+                ValueKind::EnumMember | ValueKind::UnionCase => NotAField::Unknown,
+            });
+        let suggestion = if member == NotAField::Unknown {
+            let unassigned: Vec<String> = instance_fields(self.db, item)
+                .map(|(_, field)| field.name.clone())
+                .filter(|field| !inits.iter().any(|(name, _)| name == field))
+                .collect();
+            closest(name, &unassigned).map(str::to_owned)
+        } else {
+            None
+        };
+        Some(TypeError::NotAField {
+            value: *value,
+            ty: ty.clone(),
+            name: name.clone(),
+            member,
+            suggestion,
+        })
     }
 
     /// `(T)x`: a cast converts between numeric types (§5.10).
