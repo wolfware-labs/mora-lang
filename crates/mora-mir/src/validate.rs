@@ -4,12 +4,12 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{ItemId, ItemKind, Primitive, Signature, Ty, item_tree, signature};
+use mora_hir::{ItemId, ItemKind, ParamMode, Primitive, Signature, Ty, item_tree, signature};
 use mora_span::Db;
 
 use crate::{
-    AggregateKind, BinOp, Block, BlockId, Body, Callee, Const, InterpPiece, LocalId, LocalTy, Mir,
-    Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
+    LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
 /// Checks every body of `mir` and returns every problem found, ordered by
@@ -194,6 +194,25 @@ impl Checker<'_> {
         }
     }
 
+    /// The type of the local-like value at `place`: a whole borrow local keeps
+    /// its borrow, and any path into a local is a value.
+    fn place_lt(&mut self, at: &str, place: &Place) -> Option<LocalTy> {
+        let ty = self.place(at, place)?;
+        if place.projections.is_empty() {
+            Some(self.body.local(place.local).ty.clone())
+        } else {
+            Some(LocalTy::Value(ty))
+        }
+    }
+
+    /// Like [`Checker::place_lt`], for an operand.
+    fn operand_lt(&mut self, at: &str, operand: &Operand) -> Option<LocalTy> {
+        match operand {
+            Operand::Copy(place) | Operand::Move(place) => self.place_lt(at, place),
+            Operand::Const(constant) => Some(LocalTy::Value(const_ty(constant))),
+        }
+    }
+
     /// The types of the operands; every operand is checked even after one
     /// fails.
     fn operands<'o>(
@@ -218,28 +237,31 @@ impl Checker<'_> {
     // Statements.
 
     fn assign(&mut self, at: &str, dest: &Place, rvalue: &Rvalue) {
-        let dest_ty = self.place(at, dest);
-        let value_ty = self.rvalue(at, rvalue, dest_ty.as_ref());
+        let dest_ty = self.place_lt(at, dest);
+        let dest_value = dest_ty.as_ref().map(local_value_ty);
+        let value_ty = self.rvalue(at, rvalue, dest_value);
         if let (Some(dest_ty), Some(value_ty)) = (dest_ty, value_ty)
             && dest_ty != value_ty
         {
             self.error(
                 at,
-                format!("assignment of type {value_ty:?} to a place of type {dest_ty:?}"),
+                format!("assignment of {value_ty:?} to a place of {dest_ty:?}"),
             );
         }
     }
 
-    /// The type of `rvalue`. A tuple takes the element names of `dest_ty`,
-    /// since the names are not part of what its operands carry.
-    fn rvalue(&mut self, at: &str, rvalue: &Rvalue, dest_ty: Option<&Ty>) -> Option<Ty> {
-        match rvalue {
-            Rvalue::Use(operand) | Rvalue::Unary(UnOp::Neg | UnOp::Not | UnOp::BitNot, operand) => {
-                self.operand(at, operand)
+    /// The type of `rvalue`, keeping a borrow a borrow. A tuple takes the
+    /// element names of `dest_ty`, since the names are not part of what its
+    /// operands carry.
+    fn rvalue(&mut self, at: &str, rvalue: &Rvalue, dest_ty: Option<&Ty>) -> Option<LocalTy> {
+        let value = match rvalue {
+            Rvalue::Use(operand) => return self.operand_lt(at, operand),
+            Rvalue::Borrow(mode, place) => {
+                return self.place(at, place).map(|ty| LocalTy::Borrow(*mode, ty));
             }
-            Rvalue::Borrow(_, place) => self.place(at, place),
+            Rvalue::Unary(op, operand) => self.unary(at, *op, operand),
             Rvalue::Binary(op, left, right) => self.binary(at, *op, left, right),
-            Rvalue::Cast(_, operand, ty) => self.operand(at, operand).map(|_| ty.clone()),
+            Rvalue::Cast(kind, operand, ty) => self.cast(at, *kind, operand, ty),
             Rvalue::Aggregate(AggregateKind::Tuple, operands) => {
                 let tys = self.operands(at, operands)?;
                 let names = match dest_ty {
@@ -297,7 +319,8 @@ impl Checker<'_> {
                 });
                 self.operands(at, operands).map(|_| Ty::String)
             }
-        }
+        };
+        value.map(LocalTy::Value)
     }
 
     fn binary(&mut self, at: &str, op: BinOp, left: &Operand, right: &Operand) -> Option<Ty> {
@@ -306,27 +329,66 @@ impl Checker<'_> {
         let (left, right) = (left?, right?);
         match op {
             BinOp::Shl | BinOp::Shr | BinOp::UShr => {
-                if !is_integer(&right) {
+                if !is_integer(&left) || !is_integer(&right) {
                     self.error(
                         at,
-                        format!("shift amount of type {right:?} is not an integer"),
+                        format!("{op:?} of {left:?} by {right:?} needs two integers"),
                     );
                     return None;
                 }
-                Some(left)
+                return Some(left);
             }
             _ if left != right => {
                 self.error(
                     at,
                     format!("operands of {op:?} have types {left:?} and {right:?}"),
                 );
-                None
+                return None;
             }
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                Some(Ty::Primitive(Primitive::Bool))
-            }
-            _ => Some(left),
+            _ => {}
         }
+        let fits = match op {
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                return Some(Ty::Primitive(Primitive::Bool));
+            }
+            BinOp::Add => is_numeric(&left) || left == Ty::String,
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                is_integer(&left) || left == Ty::Primitive(Primitive::Bool)
+            }
+            _ => is_numeric(&left),
+        };
+        if !fits {
+            self.error(at, format!("{op:?} does not apply to {left:?}"));
+            return None;
+        }
+        Some(left)
+    }
+
+    fn unary(&mut self, at: &str, op: UnOp, operand: &Operand) -> Option<Ty> {
+        let ty = self.operand(at, operand)?;
+        let fits = match op {
+            UnOp::Neg => is_numeric(&ty),
+            UnOp::Not => ty == Ty::Primitive(Primitive::Bool),
+            UnOp::BitNot => is_integer(&ty),
+        };
+        if !fits {
+            self.error(at, format!("{op:?} does not apply to {ty:?}"));
+            return None;
+        }
+        Some(ty)
+    }
+
+    fn cast(&mut self, at: &str, kind: CastKind, operand: &Operand, to: &Ty) -> Option<Ty> {
+        let from = self.operand(at, operand)?;
+        let fits = match kind {
+            CastKind::Numeric => is_numeric(&from) && is_numeric(to),
+            CastKind::Implicit => widens(&from, to),
+        };
+        if !fits {
+            self.error(at, format!("{kind:?} cast from {from:?} to {to:?}"));
+            return None;
+        }
+        Some(to.clone())
     }
 
     // Terminators.
@@ -371,12 +433,12 @@ impl Checker<'_> {
                 dest,
                 next,
             } => {
-                self.operands(at, args);
+                let args: Vec<_> = args.iter().map(|arg| self.operand_lt(at, arg)).collect();
                 let dest_ty = dest.as_ref().and_then(|dest| self.place(at, dest));
                 if let Some(next) = next {
                     self.target(at, "call", *next);
                 }
-                self.call(at, callee, args.len(), dest.is_some(), dest_ty);
+                self.call(at, callee, &args, dest.is_some(), dest_ty);
             }
         }
     }
@@ -385,7 +447,7 @@ impl Checker<'_> {
         &mut self,
         at: &str,
         callee: &Callee,
-        args: usize,
+        args: &[Option<LocalTy>],
         has_dest: bool,
         dest_ty: Option<Ty>,
     ) {
@@ -400,11 +462,29 @@ impl Checker<'_> {
             }
             return;
         };
-        if args != params {
+        if args.len() != params.len() {
             self.error(
                 at,
-                format!("call passes {args} arguments but the callee takes {params}"),
+                format!(
+                    "call passes {} arguments but the callee takes {}",
+                    args.len(),
+                    params.len()
+                ),
             );
+        }
+        for (index, (arg, param)) in args.iter().zip(&params).enumerate() {
+            let Some(arg) = arg else { continue };
+            match param {
+                Param::Receiver if !matches!(arg, LocalTy::Borrow(..)) => self.error(
+                    at,
+                    format!("argument {index}, the receiver, is {arg:?} and not a borrow"),
+                ),
+                Param::Exact(want) if arg != want => self.error(
+                    at,
+                    format!("argument {index} is {arg:?} but the parameter takes {want:?}"),
+                ),
+                _ => {}
+            }
         }
         if let Some(dest_ty) = dest_ty
             && dest_ty != ret
@@ -416,15 +496,27 @@ impl Checker<'_> {
         }
     }
 
-    /// How many arguments the callee takes and what it returns, or `None`
-    /// for an external callee or after reporting a callee that is not valid.
-    fn callee_shape(&mut self, at: &str, callee: &Callee) -> Option<(usize, Ty)> {
+    /// What the callee takes, in order, and what it returns; `None` for an
+    /// external callee or after reporting a callee that is not valid.
+    fn callee_shape(&mut self, at: &str, callee: &Callee) -> Option<(Vec<Param>, Ty)> {
         match callee {
             Callee::Item(item) => match signature(self.db, *item) {
-                Signature::Function(function) => Some((
-                    function.params.len() + usize::from(self.has_receiver(*item)),
-                    function.ret.clone(),
-                )),
+                Signature::Function(function) => {
+                    let receiver = self.has_receiver(*item).then_some(Param::Receiver);
+                    let params = receiver
+                        .into_iter()
+                        .chain(function.params.iter().map(|param| {
+                            Param::Exact(match param.mode {
+                                ParamMode::In => LocalTy::Borrow(BorrowMode::In, param.ty.clone()),
+                                ParamMode::Ref => {
+                                    LocalTy::Borrow(BorrowMode::Ref, param.ty.clone())
+                                }
+                                ParamMode::Move => LocalTy::Value(param.ty.clone()),
+                            })
+                        }))
+                        .collect();
+                    Some((params, function.ret.clone()))
+                }
                 _ => {
                     self.error(at, "callee item is not a function");
                     None
@@ -435,12 +527,18 @@ impl Checker<'_> {
                     self.error(at, format!("no local function {index}"));
                     return None;
                 };
-                let Some(ret) = target.locals.first() else {
-                    self.error(at, format!("local function {index} has no return slot"));
+                if target.locals.len() <= target.params {
+                    self.error(
+                        at,
+                        format!("local function {index} has fewer locals than parameters"),
+                    );
                     return None;
-                };
-                let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = &ret.ty;
-                Some((target.params, ty.clone()))
+                }
+                let params = target.locals[1..=target.params]
+                    .iter()
+                    .map(|local| Param::Exact(local.ty.clone()))
+                    .collect();
+                Some((params, local_value_ty(&target.locals[0].ty).clone()))
             }
             Callee::Initializer(item, n) => {
                 let Signature::Struct(fields) = signature(self.db, *item) else {
@@ -448,7 +546,7 @@ impl Checker<'_> {
                     return None;
                 };
                 match fields.get(*n as usize) {
-                    Some(field) => Some((0, field.ty.clone())),
+                    Some(field) => Some((Vec::new(), field.ty.clone())),
                     None => {
                         self.error(at, format!("no field {n} to initialize"));
                         None
@@ -468,6 +566,22 @@ impl Checker<'_> {
     }
 }
 
+/// What a call passes for one parameter.
+enum Param {
+    /// The receiver of a method: a borrow, whose mode and type the item
+    /// tree does not record.
+    Receiver,
+    /// A local of exactly this type.
+    Exact(LocalTy),
+}
+
+/// The value type of a local type: the type itself, or the one a borrow
+/// refers to.
+fn local_value_ty(ty: &LocalTy) -> &Ty {
+    let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = ty;
+    ty
+}
+
 /// The type of a constant.
 fn const_ty(constant: &Const) -> Ty {
     match constant {
@@ -477,6 +591,59 @@ fn const_ty(constant: &Const) -> Ty {
         Const::String(_) => Ty::String,
         Const::Unit => Ty::UNIT,
     }
+}
+
+/// Whether `ty` is an integer or floating-point type.
+fn is_numeric(ty: &Ty) -> bool {
+    is_integer(ty) || matches!(ty, Ty::Primitive(Primitive::Float | Primitive::Double))
+}
+
+/// Whether `from` converts to `to` by an implicit widening (§5.10): an
+/// integer to a wider integer of the same signedness or to a wider signed
+/// one, a type that fits exactly to a floating-point type, and `float` to
+/// `double`. The native integers have no fixed width: as a source they count
+/// as 64 bits and as a target as 32, so only types of up to 16 bits widen to
+/// them.
+fn widens(from: &Ty, to: &Ty) -> bool {
+    let (Ty::Primitive(from), Ty::Primitive(to)) = (from, to) else {
+        return false;
+    };
+    use Primitive::{Double, Float};
+    if (*from, *to) == (Float, Double) {
+        return true;
+    }
+    let Some((signed, bits)) = int_shape(*from, true) else {
+        return false;
+    };
+    match to {
+        Double => bits <= 32,
+        Float => bits <= 16,
+        _ => {
+            let Some((to_signed, to_bits)) = int_shape(*to, false) else {
+                return false;
+            };
+            to_bits > bits && (to_signed || !signed)
+        }
+    }
+}
+
+/// Whether an integer type is signed, and its width in bits; the width of a
+/// native integer is taken for a source or for a target.
+fn int_shape(ty: Primitive, source: bool) -> Option<(bool, u32)> {
+    let native = if source { 64 } else { 32 };
+    Some(match ty {
+        Primitive::Byte => (false, 8),
+        Primitive::SByte => (true, 8),
+        Primitive::Short => (true, 16),
+        Primitive::UShort => (false, 16),
+        Primitive::Int => (true, 32),
+        Primitive::UInt => (false, 32),
+        Primitive::Long => (true, 64),
+        Primitive::ULong => (false, 64),
+        Primitive::NInt => (true, native),
+        Primitive::NUInt => (false, native),
+        _ => return None,
+    })
 }
 
 /// Whether `ty` is one of the integer types.
@@ -514,7 +681,9 @@ mod tests {
     const SOURCE: &str = "struct P {\n    public A: int = 1;\n    public B: bool;\n}\n\
         Add(a: int, b: int): int { return a; }\n\
         Nop() {}\n\
-        class C {\n    M(a: int): int { return a; }\n    static S(a: int): int { return a; }\n}\n";
+        class C {\n    M(a: int): int { return a; }\n    static S(a: int): int { return a; }\n}\n\
+        Mix(in a: int, ref b: int, move c: int): int { return c; }\n\
+        struct Q {\n    public V: int;\n    Get(): int { return V; }\n    mut Set(v: int) {}\n}\n";
 
     /// The items of [`SOURCE`].
     struct Fx {
@@ -524,6 +693,9 @@ mod tests {
         nop: ItemId,
         method: ItemId,
         static_method: ItemId,
+        mix: ItemId,
+        get: ItemId,
+        set: ItemId,
     }
 
     fn fx() -> Fx {
@@ -544,6 +716,7 @@ mod tests {
         };
         let (p, add, nop, method, static_method) =
             (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
+        let (mix, get, set) = (find("Mix"), find("Get"), find("Set"));
         Fx {
             db,
             p,
@@ -551,6 +724,9 @@ mod tests {
             nop,
             method,
             static_method,
+            mix,
+            get,
+            set,
         }
     }
 
@@ -577,6 +753,14 @@ mod tests {
     fn borrow(ty: Ty) -> LocalDecl {
         LocalDecl {
             ty: LocalTy::Borrow(BorrowMode::In, ty),
+            mutable: false,
+            source: None,
+        }
+    }
+
+    fn borrow_ref(ty: Ty) -> LocalDecl {
+        LocalDecl {
+            ty: LocalTy::Borrow(BorrowMode::Ref, ty),
             mutable: false,
             source: None,
         }
@@ -633,9 +817,18 @@ mod tests {
         }
     }
 
-    /// `_0: int`, `_1: int` (parameter), `_2: int`, `_3: bool`, one block.
+    /// `_0: int`, `_1: int` (parameter), `_2: int`, `_3: bool`, `_4: in int`, `_5: ref int`,
+    /// `_6: in bool`; one block.
     fn simple(statements: Vec<Statement>, kind: TerminatorKind) -> Mir {
-        let locals = vec![val(int()), val(int()), val(int()), val(boolean())];
+        let locals = vec![
+            val(int()),
+            val(int()),
+            val(int()),
+            val(boolean()),
+            borrow(int()),
+            borrow_ref(int()),
+            borrow(boolean()),
+        ];
         Mir {
             bodies: vec![body("F", 1, locals, vec![block(statements, kind)])],
         }
@@ -842,7 +1035,7 @@ mod tests {
         let found = errors(&fx, &type_mismatch(), true);
         assert_eq!(found.len(), 1);
         assert!(found[0].starts_with("fn F bb0[0]: "), "{found:?}");
-        assert!(found[0].contains("type"), "{found:?}");
+        assert!(found[0].contains("assignment"), "{found:?}");
     }
 
     #[test]
@@ -954,24 +1147,20 @@ mod tests {
     #[test]
     fn accepts_calls_with_matching_counts() {
         let fx = fx();
-        let add = call(
-            Callee::Item(fx.add),
-            vec![int_const(1), int_const(2)],
-            Some(place(2)),
-        );
+        let add = call(Callee::Item(fx.add), vec![copy(4), copy(4)], Some(place(2)));
         assert_eq!(validate(&fx.db, &add, true), Ok(()));
         let nop = call(Callee::Item(fx.nop), vec![], None);
         assert_eq!(validate(&fx.db, &nop, true), Ok(()));
         // A call that returns int may drop its result.
-        let dropped = call(Callee::Item(fx.add), vec![int_const(1), int_const(2)], None);
+        let dropped = call(Callee::Item(fx.add), vec![copy(4), copy(4)], None);
         assert_eq!(validate(&fx.db, &dropped, true), Ok(()));
     }
 
     #[test]
     fn a_method_takes_its_receiver_and_a_static_method_does_not() {
         let fx = fx();
-        let one = vec![int_const(1)];
-        let two = vec![int_const(1), int_const(2)];
+        let one = vec![copy(4)];
+        let two = vec![copy(4), copy(4)];
         rejects(
             &fx,
             &call(Callee::Item(fx.method), one.clone(), Some(place(2))),
@@ -1382,7 +1571,7 @@ mod tests {
                 place(2),
                 Rvalue::Binary(op, copy(1), Operand::Const(Const::Bool(true))),
             ));
-            rejects(&fx, &not_integer, true, "shift amount");
+            rejects(&fx, &not_integer, true, "needs two integers");
         }
     }
 
@@ -1410,7 +1599,7 @@ mod tests {
         assert!(validate(&fx.db, &cast(2, boolean()), true).is_err());
         let moved = with_stmt(assign(place(2), Rvalue::Use(Operand::Move(place(1)))));
         assert_eq!(validate(&fx.db, &moved, true), Ok(()));
-        let borrowed = with_stmt(assign(place(2), Rvalue::Borrow(BorrowMode::In, place(1))));
+        let borrowed = with_stmt(assign(place(4), Rvalue::Borrow(BorrowMode::In, place(1))));
         assert_eq!(validate(&fx.db, &borrowed, true), Ok(()));
         let wrong = with_stmt(assign(place(3), Rvalue::Borrow(BorrowMode::In, place(1))));
         assert!(validate(&fx.db, &wrong, true).is_err());
@@ -1616,6 +1805,278 @@ mod tests {
             let result = result.unwrap_or_else(|_| panic!("body {index} made validate panic"));
             assert!(result.is_err(), "body {index} was accepted");
         }
+    }
+
+    fn args(list: &[Operand]) -> Vec<Operand> {
+        list.to_vec()
+    }
+
+    #[test]
+    fn call_arguments_must_match_parameter_modes() {
+        let fx = fx();
+        let ok = |callee: Callee, list: &[Operand]| {
+            validate(&fx.db, &call(callee, args(list), Some(place(2))), true)
+        };
+        // in, ref, move
+        assert_eq!(
+            ok(Callee::Item(fx.mix), &[copy(4), copy(5), copy(1)]),
+            Ok(())
+        );
+        let bad = |list: &[Operand], needle: &str| {
+            rejects(
+                &fx,
+                &call(Callee::Item(fx.mix), args(list), Some(place(2))),
+                true,
+                needle,
+            );
+        };
+        // A constant or value for an `in` parameter.
+        bad(&[int_const(1), copy(5), copy(1)], "argument 0");
+        bad(&[copy(1), copy(5), copy(1)], "argument 0");
+        // The wrong mode.
+        bad(&[copy(5), copy(5), copy(1)], "argument 0");
+        bad(&[copy(4), copy(4), copy(1)], "argument 1");
+        // The wrong type.
+        bad(&[copy(6), copy(5), copy(1)], "argument 0");
+        // A borrow where a value is moved, and a value of the wrong type.
+        bad(&[copy(4), copy(5), copy(4)], "argument 2");
+        bad(&[copy(4), copy(5), copy(3)], "argument 2");
+        // The value behind a borrow moves into a `move` parameter, but is not
+        // a borrow for an `in` parameter.
+        let behind = Operand::Copy(proj(4, vec![Projection::Deref]));
+        assert_eq!(
+            ok(Callee::Item(fx.mix), &[copy(4), copy(5), behind.clone()]),
+            Ok(())
+        );
+        bad(&[behind, copy(5), copy(1)], "argument 0");
+    }
+
+    #[test]
+    fn receivers_are_borrows_and_count_for_struct_and_mut_methods() {
+        let fx = fx();
+        // Q.Get(): the receiver only.
+        let get = |list: &[Operand]| call(Callee::Item(fx.get), args(list), Some(place(2)));
+        assert_eq!(validate(&fx.db, &get(&[copy(4)]), true), Ok(()));
+        rejects(&fx, &get(&[]), true, "takes 1");
+        rejects(&fx, &get(&[copy(4), copy(4)]), true, "takes 1");
+        rejects(&fx, &get(&[copy(1)]), true, "receiver");
+        // Q.Set(v) is `mut`: the receiver and one argument.
+        let set = |list: &[Operand]| call(Callee::Item(fx.set), args(list), None);
+        assert_eq!(validate(&fx.db, &set(&[copy(5), copy(4)]), true), Ok(()));
+        assert_eq!(validate(&fx.db, &set(&[copy(4), copy(4)]), true), Ok(()));
+        rejects(&fx, &set(&[copy(5)]), true, "takes 2");
+        rejects(&fx, &set(&[copy(1), copy(4)]), true, "receiver");
+        rejects(&fx, &set(&[copy(5), copy(1)]), true, "argument 1");
+    }
+
+    #[test]
+    fn local_callees_take_the_parameter_types_of_their_body() {
+        let fx = fx();
+        let callee = body(
+            "F.Inner",
+            2,
+            vec![val(boolean()), borrow(int()), val(int())],
+            vec![block(vec![], TerminatorKind::Return)],
+        );
+        let mk = |list: &[Operand]| {
+            let mut mir = call(Callee::Local(1), args(list), None);
+            mir.bodies.push(callee.clone());
+            mir
+        };
+        assert_eq!(validate(&fx.db, &mk(&[copy(4), copy(1)]), true), Ok(()));
+        rejects(&fx, &mk(&[copy(1), copy(1)]), true, "argument 0");
+        rejects(&fx, &mk(&[copy(5), copy(1)]), true, "argument 0");
+        rejects(&fx, &mk(&[copy(4), copy(4)]), true, "argument 1");
+        rejects(&fx, &mk(&[copy(4), copy(3)]), true, "argument 1");
+    }
+
+    #[test]
+    fn whole_local_assignments_compare_local_types() {
+        let fx = fx();
+        let one = |dest: u32, rvalue: Rvalue| with_stmt(assign(place(dest), rvalue));
+        // A borrow copied between borrow locals of the same kind is fine.
+        assert_eq!(
+            validate(&fx.db, &one(4, Rvalue::Use(copy(4))), true),
+            Ok(())
+        );
+        // A borrow local read into a value local.
+        rejects(&fx, &one(2, Rvalue::Use(copy(4))), true, "assignment");
+        // A value into a borrow local.
+        rejects(&fx, &one(4, Rvalue::Use(copy(1))), true, "assignment");
+        rejects(&fx, &one(4, Rvalue::Use(int_const(1))), true, "assignment");
+        // A borrow of the right mode and type.
+        assert_eq!(
+            validate(
+                &fx.db,
+                &one(4, Rvalue::Borrow(BorrowMode::In, place(1))),
+                true
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate(
+                &fx.db,
+                &one(5, Rvalue::Borrow(BorrowMode::Ref, place(2))),
+                true
+            ),
+            Ok(())
+        );
+        // The wrong mode, the wrong inner type, a value destination.
+        rejects(
+            &fx,
+            &one(4, Rvalue::Borrow(BorrowMode::Ref, place(1))),
+            true,
+            "assignment",
+        );
+        rejects(
+            &fx,
+            &one(5, Rvalue::Borrow(BorrowMode::In, place(1))),
+            true,
+            "assignment",
+        );
+        rejects(
+            &fx,
+            &one(4, Rvalue::Borrow(BorrowMode::In, place(3))),
+            true,
+            "assignment",
+        );
+        rejects(
+            &fx,
+            &one(2, Rvalue::Borrow(BorrowMode::In, place(1))),
+            true,
+            "assignment",
+        );
+        // A deref reads the value behind the borrow.
+        let deref = Operand::Copy(proj(4, vec![Projection::Deref]));
+        assert_eq!(validate(&fx.db, &one(2, Rvalue::Use(deref)), true), Ok(()));
+    }
+
+    #[test]
+    fn operators_need_fitting_operand_types() {
+        let fx = fx();
+        let s = || Operand::Const(Const::String("a".into()));
+        let b = || Operand::Const(Const::Bool(true));
+        let f = || Operand::Const(Const::Real(0, Primitive::Double));
+        let into = |ty: Ty, rvalue: Rvalue| {
+            let mut mir = with_stmt(assign(place(2), rvalue));
+            mir.bodies[0].locals[2] = val(ty);
+            mir
+        };
+        let bin = |op: BinOp, l: Operand, r: Operand, ty: Ty| {
+            validate(&fx.db, &into(ty, Rvalue::Binary(op, l, r)), true)
+        };
+        let double = Ty::Primitive(Primitive::Double);
+        // Arithmetic: numeric, and string only for Add.
+        assert_eq!(bin(BinOp::Add, s(), s(), Ty::String), Ok(()));
+        assert_eq!(bin(BinOp::Mul, f(), f(), double.clone()), Ok(()));
+        for op in [
+            BinOp::Sub,
+            BinOp::Mul,
+            BinOp::Div,
+            BinOp::Rem,
+            BinOp::WrappingAdd,
+        ] {
+            assert!(bin(op, s(), s(), Ty::String).is_err(), "{op:?}");
+            assert!(bin(op, b(), b(), boolean()).is_err(), "{op:?}");
+        }
+        assert!(bin(BinOp::Add, b(), b(), boolean()).is_err());
+        // Bitwise: integer, or bool.
+        for op in [BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor] {
+            assert_eq!(bin(op, b(), b(), boolean()), Ok(()), "{op:?}");
+            assert_eq!(bin(op, int_const(1), int_const(1), int()), Ok(()), "{op:?}");
+            assert!(bin(op, f(), f(), double.clone()).is_err(), "{op:?}");
+            assert!(bin(op, s(), s(), Ty::String).is_err(), "{op:?}");
+        }
+        // Shifts: integers only.
+        for op in [BinOp::Shl, BinOp::Shr, BinOp::UShr] {
+            assert!(bin(op, b(), int_const(1), boolean()).is_err(), "{op:?}");
+            assert!(
+                bin(op, f(), int_const(1), double.clone()).is_err(),
+                "{op:?}"
+            );
+        }
+        // Unary.
+        let un =
+            |op: UnOp, o: Operand, ty: Ty| validate(&fx.db, &into(ty, Rvalue::Unary(op, o)), true);
+        assert_eq!(un(UnOp::Not, b(), boolean()), Ok(()));
+        assert!(un(UnOp::Not, int_const(1), int()).is_err());
+        assert_eq!(un(UnOp::BitNot, int_const(1), int()), Ok(()));
+        assert!(un(UnOp::BitNot, b(), boolean()).is_err());
+        assert!(un(UnOp::BitNot, f(), double.clone()).is_err());
+        assert_eq!(un(UnOp::Neg, f(), double.clone()), Ok(()));
+        assert_eq!(un(UnOp::Neg, int_const(1), int()), Ok(()));
+        assert!(un(UnOp::Neg, b(), boolean()).is_err());
+        assert!(un(UnOp::Neg, s(), Ty::String).is_err());
+    }
+
+    #[test]
+    fn casts_follow_their_kind() {
+        let fx = fx();
+        let cast = |kind: CastKind, from: Primitive, to: Primitive| {
+            let mut mir = with_stmt(assign(
+                place(2),
+                Rvalue::Cast(kind, Operand::Const(Const::Int(1, from)), Ty::Primitive(to)),
+            ));
+            mir.bodies[0].locals[2] = val(Ty::Primitive(to));
+            validate(&fx.db, &mir, true).is_ok()
+        };
+        use CastKind::{Implicit, Numeric};
+        use Primitive::*;
+        // Implicit casts widen.
+        for (from, to) in [
+            (Byte, UShort),
+            (Byte, Short),
+            (SByte, Int),
+            (Short, Long),
+            (UShort, UInt),
+            (UInt, Long),
+            (Int, Long),
+            (Byte, ULong),
+            (Short, Float),
+            (UShort, Double),
+            (Int, Double),
+            (UInt, Double),
+            (Float, Double),
+            (Short, NInt),
+            (Byte, NUInt),
+        ] {
+            assert!(cast(Implicit, from, to), "{from:?} to {to:?}");
+        }
+        // They never narrow, change signedness the wrong way, or go inexact.
+        for (from, to) in [
+            (Int, Short),
+            (Long, Int),
+            (Int, UInt),
+            (SByte, Byte),
+            (Short, UShort),
+            (Int, Int),
+            (Int, Float),
+            (Long, Double),
+            (Double, Float),
+            (Double, Int),
+            (Int, Bool),
+            (Bool, Int),
+            (Char, Int),
+            (Int, Char),
+            (ULong, Long),
+            (NInt, Long),
+            (Int, NInt),
+        ] {
+            assert!(!cast(Implicit, from, to), "{from:?} to {to:?}");
+        }
+        // Numeric casts go between any two numeric types, and only those.
+        assert!(cast(Numeric, Long, Short));
+        assert!(cast(Numeric, Double, Int));
+        assert!(cast(Numeric, Int, Float));
+        assert!(cast(Numeric, Int, Int));
+        assert!(!cast(Numeric, Int, Bool));
+        assert!(!cast(Numeric, Bool, Int));
+        assert!(!cast(Numeric, Char, Int));
+        let to_string = with_stmt(assign(
+            place(2),
+            Rvalue::Cast(Numeric, int_const(1), Ty::String),
+        ));
+        assert!(validate(&fx.db, &to_string, true).is_err());
     }
 
     #[test]
