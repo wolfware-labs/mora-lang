@@ -1,7 +1,7 @@
 //! Tests of the MIR data types.
 
 use mora_hir::test_support::{TestDb, app, file_named};
-use mora_hir::{ItemId, Primitive, Ty, item_tree};
+use mora_hir::{ItemId, Primitive, TupleElem, Ty, item_tree};
 use mora_span::{FileId, Span, TextRange, TextSize};
 
 use crate::{
@@ -193,7 +193,7 @@ fn a_field_out_of_range_panics() {
 }
 
 #[test]
-#[should_panic(expected = "field of a type that is not a struct")]
+#[should_panic(expected = "field of a type that is not a struct or a tuple")]
 fn a_field_of_a_non_struct_panics() {
     let db = TestDb::new();
     let body = body_of(vec![decl(LocalTy::Value(int()))], vec![], 0);
@@ -241,4 +241,81 @@ fn a_deref_after_a_field_panics() {
         },
         &db,
     );
+}
+
+fn elem(ty: Ty) -> TupleElem {
+    TupleElem { name: None, ty }
+}
+
+fn place_of(local: u32, projections: Vec<Projection>) -> Place {
+    Place {
+        local: LocalId(local),
+        projections,
+    }
+}
+
+#[test]
+fn field_of_a_tuple_reads_its_element() {
+    let db = TestDb::new();
+    let tuple = Ty::Tuple(vec![elem(int()), elem(Ty::String)]);
+    let body = body_of(vec![decl(LocalTy::Value(tuple))], vec![], 0);
+    assert_eq!(
+        body.place_ty(&place_of(0, vec![Projection::Field(0)]), &db),
+        int()
+    );
+    assert_eq!(
+        body.place_ty(&place_of(0, vec![Projection::Field(1)]), &db),
+        Ty::String
+    );
+}
+
+#[test]
+fn field_of_a_nested_tuple_and_through_a_borrow() {
+    let db = TestDb::new();
+    let inner = Ty::Tuple(vec![elem(Ty::Primitive(Primitive::Bool)), elem(int())]);
+    let outer = Ty::Tuple(vec![elem(Ty::String), elem(inner)]);
+    let body = body_of(
+        vec![decl(LocalTy::Borrow(BorrowMode::In, outer))],
+        vec![],
+        0,
+    );
+    let path = vec![
+        Projection::Deref,
+        Projection::Field(1),
+        Projection::Field(1),
+    ];
+    assert_eq!(body.place_ty(&place_of(0, path), &db), int());
+}
+
+#[test]
+#[should_panic(expected = "field 2 out of range of a tuple of 2 elements")]
+fn a_tuple_field_out_of_range_panics() {
+    let db = TestDb::new();
+    let tuple = Ty::Tuple(vec![elem(int()), elem(int())]);
+    let body = body_of(vec![decl(LocalTy::Value(tuple))], vec![], 0);
+    body.place_ty(&place_of(0, vec![Projection::Field(2)]), &db);
+}
+
+#[test]
+#[should_panic(expected = "no block bb3")]
+fn a_missing_block_panics() {
+    let body = body_of(vec![], vec![], 0);
+    body.block(BlockId(3));
+}
+
+#[test]
+#[should_panic(expected = "a struct type whose item is not a struct")]
+fn a_struct_type_naming_a_function_panics() {
+    let db = TestDb::new();
+    let project = app(&db, &[("src/Program.mr", "F() {}\n")]);
+    let file = file_named(&db, project, "src/Program.mr");
+    let tree = item_tree(&db, file);
+    let (item, _) = tree.items().next().expect("the function");
+    let function = ItemId {
+        project,
+        file,
+        item,
+    };
+    let body = body_of(vec![decl(LocalTy::Value(Ty::Struct(function)))], vec![], 0);
+    body.place_ty(&place_of(0, vec![Projection::Field(0)]), &db);
 }

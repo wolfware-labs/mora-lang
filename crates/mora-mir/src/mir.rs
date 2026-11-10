@@ -374,8 +374,8 @@ impl Body {
     /// # Panics
     ///
     /// When the place is invalid: its local is missing, it dereferences a
-    /// value local, or it takes a field of something that is not a struct or
-    /// past its last field.
+    /// value local, or it takes a field of something that is not a struct or a
+    /// tuple, or past its last field.
     pub fn place_ty(&self, place: &Place, db: &dyn Db) -> Ty {
         let (mut ty, mut borrowed) = match &self.local(place.local).ty {
             LocalTy::Value(ty) => (ty.clone(), false),
@@ -400,23 +400,36 @@ impl Body {
         ty
     }
 
-    /// The type of the `n`-th field of the struct `ty`.
+    /// The type of the `n`-th field of the struct or tuple `ty`.
     fn field_ty(&self, ty: &Ty, n: u32, db: &dyn Db) -> Ty {
-        let Ty::Struct(item) = ty else {
-            panic!("body {}: field of a type that is not a struct", self.name);
-        };
-        let Signature::Struct(fields) = signature(db, *item) else {
-            panic!(
-                "body {}: a struct type whose item is not a struct",
+        match ty {
+            Ty::Struct(item) => {
+                let Signature::Struct(fields) = signature(db, *item) else {
+                    panic!(
+                        "body {}: a struct type whose item is not a struct",
+                        self.name
+                    );
+                };
+                match fields.get(n as usize) {
+                    Some(field) => field.ty.clone(),
+                    None => panic!(
+                        "body {}: field {n} out of range of a struct of {} fields",
+                        self.name,
+                        fields.len()
+                    ),
+                }
+            }
+            Ty::Tuple(elems) => match elems.get(n as usize) {
+                Some(elem) => elem.ty.clone(),
+                None => panic!(
+                    "body {}: field {n} out of range of a tuple of {} elements",
+                    self.name,
+                    elems.len()
+                ),
+            },
+            _ => panic!(
+                "body {}: field of a type that is not a struct or a tuple",
                 self.name
-            );
-        };
-        match fields.get(n as usize) {
-            Some(field) => field.ty.clone(),
-            None => panic!(
-                "body {}: field {n} out of range of a struct of {} fields",
-                self.name,
-                fields.len()
             ),
         }
     }
