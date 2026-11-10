@@ -2494,7 +2494,7 @@ mod tests {
 
     #[test]
     fn an_assignment_used_as_a_value_is_mr0185() {
-        let head = "Show(n: int) {}\nvar x = 0;\nvar y = 0;\n";
+        let head = "Show(n: int) {}\nTake(f: () => ()) {}\nTakeInt(f: () => int) {}\nvar x = 0;\nvar y = 0;\n";
         for use_ in [
             "x = y = 5;",
             "Show(x = 3);",
@@ -2505,6 +2505,8 @@ mod tests {
             "let z = x == (y = 1);",
             "return (x = 1);",
             "let f = () => (x = 1);",
+            "let t = $\"{x = 1}\";",
+            "TakeInt(() => x = 1);",
         ] {
             let text = format!("{head}{use_}\n");
             assert_eq!(reported(&text), ["MR0185"], "{use_}");
@@ -2517,9 +2519,76 @@ mod tests {
     }
 
     #[test]
+    fn a_lambda_that_returns_unit_may_assign() {
+        let head = "Take(f: () => ()) {}\nTakeInt(f: () => int) {}\nvar x = 0;\n";
+        for ok in [
+            "Take(() => x = 1);",
+            "Take(() => x += 1);",
+            "let f: () => () = () => x = 1;",
+            "Take(() => x == 1 ? x = 2 : x = 3);",
+            "Take(f: () => x = 1);",
+            "x == 1 ? x = 2 : x = 3;",
+            "x ??= 1;",
+        ] {
+            assert_eq!(
+                reported(&format!("{head}{ok}\n")),
+                Vec::<String>::new(),
+                "{ok}"
+            );
+        }
+        for bad in ["TakeInt(() => x = 1);", "let f = () => x = 1;"] {
+            assert!(
+                reported(&format!("{head}{bad}\n")).contains(&"MR0185".to_owned()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_function_type_makes_a_lambda_body_a_statement() {
+        let text = "struct Box<T> {}\nTakeBox(b: Box<()>) {}\nvar x = 0;\nTakeBox(() => x = 1);\n";
+        assert_eq!(reported(text), ["MR0185"]);
+    }
+
+    #[test]
+    fn a_conditional_statement_without_an_assignment_keeps_its_type() {
+        let types = expr_types("let c = true;\nc ? 1 : 2;\n");
+        assert!(types.contains(&"c ? 1 : 2: int".to_owned()), "{types:?}");
+    }
+
+    #[test]
+    fn only_a_lambda_argument_takes_its_parameter_type_as_a_target() {
+        // A conditional is checked against a target, and its literal does
+        // not fit a `byte`; without a target the `int` is the mismatch.
+        let text = "F(b: byte) {}\nvar c = true;\nF(c ? 1 : 300);\n";
+        let found = reported(text);
+        assert_eq!(found, ["MR0203"], "{found:?}");
+    }
+
+    #[test]
+    fn an_expression_body_of_a_unit_function_may_assign() {
+        let text = "F(ref x: int) => x = 1;\n\
+                    G(n: int, ref x: int, ref y: int) => match (n) {\n    1 => x = 2,\n    _ => y = 3,\n};\n\
+                    H(c: bool, ref x: int, ref y: int) => c ? x = 1 : y = 2;\n\
+                    struct S {\n    public V: int;\n    public M() => V = 1;\n    \
+                    public S(v: int) => V = v;\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        // A getter's value is used.
+        let getter = "class C {\n    private _a: int = 0;\n    public A: int => _a = 1;\n}\n";
+        assert_eq!(reported(getter), ["MR0185"]);
+        // So is the arm of a `match` that is a value.
+        assert_eq!(
+            reported("var x = 0;\nlet r = match (x) {\n    1 => x = 2,\n    _ => x = 3,\n};\n"),
+            ["MR0185", "MR0185"]
+        );
+    }
+
+    #[test]
     fn a_coalescing_assignment_used_as_a_value_is_mr0185() {
         let text = "Show(n: int) {}\nF(a: int?) {\n    Show(a ??= 1);\n}\n";
-        assert!(reported(text).contains(&"MR0185".to_owned()), "{text}");
+        let found = diagnostics_of(text);
+        let at = usize::from(found[0].primary.span.range.start());
+        assert_eq!(&text[at..at + 7], "a ??= 1", "{found:#?}");
     }
 
     #[test]
@@ -2537,7 +2606,7 @@ mod tests {
     fn an_assignment_message_says_what_goes_wrong() {
         let reported = diagnostics_of("var x = 0;\nvar y = 0;\nx = y = 5;\n");
         assert_eq!(reported.len(), 1, "{reported:#?}");
-        let d = &reported[0];
+        let d = reported.first().expect("one diagnostic");
         assert_eq!(d.message, "an assignment gives no value to use here");
         assert_eq!(
             d.primary.message.as_deref(),
@@ -2608,10 +2677,11 @@ mod tests {
                 assert!(d.fixes.is_empty(), "{use_}: {d:#?}");
             }
         }
-        let fixes = diagnostics_of(&format!("{head}x = y = 5;\n"));
-        assert_eq!(fixes[0].fixes.len(), 1);
+        let found = diagnostics_of(&format!("{head}x = y = 5;\n"));
+        let found = found.first().expect("one diagnostic");
+        assert_eq!(found.fixes.len(), 1);
         assert_eq!(
-            fixes[0].fixes[0].message,
+            found.fixes[0].message,
             "assign first, then use the variable"
         );
     }
@@ -2653,7 +2723,7 @@ mod tests {
         let text = "F(ref x: int = 1) {}\n";
         let reported = diagnostics_of(text);
         assert_eq!(reported.len(), 1, "{reported:#?}");
-        let d = &reported[0];
+        let d = reported.first().expect("one diagnostic");
         assert_eq!(
             d.message,
             "the `ref` parameter `x` cannot have a default value, because every call must pass a variable it can change"

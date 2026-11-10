@@ -23,7 +23,7 @@ use crate::bodies::{
 use crate::defs::ItemId;
 use crate::resolve::{Resolved, Scope, item_data};
 use crate::signature::{signature, struct_field, this_type};
-use crate::ty::{Primitive, Signature, TupleElem, Ty};
+use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -333,7 +333,26 @@ impl Check<'_> {
                 self.splittable.insert(*rhs, expr);
             }
         }
-        self.infer(expr);
+        match &body.exprs[expr] {
+            // The arms of a `match` in statement position are statements.
+            Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, true),
+            // So are the branches of a conditional that assigns.
+            Expr::Conditional {
+                condition,
+                then,
+                r#else,
+            } if [*then, *r#else]
+                .iter()
+                .any(|&branch| matches!(body.exprs[branch], Expr::Assign { .. })) =>
+            {
+                self.condition(*condition);
+                self.statement(*then, false);
+                self.statement(*r#else, false);
+            }
+            _ => {
+                self.infer(expr);
+            }
+        }
     }
 
     fn stmt(&mut self, stmt: StmtId) {
@@ -676,7 +695,17 @@ impl Check<'_> {
             } => self.conditional(*condition, *then, *r#else, expect),
             Expr::Lambda(lambda) => {
                 self.defaults(&lambda.defaults);
-                self.function_body(lambda.body, None, false);
+                // Its result type is known only when a function type is
+                // expected; a unit result makes the body a statement.
+                let ret = match expect {
+                    Expect::Target(Ty::Unsupported(function))
+                        if function.construct == Construct::Function =>
+                    {
+                        function.parts.last().cloned()
+                    }
+                    _ => None,
+                };
+                self.function_body(lambda.body, ret, false);
                 None
             }
             Expr::New { ty, args, inits } => {

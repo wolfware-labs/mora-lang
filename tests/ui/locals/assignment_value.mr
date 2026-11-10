@@ -13,6 +13,19 @@ if ((x = 2) > 1) { //~ ERROR MR0185
     Show(x);
 }
 
+let text = $"{x = 1}"; //~ ERROR MR0185
+
+Take(f: () => ()) {
+    f();
+}
+TakeInt(f: () => int) {
+    Show(f());
+}
+Take(() => x = 1);
+TakeInt(() => x = 1); //~ ERROR MR0185
+
+Reset(ref n: int) => n = 0;
+
 // An assignment as a statement, a loop update or an increment is fine.
 x = 4;
 x += 1;

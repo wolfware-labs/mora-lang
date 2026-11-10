@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use super::Check;
+use super::{Check, Expect};
 use crate::arena::arena_index;
 use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
 use crate::defs::ItemId;
@@ -165,10 +165,29 @@ impl<'a> Check<'a> {
         }
         let arguments: Vec<Argument> = args
             .iter()
-            .map(|arg| match constant::value(&self.body.exprs, arg.expr) {
-                Some(value) => Argument::Literal(value),
-                None => Argument::Typed(self.infer(arg.expr)),
-            })
+            .enumerate()
+            .map(
+                |(position, arg)| match constant::value(&self.body.exprs, arg.expr) {
+                    Some(value) => Argument::Literal(value),
+                    None => {
+                        // A lambda takes the function type of the parameter it
+                        // is for, when there is only one function to call.
+                        let target = match candidates.as_slice() {
+                            [only] if matches!(self.body.exprs[arg.expr], Expr::Lambda(_)) => {
+                                match &arg.name {
+                                    Some(name) => only.params.iter().find(|p| p.name == name),
+                                    None => only.params.get(position),
+                                }
+                            }
+                            _ => None,
+                        };
+                        Argument::Typed(match target {
+                            Some(param) => self.expr(arg.expr, Expect::Target(&param.ty)),
+                            None => self.infer(arg.expr),
+                        })
+                    }
+                },
+            )
             .collect();
         if let [candidate] = candidates.as_slice() {
             return self.call_one(expr, candidate, args, &arguments);

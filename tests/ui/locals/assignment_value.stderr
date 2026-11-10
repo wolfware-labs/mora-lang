@@ -34,3 +34,19 @@ error[MR0185]: an assignment gives no value to use here
    |      ^^^^^ this assignment must stand as a statement of its own
    |
    = note: assign first, then read the variable: an assignment is only a statement
+
+error[MR0185]: an assignment gives no value to use here
+  --> tests/ui/locals/assignment_value.mr:16:15
+   |
+16 | let text = $"{x = 1}"; //~ ERROR MR0185
+   |               ^^^^^ this assignment must stand as a statement of its own
+   |
+   = note: assign first, then read the variable: an assignment is only a statement
+
+error[MR0185]: an assignment gives no value to use here
+  --> tests/ui/locals/assignment_value.mr:25:15
+   |
+25 | TakeInt(() => x = 1); //~ ERROR MR0185
+   |               ^^^^^ this assignment must stand as a statement of its own
+   |
+   = note: assign first, then read the variable: an assignment is only a statement

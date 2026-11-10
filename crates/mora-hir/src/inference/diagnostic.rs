@@ -1,5 +1,5 @@
-//! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`, and
-//! those of calls, `MR0205` to `MR0208`, in [`call`].
+//! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
+//! and those of calls, `MR0205` to `MR0208`, in [`call`].
 
 mod call;
 mod struct_new;
