@@ -771,6 +771,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_modes_of_a_local_function_line_up_with_its_parameters() {
+        // The parser recovers from the parameter without a name, which
+        // declares no local and has no mode.
+        let db = TestDb::new();
+        let text = "F() {\n    G(ref a: int, move : int, move c: int) {}\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let body = body(&db, file, BodyOwner::Item(f));
+        let found: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Function(function) => Some(
+                    function
+                        .params
+                        .iter()
+                        .zip(&function.modes)
+                        .map(|(&param, &mode)| (body.locals[param].name.clone(), mode))
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [vec![
+                ("a".to_owned(), ParamMode::Ref),
+                ("c".to_owned(), ParamMode::Move)
+            ]]
+        );
+        let Stmt::Function(function) = body
+            .stmts
+            .iter()
+            .find_map(|(_, stmt)| matches!(stmt, Stmt::Function(_)).then_some(stmt))
+            .expect("G")
+        else {
+            unreachable!()
+        };
+        assert_eq!(function.params.len(), function.modes.len());
+    }
+
     /// The HIR of `src/Program.mr` alone in an app.
     fn dump(text: &str) -> String {
         let db = TestDb::new();

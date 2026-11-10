@@ -17,7 +17,6 @@ use crate::bodies::{
     ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, InterpPart, LocalId,
     LocalKind, Pat, PatId, Stmt, StmtId, Target, UnaryOp, body, body_resolution,
 };
-use crate::defs::ItemId;
 use crate::inference::{Callee, Inference, infer};
 use crate::items::item_tree;
 use crate::signature::signature;
@@ -49,7 +48,9 @@ pub enum Captured {
 
 /// The local functions of the body of `owner`, in the order of the text,
 /// with what each takes from the bodies around it. `this` is taken `ref`
-/// in a `mut` method, or where the function assigns through it.
+/// only where the function writes through it, in a `mut` method too: a
+/// read with a `ref` borrow would conflict with an `in` borrow of a field
+/// of `this` passed beside it (§10.4).
 #[salsa::tracked(returns(ref))]
 pub fn local_functions(
     db: &dyn Db,
@@ -58,26 +59,11 @@ pub fn local_functions(
     owner: BodyOwner,
 ) -> Vec<LocalFunctionCaptures> {
     let hir = body(db, file, owner);
-    let receiver = match owner {
-        BodyOwner::Item(item) => match signature(
-            db,
-            ItemId {
-                project,
-                file,
-                item,
-            },
-        ) {
-            Signature::Function(function) => function.receiver,
-            _ => None,
-        },
-        _ => None,
-    };
     let mut walk = Walk {
         db,
         hir,
         resolution: body_resolution(db, project, file, owner),
         inference: infer(db, project, file, owner),
-        this_by_ref: receiver == Some(ParamMode::Ref),
         open: Vec::new(),
         functions: Vec::new(),
     };
@@ -107,8 +93,6 @@ struct Walk<'a> {
     hir: &'a Body,
     resolution: &'a BodyResolution,
     inference: &'a Inference,
-    /// Whether the body's receiver is a `ref` borrow.
-    this_by_ref: bool,
     /// The local functions the code being walked is in, outermost first,
     /// by their position in `functions`.
     open: Vec<usize>,
@@ -173,7 +157,7 @@ impl Walk<'_> {
 
     /// Records a use of `this`, which assigns through it when `assigned`.
     fn this(&mut self, assigned: bool) {
-        let mode = if assigned || self.this_by_ref {
+        let mode = if assigned {
             ParamMode::Ref
         } else {
             ParamMode::In
@@ -598,8 +582,9 @@ mod tests {
         assert_eq!(summary(assigns, "B"), [entry("H", None, &["this:ref"])]);
         assert_eq!(summary(assigns, "C"), [entry("K", None, &[])]);
         assert_eq!(summary(text, "Set"), [entry("H", None, &["this:ref"])]);
-        // The receiver of a `mut` method is lifted as `ref`.
-        assert_eq!(summary(text, "Read"), [entry("K", None, &["this:ref"])]);
+        // In a `mut` method too, `this` is lifted as `ref` only where the
+        // local function writes through it: reading a field takes `in`.
+        assert_eq!(summary(text, "Read"), [entry("K", None, &["this:in"])]);
         assert_eq!(
             summary(text, "Twice"),
             [

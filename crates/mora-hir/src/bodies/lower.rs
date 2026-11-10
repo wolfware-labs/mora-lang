@@ -14,6 +14,7 @@ use super::{
 };
 use crate::items::Written;
 use crate::name::{name_ref_of, token_name};
+use crate::ty::ParamMode;
 use crate::type_ref::{LowerTypes, TypeRef, param_mode, predefined, type_param_names};
 
 /// Lowers one body.
@@ -176,32 +177,37 @@ impl Lower {
 
     /// Declares the parameters of a lambda or a local function, with their
     /// written types; defaults are lowered first, as [`Lower::params`] does.
-    fn local_params(
-        &mut self,
-        params: Vec<(Option<ast::Name>, Option<ast::Type>, Option<ast::Expr>)>,
-    ) -> (Vec<LocalId>, Vec<(LocalId, ExprId)>) {
+    fn local_params(&mut self, params: Vec<WrittenParam<'_>>) -> LocalParams {
         let mut declared = Vec::new();
+        let mut modes = Vec::new();
         let mut defaults = Vec::new();
         let lowered: Vec<_> = params
             .into_iter()
-            .map(|(name, ty, default)| {
+            .map(|(name, ty, default, mode)| {
                 let default = default.map(|default| {
                     let range = default.syntax().text_range();
                     self.scoped(|this| this.expr(Some(default), range))
                 });
-                (name, ty, default)
+                (name, ty, default, mode)
             })
             .collect();
-        for (name, ty, default) in lowered {
+        // A parameter whose name the parser recovered from declares no
+        // local, and has no mode either.
+        for (name, ty, default, mode) in lowered {
             let ty = self.opt_ty(ty);
             if let Some(local) = self.declare(name, LocalKind::Param, ty) {
                 declared.push(local);
+                modes.push(mode);
                 if let Some(default) = default {
                     defaults.push((local, default));
                 }
             }
         }
-        (declared, defaults)
+        LocalParams {
+            params: declared,
+            modes,
+            defaults,
+        }
     }
 
     /// Runs `f` and then leaves the scopes it opened.
@@ -429,22 +435,21 @@ impl Lower {
             })
         });
         let is_async = Written::of(function.modifiers()).is_async;
-        // A parameter without a name declares no local.
-        let modes = function
-            .param_list()
-            .iter()
-            .flat_map(|list| list.params())
-            .filter(|param| param.name().and_then(|name| name.ident_token()).is_some())
-            .map(|param| param_mode(&param))
-            .collect();
         self.scoped(|this| {
             let params: Vec<_> = function
                 .param_list()
                 .iter()
                 .flat_map(|list| list.params())
-                .map(|param| (param.name(), param.ty(), param.default()))
+                .map(|param| {
+                    let mode = param_mode(&param);
+                    (param.name(), param.ty(), param.default(), mode)
+                })
                 .collect();
-            let (params, defaults) = this.local_params(params);
+            let LocalParams {
+                params,
+                modes,
+                defaults,
+            } = this.local_params(params);
             let body = this.function_body(function.block(), function.expr_body());
             LocalFunction {
                 local,
@@ -707,9 +712,12 @@ impl Lower {
                                 .into_iter()
                                 .flat_map(|list| list.lambda_params()),
                         )
-                        .map(|param| (param.name(), param.ty(), param.default()))
+                        .map(|param| (param.name(), param.ty(), param.default(), ParamMode::In))
                         .collect();
-                    let params = this.local_params(params);
+                    let LocalParams {
+                        params, defaults, ..
+                    } = this.local_params(params);
+                    let params = (params, defaults);
                     let body = match it.block() {
                         Some(block) => this.block_expr(&block),
                         None => this.expr(it.expr(), range),
@@ -1166,4 +1174,24 @@ fn interp_values(parts: &mut [InterpPart], raw: bool) {
     for (slot, value) in texts.zip(values) {
         *slot = value;
     }
+}
+
+/// A parameter of a lambda or a local function as written: its name, its
+/// type, its default value and its mode.
+type WrittenParam<'a> = (
+    Option<ast::Name<'a>>,
+    Option<ast::Type<'a>>,
+    Option<ast::Expr<'a>>,
+    ParamMode,
+);
+
+/// The parameters of a lambda or a local function, as
+/// `Lower::local_params` declares them.
+struct LocalParams {
+    /// The local of each parameter that has a name.
+    params: Vec<LocalId>,
+    /// The mode of each of those parameters, as written.
+    modes: Vec<ParamMode>,
+    /// The default value of each parameter that has one.
+    defaults: Vec<(LocalId, ExprId)>,
 }

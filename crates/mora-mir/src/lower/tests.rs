@@ -2329,12 +2329,26 @@ fn this_in_a_local_function_is_lifted() {
     let lowered = lowered(
         "struct P {\n    public mut X: int;\n    \
          Get(): int {\n        G(): int => X;\n        return G();\n    }\n    \
-         mut Set() {\n        H() { X = 2; }\n        H();\n    }\n}\n",
+         mut Set() {\n        H() { X = 2; }\n        H();\n    }\n    \
+         mut Look(): int {\n        K(): int => X;\n        return K();\n    }\n}\n",
     );
     assert_eq!(
         lowered.bodies("Get"),
         ["UsersApi.P.Get", "UsersApi.P.Get.G"]
     );
+    // A `mut` method's local function that only reads takes `this` as `in`.
+    let mut out = String::new();
+    write_mir(
+        &mut out,
+        &lowered.db,
+        Some(lowered.file),
+        lowered.mir("Look"),
+    );
+    assert!(
+        out.contains("fn UsersApi.P.Look.K(this: in P) -> int {"),
+        "{out}"
+    );
+    assert_in_order(&body_code(&lowered, "Look", 0), &["_2 = &in (*this);"]);
     let mut out = String::new();
     write_mir(
         &mut out,
