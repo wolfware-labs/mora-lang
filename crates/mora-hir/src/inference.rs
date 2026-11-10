@@ -1996,6 +1996,32 @@ mod tests {
     }
 
     #[test]
+    fn new_with_empty_parentheses_on_a_struct_is_typed_and_unchecked() {
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S();\n";
+        assert_eq!(local_types(text), ["s: S"]);
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn initializers_are_inferred_when_the_name_is_unknown() {
+        let text = "struct S {\n    public L: int;\n}\nlet s = new S { L = 1, M = 1 + \"a\" };\n";
+        assert_eq!(reported(text), ["MR0204"]);
+    }
+
+    #[test]
+    fn initializers_are_inferred_when_the_target_is_not_a_struct() {
+        let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 + \"a\" };\n";
+        assert_eq!(reported(text), ["MR0204"]);
+    }
+
+    #[test]
+    fn a_generic_struct_has_no_type_yet() {
+        let text = "struct Box<T> {\n    public V: T;\n}\nlet b = new Box<int> { V = 1 };\n";
+        assert_eq!(local_types(text), ["b: ?"]);
+        assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
     fn new_of_other_targets_has_no_type() {
         let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 };\nlet d = new();\n";
         assert_eq!(local_types(text), ["c: ?", "d: ?"]);

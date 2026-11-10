@@ -183,6 +183,6 @@ pub struct Field {
     /// Its type.
     pub ty: Ty,
     /// Whether memberwise creation must assign it: it has no initializer
-    /// and is neither `static` nor `const`.
+    /// and is not `static`.
     pub needs_init: bool,
 }
