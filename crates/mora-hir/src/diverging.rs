@@ -8,13 +8,6 @@ use crate::{Body, BodyResolution, Expr, ExprId, Literal, Resolved, STD, Target};
 /// recognised by name.
 const DIVERGING: [&str; 3] = ["panic", "Unreachable", "Todo"];
 
-/// Whether a call to `path` never returns (D-138): its last segment names
-/// a function of the never type.
-pub fn is_diverging(path: &[String]) -> bool {
-    path.last()
-        .is_some_and(|name| DIVERGING.contains(&name.as_str()))
-}
-
 /// Whether a call of `callee` never returns (D-138): a call of `panic`,
 /// `Unreachable` or `Todo` of the standard library, by its name or as
 /// `Std.panic`, while the library is not loaded. The call has the never
@@ -33,7 +26,7 @@ pub fn calls_diverging(body: &Body, resolution: &BodyResolution, callee: ExprId)
         },
         _ => return false,
     };
-    is_diverging(std::slice::from_ref(name))
+    DIVERGING.contains(&name.as_str())
         && resolution
             .paths
             .get(&path)
@@ -50,24 +43,6 @@ pub fn is_literal_bool(body: &Body, expr: ExprId, value: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn is_diverging_matches_d138_names() {
-        for name in ["Todo", "Unreachable", "panic"] {
-            assert!(is_diverging(&[name.to_owned()]), "{name}");
-            assert!(
-                is_diverging(&["Std".to_owned(), name.to_owned()]),
-                "Std.{name}"
-            );
-        }
-        assert!(!is_diverging(&[
-            "Console".to_owned(),
-            "WriteLine".to_owned()
-        ]));
-        assert!(!is_diverging(&["Panic".to_owned()]));
-        assert!(!is_diverging(&["panic".to_owned(), "WriteLine".to_owned()]));
-        assert!(!is_diverging(&[]));
-    }
 
     #[test]
     fn a_call_diverges_by_its_standard_library_name() {
