@@ -91,10 +91,13 @@ pub struct Outcome {
     /// The HIR of the program, for its `.hir` snapshot; `None` when it does
     /// not compile.
     pub hir: Option<String>,
+    /// The MIR of the program, for its `.mir` snapshot; `None` when it does
+    /// not compile.
+    pub mir: Option<String>,
 }
 
 /// Checks one case of the run suite: the program must compile without
-/// errors, and its HIR is returned for the snapshot beside it. Then it runs
+/// errors, and its HIR and MIR are returned for the snapshots beside it. Then it runs
 /// through every backend the compiler has, as [`check`] does; while there
 /// are none, compiling is the whole test.
 pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
@@ -102,6 +105,7 @@ pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
         return Outcome {
             problems: vec![problem],
             hir: None,
+            mir: None,
         };
     }
     let hir = match compiler.hir(path, text) {
@@ -113,6 +117,22 @@ pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
                     rendered(&checked)
                 )],
                 hir: None,
+                mir: None,
+            };
+        }
+    };
+    // The same program compiled for the HIR compiles for the MIR, so a
+    // failure here is a bug in the compiler, not in the case.
+    let mir = match compiler.mir(path, text) {
+        Ok(mir) => mir,
+        Err(checked) => {
+            return Outcome {
+                problems: vec![format!(
+                    "the program does not lower:\n{}",
+                    rendered(&checked)
+                )],
+                hir: Some(hir),
+                mir: None,
             };
         }
     };
@@ -124,6 +144,7 @@ pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
     Outcome {
         problems,
         hir: Some(hir),
+        mir: Some(mir),
     }
 }
 

@@ -1,0 +1,243 @@
+fn top-level() -> () {
+    let _0: ();
+    let n#0: int;
+    let mut line#1: string;
+    let mut i#2: int;
+    let mut sum#3: int;
+    let mut k#4: int;
+    let mut steps#5: int;
+    let mut once#6: int;
+    let _8: bool;
+    let _9: bool;
+    let _10: bool;
+    let _11: bool;
+    let _12: bool;
+    let _13: string;
+    let _14: bool;
+    let _15: bool;
+    let _16: bool;
+
+    bb0: {
+        storage_live(n#0); // 6:5
+        n#0 = 3; // 6:9
+        storage_live(_8); // 7:5
+        _8 = copy n#0 > 10; // 7:5
+        switch copy _8 [false -> bb2] otherwise bb1; // 7:5
+    }
+
+    bb1: {
+        storage_dead(_8); // 7:5
+        call Console.WriteLine{external}("large") -> bb3; // 8:5
+    }
+
+    bb2: {
+        storage_dead(_8); // 7:5
+        storage_live(_9); // 9:12
+        _9 = copy n#0 > 1; // 9:12
+        switch copy _9 [false -> bb6] otherwise bb5; // 9:12
+    }
+
+    bb3: {
+        goto bb4; // 7:1
+    }
+
+    bb4: {
+        storage_live(line#1); // 15:5
+        line#1 = ""; // 15:12
+        storage_live(i#2); // 16:10
+        i#2 = 0; // 16:14
+        goto bb10; // 16:1
+    }
+
+    bb5: {
+        storage_dead(_9); // 9:12
+        call Console.WriteLine{external}("small") -> bb7; // 10:5
+    }
+
+    bb6: {
+        storage_dead(_9); // 9:12
+        call Console.WriteLine{external}("tiny") -> bb9; // 12:5
+    }
+
+    bb7: {
+        goto bb8; // 9:8
+    }
+
+    bb8: {
+        goto bb4; // 7:1
+    }
+
+    bb9: {
+        goto bb8; // 9:8
+    }
+
+    bb10: {
+        storage_live(_10); // 16:17
+        _10 = copy i#2 < 6; // 16:17
+        switch copy _10 [false -> bb12] otherwise bb11; // 16:17
+    }
+
+    bb11: {
+        storage_dead(_10); // 16:17
+        storage_live(_11); // 17:9
+        _11 = copy i#2 == 3; // 17:9
+        switch copy _11 [false -> bb16] otherwise bb15; // 17:9
+    }
+
+    bb12: {
+        storage_dead(_10); // 16:17
+        goto bb13; // 16:1
+    }
+
+    bb13: {
+        storage_dead(i#2); // 24:1
+        call Console.WriteLine{external}(copy line#1) -> bb26; // 25:1
+    }
+
+    bb14: {
+        i#2 = copy i#2 + 1; // 16:24
+        goto bb10; // 16:1
+    }
+
+    bb15: {
+        storage_dead(_11); // 17:9
+        goto bb14; // 18:9
+    }
+
+    bb16: {
+        storage_dead(_11); // 17:9
+        goto bb18; // 17:5
+    }
+
+    bb18: {
+        storage_live(_12); // 20:9
+        _12 = copy i#2 == 5; // 20:9
+        switch copy _12 [false -> bb20] otherwise bb19; // 20:9
+    }
+
+    bb19: {
+        storage_dead(_12); // 20:9
+        goto bb13; // 21:9
+    }
+
+    bb20: {
+        storage_dead(_12); // 20:9
+        goto bb22; // 20:5
+    }
+
+    bb22: {
+        storage_live(_13); // 23:12
+        storage_live(_14); // 23:12
+        _14 = copy i#2 == 0; // 23:12
+        switch copy _14 [false -> bb24] otherwise bb23; // 23:12
+    }
+
+    bb23: {
+        storage_dead(_14); // 23:12
+        _13 = $"{copy i#2}"; // 23:21
+        goto bb25; // 23:12
+    }
+
+    bb24: {
+        storage_dead(_14); // 23:12
+        _13 = $"{copy line#1} {copy i#2}"; // 23:30
+        goto bb25; // 23:12
+    }
+
+    bb25: {
+        line#1 = copy _13; // 23:12
+        storage_dead(_13); // 23:5
+        goto bb14; // 16:1
+    }
+
+    bb26: {
+        storage_live(sum#3); // 27:5
+        sum#3 = 0; // 27:11
+        storage_live(k#4); // 28:5
+        k#4 = 1; // 28:9
+        goto bb27; // 29:1
+    }
+
+    bb27: {
+        storage_live(_15); // 29:8
+        _15 = copy k#4 <= 3; // 29:8
+        switch copy _15 [false -> bb29] otherwise bb28; // 29:8
+    }
+
+    bb28: {
+        storage_dead(_15); // 29:8
+        sum#3 = copy sum#3 + copy k#4; // 30:5
+        k#4 = copy k#4 + 1; // 31:5
+        goto bb27; // 29:1
+    }
+
+    bb29: {
+        storage_dead(_15); // 29:8
+        goto bb30; // 29:1
+    }
+
+    bb30: {
+        call Console.WriteLine{external}(copy sum#3) -> bb31; // 33:1
+    }
+
+    bb31: {
+        storage_live(steps#5); // 35:5
+        steps#5 = 0; // 35:13
+        goto bb32; // 36:1
+    }
+
+    bb32: {
+        steps#5 = copy steps#5 + 1; // 37:5
+        goto bb33; // 36:1
+    }
+
+    bb33: {
+        storage_live(_16); // 38:10
+        _16 = copy steps#5 < 3; // 38:10
+        switch copy _16 [false -> bb36] otherwise bb35; // 38:10
+    }
+
+    bb34: {
+        call Console.WriteLine{external}(copy steps#5) -> bb37; // 39:1
+    }
+
+    bb35: {
+        storage_dead(_16); // 38:10
+        goto bb32; // 36:1
+    }
+
+    bb36: {
+        storage_dead(_16); // 38:10
+        goto bb34; // 36:1
+    }
+
+    bb37: {
+        storage_live(once#6); // 41:5
+        once#6 = 0; // 41:12
+        goto bb38; // 42:1
+    }
+
+    bb38: {
+        once#6 = copy once#6 + 1; // 43:5
+        goto bb39; // 42:1
+    }
+
+    bb39: {
+        goto bb40; // 42:1
+    }
+
+    bb40: {
+        call Console.WriteLine{external}(copy once#6) -> bb41; // 45:1
+    }
+
+    bb41: {
+        _0 = (); // 45:25
+        storage_dead(once#6); // 45:25
+        storage_dead(steps#5); // 45:25
+        storage_dead(k#4); // 45:25
+        storage_dead(sum#3); // 45:25
+        storage_dead(line#1); // 45:25
+        storage_dead(n#0); // 45:25
+        return; // 45:25
+    }
+}

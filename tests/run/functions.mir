@@ -1,0 +1,252 @@
+fn top-level() -> () {
+    let _0: ();
+    let _1: int;
+    let _2: in int;
+    let _3: int;
+    let _4: int;
+    let _5: in int;
+    let _6: int;
+    let _7: int;
+    let _8: in int;
+    let _9: int;
+    let _10: int;
+    let _11: in int;
+    let _12: int;
+    let _13: in int;
+    let _14: int;
+
+    bb0: {
+        storage_live(_1); // 5:23
+        _1 = 10; // 5:23
+        storage_live(_2); // 5:23
+        _2 = &in _1; // 5:23
+        storage_live(_3); // 5:19
+        _3 = call App.Fib{fn App.Fib}(copy _2) -> bb1; // 5:19
+    }
+
+    bb1: {
+        call Console.WriteLine{external}(copy _3) -> bb2; // 5:1
+    }
+
+    bb2: {
+        storage_dead(_3); // 5:1
+        storage_dead(_2); // 5:1
+        storage_dead(_1); // 5:1
+        storage_live(_4); // 6:25
+        _4 = 3; // 6:25
+        storage_live(_5); // 6:25
+        _5 = &in _4; // 6:25
+        storage_live(_6); // 6:19
+        _6 = call App.Twice{fn App.Twice}(copy _5) -> bb3; // 6:19
+    }
+
+    bb3: {
+        call Console.WriteLine{external}(copy _6) -> bb4; // 6:1
+    }
+
+    bb4: {
+        storage_dead(_6); // 6:1
+        storage_dead(_5); // 6:1
+        storage_dead(_4); // 6:1
+        storage_live(_7); // 7:29
+        _7 = 4; // 7:29
+        storage_live(_8); // 7:29
+        _8 = &in _7; // 7:29
+        storage_live(_9); // 7:19
+        _9 = call App.Factorial{fn App.Factorial}(copy _8) -> bb5; // 7:19
+    }
+
+    bb5: {
+        call Console.WriteLine{external}(copy _9) -> bb6; // 7:1
+    }
+
+    bb6: {
+        storage_dead(_9); // 7:1
+        storage_dead(_8); // 7:1
+        storage_dead(_7); // 7:1
+        storage_live(_10); // 8:23
+        _10 = 3; // 8:23
+        storage_live(_11); // 8:23
+        _11 = &in _10; // 8:23
+        storage_live(_12); // 8:26
+        _12 = 4; // 8:26
+        storage_live(_13); // 8:26
+        _13 = &in _12; // 8:26
+        storage_live(_14); // 8:19
+        _14 = call App.Add{fn App.Add}(copy _11, copy _13) -> bb7; // 8:19
+    }
+
+    bb7: {
+        call Console.WriteLine{external}(copy _14) -> bb8; // 8:1
+    }
+
+    bb8: {
+        storage_dead(_14); // 8:1
+        storage_dead(_13); // 8:1
+        storage_dead(_12); // 8:1
+        storage_dead(_11); // 8:1
+        storage_dead(_10); // 8:1
+        _0 = (); // 8:30
+        return; // 8:30
+    }
+}
+
+fn App.Fib(n#0: in int) -> int {
+    let _0: int;
+    let n#0: in int;
+    let _2: bool;
+    let _3: int;
+    let _4: in int;
+    let _5: int;
+    let _6: int;
+    let _7: in int;
+    let _8: int;
+
+    bb0: {
+        storage_live(_2); // 11:9
+        _2 = copy (*n#0) < 2; // 11:9
+        switch copy _2 [false -> bb2] otherwise bb1; // 11:9
+    }
+
+    bb1: {
+        storage_dead(_2); // 11:9
+        _0 = copy (*n#0); // 12:16
+        return; // 12:9
+    }
+
+    bb2: {
+        storage_dead(_2); // 11:9
+        goto bb4; // 11:5
+    }
+
+    bb4: {
+        storage_live(_3); // 14:16
+        _3 = copy (*n#0) - 1; // 14:16
+        storage_live(_4); // 14:16
+        _4 = &in _3; // 14:16
+        storage_live(_5); // 14:12
+        _5 = call App.Fib{fn App.Fib}(copy _4) -> bb5; // 14:12
+    }
+
+    bb5: {
+        storage_live(_6); // 14:29
+        _6 = copy (*n#0) - 2; // 14:29
+        storage_live(_7); // 14:29
+        _7 = &in _6; // 14:29
+        storage_live(_8); // 14:25
+        _8 = call App.Fib{fn App.Fib}(copy _7) -> bb6; // 14:25
+    }
+
+    bb6: {
+        _0 = copy _5 + copy _8; // 14:12
+        storage_dead(_8); // 14:5
+        storage_dead(_7); // 14:5
+        storage_dead(_6); // 14:5
+        storage_dead(_5); // 14:5
+        storage_dead(_4); // 14:5
+        storage_dead(_3); // 14:5
+        return; // 14:5
+    }
+}
+
+fn App.Twice(x#0: in int) -> int {
+    let _0: int;
+    let x#0: in int;
+
+    bb0: {
+        _0 = copy (*x#0) * 2; // 17:23
+        return; // 17:23
+    }
+}
+
+fn App.Factorial(n#0: in int) -> int {
+    let _0: int;
+    let n#0: in int;
+    let _2: in int;
+    let _3: int;
+    let _4: in int;
+
+    bb0: {
+        storage_live(_2); // 21:17
+        _2 = &in (*n#0); // 21:17
+        storage_live(_3); // 21:20
+        _3 = 1; // 21:20
+        storage_live(_4); // 21:20
+        _4 = &in _3; // 21:20
+        _0 = call App.Factorial.Step(copy _2, copy _4) -> bb1; // 21:12
+    }
+
+    bb1: {
+        storage_dead(_4); // 21:5
+        storage_dead(_3); // 21:5
+        storage_dead(_2); // 21:5
+        return; // 21:5
+    }
+}
+
+fn App.Factorial.Step(k#2: in int, acc#3: in int) -> int {
+    let _0: int;
+    let k#2: in int;
+    let acc#3: in int;
+    let _3: int;
+    let _4: bool;
+    let _5: int;
+    let _6: in int;
+    let _7: int;
+    let _8: in int;
+
+    bb0: {
+        storage_live(_3); // 20:36
+        storage_live(_4); // 20:36
+        _4 = copy (*k#2) <= 1; // 20:36
+        switch copy _4 [false -> bb2] otherwise bb1; // 20:36
+    }
+
+    bb1: {
+        storage_dead(_4); // 20:36
+        _3 = copy (*acc#3); // 20:45
+        goto bb3; // 20:36
+    }
+
+    bb2: {
+        storage_dead(_4); // 20:36
+        storage_live(_5); // 20:56
+        _5 = copy (*k#2) - 1; // 20:56
+        storage_live(_6); // 20:56
+        _6 = &in _5; // 20:56
+        storage_live(_7); // 20:63
+        _7 = copy (*acc#3) * copy (*k#2); // 20:63
+        storage_live(_8); // 20:63
+        _8 = &in _7; // 20:63
+        _3 = call App.Factorial.Step(copy _6, copy _8) -> bb4; // 20:51
+    }
+
+    bb3: {
+        _0 = copy _3; // 20:36
+        storage_dead(_3); // 20:36
+        return; // 20:36
+    }
+
+    bb4: {
+        storage_dead(_8); // 20:51
+        storage_dead(_7); // 20:51
+        storage_dead(_6); // 20:51
+        storage_dead(_5); // 20:51
+        goto bb3; // 20:36
+    }
+}
+
+fn App.Add(a#0: in int, b#1: in int) -> int {
+    let _0: int;
+    let a#0: in int;
+    let b#1: in int;
+    let result#2: int;
+
+    bb0: {
+        storage_live(result#2); // 25:9
+        result#2 = copy (*a#0) + copy (*b#1); // 25:18
+        _0 = copy result#2; // 26:12
+        storage_dead(result#2); // 26:5
+        return; // 26:5
+    }
+}

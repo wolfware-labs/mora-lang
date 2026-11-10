@@ -1,0 +1,156 @@
+fn top-level() -> () {
+    let _0: ();
+    let p#0: Point;
+    let q#1: Point;
+    let zero#2: Point;
+    let _4: in Point;
+    let _5: int;
+    let _6: in Point;
+    let _7: int;
+    let _8: in int;
+    let _9: in Point;
+    let _10: bool;
+
+    bb0: {
+        storage_live(p#0); // 18:5
+        p#0 = App.Point{struct App.Point}(3, 4); // 18:9
+        storage_live(_4); // 19:19
+        _4 = &in p#0; // 19:19
+        storage_live(_5); // 19:19
+        _5 = call App.Point.LengthSquared{fn App.Point.LengthSquared}(copy _4) -> bb1; // 19:19
+    }
+
+    bb1: {
+        call Console.WriteLine{external}(copy _5) -> bb2; // 19:1
+    }
+
+    bb2: {
+        storage_dead(_5); // 19:1
+        storage_dead(_4); // 19:1
+        storage_live(q#1); // 20:5
+        storage_live(_6); // 20:9
+        _6 = &in p#0; // 20:9
+        storage_live(_7); // 20:18
+        _7 = 2; // 20:18
+        storage_live(_8); // 20:18
+        _8 = &in _7; // 20:18
+        q#1 = call App.Point.Scaled{fn App.Point.Scaled}(copy _6, copy _8) -> bb3; // 20:9
+    }
+
+    bb3: {
+        storage_dead(_8); // 20:9
+        storage_dead(_7); // 20:9
+        storage_dead(_6); // 20:9
+        call Console.WriteLine{external}(copy q#1.X) -> bb4; // 21:1
+    }
+
+    bb4: {
+        call Console.WriteLine{external}(copy q#1.Y) -> bb5; // 22:1
+    }
+
+    bb5: {
+        storage_live(zero#2); // 23:5
+        zero#2 = App.Point{struct App.Point}(0, 0); // 23:12
+        storage_live(_9); // 24:5
+        _9 = &in zero#2; // 24:5
+        storage_live(_10); // 24:5
+        _10 = call App.Point.IsOrigin{fn App.Point.IsOrigin}(copy _9) -> bb6; // 24:5
+    }
+
+    bb6: {
+        switch copy _10 [false -> bb8] otherwise bb7; // 24:5
+    }
+
+    bb7: {
+        storage_dead(_10); // 24:5
+        storage_dead(_9); // 24:5
+        call Console.WriteLine{external}("origin") -> bb9; // 25:5
+    }
+
+    bb8: {
+        storage_dead(_10); // 24:5
+        storage_dead(_9); // 24:5
+        goto bb10; // 24:1
+    }
+
+    bb9: {
+        goto bb10; // 24:1
+    }
+
+    bb10: {
+        _0 = (); // 26:2
+        storage_dead(zero#2); // 26:2
+        storage_dead(q#1); // 26:2
+        storage_dead(p#0); // 26:2
+        return; // 26:2
+    }
+}
+
+fn App.Point.LengthSquared(this: in Point) -> int {
+    let _0: int;
+    let this: in Point;
+    let _2: int;
+    let _3: int;
+
+    bb0: {
+        storage_live(_2); // 9:36
+        _2 = copy (*this).X * copy (*this).X; // 9:36
+        storage_live(_3); // 9:44
+        _3 = copy (*this).Y * copy (*this).Y; // 9:44
+        _0 = copy _2 + copy _3; // 9:36
+        storage_dead(_3); // 9:36
+        storage_dead(_2); // 9:36
+        return; // 9:36
+    }
+}
+
+fn App.Point.Scaled(this: in Point, factor#0: in int) -> Point {
+    let _0: Point;
+    let this: in Point;
+    let factor#0: in int;
+    let _3: int;
+    let _4: int;
+
+    bb0: {
+        storage_live(_3); // 11:58
+        _3 = copy (*this).X * copy (*factor#0); // 11:58
+        storage_live(_4); // 11:74
+        _4 = copy (*this).Y * copy (*factor#0); // 11:74
+        _0 = App.Point{struct App.Point}(copy _3, copy _4); // 11:42
+        storage_dead(_4); // 11:42
+        storage_dead(_3); // 11:42
+        return; // 11:42
+    }
+}
+
+fn App.Point.IsOrigin(this: in Point) -> bool {
+    let _0: bool;
+    let this: in Point;
+    let _2: bool;
+    let _3: bool;
+
+    bb0: {
+        storage_live(_2); // 14:16
+        storage_live(_3); // 14:16
+        _3 = copy (*this).X == 0; // 14:16
+        switch copy _3 [false -> bb2] otherwise bb1; // 14:16
+    }
+
+    bb1: {
+        storage_dead(_3); // 14:16
+        _2 = copy (*this).Y == 0; // 14:26
+        goto bb3; // 14:16
+    }
+
+    bb2: {
+        storage_dead(_3); // 14:16
+        _2 = false; // 14:16
+        goto bb3; // 14:16
+    }
+
+    bb3: {
+        _0 = copy _2; // 14:16
+        storage_dead(_2); // 14:9
+        return; // 14:9
+    }
+}

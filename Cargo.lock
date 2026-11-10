@@ -778,6 +778,7 @@ dependencies = [
  "mora-check",
  "mora-diag",
  "mora-hir",
+ "mora-mir",
  "mora-span",
  "salsa",
 ]

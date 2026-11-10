@@ -1,0 +1,32 @@
+fn top-level() -> () {
+    let _0: ();
+    let name#0: string;
+    let greeting#1: string;
+    let _3: string;
+    let _4: string;
+
+    bb0: {
+        storage_live(name#0); // 3:5
+        name#0 = "Ada"; // 3:12
+        storage_live(greeting#1); // 4:5
+        storage_live(_3); // 4:16
+        _3 = "Hello, " + copy name#0; // 4:16
+        greeting#1 = copy _3 + "!"; // 4:16
+        storage_dead(_3); // 4:16
+        call Console.WriteLine{external}(copy greeting#1) -> bb1; // 5:1
+    }
+
+    bb1: {
+        storage_live(_4); // 6:19
+        _4 = $"{copy name#0}!"; // 6:19
+        call Console.WriteLine{external}(copy _4) -> bb2; // 6:1
+    }
+
+    bb2: {
+        storage_dead(_4); // 6:1
+        _0 = (); // 6:31
+        storage_dead(greeting#1); // 6:31
+        storage_dead(name#0); // 6:31
+        return; // 6:31
+    }
+}
