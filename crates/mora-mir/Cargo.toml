@@ -10,3 +10,11 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+mora-hir.workspace = true
+mora-span.workspace = true
+salsa.workspace = true
+
+[dev-dependencies]
+mora-hir = { workspace = true, features = ["test-support"] }
