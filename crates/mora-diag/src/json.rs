@@ -1,4 +1,4 @@
-use mora_span::{FileId, Span, to_text_size};
+use mora_span::{FileId, LineIndex, Span, to_text_size};
 use serde::{Deserialize, Serialize};
 
 use crate::sources::clamp;
@@ -99,17 +99,21 @@ impl JsonSpan {
 
 /// One-based line and character column of a byte offset on a char boundary.
 fn position(sources: &dyn Sources, file: FileId, offset: usize) -> (u32, u32) {
-    let text = sources.text(file);
-    let lines = sources.line_index(file);
-    let Some(pos) = lines.line_col(to_text_size(offset)) else {
-        return (1, 1);
-    };
+    line_column(sources.text(file), sources.line_index(file), offset).unwrap_or((1, 1))
+}
+
+/// The one-based line and the one-based column of a byte offset of `text`,
+/// counted in characters as the terminal shows them. `None` when the offset
+/// is past the end of the text or inside a character; `lines` is the line
+/// index of `text`.
+pub fn line_column(text: &str, lines: &LineIndex, offset: usize) -> Option<(u32, u32)> {
+    let pos = lines.line_col(to_text_size(offset))?;
     let line_start = offset - pos.col as usize;
     let chars = text
         .get(line_start..offset)
         .map_or(0, |prefix| prefix.chars().count());
     let column = u32::try_from(chars).unwrap_or(u32::MAX);
-    (pos.line.saturating_add(1), column.saturating_add(1))
+    Some((pos.line.saturating_add(1), column.saturating_add(1)))
 }
 
 /// One JSON object for `--message-format json`, without a trailing newline.
@@ -117,4 +121,23 @@ pub fn to_json_line(diagnostic: &Diagnostic, sources: &dyn Sources) -> String {
     let json = JsonDiagnostic::new(diagnostic, sources);
     // Serializing plain structs of strings and integers cannot fail.
     serde_json::to_string(&json).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_count_characters_and_lines_start_at_one() {
+        let text = "ab\n\u{e9}\u{1F600}x\n";
+        let lines = LineIndex::new(text);
+        let at = |needle: &str| line_column(text, &lines, text.find(needle).unwrap());
+        assert_eq!(line_column(text, &lines, 0), Some((1, 1)));
+        assert_eq!(at("b"), Some((1, 2)));
+        assert_eq!(at("x"), Some((2, 3)));
+        assert_eq!(at("\u{1F600}"), Some((2, 2)));
+        // Inside a character, and past the end.
+        assert_eq!(line_column(text, &lines, 4), None);
+        assert_eq!(line_column(text, &lines, text.len() + 1), None);
+    }
 }

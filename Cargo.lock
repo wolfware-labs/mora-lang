@@ -714,6 +714,7 @@ version = "0.0.0"
 name = "mora-mir"
 version = "0.0.0"
 dependencies = [
+ "mora-diag",
  "mora-hir",
  "mora-span",
  "salsa",

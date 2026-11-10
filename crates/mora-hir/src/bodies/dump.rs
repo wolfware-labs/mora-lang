@@ -817,6 +817,53 @@ impl Printer<'_> {
     }
 }
 
+/// Appends `ch` as it is written inside a literal quoted with `quote`:
+/// the quote and the backslash escaped, `\n`, `\r`, `\t` and `\0` by
+/// name, and a control or invisible character (a no-break space, a zero
+/// width or bidirectional mark, a line separator) as `\u{n}`, so a snapshot
+/// shows it. Any other character stays as it is.
+pub fn escape_char(ch: char, quote: char, out: &mut String) {
+    match ch {
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        _ if ch == quote => {
+            out.push('\\');
+            out.push(ch);
+        }
+        _ if ch.is_control() || is_invisible(ch) => {
+            let _ = write!(out, "\\u{{{:x}}}", u32::from(ch));
+        }
+        _ => out.push(ch),
+    }
+}
+
+/// Whether `ch` is a space or format character that shows as nothing or as
+/// a space.
+fn is_invisible(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{a0}'
+            | '\u{ad}'
+            | '\u{34f}'
+            | '\u{61c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{2000}'..='\u{200f}'
+            | '\u{2028}'..='\u{202f}'
+            | '\u{205f}'..='\u{206f}'
+            | '\u{3000}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+    )
+}
+
 /// The word the dump uses for an item of the kind.
 fn item_kind_word(kind: ItemKind) -> &'static str {
     match kind {

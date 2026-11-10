@@ -47,7 +47,7 @@ pub use bodies::{
     CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
     LocalKind, MatchArm, Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId,
     Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution, body_source_map,
-    hir_dump, item_text,
+    escape_char, hir_dump, item_text,
 };
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,

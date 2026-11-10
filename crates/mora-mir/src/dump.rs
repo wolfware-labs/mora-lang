@@ -43,9 +43,9 @@
 //! terminator, and `}`, one per line, with a blank line before each block.
 //! A block with no statements that ends in `unreachable` is left out; the
 //! other blocks keep their numbers. Every statement and terminator ends in
-//! `// line:col`, the one-based line and the one-based column in bytes where
-//! its source starts, or `// ?` when the span names no position in the
-//! file (see [`write_body_in`]).
+//! `// line:col`, the one-based line and the one-based column, counted in
+//! characters as diagnostics count it, where its source starts, or `// ?`
+//! when the span names no position in the file (see [`write_body_in`]).
 //!
 //! # Statements
 //!
@@ -93,7 +93,8 @@
 
 use std::fmt::Write;
 
-use mora_hir::{Signature, Ty, arena_index, item_text, signature, ty_name};
+use mora_diag::line_column;
+use mora_hir::{Constant, Signature, Ty, arena_index, escape_char, item_text, signature, ty_name};
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
@@ -124,7 +125,7 @@ pub fn write_body_in(out: &mut String, db: &dyn Db, file: SourceFile, body: &Bod
         db,
         body,
         bodies: &[],
-        lines: Some((file.id(db), line_index(db, file))),
+        lines: Some((file.id(db), file.text(db), line_index(db, file))),
         out,
     }
     .body();
@@ -142,7 +143,7 @@ pub fn write_mir(out: &mut String, db: &dyn Db, file: Option<SourceFile>, mir: &
             db,
             body,
             bodies: &mir.bodies,
-            lines: file.map(|file| (file.id(db), line_index(db, file))),
+            lines: file.map(|file| (file.id(db), file.text(db).as_str(), line_index(db, file))),
             out,
         }
         .body();
@@ -154,7 +155,7 @@ struct Printer<'a> {
     body: &'a Body,
     /// The bodies a [`Callee::Local`] indexes, when known.
     bodies: &'a [Body],
-    lines: Option<(FileId, &'a LineIndex)>,
+    lines: Option<(FileId, &'a str, &'a LineIndex)>,
     out: &'a mut String,
 }
 
@@ -217,15 +218,15 @@ impl Printer<'_> {
 
     /// `// line:col`, or `// ?`.
     fn span(&mut self, span: mora_span::Span) {
-        let position = self.lines.and_then(|(file, index)| {
+        let position = self.lines.and_then(|(file, text, index)| {
             if span.file != file {
                 return None;
             }
-            index.line_col(span.range.start())
+            line_column(text, index, usize::from(span.range.start()))
         });
         match position {
-            Some(position) => {
-                let _ = writeln!(self.out, " // {}:{}", position.line + 1, position.col + 1);
+            Some((line, column)) => {
+                let _ = writeln!(self.out, " // {line}:{column}");
             }
             None => self.out.push_str(" // ?\n"),
         }
@@ -367,7 +368,7 @@ impl Printer<'_> {
                                 match ch {
                                     '{' => text.push_str("{{"),
                                     '}' => text.push_str("}}"),
-                                    _ => escape(ch, '"', &mut text),
+                                    _ => escape_char(ch, '"', &mut text),
                                 }
                             }
                         }
@@ -482,43 +483,24 @@ fn unary_symbol(op: UnOp) -> &'static str {
 /// A constant as written.
 fn constant(value: &Const) -> String {
     match value {
-        Const::Int(value, _) => value.to_string(),
-        Const::Real(bits, _) => format!("{:?}", f64::from_bits(*bits)),
+        Const::Int(value, _) => Constant::Int(*value).to_string(),
+        Const::Real(bits, _) => Constant::Real(*bits).to_string(),
         Const::Bool(value) => value.to_string(),
         Const::Char(ch) => {
             let mut text = String::from("'");
-            escape(*ch, '\'', &mut text);
+            escape_char(*ch, '\'', &mut text);
             text.push('\'');
             text
         }
         Const::String(value) => {
             let mut text = String::from("\"");
             for ch in value.chars() {
-                escape(ch, '"', &mut text);
+                escape_char(ch, '"', &mut text);
             }
             text.push('"');
             text
         }
         Const::Unit => "()".to_owned(),
-    }
-}
-
-/// `ch` as it is written inside quotes `quote`.
-fn escape(ch: char, quote: char, out: &mut String) {
-    match ch {
-        '\\' => out.push_str("\\\\"),
-        '\n' => out.push_str("\\n"),
-        '\r' => out.push_str("\\r"),
-        '\t' => out.push_str("\\t"),
-        '\0' => out.push_str("\\0"),
-        _ if ch == quote => {
-            out.push('\\');
-            out.push(ch);
-        }
-        _ if ch.is_control() => {
-            let _ = write!(out, "\\u{{{:x}}}", u32::from(ch));
-        }
-        _ => out.push(ch),
     }
 }
 
@@ -928,7 +910,27 @@ fn Fib(n#0: int, this#2: in P) -> int {
             text(Const::Real(1.5f64.to_bits(), Primitive::Double)),
             "1.5"
         );
-        assert_eq!(text(Const::Real(3f64.to_bits(), Primitive::Float)), "3.0");
+        assert_eq!(text(Const::Real(3f64.to_bits(), Primitive::Float)), "3");
+        assert_eq!(
+            text(Const::Real(0.25f64.to_bits(), Primitive::Double)),
+            "0.25"
+        );
+        assert_eq!(
+            text(Const::Real((-0.0f64).to_bits(), Primitive::Double)),
+            "-0"
+        );
+        assert_eq!(
+            text(Const::Real(f64::NAN.to_bits(), Primitive::Double)),
+            "NaN"
+        );
+        assert_eq!(
+            text(Const::Real(f64::INFINITY.to_bits(), Primitive::Double)),
+            "inf"
+        );
+        assert_eq!(
+            text(Const::Real(1e21f64.to_bits(), Primitive::Double)),
+            "1000000000000000000000"
+        );
         assert_eq!(text(Const::Bool(true)), "true");
         assert_eq!(text(Const::Bool(false)), "false");
         assert_eq!(text(Const::Unit), "()");
@@ -942,6 +944,62 @@ fn Fib(n#0: int, this#2: in P) -> int {
             "\"a\\\"b\\\\c\\nd\\re\\tf\\0g\\u{1}é\""
         );
         assert_eq!(text(Const::String("it's".into())), "\"it's\"");
+    }
+
+    #[test]
+    fn invisible_characters_are_escaped() {
+        let fx = fixture();
+        let text = |value: &str| {
+            rvalue_text(
+                &fx,
+                Rvalue::Use(Operand::Const(Const::String(value.into()))),
+            )
+        };
+        assert_eq!(text("a\u{200b}b"), "\"a\\u{200b}b\"");
+        assert_eq!(
+            text("\u{a0}\u{202e}\u{feff}\u{2028}\u{3000}\u{ad}"),
+            "\"\\u{a0}\\u{202e}\\u{feff}\\u{2028}\\u{3000}\\u{ad}\""
+        );
+        assert_eq!(text("é ü 日本"), "\"é ü 日本\"");
+        assert_eq!(
+            rvalue_text(&fx, Rvalue::Use(Operand::Const(Const::Char('\u{200b}')))),
+            "'\\u{200b}'"
+        );
+        assert_eq!(
+            rvalue_text(
+                &fx,
+                Rvalue::Interpolate(vec![InterpPiece::Text("\u{200b}".into())])
+            ),
+            "$\"\\u{200b}\""
+        );
+    }
+
+    #[test]
+    fn columns_count_characters_as_diagnostics_do() {
+        let db = TestDb::new();
+        let text = "é\u{1F600}x = 1;\nüüy\n";
+        let file = db.file("src/Program.mr", text);
+        let at = |needle: &str| {
+            let start = text.find(needle).expect("the needle") as u32;
+            Span::new(file.id(&db), TextRange::empty(TextSize::new(start)))
+        };
+        let stmt = |span| assign(local(1), Rvalue::Use(int_const(1)), span);
+        let mut locals = vec![temp(Ty::UNIT)];
+        locals.push(temp(int()));
+        let body = body_of(
+            "F",
+            0,
+            locals,
+            vec![block(
+                vec![stmt(at("x")), stmt(at("y"))],
+                end(TerminatorKind::Return, at("é")),
+            )],
+        );
+        let mut out = String::new();
+        write_body_in(&mut out, &db, file, &body);
+        assert!(out.contains("_1 = 1; // 1:3\n"), "{out}");
+        assert!(out.contains("_1 = 1; // 2:3\n"), "{out}");
+        assert!(out.contains("return; // 1:1\n"), "{out}");
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::arena::arena_index;
 use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::type_ref::TypeRef;
 
-pub use dump::{hir_dump, item_text};
+pub use dump::{escape_char, hir_dump, item_text};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -1602,6 +1602,48 @@ get extension#0.Empty(items#0) => items#0[0];
             texts.contains(&"UsersApi.Fib{fn UsersApi.Fib}".to_owned()),
             "{texts:?}"
         );
+    }
+
+    #[test]
+    fn escape_char_escapes_quotes_controls_and_invisible_characters() {
+        let escaped = |ch: char, quote: char| {
+            let mut out = String::new();
+            escape_char(ch, quote, &mut out);
+            out
+        };
+        assert_eq!(escaped('a', '"'), "a");
+        assert_eq!(escaped('é', '"'), "é");
+        assert_eq!(escaped('"', '"'), "\\\"");
+        assert_eq!(escaped('"', '\''), "\"");
+        assert_eq!(escaped('\'', '\''), "\\'");
+        assert_eq!(escaped('\\', '"'), "\\\\");
+        assert_eq!(escaped('\n', '"'), "\\n");
+        assert_eq!(escaped('\r', '"'), "\\r");
+        assert_eq!(escaped('\t', '"'), "\\t");
+        assert_eq!(escaped('\0', '"'), "\\0");
+        assert_eq!(escaped('\u{1}', '"'), "\\u{1}");
+        for ch in [
+            '\u{a0}', '\u{ad}', '\u{34f}', '\u{61c}', '\u{115f}', '\u{1160}', '\u{17b4}',
+            '\u{17b5}', '\u{180b}', '\u{180f}', '\u{2000}', '\u{200b}', '\u{200f}', '\u{2028}',
+            '\u{202e}', '\u{202f}', '\u{205f}', '\u{2060}', '\u{206f}', '\u{3000}', '\u{3164}',
+            '\u{fe00}', '\u{fe0f}', '\u{feff}', '\u{ffa0}', '\u{fff9}', '\u{fffb}',
+        ] {
+            assert_eq!(escaped(ch, '"'), format!("\\u{{{:x}}}", u32::from(ch)));
+        }
+        // The neighbours of the ranges stay.
+        for ch in [
+            '\u{a1}',
+            '\u{1161}',
+            '\u{1ffff}',
+            '\u{2010}',
+            '\u{2027}',
+            '\u{2070}',
+            '\u{3001}',
+            '\u{fe10}',
+            '\u{fffc}',
+        ] {
+            assert_eq!(escaped(ch, '"'), ch.to_string());
+        }
     }
 
     /// Every prefix of `text`, cut at each character, lowers and reports
