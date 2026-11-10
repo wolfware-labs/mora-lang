@@ -1,6 +1,6 @@
 //! Local functions (§7.10). A local function is lowered as a body of its
 //! own, which takes what it uses of the bodies around it as extra
-//! parameters, as [`mora_hir::local_functions`] gives them: `this` first,
+//! parameters, as [`mora_hir::local_functions()`] gives them: `this` first,
 //! as a borrow, then its own parameters, then a borrow of each local it
 //! takes. A call passes the arguments and those borrows in that order.
 //!

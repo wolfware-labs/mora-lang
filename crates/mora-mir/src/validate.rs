@@ -7,11 +7,11 @@
 use std::rc::Rc;
 
 use mora_hir::{
-    Primitive, Signature, Ty, converts_implicitly, instance_fields, signature, this_type,
+    Primitive, Signature, Ty, converts_implicitly, instance_fields, is_known, signature, this_type,
 };
 use mora_span::Db;
 
-use crate::types::{is_concrete, param_ty};
+use crate::types::param_ty;
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, Const, InterpPiece, LocalId,
     LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
@@ -92,8 +92,8 @@ impl Checker<'_> {
             self.error(&at, "no blocks");
         }
         for (index, decl) in body.locals.iter().enumerate() {
-            let ty = local_value_ty(&decl.ty);
-            if !is_concrete(ty) {
+            let ty = decl.ty.ty();
+            if !is_known(ty) {
                 self.error(
                     &at,
                     format!("local _{index} has type {ty:?}, which is not a concrete type"),
@@ -395,7 +395,7 @@ impl Checker<'_> {
 
     fn assign(&mut self, at: &str, dest: &Place, rvalue: &Rvalue) {
         let dest_ty = self.place_lt(at, dest);
-        let dest_value = dest_ty.as_ref().map(local_value_ty);
+        let dest_value = dest_ty.as_ref().map(LocalTy::ty);
         if dest_value == Some(&Ty::Never) {
             self.error(at, "assignment to a place of the never type");
         }
@@ -730,7 +730,7 @@ impl Checker<'_> {
                     .iter()
                     .map(|local| local.ty.clone())
                     .collect();
-                Some((params, local_value_ty(&target.locals[0].ty).clone()))
+                Some((params, target.locals[0].ty.ty().clone()))
             }
             Callee::Initializer(item, n) => {
                 let Signature::Struct(_) = signature(self.db, *item) else {
@@ -816,16 +816,9 @@ fn join_problem(here: &[LocalId], there: &[LocalId]) -> Option<String> {
     Some(parts.join(", and "))
 }
 
-/// The value type of a local type: the type itself, or the one a borrow
-/// refers to.
-fn local_value_ty(ty: &LocalTy) -> &Ty {
-    let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = ty;
-    ty
-}
-
 /// Whether `ty` is an integer or floating-point type.
 fn is_numeric(ty: &Ty) -> bool {
-    matches!(ty, Ty::Primitive(primitive) if primitive.is_integer() || primitive.is_floating_point())
+    matches!(ty, Ty::Primitive(primitive) if primitive.is_numeric())
 }
 
 /// Whether `from` converts implicitly to `to`, by the rule inference uses.
@@ -843,8 +836,8 @@ fn is_integer(ty: &Ty) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use mora_hir::test_support::{TestDb, app, file_named};
-    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported, item_tree};
+    use mora_hir::test_support::{TestDb, app, file_named, item_named};
+    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
     use super::{Checker, debug_validate, validate};
@@ -883,18 +876,7 @@ mod tests {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", SOURCE)]);
         let file = file_named(&db, project, "src/Program.mr");
-        let tree = item_tree(&db, file);
-        let find = |name: &str| {
-            let (item, _) = tree
-                .items()
-                .find(|(_, item)| item.name == name)
-                .expect("the item");
-            ItemId {
-                project,
-                file,
-                item,
-            }
-        };
+        let find = |name: &str| item_named(&db, project, file, name);
         let (p, add, nop, method, static_method) =
             (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
         let (mix, get, set) = (find("Mix"), find("Get"), find("Set"));

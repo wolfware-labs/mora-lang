@@ -465,12 +465,15 @@ mod tests {
         assert!(function(signature_of(&db, project, "src/Program.mr", "Id")).is_generic);
     }
 
+    /// A struct with a field, a getter, a constant, a `static` field and a
+    /// second field, and a class with a field.
+    const FIELDS: &str = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
+                          static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
+
     #[test]
     fn a_value_member_finds_the_struct_field_it_declares() {
         let db = TestDb::new();
-        let text = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
-                    static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
+        let project = app(&db, &[("src/Program.mr", FIELDS)]);
         let file = file_named(&db, project, "src/Program.mr");
         let p = item_named(&db, project, file, "P");
         let found =
@@ -490,9 +493,7 @@ mod tests {
     #[test]
     fn the_instance_fields_of_a_struct_are_in_declaration_order() {
         let db = TestDb::new();
-        let text = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
-                    static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
+        let project = app(&db, &[("src/Program.mr", FIELDS)]);
         let file = file_named(&db, project, "src/Program.mr");
         let fields = |name: &str| -> Vec<(u32, String)> {
             instance_fields(&db, item_named(&db, project, file, name))

@@ -1,6 +1,6 @@
 //! Tests of lowering, each from source text through the front end.
 
-use mora_hir::test_support::{TestDb, app, codes, file_named};
+use mora_hir::test_support::{TestDb, app, codes, file_named, item_named};
 use mora_hir::{BodyOwner, ItemId, body, body_owners, diagnostics, item_tree, parse};
 use mora_span::{Dependency, Project, ProjectKind, SourceFile};
 
@@ -47,26 +47,12 @@ impl Lowered {
         if name == "top-level" {
             return BodyOwner::TopLevel;
         }
-        let tree = item_tree(&self.db, self.file);
-        let (item, _) = tree
-            .items()
-            .find(|(_, item)| item.name == name)
-            .expect("the function");
-        BodyOwner::Item(item)
+        BodyOwner::Item(self.item(name).item)
     }
 
     /// The item `name` declared in the file.
     fn item(&self, name: &str) -> ItemId {
-        let tree = item_tree(&self.db, self.file);
-        let (item, _) = tree
-            .items()
-            .find(|(_, item)| item.name == name)
-            .expect("the item");
-        ItemId {
-            project: self.project,
-            file: self.file,
-            item,
-        }
+        item_named(&self.db, self.project, self.file, name)
     }
 
     fn mir(&self, name: &str) -> &Mir {

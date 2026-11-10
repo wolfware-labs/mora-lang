@@ -9,7 +9,7 @@ use mora_hir::{
 };
 use mora_span::Span;
 
-use super::expr::{Dest, cast_kind, constant};
+use super::expr::{Dest, constant};
 use super::{Diverged, Lowered, Lowerer};
 use crate::{BorrowMode, Callee, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
@@ -111,7 +111,7 @@ impl Lowerer<'_> {
         args: &[Arg],
         diverges: bool,
     ) -> Lowered<()> {
-        let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
+        let values = arg_values(args);
         let args = self.operands(&values)?;
         let span = self.span(expr);
         let call = |next| TerminatorKind::Call {
@@ -143,7 +143,7 @@ impl Lowerer<'_> {
         let Signature::Function(function) = signature(self.owner.db, item) else {
             self.ice(expr, "the callee is not a function")
         };
-        let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
+        let values = arg_values(args);
         let mut operands = Vec::with_capacity(function.params.len() + 1);
         if let Some(mode) = function.receiver {
             operands.push(self.receiver(expr, callee, mode, &values)?);
@@ -201,7 +201,7 @@ impl Lowerer<'_> {
         };
         let def = function.def;
         let span = self.span(expr);
-        let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
+        let values = arg_values(args);
         let mut operands = Vec::with_capacity(def.params.len() + function.captures.len());
         // `this` first, then the arguments, then the locals it takes.
         let mut locals = Vec::with_capacity(function.captures.len());
@@ -333,10 +333,8 @@ impl Lowerer<'_> {
     /// place that holds it for `in` and `ref`, a constant first stored in
     /// a temporary; itself for `move`.
     fn pass(&mut self, operand: Operand, mode: ParamMode, span: Span) -> Operand {
-        let mode = match mode {
-            ParamMode::Move => return operand,
-            ParamMode::In => BorrowMode::In,
-            ParamMode::Ref => BorrowMode::Ref,
+        let Some(mode) = BorrowMode::of(mode) else {
+            return operand;
         };
         let place = self.operand_place(operand, span);
         self.borrow(mode, place, span)
@@ -381,15 +379,12 @@ impl Lowerer<'_> {
             )
         };
         let span = self.span(call);
-        let operand = match inference.conversion(default) {
-            Some(conversion) => self.cast_to_temp(
-                cast_kind(conversion.kind),
-                Operand::Const(value),
-                conversion.to.clone(),
-                span,
-            ),
-            None => Operand::Const(value),
-        };
+        let operand = self.converted(inference.conversion(default), Operand::Const(value), span);
         self.pass(operand, mode, span)
     }
+}
+
+/// The values of `args`, in the order they are written.
+fn arg_values(args: &[Arg]) -> Vec<ExprId> {
+    args.iter().map(|arg| arg.expr).collect()
 }

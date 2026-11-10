@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use mora_diag::Diagnostic;
 use mora_span::{Dependency, FileId, LineIndex, Project, ProjectKind, SourceFile};
 
-use crate::pascal_case;
+use crate::{ItemId, Scope, item_tree, pascal_case};
 
 /// A database that records every query execution.
 #[salsa::db]
@@ -111,6 +111,21 @@ pub fn file_named(db: &TestDb, project: Project, path: &str) -> SourceFile {
         Some(file) => *file,
         None => panic!("no file at {path}"),
     }
+}
+
+/// The first item of `file` in `project` named `name`.
+///
+/// # Panics
+///
+/// When the file declares no item of that name.
+pub fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -> ItemId {
+    let Some((idx, _)) = item_tree(db, file)
+        .items()
+        .find(|(_, item)| item.name == name)
+    else {
+        panic!("no item named {name}");
+    };
+    Scope::file(project, file).item(idx)
 }
 
 /// The codes of `diagnostics`.

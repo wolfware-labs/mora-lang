@@ -33,13 +33,13 @@ use std::collections::{HashMap, HashSet};
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemKind, STD, Signature,
-    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, item_tree,
-    owner_name, signature, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, ItemKind, STD,
+    Signature, Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer,
+    is_known, item_tree, owner_name, signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
-use crate::types::{is_concrete, param_ty};
+use crate::types::param_ty;
 use crate::{
     Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
     Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_mir,
@@ -389,37 +389,44 @@ fn number_densely(body: &mut Body) {
             targeted[target.index()] = true;
         }
     }
+    // The new id of each block, `None` for a block that is dropped.
     let mut new_ids = Vec::with_capacity(body.blocks.len());
     let mut kept = 0;
     for (index, block) in body.blocks.iter().enumerate() {
         let empty = block.statements.is_empty()
             && matches!(block.terminator.kind, TerminatorKind::Unreachable);
         if index == BlockId::ENTRY.index() || targeted[index] || !empty {
-            new_ids.push(BlockId(index_u32(kept)));
+            new_ids.push(Some(BlockId(index_u32(kept))));
             kept += 1;
         } else {
-            new_ids.push(BlockId(u32::MAX));
+            new_ids.push(None);
         }
     }
-    let mut index = 0;
-    body.blocks.retain(|_| {
-        index += 1;
-        new_ids[index - 1].0 != u32::MAX
-    });
+    body.blocks = std::mem::take(&mut body.blocks)
+        .into_iter()
+        .zip(&new_ids)
+        .filter_map(|(block, id)| id.map(|_| block))
+        .collect();
+    // Only kept blocks are targets.
+    let renumber = |target: &mut BlockId| {
+        if let Some(new) = new_ids[target.index()] {
+            *target = new;
+        }
+    };
     for block in &mut body.blocks {
         match &mut block.terminator.kind {
-            TerminatorKind::Goto(target) => *target = new_ids[target.index()],
+            TerminatorKind::Goto(target) => renumber(target),
             TerminatorKind::Switch {
                 targets, otherwise, ..
             } => {
                 for (_, target) in targets {
-                    *target = new_ids[target.index()];
+                    renumber(target);
                 }
-                *otherwise = new_ids[otherwise.index()];
+                renumber(otherwise);
             }
             TerminatorKind::Call { next, .. } => {
                 if let Some(next) = next {
-                    *next = new_ids[next.index()];
+                    renumber(next);
                 }
             }
             TerminatorKind::Return | TerminatorKind::Unreachable => {}
@@ -499,18 +506,11 @@ impl<'a> Owner<'a> {
             resolution: body_resolution(db, project, file, owner),
             inference: infer(db, project, file, owner),
             functions: Vec::new(),
-            this_ty: match owner {
-                BodyOwner::Item(item) => this_type(
-                    db,
-                    ItemId {
-                        project,
-                        file,
-                        item,
-                    },
-                ),
-                _ => None,
-            },
+            this_ty: None,
         };
+        if let BodyOwner::Item(item) = owner {
+            shared.this_ty = this_type(db, shared.item(item));
+        }
         shared.functions = shared.local_functions(owner);
         shared
     }
@@ -523,18 +523,9 @@ impl<'a> Owner<'a> {
         };
         let (ret, this, params) = match owner {
             BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
-            BodyOwner::Item(item) => self.function_signature(ItemId {
-                project: self.project,
-                file: self.file,
-                item,
-            }),
+            BodyOwner::Item(item) => self.function_signature(self.item(item)),
             BodyOwner::Value(ty, index) => {
-                let item = ItemId {
-                    project: self.project,
-                    file: self.file,
-                    item: ty,
-                };
-                let Some(field) = structs::field_of_value(self.db, item, index) else {
+                let Some(field) = structs::field_of_value(self.db, self.item(ty), index) else {
                     panic!(
                         "internal error lowering {name}: only the initializer of a field is lowered"
                     );
@@ -590,7 +581,7 @@ impl<'a> Owner<'a> {
         });
         let mut params = Vec::with_capacity(function.params.len());
         for param in &function.params {
-            if !is_concrete(&param.ty) {
+            if !is_known(&param.ty) {
                 panic!(
                     "internal error lowering {name}: the parameter `{}` has a type that is not lowered",
                     param.name
@@ -598,7 +589,7 @@ impl<'a> Owner<'a> {
             }
             params.push(param_ty(param.mode, param.ty.clone()));
         }
-        if !is_concrete(&function.ret) {
+        if !is_known(&function.ret) {
             panic!("internal error lowering {name}: the return type is not lowered");
         }
         (function.ret.clone(), this, params)
@@ -606,7 +597,21 @@ impl<'a> Owner<'a> {
 
     /// The span of `expr`.
     fn span(&self, expr: ExprId) -> Span {
-        Span::new(self.file.id(self.db), self.map.expr(expr))
+        self.span_at(self.map.expr(expr))
+    }
+
+    /// The span of `range` in the owner's file.
+    fn span_at(&self, range: TextRange) -> Span {
+        Span::new(self.file.id(self.db), range)
+    }
+
+    /// The item `item` of the owner's file.
+    fn item(&self, item: ItemIdx) -> ItemId {
+        ItemId {
+            project: self.project,
+            file: self.file,
+            item,
+        }
     }
 
     /// Panics with an internal error, about the code at `range`, in the
@@ -812,7 +817,7 @@ impl<'a> Lowerer<'a> {
             Some(brace) => *brace,
             None => TextRange::empty(self.owner.map.expr(root).end()),
         };
-        Span::new(self.owner.file.id(self.owner.db), range)
+        self.owner.span_at(range)
     }
 
     /// The statements `stmts`, up to the first that control cannot get to:
@@ -838,10 +843,7 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Local { local, init } => {
                 let id = self.local(*local);
-                let at = Span::new(
-                    self.owner.file.id(self.owner.db),
-                    self.owner.map.local(*local),
-                );
+                let at = self.owner.span_at(self.owner.map.local(*local));
                 self.builder.storage_live(id, at);
                 if let Some(init) = *init {
                     let mark = self.builder.temp_mark();
@@ -858,8 +860,7 @@ impl<'a> Lowerer<'a> {
                         self.name
                     );
                 };
-                self.builder
-                    .leave_scope(Span::new(self.owner.file.id(self.owner.db), end));
+                self.builder.leave_scope(self.owner.span_at(end));
             }
             Stmt::Return(value) => {
                 let span = self.stmt_span(stmt);
@@ -887,8 +888,8 @@ impl<'a> Lowerer<'a> {
                 update,
                 body,
             } => self.r#for(stmt, init, *condition, update, *body),
-            Stmt::Break => self.loop_jump(stmt, true),
-            Stmt::Continue => self.loop_jump(stmt, false),
+            Stmt::Break => self.loop_jump(stmt, control::Jump::Break),
+            Stmt::Continue => self.loop_jump(stmt, control::Jump::Continue),
             Stmt::Unsafe(block) => self.stmt(*block),
             // A local function is a body of its own.
             Stmt::Function(_) => {}
@@ -943,7 +944,7 @@ impl<'a> Lowerer<'a> {
                 self.name
             );
         };
-        Span::new(self.owner.file.id(self.owner.db), range)
+        self.owner.span_at(range)
     }
 
     /// Panics with an internal error about `expr`.

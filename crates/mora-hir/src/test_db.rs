@@ -1,8 +1,8 @@
 //! The database and helpers the tests of this crate share.
 
-use mora_span::{Project, SourceFile};
+use mora_span::Project;
 
-pub(crate) use crate::test_support::{TestDb, app, codes, file_named, messages};
+pub(crate) use crate::test_support::{TestDb, app, codes, file_named, item_named, messages};
 use crate::*;
 
 pub(crate) fn path(text: &str) -> Vec<String> {
@@ -40,14 +40,6 @@ pub(crate) fn item_name(db: &TestDb, item: ItemId) -> String {
         map.namespace_path(namespace),
         item_tree(db, item.file).item(item.item).name
     )
-}
-
-pub(crate) fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -> ItemId {
-    let (idx, _) = item_tree(db, file)
-        .items()
-        .find(|(_, item)| item.name == name)
-        .unwrap();
-    Scope::file(project, file).item(idx)
 }
 
 /// The signature of the item `name` in the file at `path`.

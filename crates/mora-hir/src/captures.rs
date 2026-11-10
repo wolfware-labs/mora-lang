@@ -12,13 +12,11 @@ use std::collections::{BTreeMap, HashSet};
 
 use mora_span::{Db, Project, SourceFile};
 
-use crate::arena::arena_index;
 use crate::bodies::{
     ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, InterpPart, LocalId,
     LocalKind, Pat, PatId, Stmt, StmtId, Target, UnaryOp, body, body_resolution,
 };
 use crate::inference::{Callee, Inference, infer};
-use crate::items::item_tree;
 use crate::signature::signature;
 use crate::ty::{ParamMode, Signature};
 
@@ -37,8 +35,10 @@ pub struct LocalFunctionCaptures {
     pub captures: Vec<(Captured, ParamMode)>,
 }
 
-/// What a local function takes from the bodies around it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// What a local function takes from the bodies around it, ordered as a
+/// local function takes them: `this` first, then the locals in the order of
+/// their declarations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Captured {
     /// The receiver of the method it is in.
     This,
@@ -80,9 +80,8 @@ struct Found {
     outer: Option<usize>,
     /// The locals declared inside it.
     declared: HashSet<LocalId>,
-    /// What it takes itself, keyed by `this` first, then the position of
-    /// the local.
-    captures: BTreeMap<(u8, usize), (Captured, ParamMode)>,
+    /// What it takes itself, in the order it takes them.
+    captures: BTreeMap<Captured, ParamMode>,
     /// The local functions it calls that are not inside it.
     calls: Vec<LocalId>,
 }
@@ -109,7 +108,11 @@ impl Walk<'_> {
                 let Some(callee) = self.functions.iter().position(|f| f.local == callee) else {
                     continue;
                 };
-                let inherited: Vec<_> = self.functions[callee].captures.values().copied().collect();
+                let inherited: Vec<_> = self.functions[callee]
+                    .captures
+                    .iter()
+                    .map(|(&captured, &mode)| (captured, mode))
+                    .collect();
                 let caller = &mut self.functions[caller];
                 for (captured, mode) in inherited {
                     if let Captured::Local(local) = captured
@@ -127,7 +130,7 @@ impl Walk<'_> {
                 stmt: found.stmt,
                 local: found.local,
                 outer: found.outer,
-                captures: found.captures.into_values().collect(),
+                captures: found.captures.into_iter().collect(),
             })
             .collect()
     }
@@ -184,10 +187,8 @@ impl Walk<'_> {
             .paths
             .get(&path)
             .is_some_and(|resolution| match resolution.target {
-                Target::Value(value) => item_tree(self.db, value.ty.file)
-                    .item(value.ty.item)
-                    .values
-                    .get(value.index)
+                Target::Value(value) => value
+                    .member(self.db)
                     .is_some_and(|member| member.is_instance_field()),
                 _ => false,
             })
@@ -469,16 +470,8 @@ impl Walk<'_> {
 
 /// Records that a local function takes `captured` by `mode`: `ref` when
 /// any use needs it.
-fn capture(
-    captures: &mut BTreeMap<(u8, usize), (Captured, ParamMode)>,
-    captured: Captured,
-    mode: ParamMode,
-) {
-    let key = match captured {
-        Captured::This => (0, 0),
-        Captured::Local(local) => (1, arena_index(local)),
-    };
-    let (_, recorded) = captures.entry(key).or_insert((captured, mode));
+fn capture(captures: &mut BTreeMap<Captured, ParamMode>, captured: Captured, mode: ParamMode) {
+    let recorded = captures.entry(captured).or_insert(mode);
     if mode == ParamMode::Ref {
         *recorded = ParamMode::Ref;
     }

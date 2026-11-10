@@ -46,6 +46,11 @@ pub enum Primitive {
 }
 
 impl Primitive {
+    /// Whether it is a numeric type: an integer type, `float` or `double`.
+    pub fn is_numeric(self) -> bool {
+        !matches!(self, Primitive::Bool | Primitive::Char)
+    }
+
     /// Whether it is a floating-point type: `float` or `double`.
     pub fn is_floating_point(self) -> bool {
         matches!(self, Primitive::Float | Primitive::Double)
@@ -54,7 +59,7 @@ impl Primitive {
     /// Whether it is an integer type: a numeric type that is not a
     /// floating-point one.
     pub fn is_integer(self) -> bool {
-        !matches!(self, Primitive::Bool | Primitive::Char) && !self.is_floating_point()
+        self.is_numeric() && !self.is_floating_point()
     }
 
     /// The keyword that names the type.

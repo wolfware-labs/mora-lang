@@ -76,7 +76,7 @@ impl BodyResolution {
 
 impl ValueRef {
     /// The value member it refers to.
-    pub(crate) fn member(self, db: &dyn Db) -> Option<&ValueMember> {
+    pub fn member(self, db: &dyn Db) -> Option<&ValueMember> {
         item_data(db, self.ty).values.get(self.index)
     }
 }

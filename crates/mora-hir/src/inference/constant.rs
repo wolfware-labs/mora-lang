@@ -40,7 +40,7 @@ impl Value {
         };
         match self {
             Value::Int(value) if numeric::holds(target, value) => {
-                if numeric::is_floating_point(target) {
+                if target.is_floating_point() {
                     // `holds` says the value is exact in `target`.
                     Some(real(value as f64))
                 } else {

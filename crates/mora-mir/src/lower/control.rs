@@ -14,6 +14,15 @@ use mora_span::{Span, TextRange};
 use super::{Diverged, Lowered, Lowerer};
 use crate::{BlockId, Const, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
+/// A jump to a loop's target.
+#[derive(Clone, Copy)]
+pub(super) enum Jump {
+    /// `break`, to the block after the loop.
+    Break,
+    /// `continue`, to the loop's condition or update.
+    Continue,
+}
+
 /// A loop around the statement being lowered.
 pub(super) struct Loop {
     /// The block after the loop, where `break` goes.
@@ -140,15 +149,14 @@ impl Lowerer<'_> {
     /// `break` or `continue`: the storage of the locals of every scope
     /// opened inside the loop ends, the innermost first, and control goes to
     /// the loop's target. The scopes stay open for the code after it.
-    pub(super) fn loop_jump(&mut self, stmt: StmtId, is_break: bool) {
+    pub(super) fn loop_jump(&mut self, stmt: StmtId, jump: Jump) {
         let span = self.stmt_span(stmt);
         let Some(target) = self.loops.last() else {
             self.ice_at(span.range, "`break` or `continue` outside a loop")
         };
-        let to = if is_break {
-            target.r#break
-        } else {
-            target.r#continue
+        let to = match jump {
+            Jump::Break => target.r#break,
+            Jump::Continue => target.r#continue,
         };
         let depth = target.depth;
         // A jump is a statement: no temporary is open.
@@ -318,7 +326,7 @@ impl Lowerer<'_> {
     /// end of its text.
     fn stmt_end(&self, stmt: StmtId) -> Span {
         if let Some(&brace) = self.owner.map.block_ends.get(&stmt) {
-            return Span::new(self.owner.file.id(self.owner.db), brace);
+            return self.owner.span_at(brace);
         }
         let span = self.stmt_span(stmt);
         Span::new(span.file, TextRange::empty(span.range.end()))

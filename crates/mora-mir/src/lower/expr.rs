@@ -2,8 +2,8 @@
 //! strings and calls.
 
 use mora_hir::{
-    BinaryOp, Constant, ConversionKind, Expr, ExprId, Inference, InterpPart, Literal, Ty, UnaryOp,
-    literal_constant,
+    BinaryOp, Constant, Conversion, ConversionKind, Expr, ExprId, Inference, InterpPart, Literal,
+    Ty, UnaryOp, literal_constant,
 };
 use mora_span::Span;
 use mora_syntax::lexer::literal::{char_value, string_value};
@@ -67,10 +67,7 @@ impl Lowerer<'_> {
     /// records.
     fn converted_rvalue(&mut self, expr: ExprId) -> Lowered<Rvalue> {
         Ok(match self.owner.inference.conversion(expr) {
-            Some(conversion) => {
-                let value = self.operand_unconverted(expr)?;
-                Rvalue::Cast(cast_kind(conversion.kind), value, conversion.to.clone())
-            }
+            Some(conversion) => cast(conversion, self.operand_unconverted(expr)?),
             None => self.rvalue(expr)?,
         })
     }
@@ -78,15 +75,8 @@ impl Lowerer<'_> {
     /// The value of `expr`, converted as inference records.
     pub(super) fn operand(&mut self, expr: ExprId) -> Lowered<Operand> {
         let value = self.operand_unconverted(expr)?;
-        Ok(match self.owner.inference.conversion(expr) {
-            Some(conversion) => self.cast_to_temp(
-                cast_kind(conversion.kind),
-                value,
-                conversion.to.clone(),
-                self.span(expr),
-            ),
-            None => value,
-        })
+        let conversion = self.owner.inference.conversion(expr);
+        Ok(self.converted(conversion, value, self.span(expr)))
     }
 
     /// The value of `expr` before any conversion: a constant, a place that
@@ -206,17 +196,22 @@ impl Lowerer<'_> {
         constant(self.owner.hir, self.owner.inference, expr)
     }
 
-    /// `value`, of the type it has, converted to `to` in a new temporary.
-    pub(super) fn cast_to_temp(
+    /// `value` converted as `conversion` says, in a new temporary; `value`
+    /// itself when there is no conversion.
+    pub(super) fn converted(
         &mut self,
-        kind: CastKind,
+        conversion: Option<&Conversion>,
         value: Operand,
-        to: Ty,
         span: Span,
     ) -> Operand {
-        let temp = self.builder.temp(LocalTy::Value(to.clone()), span);
+        let Some(conversion) = conversion else {
+            return value;
+        };
+        let temp = self
+            .builder
+            .temp(LocalTy::Value(conversion.to.clone()), span);
         self.builder
-            .assign(Place::local(temp), Rvalue::Cast(kind, value, to), span);
+            .assign(Place::local(temp), cast(conversion, value), span);
         Operand::Copy(Place::local(temp))
     }
 
@@ -378,16 +373,8 @@ impl Lowerer<'_> {
             self.ice(expr, "the operator is not lowered")
         };
         // The conversion recorded on `lhs` applies to reading it.
-        let read = Operand::Copy(place.clone());
-        let read = match self.owner.inference.conversion(lhs) {
-            Some(conversion) => self.cast_to_temp(
-                cast_kind(conversion.kind),
-                read,
-                conversion.to.clone(),
-                self.span(lhs),
-            ),
-            None => read,
-        };
+        let conversion = self.owner.inference.conversion(lhs);
+        let read = self.converted(conversion, Operand::Copy(place.clone()), self.span(lhs));
         let result_ty = self.operand_ty(&read);
         let read = self.stable(read, &[rhs], self.span(lhs));
         let right = self.operand(rhs)?;
@@ -397,12 +384,8 @@ impl Lowerer<'_> {
             Some(back) => {
                 let temp = self.builder.temp(LocalTy::Value(result_ty), span);
                 self.builder.assign(Place::local(temp), value, span);
-                let cast = Rvalue::Cast(
-                    cast_kind(back.kind),
-                    Operand::Copy(Place::local(temp)),
-                    back.to.clone(),
-                );
-                self.builder.assign(place, cast, span);
+                let value = cast(back, Operand::Copy(Place::local(temp)));
+                self.builder.assign(place, value, span);
             }
             None => self.builder.assign(place, value, span),
         }
@@ -551,10 +534,11 @@ fn bin_op(op: BinaryOp) -> Option<BinOp> {
     })
 }
 
-/// The cast that applies a conversion of `kind`.
-pub(super) fn cast_kind(kind: ConversionKind) -> CastKind {
-    match kind {
+/// The cast of `value` that applies `conversion`.
+fn cast(conversion: &Conversion, value: Operand) -> Rvalue {
+    let kind = match conversion.kind {
         ConversionKind::Implicit => CastKind::Implicit,
         ConversionKind::Numeric => CastKind::Numeric,
-    }
+    };
+    Rvalue::Cast(kind, value, conversion.to.clone())
 }

@@ -30,6 +30,16 @@ use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
 
+/// The implicit conversion of a value of `from` to `to`, which `to`
+/// accepts: none when the types are the same, or for a value of the never
+/// type, which does not exist.
+fn widening(from: &Ty, to: &Ty) -> Option<Conversion> {
+    (!same(from, to) && *from != Ty::Never).then(|| Conversion {
+        to: to.clone(),
+        kind: ConversionKind::Implicit,
+    })
+}
+
 /// Whether `place` is a name, `this` or a field of one, which can be read
 /// again without a change.
 fn is_plain_place(body: &Body, place: ExprId) -> bool {
@@ -278,31 +288,46 @@ impl Check<'_> {
     }
 
     /// Reports `expr` when `context` does not accept its type `found` where
-    /// it expects `expected` (`Context::accepts`).
+    /// it expects `expected` (`Context::accepts`), and records its
+    /// conversion when it does.
     fn coerce(&mut self, expr: ExprId, found: Option<&Ty>, expected: &Ty, context: Context) {
         if let Some(found) = found
-            && is_known(found)
-            && is_known(expected)
+            && self.fits_or_report(expr, found, expected, context)
         {
-            if !context.accepts(found, expected) {
-                self.errors.push(TypeError::Mismatch {
-                    expr,
-                    expected: expected.clone(),
-                    found: found.clone(),
-                    context,
-                });
-            } else {
-                self.widen(expr, found, expected);
-            }
+            self.widen(expr, found, expected);
         }
+    }
+
+    /// Whether `context` accepts `expr`, of type `found`, where it expects
+    /// `expected` (`Context::accepts`); a `Mismatch` is reported when it
+    /// does not. `false` without a report when either type is not known.
+    fn fits_or_report(
+        &mut self,
+        expr: ExprId,
+        found: &Ty,
+        expected: &Ty,
+        context: Context,
+    ) -> bool {
+        if !is_known(found) || !is_known(expected) {
+            return false;
+        }
+        let fits = context.accepts(found, expected);
+        if !fits {
+            self.errors.push(TypeError::Mismatch {
+                expr,
+                expected: expected.clone(),
+                found: found.clone(),
+                context,
+            });
+        }
+        fits
     }
 
     /// Records that `expr`, of type `from`, converts to `to` where it is
     /// used, when the types differ.
     fn widen(&mut self, expr: ExprId, from: &Ty, to: &Ty) {
-        // A value of the never type does not exist, so it is not converted.
-        if !same(from, to) && *from != Ty::Never {
-            self.convert(expr, to.clone(), ConversionKind::Implicit);
+        if let Some(Conversion { to, kind }) = widening(from, to) {
+            self.convert(expr, to, kind);
         }
     }
 
@@ -534,7 +559,7 @@ impl Check<'_> {
         }
         let value = constant::value(&body.exprs, expr)?;
         // A real for an integer type follows the usual rules.
-        if !numeric::is_floating_point(target)
+        if !target.is_floating_point()
             && matches!(
                 value,
                 constant::Value::Real(_)
@@ -960,7 +985,7 @@ impl Check<'_> {
                     Some(ty) => match (op, ty) {
                         (UnaryOp::Neg, Primitive::UInt) => Some(Primitive::Long),
                         (UnaryOp::Neg, Primitive::ULong | Primitive::NUInt) => None,
-                        (UnaryOp::BitNot, ty) if numeric::is_floating_point(ty) => None,
+                        (UnaryOp::BitNot, ty) if ty.is_floating_point() => None,
                         _ => Some(numeric::widen_small(ty)),
                     },
                     None if !is_known(&found) => return None,
@@ -1080,7 +1105,7 @@ impl Check<'_> {
                 if value == Ty::Never {
                     return Some(Ty::Never);
                 }
-                return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
+                return match numeric::as_numeric(&value).filter(|ty| ty.is_integer()) {
                     Some(ty) => {
                         let widened = Ty::Primitive(numeric::widen_small(ty));
                         self.widen(lhs, &value, &widened);
@@ -1250,21 +1275,9 @@ impl Check<'_> {
         let Expr::Tuple(inner) = &body.exprs[place] else {
             let index = *leaf;
             *leaf += 1;
-            if !is_known(found) || !is_known(places) {
-                return;
-            }
-            if !Context::Value.accepts(found, places) {
-                self.errors.push(TypeError::Mismatch {
-                    expr: value,
-                    expected: places.clone(),
-                    found: found.clone(),
-                    context: Context::Value,
-                });
-            } else if !same(found, places) && *found != Ty::Never {
-                let conversion = Conversion {
-                    to: places.clone(),
-                    kind: ConversionKind::Implicit,
-                };
+            if self.fits_or_report(value, found, places, Context::Value)
+                && let Some(conversion) = widening(found, places)
+            {
                 let previous = self.element_conversions.insert((value, index), conversion);
                 debug_assert!(previous.is_none(), "an element is recorded once");
             }
@@ -1499,9 +1512,7 @@ fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
         let ty = numeric::promote(a, b)?;
         return match op {
             B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => Some(BOOL),
-            _ if numeric::is_integer_only(op) => {
-                numeric::is_integer(ty).then_some(Ty::Primitive(ty))
-            }
+            _ if numeric::is_integer_only(op) => ty.is_integer().then_some(Ty::Primitive(ty)),
             _ => Some(Ty::Primitive(ty)),
         };
     }

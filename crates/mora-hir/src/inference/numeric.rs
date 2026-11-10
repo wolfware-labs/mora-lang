@@ -7,27 +7,12 @@
 use crate::bodies::BinaryOp;
 use crate::ty::{Primitive, Ty};
 
-/// Whether `ty` is a numeric type: an integer type, `float` or `double`.
-pub(crate) fn is_numeric(ty: Primitive) -> bool {
-    !matches!(ty, Primitive::Bool | Primitive::Char)
-}
-
 /// The primitive type `ty` is, when it is a numeric type.
 pub(crate) fn as_numeric(ty: &Ty) -> Option<Primitive> {
     match ty {
-        Ty::Primitive(ty) if is_numeric(*ty) => Some(*ty),
+        Ty::Primitive(ty) if ty.is_numeric() => Some(*ty),
         _ => None,
     }
-}
-
-/// Whether `ty` is a floating-point type: `float` or `double`.
-pub(crate) fn is_floating_point(ty: Primitive) -> bool {
-    ty.is_floating_point()
-}
-
-/// Whether `ty` is an integer type.
-pub(crate) fn is_integer(ty: Primitive) -> bool {
-    ty.is_integer()
 }
 
 /// Whether `op` is defined only on two integer operands of one promoted
@@ -167,9 +152,11 @@ pub(crate) fn is_signed(ty: Primitive) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use Primitive::*;
+
     #[test]
     fn converts_implicitly_is_the_table_and_leaves_native_integers_out() {
-        use crate::ty::Primitive::{Byte, Double, Float, Int, Long, NInt, NUInt};
         assert!(crate::converts_implicitly(Byte, Int));
         assert!(crate::converts_implicitly(Int, Double));
         assert!(crate::converts_implicitly(Float, Double));
@@ -179,9 +166,6 @@ mod tests {
         assert!(!crate::converts_implicitly(Int, NInt));
         assert!(!crate::converts_implicitly(NUInt, Long));
     }
-
-    use super::*;
-    use Primitive::*;
 
     const NUMERIC: [Primitive; 12] = [
         Byte, SByte, Short, UShort, Int, UInt, Long, ULong, NInt, NUInt, Float, Double,
@@ -299,14 +283,16 @@ mod tests {
 
     #[test]
     fn kinds_of_numeric_type() {
-        assert!(is_integer(NInt));
-        assert!(!is_integer(Float));
-        assert!(!is_numeric(Bool));
-        assert!(!is_numeric(Char));
-        assert!(is_floating_point(Float));
-        assert!(is_floating_point(Double));
-        assert!(!is_floating_point(Long));
-        assert!(!is_floating_point(Char));
+        assert!(NInt.is_integer());
+        assert!(!Float.is_integer());
+        assert!(!Char.is_integer());
+        assert!(Float.is_numeric());
+        assert!(!Bool.is_numeric());
+        assert!(!Char.is_numeric());
+        assert!(Float.is_floating_point());
+        assert!(Double.is_floating_point());
+        assert!(!Long.is_floating_point());
+        assert!(!Char.is_floating_point());
         assert_eq!(as_numeric(&Ty::Primitive(Double)), Some(Double));
         assert_eq!(as_numeric(&Ty::Primitive(Bool)), None);
         assert_eq!(as_numeric(&Ty::String), None);

@@ -82,6 +82,14 @@ pub enum LocalTy {
     Borrow(BorrowMode, Ty),
 }
 
+impl LocalTy {
+    /// The type of the value: the local's own, or the one it borrows.
+    pub fn ty(&self) -> &Ty {
+        let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = self;
+        ty
+    }
+}
+
 /// How a borrow lets its holder use the value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BorrowMode {
@@ -89,6 +97,26 @@ pub enum BorrowMode {
     In,
     /// Read and write.
     Ref,
+}
+
+impl BorrowMode {
+    /// The borrow that passes a value to a parameter of mode `mode`: `None`
+    /// for `move`, which passes the value itself (§10.3).
+    pub fn of(mode: ParamMode) -> Option<BorrowMode> {
+        match mode {
+            ParamMode::In => Some(BorrowMode::In),
+            ParamMode::Ref => Some(BorrowMode::Ref),
+            ParamMode::Move => None,
+        }
+    }
+
+    /// The keyword of the mode, as the dump writes it.
+    pub fn keyword(self) -> &'static str {
+        match self {
+            BorrowMode::In => "in",
+            BorrowMode::Ref => "ref",
+        }
+    }
 }
 
 /// Where a local comes from in the source.
@@ -301,6 +329,34 @@ pub enum BinOp {
     Ge,
 }
 
+impl BinOp {
+    /// The operator as code writes it: `+%` for [`BinOp::WrappingAdd`].
+    pub fn text(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Rem => "%",
+            BinOp::WrappingAdd => "+%",
+            BinOp::WrappingSub => "-%",
+            BinOp::WrappingMul => "*%",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+            BinOp::UShr => ">>>",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+        }
+    }
+}
+
 /// A unary operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UnOp {
@@ -310,6 +366,17 @@ pub enum UnOp {
     Not,
     /// `~`.
     BitNot,
+}
+
+impl UnOp {
+    /// The operator as code writes it.
+    pub fn text(self) -> &'static str {
+        match self {
+            UnOp::Neg => "-",
+            UnOp::Not => "!",
+            UnOp::BitNot => "~",
+        }
+    }
 }
 
 /// How a block ends.
@@ -391,8 +458,19 @@ pub enum Callee {
 
 impl Body {
     /// The ids of the blocks, in order.
-    pub fn block_ids(&self) -> impl Iterator<Item = BlockId> + use<> {
-        (0..self.blocks.len()).map(|index| BlockId(index as u32))
+    pub fn block_ids(&self) -> impl Iterator<Item = BlockId> + '_ {
+        (0u32..).zip(&self.blocks).map(|(index, _)| BlockId(index))
+    }
+
+    /// The ids of the locals, in order: the return slot, the parameters,
+    /// then the other locals.
+    pub fn local_ids(&self) -> impl Iterator<Item = LocalId> + '_ {
+        (0u32..).zip(&self.locals).map(|(index, _)| LocalId(index))
+    }
+
+    /// The ids of the parameters, in order.
+    pub fn param_ids(&self) -> impl Iterator<Item = LocalId> + '_ {
+        self.local_ids().skip(1).take(self.params)
     }
 
     /// The declaration of the local.
@@ -428,10 +506,9 @@ impl Body {
     /// value local, or it takes a field of something that is not a struct or a
     /// tuple, or past its last field.
     pub fn place_ty(&self, place: &Place, db: &dyn Db) -> Ty {
-        let (mut ty, mut borrowed) = match &self.local(place.local).ty {
-            LocalTy::Value(ty) => (ty.clone(), false),
-            LocalTy::Borrow(_, ty) => (ty.clone(), true),
-        };
+        let decl = &self.local(place.local).ty;
+        let mut ty = decl.ty().clone();
+        let mut borrowed = matches!(decl, LocalTy::Borrow(..));
         for projection in &place.projections {
             match *projection {
                 Projection::Deref => {
@@ -486,24 +563,12 @@ impl Body {
     }
 }
 
-/// Whether MIR can hold a value of `ty`: no part of it is an error or a
-/// type whose meaning a later part of the compiler gives. The never type is
-/// concrete; a local of it is declared and never assigned.
-pub(crate) fn is_concrete(ty: &Ty) -> bool {
-    match ty {
-        Ty::Unsupported(_) | Ty::Error => false,
-        Ty::Tuple(elems) => elems.iter().all(|elem| is_concrete(&elem.ty)),
-        Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never => true,
-    }
-}
-
 /// The type of a parameter of mode `mode` and type `ty`, or of a receiver
 /// taken that way, in the callee: a borrow for `in` and `ref`, the value
 /// itself for `move` (§10.3).
 pub(crate) fn param_ty(mode: ParamMode, ty: Ty) -> LocalTy {
-    match mode {
-        ParamMode::In => LocalTy::Borrow(BorrowMode::In, ty),
-        ParamMode::Ref => LocalTy::Borrow(BorrowMode::Ref, ty),
-        ParamMode::Move => LocalTy::Value(ty),
+    match BorrowMode::of(mode) {
+        Some(borrow) => LocalTy::Borrow(borrow, ty),
+        None => LocalTy::Value(ty),
     }
 }

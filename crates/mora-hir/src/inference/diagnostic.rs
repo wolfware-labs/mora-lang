@@ -328,7 +328,7 @@ fn mismatch(
 fn cast(source: &Source<'_>, expr: ExprId, operand: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
     let char_and_integer = |a: &Ty, b: &Ty| {
         *a == Ty::Primitive(Primitive::Char)
-            && numeric::as_numeric(b).is_some_and(numeric::is_integer)
+            && numeric::as_numeric(b).is_some_and(Primitive::is_integer)
     };
     let note = if char_and_integer(from, to) || char_and_integer(to, from) {
         "a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function"
@@ -479,9 +479,7 @@ fn binary(
     if let (Some(a), Some(b)) = (numeric::as_numeric(lhs), numeric::as_numeric(rhs)) {
         // A cast cannot make an operator defined only on integers work on a
         // `float` or a `double`, so that is what is wrong, with no fix.
-        if numeric::is_integer_only(op)
-            && (numeric::is_floating_point(a) || numeric::is_floating_point(b))
-        {
+        if numeric::is_integer_only(op) && (a.is_floating_point() || b.is_floating_point()) {
             return diagnostic.with_note(format!("`{sym}` is defined only on integer types"));
         }
         // Any other operator on two numbers fails only when they have no
@@ -518,8 +516,8 @@ fn binary(
 /// when one is a floating-point type, else the wider type, or the signed
 /// one of two as wide, or the left one's.
 fn cast_side(a: Primitive, b: Primitive) -> (bool, Primitive) {
-    if numeric::is_floating_point(a) || numeric::is_floating_point(b) {
-        return (numeric::is_floating_point(a), Primitive::Double);
+    if a.is_floating_point() || b.is_floating_point() {
+        return (a.is_floating_point(), Primitive::Double);
     }
     let a_first =
         (numeric::bits(a), numeric::is_signed(a)) >= (numeric::bits(b), numeric::is_signed(b));

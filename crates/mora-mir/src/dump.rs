@@ -125,9 +125,9 @@ use mora_hir::{
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
-    AggregateKind, BinOp, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece, LocalId,
-    LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind,
-    Terminator, TerminatorKind, UnOp,
+    AggregateKind, BlockId, Body, Callee, CastKind, Const, InterpPiece, LocalId, LocalSource,
+    LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind, Terminator,
+    TerminatorKind,
 };
 
 /// Appends the text of `body` to `out`. No file is known, so every span
@@ -190,11 +190,10 @@ impl Printer<'_> {
     fn body(&mut self) {
         let body = self.body;
         let _ = write!(self.out, "fn {}(", body.name);
-        for index in 1..=body.params {
-            if index > 1 {
+        for (n, id) in body.param_ids().enumerate() {
+            if n > 0 {
                 self.out.push_str(", ");
             }
-            let id = LocalId(index as u32);
             let _ = write!(
                 self.out,
                 "{}: {}",
@@ -204,8 +203,7 @@ impl Printer<'_> {
         }
         let ret = self.local_ty(&body.local(LocalId::RETURN).ty);
         let _ = writeln!(self.out, ") -> {ret} {{");
-        for (index, decl) in body.locals.iter().enumerate() {
-            let id = LocalId(index as u32);
+        for (id, decl) in body.local_ids().zip(&body.locals) {
             let _ = writeln!(
                 self.out,
                 "    let {}{}: {};",
@@ -240,7 +238,7 @@ impl Printer<'_> {
     fn local_ty(&self, ty: &LocalTy) -> String {
         match ty {
             LocalTy::Value(ty) => ty_name(self.db, ty),
-            LocalTy::Borrow(mode, ty) => format!("{} {}", borrow_word(*mode), ty_name(self.db, ty)),
+            LocalTy::Borrow(mode, ty) => format!("{} {}", mode.keyword(), ty_name(self.db, ty)),
         }
     }
 
@@ -353,15 +351,15 @@ impl Printer<'_> {
     fn rvalue(&self, rvalue: &Rvalue) -> String {
         match rvalue {
             Rvalue::Use(operand) => self.operand(operand),
-            Rvalue::Borrow(mode, place) => format!("&{} {}", borrow_word(*mode), self.place(place)),
+            Rvalue::Borrow(mode, place) => format!("&{} {}", mode.keyword(), self.place(place)),
             Rvalue::Binary(op, left, right) => format!(
                 "{} {} {}",
                 self.operand(left),
-                binary_symbol(*op),
+                op.text(),
                 self.operand(right)
             ),
             Rvalue::Unary(op, operand) => {
-                format!("{}{}", unary_symbol(*op), self.operand(operand))
+                format!("{}{}", op.text(), self.operand(operand))
             }
             Rvalue::Cast(kind, operand, ty) => {
                 let prefix = match kind {
@@ -432,9 +430,7 @@ impl Printer<'_> {
     /// body is malformed.
     fn place(&self, place: &Place) -> String {
         let mut text = self.local_name(place.local);
-        let mut ty = match &self.body.local(place.local).ty {
-            LocalTy::Value(ty) | LocalTy::Borrow(_, ty) => Some(ty.clone()),
-        };
+        let mut ty = Some(self.body.local(place.local).ty.ty().clone());
         for projection in &place.projections {
             match *projection {
                 Projection::Deref => text = format!("(*{text})"),
@@ -468,46 +464,6 @@ impl Printer<'_> {
     }
 }
 
-fn borrow_word(mode: BorrowMode) -> &'static str {
-    match mode {
-        BorrowMode::In => "in",
-        BorrowMode::Ref => "ref",
-    }
-}
-
-fn binary_symbol(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Rem => "%",
-        BinOp::WrappingAdd => "+%",
-        BinOp::WrappingSub => "-%",
-        BinOp::WrappingMul => "*%",
-        BinOp::Shl => "<<",
-        BinOp::Shr => ">>",
-        BinOp::UShr => ">>>",
-        BinOp::BitAnd => "&",
-        BinOp::BitOr => "|",
-        BinOp::BitXor => "^",
-        BinOp::Eq => "==",
-        BinOp::Ne => "!=",
-        BinOp::Lt => "<",
-        BinOp::Le => "<=",
-        BinOp::Gt => ">",
-        BinOp::Ge => ">=",
-    }
-}
-
-fn unary_symbol(op: UnOp) -> &'static str {
-    match op {
-        UnOp::Neg => "-",
-        UnOp::Not => "!",
-        UnOp::BitNot => "~",
-    }
-}
-
 /// A constant as written.
 fn constant(value: &Const) -> String {
     match value {
@@ -534,8 +490,8 @@ fn constant(value: &Const) -> String {
 
 #[cfg(test)]
 mod tests {
-    use mora_hir::test_support::{TestDb, app, file_named};
-    use mora_hir::{BodyOwner, ItemId, Primitive, TupleElem, Ty, body, item_tree};
+    use mora_hir::test_support::{TestDb, app, file_named, item_named};
+    use mora_hir::{BodyOwner, ItemId, Primitive, TupleElem, Ty, body};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
     use super::*;
@@ -559,18 +515,7 @@ mod tests {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", SOURCE)]);
         let file = file_named(&db, project, "src/Program.mr");
-        let tree = item_tree(&db, file);
-        let find = |name: &str| {
-            let (item, _) = tree
-                .items()
-                .find(|(_, item)| item.name == name)
-                .expect("the item");
-            ItemId {
-                project,
-                file,
-                item,
-            }
-        };
+        let find = |name: &str| item_named(&db, project, file, name);
         let (p, fib) = (find("P"), find("Fib"));
         let hir: Vec<_> = body(&db, file, BodyOwner::Item(fib.item))
             .locals

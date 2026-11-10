@@ -413,8 +413,9 @@ pub(crate) fn type_errors(
 }
 
 /// Whether everything about `ty` is known, so that a diagnostic can be
-/// about it: an unsupported type or an error inside it makes it unknown.
-pub(crate) fn is_known(ty: &Ty) -> bool {
+/// about it, or a later pass hold a value of it: an unsupported type or an
+/// error inside it makes it unknown.
+pub fn is_known(ty: &Ty) -> bool {
     match ty {
         Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never => true,
         Ty::Tuple(elems) => elems.iter().all(|elem| is_known(&elem.ty)),

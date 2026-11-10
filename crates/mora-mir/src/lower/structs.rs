@@ -3,7 +3,7 @@
 
 use mora_hir::{
     Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, body, instance_fields,
-    item_tree, signature,
+    signature,
 };
 use mora_span::Db;
 
@@ -36,11 +36,11 @@ impl Lowerer<'_> {
         let mut written: Vec<Option<Operand>> =
             self.operands(&values)?.into_iter().map(Some).collect();
         let mut operands = Vec::new();
-        for (n, (index, field)) in instance_fields(self.owner.db, item).enumerate() {
+        for (n, (index, field)) in (0u32..).zip(instance_fields(self.owner.db, item)) {
             let init = inits.iter().position(|(name, _)| *name == field.name);
             operands.push(match init.and_then(|init| written[init].take()) {
                 Some(operand) => operand,
-                None => self.initializer_call(expr, item, (n, index), field)?,
+                None => self.initializer_call(expr, item, n, index, field)?,
             });
         }
         Ok(Rvalue::Aggregate(AggregateKind::Struct(item), operands))
@@ -54,7 +54,8 @@ impl Lowerer<'_> {
         &mut self,
         expr: ExprId,
         item: ItemId,
-        (n, index): (usize, u32),
+        n: u32,
+        index: u32,
         field: &Field,
     ) -> Lowered<Operand> {
         let owner = BodyOwner::Value(item.item, index);
@@ -63,7 +64,7 @@ impl Lowerer<'_> {
         }
         let dest = self.finish_call(
             expr,
-            Callee::Initializer(item, self.field_number(expr, n)),
+            Callee::Initializer(item, n),
             Vec::new(),
             field.ty.clone(),
             Dest::Temp,
@@ -85,7 +86,10 @@ impl Lowerer<'_> {
                 "a member that is not a field of a struct is not lowered",
             )
         };
-        let Some(n) = instance_fields(db, item).position(|(_, field)| field.name == name) else {
+        let field = (0u32..)
+            .zip(instance_fields(db, item))
+            .find(|(_, (_, field))| field.name == name);
+        let Some((n, _)) = field else {
             let declared = match signature(db, item) {
                 Signature::Struct(fields) => fields.iter().any(|field| field.name == name),
                 _ => false,
@@ -98,17 +102,8 @@ impl Lowerer<'_> {
                 "a member that is not a field of a struct is not lowered",
             )
         };
-        base.projections
-            .push(Projection::Field(self.field_number(expr, n)));
+        base.projections.push(Projection::Field(n));
         base
-    }
-
-    /// The position `n` of a field, as MIR holds it.
-    fn field_number(&self, expr: ExprId, n: usize) -> u32 {
-        match u32::try_from(n) {
-            Ok(n) => n,
-            Err(_) => self.ice(expr, "a struct with more than u32::MAX fields"),
-        }
     }
 
     /// The place `path` names: a field of `this`, then the fields its
@@ -117,10 +112,7 @@ impl Lowerer<'_> {
         let resolution = self.owner.resolution.paths.get(&expr);
         let field = resolution.and_then(|resolution| match resolution.target {
             Target::Value(value) => {
-                let member = item_tree(self.owner.db, value.ty.file)
-                    .item(value.ty.item)
-                    .values
-                    .get(value.index)?;
+                let member = value.member(self.owner.db)?;
                 Some((member.name.clone(), resolution.segments.max(1)))
             }
             _ => None,
