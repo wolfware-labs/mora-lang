@@ -148,6 +148,10 @@ pub struct FnSignature {
     pub is_async: bool,
     /// Whether the function declares type parameters of its own (§8.1).
     pub is_generic: bool,
+    /// How a method takes `this`: `in` by default, `ref` for a `mut`
+    /// method and `move` for a `move` one (§10.3). `None` for a function
+    /// that takes no receiver: one at namespace level, or a `static` one.
+    pub receiver: Option<ParamMode>,
 }
 
 /// A parameter of a function.

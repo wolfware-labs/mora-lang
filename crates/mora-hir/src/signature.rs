@@ -91,6 +91,7 @@ fn item_signature(
             params,
             ret,
             is_async,
+            receiver,
         } => Signature::Function(FnSignature {
             params: params
                 .iter()
@@ -105,6 +106,10 @@ fn item_signature(
             ret: ret.as_ref().map_or(Ty::UNIT, |ret| lower.ty(ret)),
             is_async: *is_async,
             is_generic: !refs[arena_index(item)].type_params.is_empty(),
+            receiver: {
+                let data = tree.item(item);
+                (data.parent.is_some() && !data.is_static).then_some(*receiver)
+            },
         }),
         SignatureRefKind::Struct(fields) => {
             let owner = lower.member;
@@ -391,6 +396,28 @@ mod tests {
         assert!(!g.is_async);
         assert_eq!(g.ret, Ty::String);
         assert!(function(signature_of(&db, project, "src/Program.mr", "Id")).is_generic);
+    }
+
+    #[test]
+    fn a_method_records_how_it_takes_its_receiver() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "struct P {\n    X: int;\n    In(): int => X;\n    mut Ref() {}\n    \
+                 move Move() {}\n    static S() {}\n    static mut T() {}\n}\nF() {}\nmut G() {}\n",
+            )],
+        );
+        let receiver =
+            |name: &str| function(signature_of(&db, project, "src/Program.mr", name)).receiver;
+        assert_eq!(receiver("In"), Some(ParamMode::In));
+        assert_eq!(receiver("Ref"), Some(ParamMode::Ref));
+        assert_eq!(receiver("Move"), Some(ParamMode::Move));
+        assert_eq!(receiver("S"), None);
+        assert_eq!(receiver("T"), None);
+        assert_eq!(receiver("F"), None);
+        assert_eq!(receiver("G"), None);
     }
 
     #[test]

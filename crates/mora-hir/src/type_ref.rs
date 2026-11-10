@@ -53,6 +53,9 @@ pub(crate) enum SignatureRefKind {
         params: Vec<ParamRef>,
         ret: Option<TypeRef>,
         is_async: bool,
+        /// How `this` is taken, as the modifiers write it, should the
+        /// function be a method.
+        receiver: ParamMode,
     },
     Struct(Vec<FieldRef>),
     Value(TypeRef),
@@ -103,6 +106,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             params,
             ret: it.ret().map(|ty| lower.ty(&ty)),
             is_async: Written::of(it.modifiers()).is_async,
+            receiver: receiver_mode(it.modifiers()),
         };
     } else if let Some(it) = ast::StructDecl::cast(node) {
         signature.type_params = type_param_names(it.type_param_list()).collect();
@@ -127,6 +131,20 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
         signature.type_params = type_param_names(it.type_param_list()).collect();
     }
     (signature, lower.source)
+}
+
+/// How a method with the modifiers `modifiers` takes `this` (§10.3):
+/// `ref` when it is `mut`, `move` when it is `move`, `in` otherwise.
+fn receiver_mode<'a>(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> ParamMode {
+    let mut mode = ParamMode::In;
+    for token in modifiers.into_iter().filter_map(|modifier| modifier.kind()) {
+        match token.kind() {
+            SyntaxKind::MutKw => mode = ParamMode::Ref,
+            SyntaxKind::MoveKw => mode = ParamMode::Move,
+            _ => {}
+        }
+    }
+    mode
 }
 
 /// The names of the type parameters `list` declares, in order; a parameter
