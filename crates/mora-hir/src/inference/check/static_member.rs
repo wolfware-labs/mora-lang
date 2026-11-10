@@ -1,4 +1,5 @@
-//! A static member has no `this`: what it may not use (`MR0149`).
+//! A static member and the initializer of an instance field have no `this`:
+//! what they may not use (`MR0149`, `MR0152`).
 
 use super::Check;
 use crate::bodies::{BodyOwner, Expr, ExprId, Target};
@@ -10,9 +11,12 @@ use crate::ty::Signature;
 
 impl Check<'_> {
     /// Reports each use of `this`, or of an instance member of the type by
-    /// its bare name, in the body of a static member of that type.
-    pub(super) fn static_member_uses(&mut self, owner: BodyOwner) {
-        if !self.is_static_member(owner) {
+    /// its bare name, in the body of a static member of that type
+    /// (`MR0149`) or in the initializer of one of its instance fields
+    /// (`MR0152`).
+    pub(super) fn instance_uses(&mut self, owner: BodyOwner) {
+        let field = self.initialized_field(owner);
+        if field.is_none() && !self.is_static_member(owner) {
             return;
         }
         let body = self.body;
@@ -23,9 +27,15 @@ impl Check<'_> {
                 Expr::Call { callee, .. } => (*callee, self.instance_method(expr, *callee)),
                 _ => continue,
             };
-            if let Some(used) = used {
-                self.errors.push(TypeError::StaticThis { expr: at, used });
-            }
+            let Some(used) = used else { continue };
+            self.errors.push(match &field {
+                Some(field) => TypeError::InitializerThis {
+                    expr: at,
+                    used,
+                    field: field.clone(),
+                },
+                None => TypeError::StaticThis { expr: at, used },
+            });
         }
     }
 
@@ -45,6 +55,17 @@ impl Check<'_> {
                 .is_some_and(|value| value.is_static),
             _ => false,
         }
+    }
+
+    /// The name of the instance field whose initializer `owner` is, if it
+    /// is one.
+    fn initialized_field(&self, owner: BodyOwner) -> Option<String> {
+        let BodyOwner::Value(item, index) = owner else {
+            return None;
+        };
+        let tree = item_tree(self.db, self.scope.file);
+        let value = tree.item(item).values.get(index as usize)?;
+        value.is_instance_field().then(|| value.name.clone())
     }
 
     /// The instance field or getter the path `path` names, if it does.

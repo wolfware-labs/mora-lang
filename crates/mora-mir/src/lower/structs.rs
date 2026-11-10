@@ -113,13 +113,20 @@ impl Lowerer<'_> {
         let field = resolution.and_then(|resolution| match resolution.target {
             Target::Value(value) => {
                 let member = value.member(self.owner.db)?;
-                Some((member.name.clone(), resolution.segments.max(1)))
+                Some((
+                    member.name.clone(),
+                    resolution.segments.max(1),
+                    member.is_static,
+                ))
             }
             _ => None,
         });
-        let Some((name, named)) = field else {
+        let Some((name, named, is_static)) = field else {
             self.ice(expr, "a name that is not a field of `this` is not lowered")
         };
+        if is_static {
+            self.ice(expr, "a static or constant member is not lowered (M1.11)");
+        }
         let mut place = self.field_place(expr, self.this_place(expr), &name);
         for segment in path.segments.iter().skip(named) {
             place = self.field_place(expr, place, segment);

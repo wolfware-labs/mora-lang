@@ -1,7 +1,8 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
 //! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`]. A static
-//! member that uses `this` is `MR0149`.
+//! member that uses `this` is `MR0149`, and
+//! an instance field's initializer that does is `MR0152`.
 
 mod call;
 mod struct_new;
@@ -201,6 +202,9 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             name,
         } => struct_new::repeated_field(source, [*first, *previous, *value], ty, name),
         TypeError::StaticThis { expr, used } => static_this(source, *expr, used),
+        TypeError::InitializerThis { expr, used, field } => {
+            initializer_this(source, *expr, used, field)
+        }
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
@@ -223,6 +227,36 @@ fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnos
     };
     Diagnostic::error(codes::MR0149, message, Label::new(source.span(expr), label))
         .with_note("a `static` member belongs to the type, not to a value of it")
+}
+
+/// `MR0152`: the initializer of the instance field `field` uses `this`, or
+/// an instance member that it reaches through `this`, at `expr`.
+fn initializer_this(
+    source: &Source<'_>,
+    expr: ExprId,
+    used: &InstanceUse,
+    field: &str,
+) -> Diagnostic {
+    let (message, label) = match used {
+        InstanceUse::This => (
+            format!(
+                "the initializer of `{field}` cannot use `this`: \
+                 initializers run before the value exists"
+            ),
+            "there is no value of the type yet",
+        ),
+        InstanceUse::Member { name, .. } => (
+            format!(
+                "the initializer of `{field}` cannot use the instance member `{name}`: \
+                 initializers run before the value exists"
+            ),
+            "the value does not exist yet",
+        ),
+    };
+    Diagnostic::error(codes::MR0152, message, Label::new(source.span(expr), label)).with_note(
+        "an initializer runs for each field that `new T { ... }` leaves out, with no `this`; \
+         it may use constants and `static` members",
+    )
 }
 
 /// `MR0185`: an assignment whose value is used. When `split` is the

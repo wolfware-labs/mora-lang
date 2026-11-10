@@ -2286,6 +2286,44 @@ fn fields_are_numbered_among_the_instance_fields() {
 }
 
 #[test]
+fn an_initializer_that_uses_an_instance_member_stops_in_the_front_end() {
+    let db = TestDb::new();
+    let project = app(
+        &db,
+        &[(
+            "src/Program.mr",
+            "struct P {\n    public X: int = 1;\n    public Y: int = X;\n}\n\
+             F(): P => new P();\n",
+        )],
+    );
+    assert_eq!(codes(diagnostics(&db, project)), ["MR0152"]);
+}
+
+#[test]
+fn an_initializer_of_plain_values_lowers() {
+    let lowered = lowered(
+        "struct P {\n    Z: int;\n    public Y: int = 2 + 3;\n}\n\
+         F(): P => new P { Z = 1 };\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &["_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;"],
+    );
+    let init = lowered.mir_of(lowered.initializer("P", "Y"));
+    assert_eq!(init.bodies.len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+fn a_constant_in_an_initializer_is_not_lowered_yet() {
+    let lowered = lowered(
+        "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n}\n\
+         F(): P => new P();\n",
+    );
+    lowered.mir_of(lowered.initializer("P", "X"));
+}
+
+#[test]
 #[should_panic(expected = "only the initializer of a field is lowered")]
 fn a_getter_is_not_lowered() {
     let lowered = lowered("struct P {\n    public X: int;\n    public Get: int => X;\n}\n");

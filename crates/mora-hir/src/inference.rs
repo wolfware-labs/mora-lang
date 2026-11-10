@@ -208,7 +208,8 @@ pub(crate) enum NotAField {
     Constant,
 }
 
-/// What a static member uses that only a value of its type has (`MR0149`).
+/// What a static member or a field initializer uses that only a value of
+/// its type has (`MR0149`, `MR0152`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InstanceUse {
     /// `this`.
@@ -335,6 +336,13 @@ pub(crate) enum TypeError {
     /// The body of a static member uses `this` or an instance member at
     /// `expr`, which names it (`MR0149`).
     StaticThis { expr: ExprId, used: InstanceUse },
+    /// The initializer of the instance field `field` uses `this` or an
+    /// instance member at `expr`, which names it (`MR0152`).
+    InitializerThis {
+        expr: ExprId,
+        used: InstanceUse,
+        field: String,
+    },
     /// The assignment `expr` is used as a value (`MR0185`); `split` is the
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
@@ -2702,6 +2710,82 @@ mod tests {
         );
         assert_eq!(this.0, "a static member has no `this`");
         assert_eq!(this.1, "there is no value of the type here");
+    }
+
+    #[test]
+    fn an_initializer_has_no_this() {
+        let head = "struct S {\n    public X: int;\n    public Y: int => X;\n    \
+                    Get(): int => X;\n    const K: int = 4;\n    static N: int = 5;\n    \
+                    static Twice(k: int): int => k * 2;\n";
+        for field in [
+            "public Z: int = X;",
+            "public Z: int = Y;",
+            "public Z: int = this.X;",
+            "public Z: int = Get();",
+            "public Z: int = this.Get();",
+            "public Z: int = X + 1;",
+            "public Z: int = (() => X)();",
+            "public Z: int = (() => { G(): int => X; return G(); })();",
+            "public Z: int = (() => { var f = () => this.X; return f(); })();",
+        ] {
+            let text = format!("{head}    {field}\n}}\n");
+            assert_eq!(reported(&text), ["MR0152"], "{text}");
+        }
+        // Constants and static members belong to the type, and a field that
+        // is not initialized reads nothing.
+        let text = format!(
+            "{head}    public Z: int = K + N + Twice(K);\n    \
+             public W: int = (() => {{ G(): int => N; return G(); }})();\n    public V: int;\n}}\n"
+        );
+        assert_eq!(reported(&text), Vec::<String>::new(), "{text}");
+    }
+
+    #[test]
+    fn an_initializer_that_uses_this_says_what_it_uses() {
+        let head = "struct S {\n    public X: int;\n    public Y: int => X;\n    \
+                    Get(): int => X;\n";
+        let [field, getter, method, this] = [
+            ("public Z: int = X;", "X"),
+            ("public Z: int = Y;", "Y"),
+            ("public Z: int = Get();", "Get"),
+            ("public Z: S = this;", "this"),
+        ]
+        .map(|(member, used)| {
+            let text = format!("{head}    {member}\n}}\n");
+            let reported = diagnostics_of(&text);
+            assert_eq!(reported.len(), 1, "{reported:#?}");
+            let d = &reported[0];
+            let at = usize::from(d.primary.span.range.start());
+            assert_eq!(&text[at..at + used.len()], used);
+            assert_eq!(d.fixes.len(), 0);
+            assert_eq!(
+                d.note.as_deref(),
+                Some(
+                    "an initializer runs for each field that `new T { ... }` leaves out, with \
+                     no `this`; it may use constants and `static` members"
+                )
+            );
+            (d.message.clone(), d.primary.message.clone().expect("label"))
+        });
+        assert_eq!(
+            field,
+            (
+                "the initializer of `Z` cannot use the instance member `X`: \
+                 initializers run before the value exists"
+                    .to_owned(),
+                "the value does not exist yet".to_owned()
+            )
+        );
+        assert!(getter.0.contains("the instance member `Y`"), "{getter:?}");
+        assert!(method.0.contains("the instance member `Get`"), "{method:?}");
+        assert_eq!(
+            this,
+            (
+                "the initializer of `Z` cannot use `this`: initializers run before the value exists"
+                    .to_owned(),
+                "there is no value of the type yet".to_owned()
+            )
+        );
     }
 
     #[test]

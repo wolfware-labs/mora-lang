@@ -175,7 +175,7 @@ pub(super) fn infer_body(
         );
         check.function_body(root, expected, statement);
     }
-    check.static_member_uses(owner);
+    check.instance_uses(owner);
     Inference {
         exprs: check.exprs,
         locals: check.locals,

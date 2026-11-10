@@ -846,6 +846,7 @@ let options = new Options { Port = 8080, Retries = 5 };
 - `new T { F = v, ... }` MUST assign every field that has no initializer (`MR0143`). It may also assign a field that has one, and the value given replaces the initializer. A getter, plain or `stored`, is never assigned.
 - Each name in `new T { ... }` MUST be an instance field of `T`, one that every value holds, and MUST appear once. A name that no member of `T` has, a getter, a `static` field and a constant are error `MR0147`, which suggests the closest field the expression does not assign yet, with the distance rule of names (§14.5). A field assigned twice is error `MR0148`, with a fix that removes the repeated assignment (D-143).
 - The written field values run left to right, then the initializers of the omitted fields run in declaration order (D-142).
+- The initializer of an instance field runs before the value exists, so it has no `this`: it, and a lambda or local function inside it, MUST NOT write `this` and MUST NOT name an instance field, getter or method of the type. Each is error `MR0152`, without a fix. A `static` member and a constant stay allowed (D-145).
 - Read-only fields may be assigned, because creating a value is not mutating it.
 - `new() { F = v, ... }` does the same where the target type is known. On such a type, `new T()` and `new()` name no fields.
 - Memberwise creation is available only where every field without an initializer is visible. Where one is not, `new T { ... }` is error `MR0144`. A library type that keeps such a field private is created only through what the library provides.
@@ -3406,6 +3407,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-142 | In `new T { ... }`, the written field values run left to right, then the initializers of the omitted fields run in declaration order | user | 6.9 |
 | D-143 | In memberwise `new T { ... }`, each name is an instance field of `T` and is assigned once: a name that is no member, a getter, a `static` field or a constant is `MR0147`, suggesting the closest unassigned field, and a repeated field is `MR0148`, with a fix that removes the repetition; `new T(args) { ... }` runs a constructor and assigns the members afterwards, so these rules do not apply to it | author | 6.9 |
 | D-144 | A static member has no `this`: its body, and a local function or lambda inside it, that writes `this` or names an instance field, getter or method of the type is `MR0149`, with no fix, because passing the value as a parameter and dropping `static` both keep the program meaningful | author | 6.10 |
+| D-145 | The initializer of an instance field has no `this`: it, and a lambda or local function inside it, that writes `this` or names an instance field, getter or method of the type is `MR0152`, with no fix; `static` members and constants stay allowed, because they need no value of the type | user | 6.9 |
 
 ## 24. Open questions
 
