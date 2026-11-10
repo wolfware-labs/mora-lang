@@ -4,6 +4,8 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
+use std::rc::Rc;
+
 use mora_hir::{
     Primitive, Signature, Ty, converts_implicitly, instance_fields, signature, this_type,
 };
@@ -112,79 +114,73 @@ impl Checker<'_> {
     /// the same live locals. A block's live locals are those of the first
     /// path that gets there, in breadth-first order from the entry; each
     /// other path into it is compared with them. Blocks no path gets to are
-    /// not checked.
+    /// not checked. The problems are reported in the order of the blocks.
     fn storage_pairs(&mut self) {
+        let mut problems = Vec::new();
+        self.storage_entries(&mut problems);
+        problems.sort_by_key(|&(block, _)| block);
+        self.errors
+            .extend(problems.into_iter().map(|(_, problem)| problem));
+    }
+
+    /// The storage on entry to each block that a path from the entry block
+    /// gets to, with each problem of the markers and the block it is in.
+    /// Each block is walked once, from the state of the first path into
+    /// it, and a state holds only the locals live on that path, so the
+    /// work grows with the blocks and their live locals, not with every
+    /// local of the body.
+    fn storage_entries(&self, problems: &mut Vec<(BlockId, String)>) -> Vec<Option<PathStorage>> {
         let body = self.body;
-        if body.blocks.is_empty() {
-            return;
-        }
-        let mut entries: Vec<Option<Vec<Storage>>> = vec![None; body.blocks.len()];
-        entries[0] = Some(vec![Storage::Unborn; body.locals.len()]);
+        let mut entries: Vec<Option<PathStorage>> = vec![None; body.blocks.len()];
+        let Some(entry) = entries.first_mut() else {
+            return entries;
+        };
+        *entry = Some(PathStorage::default());
         let mut queue = std::collections::VecDeque::from([BlockId::ENTRY]);
         while let Some(id) = queue.pop_front() {
-            let Some(mut live) = entries[id.index()].clone() else {
+            let Some(mut path) = entries[id.index()].clone() else {
                 continue;
             };
-            self.storage_walk(id, &mut live, false);
-            for target in body.block(id).terminator.kind.successors() {
-                if let Some(entry @ None) = entries.get_mut(target.index()) {
-                    *entry = Some(live.clone());
-                    queue.push_back(target);
-                }
-            }
-        }
-        for id in body.block_ids() {
-            let Some(mut live) = entries[id.index()].clone() else {
-                continue;
-            };
-            self.storage_walk(id, &mut live, true);
+            self.storage_walk(id, &mut path, problems);
             let at = format!("fn {} bb{}[term]", body.name, id.0);
             let kind = &body.block(id).terminator.kind;
             if matches!(kind, TerminatorKind::Return) {
-                for local in live_locals(&live) {
-                    self.error(&at, format!("return while _{local} is live"));
+                for local in &path.live {
+                    problems.push((id, format!("{at}: return while _{} is live", local.0)));
                 }
             }
             for target in kind.successors() {
-                let Some(Some(entry)) = entries.get(target.index()) else {
-                    continue;
-                };
-                let here: Vec<String> = live_locals(&live)
-                    .filter(|&local| entry[local] != Storage::Live)
-                    .map(|local| format!("_{local}"))
-                    .collect();
-                let there: Vec<String> = live_locals(entry)
-                    .filter(|&local| live[local] != Storage::Live)
-                    .map(|local| format!("_{local}"))
-                    .collect();
-                if here.is_empty() && there.is_empty() {
-                    continue;
+                match entries.get_mut(target.index()) {
+                    Some(slot @ None) => {
+                        *slot = Some(path.clone());
+                        queue.push_back(target);
+                    }
+                    Some(Some(entry)) => {
+                        if let Some(problem) = join_problem(&path.live, &entry.live) {
+                            problems.push((
+                                id,
+                                format!("{at}: bb{} is entered with {problem}", target.0),
+                            ));
+                        }
+                    }
+                    // A missing block is reported by `target`.
+                    None => {}
                 }
-                let mut parts = Vec::new();
-                if !here.is_empty() {
-                    parts.push(format!(
-                        "{} live here but not on another path",
-                        here.join(", ")
-                    ));
-                }
-                if !there.is_empty() {
-                    parts.push(format!(
-                        "{} live on another path but not here",
-                        there.join(", ")
-                    ));
-                }
-                self.error(
-                    &at,
-                    format!("bb{} is entered with {}", target.0, parts.join(", and ")),
-                );
             }
         }
+        entries
     }
 
-    /// Applies the storage markers of block `id` to `live`, reporting each
-    /// one that does not pair when `report` is set.
-    fn storage_walk(&mut self, id: BlockId, live: &mut [Storage], report: bool) {
+    /// Applies the storage markers of block `id` to `path`, with each one
+    /// that does not pair.
+    fn storage_walk(
+        &self,
+        id: BlockId,
+        path: &mut PathStorage,
+        problems: &mut Vec<(BlockId, String)>,
+    ) {
         let body = self.body;
+        let mut ended = Vec::new();
         for (index, statement) in body.block(id).statements.iter().enumerate() {
             let (local, starts) = match statement.kind {
                 StatementKind::StorageLive(local) => (local, true),
@@ -193,24 +189,45 @@ impl Checker<'_> {
             };
             // A marker on a local that is not one of the body's, or on the
             // return slot or a parameter, is reported by `storage`.
-            if local.index() >= live.len() || local.index() <= body.params {
+            if local.index() >= body.locals.len() || local.index() <= body.params {
                 continue;
             }
-            let problem = match (starts, live[local.index()]) {
-                (true, Storage::Live) => Some("storage_live of {}, which is already live"),
-                (false, Storage::Ended) => Some("storage_dead of {}, which is already dead"),
-                (false, Storage::Unborn) => Some("storage_dead of {}, which is not live"),
-                _ => None,
+            let problem = match (starts, path.live.binary_search(&local)) {
+                (true, Ok(_)) => Some("which is already live"),
+                (true, Err(at)) => {
+                    path.live.insert(at, local);
+                    None
+                }
+                (false, Ok(at)) => {
+                    path.live.remove(at);
+                    ended.push(local);
+                    None
+                }
+                (false, Err(_)) if ended.contains(&local) || path.ended_before(local) => {
+                    Some("which is already dead")
+                }
+                (false, Err(_)) => Some("which is not live"),
             };
-            if report && let Some(problem) = problem {
-                let at = format!("fn {} bb{}[{index}]", body.name, id.0);
-                self.error(&at, problem.replace("{}", &format!("_{}", local.0)));
+            if let Some(problem) = problem {
+                let marker = if starts {
+                    "storage_live"
+                } else {
+                    "storage_dead"
+                };
+                problems.push((
+                    id,
+                    format!(
+                        "fn {} bb{}[{index}]: {marker} of _{}, {problem}",
+                        body.name, id.0, local.0
+                    ),
+                ));
             }
-            live[local.index()] = if starts {
-                Storage::Live
-            } else {
-                Storage::Ended
-            };
+        }
+        if !ended.is_empty() {
+            path.ended = Some(Rc::new(Ended {
+                locals: ended,
+                earlier: path.ended.take(),
+            }));
         }
     }
 
@@ -715,24 +732,70 @@ impl Checker<'_> {
     }
 }
 
-/// The storage of a local on a path.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Storage {
-    /// Not started yet.
-    Unborn,
-    /// Started and not ended.
-    Live,
-    /// Started, then ended.
-    Ended,
+/// The storage of the locals on a path from the entry block.
+#[derive(Clone, Debug, Default)]
+struct PathStorage {
+    /// The locals that are live, in order.
+    live: Vec<LocalId>,
+    /// The locals ended on the path, most recent blocks first, which tell
+    /// a second `storage_dead` from one of a local never made live.
+    ended: Option<Rc<Ended>>,
 }
 
-/// The locals that `storage` marks live.
-fn live_locals(storage: &[Storage]) -> impl Iterator<Item = usize> + '_ {
-    storage
-        .iter()
-        .enumerate()
-        .filter(|&(_, &state)| state == Storage::Live)
-        .map(|(local, _)| local)
+impl PathStorage {
+    /// Whether the path ended `local` in a block before the current one.
+    fn ended_before(&self, local: LocalId) -> bool {
+        let mut node = self.ended.as_deref();
+        while let Some(ended) = node {
+            if ended.locals.contains(&local) {
+                return true;
+            }
+            node = ended.earlier.as_deref();
+        }
+        false
+    }
+}
+
+/// The locals one block of a path ends, and those the blocks before it
+/// end. Paths that share blocks share these.
+#[derive(Debug)]
+struct Ended {
+    /// The locals the block ends.
+    locals: Vec<LocalId>,
+    /// What the blocks before it end.
+    earlier: Option<Rc<Ended>>,
+}
+
+/// How the live locals `here`, on the path being walked, differ from
+/// `there`, those of the first path into the same block, both in order;
+/// `None` when they are the same.
+fn join_problem(here: &[LocalId], there: &[LocalId]) -> Option<String> {
+    if here == there {
+        return None;
+    }
+    let names = |locals: &[LocalId], other: &[LocalId]| -> Vec<String> {
+        locals
+            .iter()
+            .filter(|local| other.binary_search(local).is_err())
+            .map(|local| format!("_{}", local.0))
+            .collect()
+    };
+    let mut parts = Vec::new();
+    let only_here = names(here, there);
+    if !only_here.is_empty() {
+        parts.push(format!(
+            "{} live here but not on another path",
+            only_here.join(", ")
+        ));
+    }
+    let only_there = names(there, here);
+    if !only_there.is_empty() {
+        parts.push(format!(
+            "{} live on another path but not here",
+            only_there.join(", ")
+        ));
+    }
+    Some(parts.join(", and "))
 }
 
 /// The value type of a local type: the type itself, or the one a borrow
@@ -780,7 +843,7 @@ mod tests {
     use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported, item_tree};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
-    use super::{debug_validate, validate};
+    use super::{Checker, debug_validate, validate};
     use crate::{
         AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const,
         InterpPiece, LocalDecl, LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue,
@@ -2479,6 +2542,86 @@ mod tests {
             errors(&fx, &mir, true),
             ["fn F bb0[term]: return while _2 is live"]
         );
+    }
+
+    #[test]
+    fn rejects_storage_dead_of_a_local_ended_in_an_earlier_block() {
+        let fx = fx();
+        let mir = blocks(vec![
+            block(vec![live(2), dead(2)], TerminatorKind::Goto(BlockId(1))),
+            block(vec![], TerminatorKind::Goto(BlockId(2))),
+            block(vec![dead(2), live(2), dead(2)], TerminatorKind::Return),
+        ]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb2[0]: storage_dead of _2, which is already dead"]
+        );
+    }
+
+    #[test]
+    fn storage_problems_come_in_the_order_of_the_blocks() {
+        // The search reaches bb2 before bb1; the report keeps bb1 first.
+        let fx = fx();
+        let mir = blocks(vec![
+            block(
+                vec![],
+                TerminatorKind::Switch {
+                    discr: copy(3),
+                    targets: vec![(Const::Bool(false), BlockId(2))],
+                    otherwise: BlockId(1),
+                },
+            ),
+            block(vec![dead(2)], TerminatorKind::Return),
+            block(vec![live(2)], TerminatorKind::Return),
+        ]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            [
+                "fn F bb1[0]: storage_dead of _2, which is not live",
+                "fn F bb2[term]: return while _2 is live",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_state_holds_only_the_live_locals() {
+        // A chain of blocks, each with a temporary of its own that lives
+        // inside it, under one local that lives throughout: every entry
+        // state holds that one local, however many locals the body has.
+        let fx = fx();
+        let n = 2000u32;
+        let mut mir = simple(vec![], TerminatorKind::Return);
+        let body = &mut mir.bodies[0];
+        body.locals
+            .extend((0..n).map(|_| val(Ty::Primitive(Primitive::Int))));
+        let mut chain = vec![block(vec![live(2)], TerminatorKind::Goto(BlockId(1)))];
+        for k in 0..n {
+            let temp = 7 + k;
+            chain.push(block(
+                vec![live(temp), dead(temp)],
+                TerminatorKind::Goto(BlockId(k + 2)),
+            ));
+        }
+        chain.push(block(vec![dead(2)], TerminatorKind::Return));
+        body.blocks = chain;
+        let checker = Checker {
+            db: &fx.db,
+            mir: &mir,
+            body: &mir.bodies[0],
+            std_loaded: true,
+            errors: &mut Vec::new(),
+        };
+        let mut problems = Vec::new();
+        let entries = checker.storage_entries(&mut problems);
+        assert_eq!(problems, []);
+        assert_eq!(entries.len(), n as usize + 2);
+        assert_eq!(entries[0].as_ref().map(|path| path.live.len()), Some(0));
+        for entry in &entries[1..] {
+            assert_eq!(
+                entry.as_ref().map(|path| path.live.as_slice()),
+                Some(&[LocalId(2)][..])
+            );
+        }
     }
 
     #[test]
