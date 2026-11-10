@@ -77,7 +77,7 @@ impl Lowerer<'_> {
         let after = self.builder.new_block();
         self.loop_body(body, after, next, start, span);
         self.builder.switch_to(next);
-        if !self.builder.is_reachable() || is_literal_bool(self.hir, condition, false) {
+        if !self.builder.is_reachable() || is_literal_bool(self.owner.hir, condition, false) {
             self.builder.goto(after, span);
         } else if let Ok((back, exit)) = self.loop_condition(Some(condition), next) {
             self.builder.switch_to(back);
@@ -275,7 +275,7 @@ impl Lowerer<'_> {
         head: BlockId,
     ) -> Lowered<(BlockId, Option<BlockId>)> {
         match condition {
-            Some(condition) if !is_literal_bool(self.hir, condition, true) => {
+            Some(condition) if !is_literal_bool(self.owner.hir, condition, true) => {
                 let (when_true, when_false) = self.branch(condition)?;
                 Ok((when_true, Some(when_false)))
             }
@@ -317,8 +317,8 @@ impl Lowerer<'_> {
     /// Where the statement `stmt` ends: the closing brace of a block, or the
     /// end of its text.
     fn stmt_end(&self, stmt: StmtId) -> Span {
-        if let Some(&brace) = self.map.block_ends.get(&stmt) {
-            return Span::new(self.file.id(self.db), brace);
+        if let Some(&brace) = self.owner.map.block_ends.get(&stmt) {
+            return Span::new(self.owner.file.id(self.owner.db), brace);
         }
         let span = self.stmt_span(stmt);
         Span::new(span.file, TextRange::empty(span.range.end()))

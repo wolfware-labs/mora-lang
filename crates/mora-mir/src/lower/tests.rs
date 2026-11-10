@@ -1,7 +1,7 @@
 //! Tests of lowering, each from source text through the front end.
 
 use mora_hir::test_support::{TestDb, app, codes, file_named};
-use mora_hir::{BodyOwner, diagnostics, item_tree, parse};
+use mora_hir::{BodyOwner, body, body_owners, diagnostics, item_tree, parse};
 use mora_span::{Dependency, Project, ProjectKind, SourceFile};
 
 use crate::{Callee, Const, Mir, Operand, TerminatorKind, mir, mir_dump, validate, write_mir};
@@ -53,9 +53,38 @@ impl Lowered {
     }
 
     fn mir(&self, name: &str) -> &Mir {
-        let mir = mir(&self.db, self.project, self.file, self.owner(name));
+        self.mir_of(self.owner(name))
+    }
+
+    /// The MIR of `owner`, validated.
+    fn mir_of(&self, owner: BodyOwner) -> &Mir {
+        let mir = mir(&self.db, self.project, self.file, owner);
         assert_eq!(validate(&self.db, mir, false), Ok(()));
         mir
+    }
+
+    /// The owner of the initializer of the field `field` of the type `ty`.
+    fn initializer(&self, ty: &str, field: &str) -> BodyOwner {
+        let tree = item_tree(&self.db, self.file);
+        let (item, data) = tree
+            .items()
+            .find(|(_, item)| item.name == ty)
+            .expect("the type");
+        let index = data
+            .values
+            .iter()
+            .position(|value| value.name == field)
+            .expect("the field");
+        BodyOwner::Value(item, u32::try_from(index).expect("a small index"))
+    }
+
+    /// The names of the bodies of `name`, in order.
+    fn bodies(&self, name: &str) -> Vec<String> {
+        self.mir(name)
+            .bodies
+            .iter()
+            .map(|body| body.name.clone())
+            .collect()
     }
 
     /// The dump of the body of `name`.
@@ -502,21 +531,14 @@ fn a_var_is_a_mutable_local() {
 }
 
 #[test]
-#[should_panic(expected = "methods, generic functions and async functions are not lowered")]
-fn a_method_is_not_lowered_yet() {
-    let lowered = lowered("struct P {\n    public X: int;\n    public Get(): int => X;\n}\n");
-    lowered.mir("Get");
-}
-
-#[test]
-#[should_panic(expected = "methods, generic functions and async functions are not lowered")]
+#[should_panic(expected = "generic and async functions are not lowered")]
 fn a_generic_function_is_not_lowered_yet() {
     let lowered = lowered("Id<T>(move x: T): T => x;\n");
     lowered.mir("Id");
 }
 
 #[test]
-#[should_panic(expected = "methods, generic functions and async functions are not lowered")]
+#[should_panic(expected = "generic and async functions are not lowered")]
 fn an_async_function_is_not_lowered_yet() {
     let lowered = lowered("async Wait() {}\n");
     lowered.mir("Wait");
@@ -1524,28 +1546,6 @@ fn diverging_calls_in_value_positions_do_not_return() {
 }
 
 #[test]
-fn the_run_tests_in_scope_lower_and_validate() {
-    let files = [
-        include_str!("../../../../tests/run/arithmetic.mr"),
-        include_str!("../../../../tests/run/booleans.mr"),
-        include_str!("../../../../tests/run/control_flow.mr"),
-        include_str!("../../../../tests/run/float_target.mr"),
-        include_str!("../../../../tests/run/hello.mr"),
-        include_str!("../../../../tests/run/literal_values.mr"),
-        include_str!("../../../../tests/run/locals.mr"),
-        include_str!("../../../../tests/run/promotion.mr"),
-    ];
-    for text in files {
-        lowered(text).mir("top-level");
-    }
-    // A local function is lowered with its owner, later.
-    let functions = lowered(include_str!("../../../../tests/run/functions.mr"));
-    for name in ["top-level", "Fib", "Twice", "Add"] {
-        functions.mir(name);
-    }
-}
-
-#[test]
 fn a_short_circuit_in_a_loop_condition() {
     let lowered = lowered("H(): bool => true;\nF(a: bool) {\n    while (a && H()) {\n    }\n}\n");
     // `H` is called only in bb2, which the switch reaches when `a` is true;
@@ -1670,4 +1670,640 @@ fn UsersApi.K() -> () {
 }
 "
     );
+}
+
+#[test]
+fn struct_creation_is_an_aggregate_in_field_order() {
+    let lowered = lowered(
+        "struct P {\n    X: int;\n    Y: int;\n}\nG(): int => 1;\nH(): int => 2;\n\
+         F(): P => new P { Y = 1, X = 2 };\nK(): P => new P { Y = G(), X = H() };\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        ["_0 = UsersApi.P{struct UsersApi.P}(2, 1);", "return;"]
+    );
+    // The written values are evaluated in the order of the text, then
+    // passed in the order of the fields.
+    assert_eq!(
+        lowered.code("K"),
+        [
+            "storage_live(_1);",
+            "_1 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "storage_live(_2);",
+            "_2 = call UsersApi.H{fn UsersApi.H}() -> bb2;",
+            "_0 = UsersApi.P{struct UsersApi.P}(copy _2, copy _1);",
+            "storage_dead(_2);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn omitted_field_calls_its_initializer() {
+    let lowered = lowered(
+        "struct P {\n    X: int;\n    Y: long = 7;\n    Z: int = 8;\n}\n\
+         F(): P => new P { X = 1 };\nG(): P => new P { Z = 3, X = 1 };\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_1);",
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "storage_live(_2);",
+            "_2 = call UsersApi.P{struct UsersApi.P}.Z{init}() -> bb2;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1, copy _2);",
+            "storage_dead(_2);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+    assert_in_order(
+        &lowered.code("G"),
+        &[
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1, 3);",
+        ],
+    );
+    // The initializer is a body of its own, of the field's type, which
+    // converts its value as inference records.
+    let mut out = String::new();
+    let init = lowered.mir_of(lowered.initializer("P", "Y"));
+    write_mir(&mut out, &lowered.db, Some(lowered.file), init);
+    assert_eq!(
+        out,
+        "\
+fn UsersApi.P.Y() -> long {
+    let _0: long;
+
+    bb0: {
+        _0 = 7; // 3:15
+        return; // 3:15
+    }
+}
+"
+    );
+}
+
+#[test]
+fn method_reads_fields_through_deref() {
+    let lowered = lowered(
+        "struct P {\n    X: int;\n    Y: int;\n    Sum(): int => X + Y;\n    \
+         Both(): int => Sum() + this.X;\n}\nF(p: P): int => p.Sum();\n",
+    );
+    let dump = lowered.dump("Sum");
+    assert!(
+        dump.starts_with(
+            "fn UsersApi.P.Sum(this: in P) -> int {\n    let _0: int;\n    let this: in P;\n"
+        ),
+        "{dump}"
+    );
+    assert_eq!(
+        lowered.code("Sum"),
+        ["_0 = copy (*this).X + copy (*this).Y;", "return;"]
+    );
+    // A method called inside another takes `this` on.
+    assert_in_order(
+        &lowered.code("Both"),
+        &[
+            "_2 = &in (*this);",
+            "_3 = call UsersApi.P.Sum{fn UsersApi.P.Sum}(copy _2) -> bb1;",
+            "_0 = copy _3 + copy (*this).X;",
+        ],
+    );
+    // A call through a value borrows the receiver, its first argument.
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_2);",
+            "_2 = &in (*p#0);",
+            "_0 = call UsersApi.P.Sum{fn UsersApi.P.Sum}(copy _2) -> bb1;",
+            "storage_dead(_2);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn mut_method_writes_through_ref() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    public mut Scale(k: int) { X *= k; }\n    \
+         public move Take(): int => X;\n}\nF() {\n    var p = new P { X = 1 };\n    \
+         p.Scale(2);\n    let n = p.Take();\n}\n",
+    );
+    let dump = lowered.dump("Scale");
+    assert!(
+        dump.starts_with("fn UsersApi.P.Scale(this: ref P, k#0: in int) -> () {"),
+        "{dump}"
+    );
+    assert_eq!(
+        lowered.code("Scale"),
+        [
+            "(*this).X = copy (*this).X * copy (*k#0);",
+            "_0 = ();",
+            "return;",
+        ]
+    );
+    // A `move` method takes `this` by value.
+    assert!(
+        lowered
+            .dump("Take")
+            .starts_with("fn UsersApi.P.Take(this: P) -> int {"),
+        "{}",
+        lowered.dump("Take")
+    );
+    assert_eq!(lowered.code("Take"), ["_0 = copy this.X;", "return;"]);
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_3 = &ref p#0;",
+            "call UsersApi.P.Scale{fn UsersApi.P.Scale}(copy _3, copy _5) -> bb1;",
+            "n#1 = call UsersApi.P.Take{fn UsersApi.P.Take}(copy p#0) -> bb2;",
+        ],
+    );
+}
+
+#[test]
+fn ref_argument_is_borrowed_ref() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n}\nBump(ref n: int) { n += 1; }\nF() {\n    \
+         var x = 1;\n    Bump(ref x);\n    var p = new P { X = 1 };\n    Bump(ref p.X);\n}\n",
+    );
+    assert!(
+        lowered
+            .dump("Bump")
+            .starts_with("fn UsersApi.Bump(n#0: ref int) -> () {"),
+        "{}",
+        lowered.dump("Bump")
+    );
+    assert_in_order(&lowered.code("Bump"), &["(*n#0) = copy (*n#0) + 1;"]);
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_3 = &ref x#0;",
+            "call UsersApi.Bump{fn UsersApi.Bump}(copy _3) -> bb1;",
+            "_4 = &ref p#1.X;",
+            "call UsersApi.Bump{fn UsersApi.Bump}(copy _4) -> bb2;",
+        ],
+    );
+}
+
+#[test]
+fn in_argument_is_borrowed_in() {
+    let lowered = lowered(
+        "Twice(x: int): int => x * 2;\nTake(move x: int): int => x;\nF(): int {\n    \
+         let a = 3;\n    return Twice(a) + Take(a);\n}\n",
+    );
+    assert!(
+        lowered
+            .dump("Twice")
+            .starts_with("fn UsersApi.Twice(x#0: in int) -> int {"),
+        "{}",
+        lowered.dump("Twice")
+    );
+    assert!(
+        lowered
+            .dump("Take")
+            .starts_with("fn UsersApi.Take(x#0: int) -> int {"),
+        "{}",
+        lowered.dump("Take")
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_2 = &in a#0;",
+            "_3 = call UsersApi.Twice{fn UsersApi.Twice}(copy _2) -> bb1;",
+            "_4 = call UsersApi.Take{fn UsersApi.Take}(copy a#0) -> bb2;",
+        ],
+    );
+}
+
+#[test]
+fn compound_assignment_on_field_evaluates_place_once() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n}\nG(): int => 1;\nF() {\n    \
+         var p = new P { X = 1 };\n    p.X += G();\n    p.X++;\n}\n",
+    );
+    let code = lowered.code("F");
+    assert_in_order(
+        &code,
+        &[
+            "storage_live(_2);",
+            "_2 = copy p#0.X;",
+            "storage_live(_3);",
+            "_3 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "p#0.X = copy _2 + copy _3;",
+            "storage_dead(_3);",
+            "storage_dead(_2);",
+            "p#0.X = copy p#0.X + 1;",
+        ],
+    );
+    let calls = code.iter().filter(|line| line.contains("call ")).count();
+    assert_eq!(calls, 1, "{code:?}");
+}
+
+#[test]
+fn local_function_capture_is_lifted() {
+    let lowered = lowered(
+        "F(n: int): int {\n    var total = 0;\n    Add(k: int) { total += k * n; }\n    \
+         Add(1);\n    Add(2);\n    return total;\n}\n",
+    );
+    assert_eq!(lowered.bodies("F"), ["UsersApi.F", "UsersApi.F.Add"]);
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    let add = out
+        .split("\n\n")
+        .filter(|part| part.starts_with("fn UsersApi.F.Add"))
+        .count();
+    assert_eq!(add, 1, "{out}");
+    assert!(
+        out.contains("fn UsersApi.F.Add(k#3: in int, n#0: in int, total#1: ref int) -> () {"),
+        "{out}"
+    );
+    let mir = lowered.mir("F");
+    assert_in_order(
+        &body_code(&lowered, "F", 0),
+        &[
+            "_3 = 1;",
+            "_4 = &in _3;",
+            "_5 = &in (*n#0);",
+            "_6 = &ref total#1;",
+            "call UsersApi.F.Add(copy _4, copy _5, copy _6) -> bb1;",
+            "call UsersApi.F.Add(copy _8, copy _9, copy _10) -> bb2;",
+        ],
+    );
+    let TerminatorKind::Call { callee, .. } = &mir.bodies[0].blocks[0].terminator.kind else {
+        panic!("a call ends bb0");
+    };
+    assert_eq!(*callee, Callee::Local(1));
+    assert_in_order(
+        &body_code(&lowered, "F", 1),
+        &[
+            "_4 = copy (*k#3) * copy (*n#0);",
+            "(*total#1) = copy (*total#1) + copy _4;",
+            "_0 = ();",
+            "return;",
+        ],
+    );
+}
+
+#[test]
+fn local_function_bodies_follow_owner_in_text_order() {
+    let lowered = lowered(
+        "F(): int {\n    A(): int => 1;\n    B(): int {\n        C(): int => 2;\n        \
+         return C() + A();\n    }\n    D(): int => 3;\n    return B() + D();\n}\n",
+    );
+    assert_eq!(
+        lowered.bodies("F"),
+        [
+            "UsersApi.F",
+            "UsersApi.F.A",
+            "UsersApi.F.B",
+            "UsersApi.F.B.C",
+            "UsersApi.F.D"
+        ]
+    );
+    let mir = lowered.mir("F");
+    let callees = |body: usize| -> Vec<Callee> {
+        mir.bodies[body]
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.terminator.kind {
+                TerminatorKind::Call { callee, .. } => Some(callee.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(callees(0), [Callee::Local(2), Callee::Local(4)]);
+    assert_eq!(callees(2), [Callee::Local(3), Callee::Local(1)]);
+}
+
+#[test]
+fn a_member_index_or_method_of_a_diverging_value_diverges() {
+    let lowered = lowered(
+        "A(): int => Todo().Length;\nB(): int => Todo()[0];\nC() {\n    Todo().Foo();\n}\n\
+         D() {\n    let x: int = Todo().X.Y;\n}\n",
+    );
+    for name in ["A", "B", "C"] {
+        assert_eq!(
+            lowered.code(name),
+            ["call Todo{external}() -> !;"],
+            "{name}"
+        );
+    }
+    assert_eq!(
+        lowered.code("D"),
+        ["storage_live(x#0);", "call Todo{external}() -> !;"]
+    );
+}
+
+#[test]
+fn every_owner_of_the_run_tests_lowers_and_validates() {
+    let files = [
+        include_str!("../../../../tests/run/arithmetic.mr"),
+        include_str!("../../../../tests/run/booleans.mr"),
+        include_str!("../../../../tests/run/control_flow.mr"),
+        include_str!("../../../../tests/run/float_target.mr"),
+        include_str!("../../../../tests/run/functions.mr"),
+        include_str!("../../../../tests/run/hello.mr"),
+        include_str!("../../../../tests/run/literal_values.mr"),
+        include_str!("../../../../tests/run/locals.mr"),
+        include_str!("../../../../tests/run/promotion.mr"),
+        include_str!("../../../../tests/run/structs.mr"),
+    ];
+    for text in files {
+        let lowered = lowered(text);
+        let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+        assert!(!dump.is_empty());
+        for owner in body_owners(&lowered.db, lowered.file) {
+            if body(&lowered.db, lowered.file, owner).root.is_some() {
+                lowered.mir_of(owner);
+            }
+        }
+    }
+    let functions = lowered(include_str!("../../../../tests/run/functions.mr"));
+    assert_eq!(
+        functions.bodies("Factorial"),
+        ["UsersApi.Factorial", "UsersApi.Factorial.Step"]
+    );
+    // `strings.mr` holds `name.Length` and a `foreach` over an array, which
+    // are not part of the language lowered here; its other owners are.
+    let strings = lowered(include_str!("../../../../tests/run/strings.mr"));
+    for owner in body_owners(&strings.db, strings.file) {
+        if owner != BodyOwner::TopLevel && body(&strings.db, strings.file, owner).root.is_some() {
+            strings.mir_of(owner);
+        }
+    }
+}
+
+/// The code of the body at `index` in the MIR of `name`, as
+/// [`Lowered::code`] gives it, with calls of local functions by name.
+fn body_code(lowered: &Lowered, name: &str, index: usize) -> Vec<String> {
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir(name));
+    let mut bodies: Vec<String> = Vec::new();
+    for line in out.lines() {
+        if line.starts_with("fn ") {
+            bodies.push(String::new());
+        }
+        if let Some(body) = bodies.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    code(&bodies[index])
+}
+
+#[test]
+fn a_capture_takes_the_borrow_its_uses_need() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    public mut Scale(k: int) { X *= k; }\n    \
+         public Get(): int => X;\n}\nBump(ref n: int) { n += 1; }\nF(): int {\n    \
+         var a = 0;\n    var b = 0;\n    var c = 0;\n    var d = 0;\n    \
+         var p = new P { X = 1 };\n    var q = new P { X = 1 };\n    var r = new P { X = 1 };\n    \
+         G() {\n        a++;\n        ++b;\n        Bump(ref c);\n        p.Scale(2);\n        \
+         q.X = 3;\n        let n = r.Get() + d;\n    }\n    \
+         G();\n    return a;\n}\n",
+    );
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    assert!(
+        out.contains(
+            "fn UsersApi.F.G(a#0: ref int, b#1: ref int, c#2: ref int, d#3: in int, \
+             p#4: ref P, q#5: ref P, r#6: in P) -> () {"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_local_function_takes_what_the_ones_it_calls_take() {
+    // `A` calls `B`, which calls `C`: what `C` assigns reaches `A` too.
+    // `A` reads `total` itself and still takes it by `ref`. `E` declares
+    // the `count` that `D` uses, so it takes nothing.
+    let lowered = lowered(
+        "F(): int {\n    var total = 0;\n    var other = 0;\n    \
+         C() {\n        total += 1;\n        other += 0;\n    }\n    \
+         B() {\n        C();\n        let o = other;\n    }\n    \
+         A() {\n        let t = total;\n        B();\n    }\n    \
+         E() {\n        var count = 1;\n        D() { count += 1; }\n        D();\n    }\n    \
+         A();\n    E();\n    return total;\n}\n",
+    );
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    let headers: Vec<&str> = out.lines().filter(|line| line.starts_with("fn ")).collect();
+    assert_eq!(
+        headers,
+        [
+            "fn UsersApi.F() -> int {",
+            "fn UsersApi.F.C(total#0: ref int, other#1: ref int) -> () {",
+            "fn UsersApi.F.B(total#0: ref int, other#1: ref int) -> () {",
+            "fn UsersApi.F.A(total#0: ref int, other#1: ref int) -> () {",
+            "fn UsersApi.F.E() -> () {",
+            "fn UsersApi.F.E.D(count#8: ref int) -> () {",
+        ]
+    );
+}
+
+#[test]
+fn a_local_function_inside_a_local_function_takes_its_parameters() {
+    let lowered = lowered(
+        "F(n: int): int {\n    G(k: int): int {\n        H(): int => k + n;\n        \
+         return H();\n    }\n    return G(1);\n}\n",
+    );
+    assert_eq!(
+        lowered.bodies("F"),
+        ["UsersApi.F", "UsersApi.F.G", "UsersApi.F.G.H"]
+    );
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    assert!(
+        out.contains("fn UsersApi.F.G(k#2: in int, n#0: in int) -> int {"),
+        "{out}"
+    );
+    assert!(
+        out.contains("fn UsersApi.F.G.H(n#0: in int, k#2: in int) -> int {"),
+        "{out}"
+    );
+    assert_in_order(
+        &body_code(&lowered, "F", 1),
+        &[
+            "_3 = &in (*n#0);",
+            "_4 = &in (*k#2);",
+            "_0 = call UsersApi.F.G.H(copy _3, copy _4) -> bb1;",
+        ],
+    );
+}
+
+#[test]
+fn a_local_function_takes_its_default_arguments() {
+    let lowered = lowered("F(): int {\n    G(k: int = 5): int => k;\n    return G();\n}\n");
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = 5;",
+            "_2 = &in _1;",
+            "_0 = call UsersApi.F.G(copy _2) -> bb1;",
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a `ref` or `move` argument of a local function is not lowered")]
+fn a_marked_argument_of_a_local_function_is_not_lowered() {
+    let lowered = lowered("F() {\n    var x = 1;\n    G(k: int) {}\n    G(ref x);\n}\n");
+    lowered.mir("F");
+}
+
+#[test]
+#[should_panic(expected = "`this` is not lowered outside a method")]
+fn this_in_a_local_function_is_not_lowered() {
+    let lowered = lowered(
+        "struct P {\n    X: int;\n    Get(): int {\n        G(): int => X;\n        \
+         return G();\n    }\n}\n",
+    );
+    lowered.mir("Get");
+}
+
+#[test]
+fn a_method_named_alone_takes_this() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    Plus(k: int): int => X + k;\n    \
+         mut Add(k: int) { X += k; }\n    A(): int => Plus(G());\n    \
+         mut B() { Add(G()); }\n}\nG(): int => 1;\n",
+    );
+    // An `in` receiver is read before an argument that may change it.
+    assert_in_order(
+        &lowered.code("A"),
+        &[
+            "_2 = copy (*this);",
+            "_3 = &in _2;",
+            "_4 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "_5 = &in _4;",
+            "_0 = call UsersApi.P.Plus{fn UsersApi.P.Plus}(copy _3, copy _5) -> bb2;",
+        ],
+    );
+    // A `ref` receiver is the place itself.
+    assert_in_order(
+        &lowered.code("B"),
+        &[
+            "_2 = &ref (*this);",
+            "_3 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "_4 = &in _3;",
+            "call UsersApi.P.Add{fn UsersApi.P.Add}(copy _2, copy _4) -> bb2;",
+        ],
+    );
+}
+
+#[test]
+fn a_field_of_a_field_and_of_a_value_are_places() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n}\nstruct Q {\n    public Inner: P;\n    \
+         Get(): int => Inner.X;\n}\nMake(): P => new P { X = 1 };\nF(): int => Make().X;\n\
+         H(q: Q): int => q.Inner.X;\n",
+    );
+    assert_eq!(
+        lowered.code("Get"),
+        ["_0 = copy (*this).Inner.X;", "return;"]
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_1);",
+            "_1 = call UsersApi.Make{fn UsersApi.Make}() -> bb1;",
+            "_0 = copy _1.X;",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+    assert_eq!(lowered.code("H"), ["_0 = copy (*q#0).Inner.X;", "return;"]);
+}
+
+#[test]
+fn fields_and_structs_without_effects_keep_earlier_places() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    Two(a: int, b: int): int => a;\n    \
+         M(k: int): int => Two(k, X);\n    N(k: int): int => Two(k, this.X);\n}\n\
+         G(): int => 1;\nT(a: int, b: int): int => a;\nH(a: int, b: P): int => a;\n\
+         K(x: int, p: P): int => T(x, p.X);\nL(x: int): int => H(x, new P { X = 1 });\n\
+         W(x: int): int => H(x, new P { X = G() });\n",
+    );
+    for (name, borrowed) in [("K", "_3 = &in (*x#0);"), ("L", "_2 = &in (*x#0);")] {
+        assert_in_order(&lowered.code(name), &[borrowed]);
+    }
+    for name in ["M", "N"] {
+        let code = lowered.code(name);
+        assert!(
+            code.iter().any(|line| line == "_4 = &in (*k#0);"),
+            "{name}: {code:?}"
+        );
+    }
+    // A struct with a value that calls is evaluated after a copy of `x`.
+    assert_in_order(&lowered.code("W"), &["_2 = copy (*x#0);", "_3 = &in _2;"]);
+}
+
+#[test]
+fn a_step_of_a_field_whose_value_is_used_keeps_the_old_value() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n}\nF(): int {\n    var p = new P { X = 1 };\n    \
+         let old = p.X++;\n    return old;\n}\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_3 = copy p#0.X;",
+            "p#0.X = copy p#0.X + 1;",
+            "old#1 = copy _3;",
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a struct with a static or constant field is not lowered")]
+fn a_struct_with_a_static_field_is_not_built() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public static S: int = 1;\n}\n\
+         F(): P => new P { X = 1 };\n",
+    );
+    lowered.mir("F");
+}
+
+#[test]
+#[should_panic(expected = "only the initializer of a field is lowered")]
+fn a_getter_is_not_lowered() {
+    let lowered = lowered("struct P {\n    public X: int;\n    public Get: int => X;\n}\n");
+    lowered.mir_of(lowered.initializer("P", "Get"));
+}
+
+#[test]
+#[should_panic(expected = "a method of a type other than a struct is not lowered")]
+fn a_method_of_a_class_is_not_lowered() {
+    let lowered = lowered("class C {\n    M() {}\n}\n");
+    lowered.mir("M");
+}
+
+#[test]
+#[should_panic(expected = "a member that is not a field of a struct is not lowered")]
+fn a_getter_read_is_not_lowered() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public Get: int => X;\n}\nF(p: P): int => p.Get;\n",
+    );
+    lowered.mir("F");
+}
+
+#[test]
+#[should_panic(expected = "only the initializer of a field is lowered")]
+fn the_initializer_of_a_static_field_is_not_lowered() {
+    let lowered = lowered("struct P {\n    public X: int;\n    public static S: int = 1;\n}\n");
+    lowered.mir_of(lowered.initializer("P", "S"));
+}
+
+#[test]
+#[should_panic(expected = "a name that is not a field of `this` is not lowered")]
+fn a_static_field_named_in_a_method_is_not_lowered() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public static S: int = 1;\n    \
+         Get(): int => S;\n}\n",
+    );
+    lowered.mir("Get");
 }

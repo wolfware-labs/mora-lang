@@ -6,7 +6,7 @@
 //! `Console.WriteLine{external}`, and a type is written as code writes it.
 //! A local with a source name is `name#n`, where `n` is the index of the
 //! HIR local it comes from, so it reads the same in both dumps; the
-//! receiver is `this#n`. Any other local is `_n`, where `n` is its index in
+//! receiver, which no HIR local stands for, is `this`. Any other local is `_n`, where `n` is its index in
 //! the body, so `_0` is the return slot and the parameters come next. The
 //! `let` lines list the locals in the body's order, which shows the
 //! mapping. The output is a pure function of
@@ -56,8 +56,8 @@
 //!
 //! A place is its local followed by its projections. A field of a struct is
 //! `x#0.X`, by name, and a field of a tuple is `t#1.0`, by index. A
-//! dereference is `(*this#2)`, so a field behind a borrow is
-//! `(*this#2).X`.
+//! dereference is `(*this)`, so a field behind a borrow is
+//! `(*this).X`.
 //!
 //! # Operands and constants
 //!
@@ -99,8 +99,8 @@ use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
-    LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind,
-    Terminator, TerminatorKind, UnOp,
+    LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
+    StatementKind, Terminator, TerminatorKind, UnOp,
 };
 
 /// Appends the text of `body` to `out`. No file is known, so every span
@@ -204,7 +204,11 @@ impl Printer<'_> {
 
     fn local_name(&self, id: LocalId) -> String {
         match &self.body.local(id).source {
-            Some(source) => format!("{}#{}", source.name, arena_index(source.hir)),
+            Some(LocalSource {
+                name,
+                hir: Some(hir),
+            }) => format!("{name}#{}", arena_index(*hir)),
+            Some(LocalSource { name, hir: None }) => name.clone(),
             None => format!("_{}", id.0),
         }
     }
@@ -593,7 +597,7 @@ mod tests {
             mutable,
             source: Some(LocalSource {
                 name: name.into(),
-                hir: fx.hir[hir],
+                hir: Some(fx.hir[hir]),
             }),
         }
     }
@@ -698,7 +702,14 @@ mod tests {
             vec![
                 temp(int()),
                 named(fx, "n", 0, LocalTy::Value(int()), false),
-                named(fx, "this", 2, LocalTy::Borrow(BorrowMode::In, p), false),
+                LocalDecl {
+                    ty: LocalTy::Borrow(BorrowMode::In, p),
+                    mutable: false,
+                    source: Some(LocalSource {
+                        name: "this".into(),
+                        hir: None,
+                    }),
+                },
                 named(fx, "acc", 1, LocalTy::Value(int()), true),
                 temp(Ty::Primitive(Primitive::Bool)),
             ],
@@ -772,10 +783,10 @@ mod tests {
     fn dump_of_hand_built_body() {
         let fx = fixture();
         let expected = "\
-fn Fib(n#0: int, this#2: in P) -> int {
+fn Fib(n#0: int, this: in P) -> int {
     let _0: int;
     let n#0: int;
-    let this#2: in P;
+    let this: in P;
     let mut acc#1: int;
     let _4: bool;
 
@@ -786,7 +797,7 @@ fn Fib(n#0: int, this#2: in P) -> int {
     }
 
     bb1: {
-        acc#1 = copy (*this#2).X; // 2:12
+        acc#1 = copy (*this).X; // 2:12
         _0 = move acc#1; // 2:12
         return; // 6:1
     }

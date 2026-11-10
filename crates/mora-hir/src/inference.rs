@@ -1802,6 +1802,42 @@ mod tests {
     }
 
     #[test]
+    fn the_initializer_of_a_struct_field_has_the_field_type() {
+        assert_eq!(
+            reported("struct P {\n    X: long = 7;\n    static S: int = 1;\n}\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(reported("struct P {\n    X: string = 7;\n}\n"), ["MR0203"]);
+        assert_eq!(
+            reported("struct P {\n    static S: bool = 1;\n}\n"),
+            ["MR0203"]
+        );
+    }
+
+    #[test]
+    fn this_is_the_struct_a_method_is_declared_in() {
+        let decls = "struct P {\n    X: int;\n    Get(): int => this.X;\n    \
+                     Same(): P => this;\n}\nclass C {\n    M(): int => this.Y;\n}\n";
+        assert_eq!(reported(decls), Vec::<String>::new());
+        assert_eq!(
+            reported("struct P {\n    X: int;\n    Get(): string => this.X;\n}\n"),
+            ["MR0203"]
+        );
+    }
+
+    #[test]
+    fn a_member_index_or_method_of_the_never_type_has_the_never_type() {
+        let text = "let a = Todo().Length;\nlet b = Todo()[0];\nlet c = Todo().Foo(1);\n\
+                    let d: int = Todo().X.Y;\nlet e = panic(\"no\")[Todo()];\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            local_types(text),
+            ["a: !", "b: !", "c: !", "d: int", "e: !"]
+        );
+        assert_eq!(conversions(text), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_call_has_the_return_type_of_what_it_calls() {
         let text = "Add(a: int, b: int): long => a + b;\nstruct P {\n    X: int;\n    \
                     Get(): int => X;\n    static Make(): string => \"\";\n}\n\

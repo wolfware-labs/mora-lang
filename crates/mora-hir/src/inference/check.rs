@@ -22,7 +22,7 @@ use crate::bodies::{
 };
 use crate::defs::ItemId;
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::signature::signature;
+use crate::signature::{signature, struct_field, this_type};
 use crate::ty::{Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
@@ -71,6 +71,7 @@ pub(super) fn infer_body(
         errors: Vec::new(),
         ret: None,
         scope: body_scope(project, file, owner),
+        this: None,
     };
     check.locals = body
         .locals
@@ -88,6 +89,7 @@ pub(super) fn infer_body(
         }),
         _ => None,
     };
+    check.this = item.and_then(|item| this_type(db, item));
     match item.map(|item| signature(db, item)) {
         Some(Signature::Function(function)) => {
             // A parameter the parser recovered from declares no local, and
@@ -103,6 +105,21 @@ pub(super) fn infer_body(
             }
         }
         Some(Signature::Value(ty)) => expected = Some(ty.clone()),
+        // The initializer of a field of a struct, whose type the struct's
+        // signature holds.
+        _ if let BodyOwner::Value(ty, index) = owner
+            && let Some((_, field)) = struct_field(
+                db,
+                ItemId {
+                    project,
+                    file,
+                    item: ty,
+                },
+                index,
+            ) =>
+        {
+            expected = Some(field.ty.clone());
+        }
         _ => match body.kind {
             BodyKind::Initializer => {
                 if let [ty] = body.signature_types[..] {
@@ -172,6 +189,8 @@ struct Check<'a> {
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
+    /// The type of `this`, in a method of a struct.
+    this: Option<Ty>,
 }
 
 impl Check<'_> {
@@ -520,6 +539,10 @@ impl Check<'_> {
                 if let Some(resolution) = self.resolution.paths.get(&expr) {
                     return self.target(&resolution.target);
                 }
+                // A value that never exists has every member (§11.4).
+                if receiver == Some(Ty::Never) {
+                    return receiver;
+                }
                 // `x?.F` gives an option (§7.5).
                 if *optional {
                     return None;
@@ -528,9 +551,9 @@ impl Check<'_> {
             }
             Expr::Call { callee, args } => self.call(expr, *callee, args),
             Expr::Index { base, args, .. } => {
-                self.infer(*base);
+                let base = self.infer(*base);
                 self.args(args);
-                None
+                base.filter(|base| *base == Ty::Never)
             }
             Expr::Unary { op, expr: operand } => self.unary(expr, *op, *operand, expect),
             Expr::Postfix {
@@ -607,7 +630,8 @@ impl Check<'_> {
                 self.block(stmts);
                 None
             }
-            Expr::This | Expr::Type(_) | Expr::Default(_) | Expr::Macro => None,
+            Expr::This => self.this.clone(),
+            Expr::Type(_) | Expr::Default(_) | Expr::Macro => None,
         }
     }
 

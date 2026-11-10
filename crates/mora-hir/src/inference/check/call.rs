@@ -126,6 +126,12 @@ impl<'a> Check<'a> {
                 self.unchecked_call(args);
                 return Some(Ty::Never);
             }
+            // A method of a value that never exists, as `Todo().M()`, is
+            // never called either.
+            Callees::Unknown if self.exprs[arena_index(callee)] == Some(Ty::Never) => {
+                self.unchecked_call(args);
+                return Some(Ty::Never);
+            }
             Callees::Unknown => return self.unchecked_call(args),
             Callees::NotCallable(ty) => {
                 self.errors

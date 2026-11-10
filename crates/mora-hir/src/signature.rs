@@ -2,7 +2,9 @@ use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
 use crate::defs::ItemId;
-use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
+use crate::items::{
+    ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree, signature_refs,
+};
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, item_data,
     resolve_path,
@@ -14,6 +16,47 @@ use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
 /// It reads no text range, so an edit inside a body does not run it again.
 pub fn signature(db: &dyn Db, item: ItemId) -> &Signature {
     &item_signature(db, item.project, item.file, item.item).signature
+}
+
+/// The field of the struct `item` that its value member at `index`
+/// declares, with its position among the fields of [`Signature::Struct`]:
+/// a field or a constant, `static` or not. `None` for another member, or
+/// when `item` is not a struct.
+pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Field)> {
+    let Signature::Struct(fields) = signature(db, item) else {
+        return None;
+    };
+    let values = &item_tree(db, item.file).item(item.item).values;
+    let declares =
+        |member: &ValueMember| matches!(member.kind, ValueKind::Field | ValueKind::Const);
+    if !declares(values.get(index as usize)?) {
+        return None;
+    }
+    let n = values[..index as usize]
+        .iter()
+        .filter(|member| declares(member))
+        .count();
+    Some((n, fields.get(n)?))
+}
+
+/// The type of `this` in the method `item`: the struct it is declared in
+/// (§10.3). `None` for a function that takes no receiver, and for a method
+/// of any other type, or of a generic struct, whose type is not a
+/// [`Ty::Struct`].
+pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
+    let Signature::Function(function) = signature(db, item) else {
+        return None;
+    };
+    function.receiver?;
+    let parent = item_tree(db, item.file).item(item.item).parent?;
+    let generic = !signature_refs(db, item.file)[arena_index(parent)]
+        .type_params
+        .is_empty();
+    let parent = ItemId {
+        item: parent,
+        ..item
+    };
+    (item_data(db, parent).kind == ItemKind::Struct && !generic).then_some(Ty::Struct(parent))
 }
 
 /// What is wrong with the types of an item's signature.
@@ -396,6 +439,58 @@ mod tests {
         assert!(!g.is_async);
         assert_eq!(g.ret, Ty::String);
         assert!(function(signature_of(&db, project, "src/Program.mr", "Id")).is_generic);
+    }
+
+    #[test]
+    fn a_value_member_finds_the_struct_field_it_declares() {
+        let db = TestDb::new();
+        let text = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
+                    static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let p = item_named(&db, project, file, "P");
+        let found =
+            |index: u32| struct_field(&db, p, index).map(|(n, field)| (n, field.name.clone()));
+        assert_eq!(found(0), Some((0, "X".to_owned())));
+        assert_eq!(found(1), None);
+        assert_eq!(found(2), Some((1, "K".to_owned())));
+        assert_eq!(found(3), Some((2, "S".to_owned())));
+        assert_eq!(found(4), Some((3, "Y".to_owned())));
+        assert_eq!(found(5), None);
+        assert_eq!(
+            struct_field(&db, item_named(&db, project, file, "C"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn this_has_the_type_of_the_struct_of_its_method() {
+        let db = TestDb::new();
+        let text = "struct P {\n    M() {}\n    static S() {}\n}\nclass C {\n    M() {}\n}\n\
+                    struct G<T> {\n    M() {}\n}\nF() {}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let item = |name: &str, parent: &str| {
+            let (item, _) = tree
+                .items()
+                .find(|(_, data)| {
+                    data.name == name
+                        && data.parent.map(|p| tree.item(p).name.as_str()) == Some(parent)
+                })
+                .expect("the item");
+            ItemId {
+                project,
+                file,
+                item,
+            }
+        };
+        let p = item_named(&db, project, file, "P");
+        assert_eq!(this_type(&db, item("M", "P")), Some(Ty::Struct(p)));
+        assert_eq!(this_type(&db, item("S", "P")), None);
+        assert_eq!(this_type(&db, item("M", "C")), None);
+        assert_eq!(this_type(&db, item("M", "G")), None);
+        assert_eq!(this_type(&db, item_named(&db, project, file, "F")), None);
     }
 
     #[test]

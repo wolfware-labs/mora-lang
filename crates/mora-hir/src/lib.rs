@@ -67,7 +67,7 @@ pub use resolve::{
     ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, is_visible,
     resolve_path,
 };
-pub use signature::signature;
+pub use signature::{signature, struct_field, this_type};
 pub use ty::{
     Construct, Field, FnSignature, Param, ParamMode, Primitive, Signature, TupleElem, Ty,
     Unsupported,

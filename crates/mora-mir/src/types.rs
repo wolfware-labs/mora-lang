@@ -1,7 +1,7 @@
 //! The data types of MIR (§14.7): a control-flow graph of basic blocks per
 //! body, over typed locals and places.
 
-use mora_hir::{ItemId, ItemKind, Primitive, Signature, Ty, item_tree, signature};
+use mora_hir::{ItemId, ParamMode, Primitive, Signature, Ty, signature};
 use mora_span::{Db, Span};
 
 /// The MIR of one body owner.
@@ -96,8 +96,9 @@ pub enum BorrowMode {
 pub struct LocalSource {
     /// The name as written; `this` for the receiver.
     pub name: String,
-    /// The local of the HIR body it was lowered from.
-    pub hir: mora_hir::LocalId,
+    /// The local of the HIR body it was lowered from; `None` for the
+    /// receiver, which the HIR body does not declare.
+    pub hir: Option<mora_hir::LocalId>,
 }
 
 /// A basic block: statements, then one terminator.
@@ -481,10 +482,13 @@ impl Body {
     }
 }
 
-/// Whether a call of the function `item` passes a receiver before its
-/// arguments: it is declared in a type and is not `static`.
-pub(crate) fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
-    let tree = item_tree(db, item.file);
-    let item = tree.item(item.item);
-    item.kind == ItemKind::Function && item.parent.is_some() && !item.is_static
+/// The type of a parameter of mode `mode` and type `ty`, or of a receiver
+/// taken that way, in the callee: a borrow for `in` and `ref`, the value
+/// itself for `move` (§10.3).
+pub(crate) fn param_ty(mode: ParamMode, ty: Ty) -> LocalTy {
+    match mode {
+        ParamMode::In => LocalTy::Borrow(BorrowMode::In, ty),
+        ParamMode::Ref => LocalTy::Borrow(BorrowMode::Ref, ty),
+        ParamMode::Move => LocalTy::Value(ty),
+    }
 }

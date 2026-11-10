@@ -4,13 +4,13 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{ParamMode, Primitive, Signature, Ty, converts_implicitly, signature};
+use mora_hir::{Primitive, Signature, Ty, converts_implicitly, signature, this_type};
 use mora_span::Db;
 
-use crate::types::has_receiver;
+use crate::types::param_ty;
 use crate::{
-    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, InterpPiece, LocalId,
-    LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, InterpPiece, LocalId, LocalTy,
+    Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
 /// Checks every body of `mir` and returns every problem found, ordered by
@@ -604,17 +604,13 @@ impl Checker<'_> {
             );
         }
         for (index, (arg, param)) in args.iter().zip(&params).enumerate() {
-            let Some(arg) = arg else { continue };
-            match param {
-                Param::Receiver if !matches!(arg, LocalTy::Borrow(..)) => self.error(
+            if let Some(arg) = arg
+                && arg != param
+            {
+                self.error(
                     at,
-                    format!("argument {index}, the receiver, is {arg:?} and not a borrow"),
-                ),
-                Param::Exact(want) if arg != want => self.error(
-                    at,
-                    format!("argument {index} is {arg:?} but the parameter takes {want:?}"),
-                ),
-                _ => {}
+                    format!("argument {index} is {arg:?} but the parameter takes {param:?}"),
+                );
             }
         }
         if let Some(dest_ty) = dest_ty
@@ -628,23 +624,33 @@ impl Checker<'_> {
     }
 
     /// What the callee takes, in order, and what it returns; `None` for an
-    /// external callee or after reporting a callee that is not valid.
-    fn callee_shape(&mut self, at: &str, callee: &Callee) -> Option<(Vec<Param>, Ty)> {
+    /// external callee or after reporting a callee that is not valid. A
+    /// method takes its receiver first.
+    fn callee_shape(&mut self, at: &str, callee: &Callee) -> Option<(Vec<LocalTy>, Ty)> {
         match callee {
             Callee::Item(item) => match signature(self.db, *item) {
                 Signature::Function(function) => {
-                    let receiver = has_receiver(self.db, *item).then_some(Param::Receiver);
+                    let receiver = match function.receiver {
+                        Some(mode) => match this_type(self.db, *item) {
+                            Some(ty) => Some(param_ty(mode, ty)),
+                            None => {
+                                self.error(
+                                    at,
+                                    "receiver of a method of a type that is not a struct",
+                                );
+                                return None;
+                            }
+                        },
+                        None => None,
+                    };
                     let params = receiver
                         .into_iter()
-                        .chain(function.params.iter().map(|param| {
-                            Param::Exact(match param.mode {
-                                ParamMode::In => LocalTy::Borrow(BorrowMode::In, param.ty.clone()),
-                                ParamMode::Ref => {
-                                    LocalTy::Borrow(BorrowMode::Ref, param.ty.clone())
-                                }
-                                ParamMode::Move => LocalTy::Value(param.ty.clone()),
-                            })
-                        }))
+                        .chain(
+                            function
+                                .params
+                                .iter()
+                                .map(|param| param_ty(param.mode, param.ty.clone())),
+                        )
                         .collect();
                     Some((params, function.ret.clone()))
                 }
@@ -667,7 +673,7 @@ impl Checker<'_> {
                 }
                 let params = target.locals[1..=target.params]
                     .iter()
-                    .map(|local| Param::Exact(local.ty.clone()))
+                    .map(|local| local.ty.clone())
                     .collect();
                 Some((params, local_value_ty(&target.locals[0].ty).clone()))
             }
@@ -687,15 +693,6 @@ impl Checker<'_> {
             Callee::External(_) => None,
         }
     }
-}
-
-/// What a call passes for one parameter.
-enum Param {
-    /// The receiver of a method: a borrow, whose mode and type the item
-    /// tree does not record.
-    Receiver,
-    /// A local of exactly this type.
-    Exact(LocalTy),
 }
 
 /// The storage of a local on a path.
@@ -775,7 +772,8 @@ mod tests {
         Nop() {}\n\
         class C {\n    M(a: int): int { return a; }\n    static S(a: int): int { return a; }\n}\n\
         Mix(in a: int, ref b: int, move c: int): int { return c; }\n\
-        struct Q {\n    public V: int;\n    Get(): int { return V; }\n    mut Set(v: int) {}\n}\n";
+        struct Q {\n    public V: int;\n    Get(): int { return V; }\n    mut Set(v: int) {}\n    \
+        move Take(): int { return V; }\n}\n";
 
     /// The items of [`SOURCE`].
     struct Fx {
@@ -788,6 +786,8 @@ mod tests {
         mix: ItemId,
         get: ItemId,
         set: ItemId,
+        take: ItemId,
+        q: ItemId,
     }
 
     fn fx() -> Fx {
@@ -809,6 +809,7 @@ mod tests {
         let (p, add, nop, method, static_method) =
             (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
         let (mix, get, set) = (find("Mix"), find("Get"), find("Set"));
+        let (take, q) = (find("Take"), find("Q"));
         Fx {
             db,
             p,
@@ -819,6 +820,8 @@ mod tests {
             mix,
             get,
             set,
+            take,
+            q,
         }
     }
 
@@ -1249,37 +1252,44 @@ mod tests {
     }
 
     #[test]
-    fn a_method_takes_its_receiver_and_a_static_method_does_not() {
+    fn a_static_method_takes_no_receiver() {
         let fx = fx();
-        let one = vec![copy(4)];
-        let two = vec![copy(4), copy(4)];
-        rejects(
-            &fx,
-            &call(Callee::Item(fx.method), one.clone(), Some(place(2))),
-            true,
-            "takes 2",
-        );
         assert_eq!(
             validate(
                 &fx.db,
-                &call(Callee::Item(fx.method), two.clone(), Some(place(2))),
-                true
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            validate(
-                &fx.db,
-                &call(Callee::Item(fx.static_method), one, Some(place(2))),
+                &call(
+                    Callee::Item(fx.static_method),
+                    vec![copy(4)],
+                    Some(place(2))
+                ),
                 true
             ),
             Ok(())
         );
         rejects(
             &fx,
-            &call(Callee::Item(fx.static_method), two, Some(place(2))),
+            &call(
+                Callee::Item(fx.static_method),
+                vec![copy(4), copy(4)],
+                Some(place(2)),
+            ),
             true,
             "takes 1",
+        );
+    }
+
+    #[test]
+    fn a_receiver_of_a_method_of_a_class_is_not_known() {
+        let fx = fx();
+        rejects(
+            &fx,
+            &call(
+                Callee::Item(fx.method),
+                vec![copy(4), copy(4)],
+                Some(place(2)),
+            ),
+            true,
+            "receiver of a method of a type that is not a struct",
         );
     }
 
@@ -2016,22 +2026,42 @@ mod tests {
         bad(&[behind, copy(5), copy(1)], "argument 0");
     }
 
+    /// [`call`] with `_7: in Q`, `_8: ref Q`, `_9: Q` and `_10: in P` after
+    /// the locals of [`simple`].
+    fn call_with_q(fx: &Fx, callee: Callee, list: &[Operand], dest: Option<Place>) -> Mir {
+        let mut mir = call(callee, args(list), dest);
+        let q = Ty::Struct(fx.q);
+        mir.bodies[0].locals.extend([
+            borrow(q.clone()),
+            borrow_ref(q.clone()),
+            val(q),
+            borrow(Ty::Struct(fx.p)),
+        ]);
+        mir
+    }
+
     #[test]
-    fn receivers_are_borrows_and_count_for_struct_and_mut_methods() {
+    fn receivers_have_the_mode_and_type_of_the_method() {
         let fx = fx();
-        // Q.Get(): the receiver only.
-        let get = |list: &[Operand]| call(Callee::Item(fx.get), args(list), Some(place(2)));
-        assert_eq!(validate(&fx.db, &get(&[copy(4)]), true), Ok(()));
+        // Q.Get(): an `in` borrow of a Q, and nothing else.
+        let get = |list: &[Operand]| call_with_q(&fx, Callee::Item(fx.get), list, Some(place(2)));
+        assert_eq!(validate(&fx.db, &get(&[copy(7)]), true), Ok(()));
         rejects(&fx, &get(&[]), true, "takes 1");
-        rejects(&fx, &get(&[copy(4), copy(4)]), true, "takes 1");
-        rejects(&fx, &get(&[copy(1)]), true, "receiver");
-        // Q.Set(v) is `mut`: the receiver and one argument.
-        let set = |list: &[Operand]| call(Callee::Item(fx.set), args(list), None);
-        assert_eq!(validate(&fx.db, &set(&[copy(5), copy(4)]), true), Ok(()));
-        assert_eq!(validate(&fx.db, &set(&[copy(4), copy(4)]), true), Ok(()));
-        rejects(&fx, &set(&[copy(5)]), true, "takes 2");
-        rejects(&fx, &set(&[copy(1), copy(4)]), true, "receiver");
-        rejects(&fx, &set(&[copy(5), copy(1)]), true, "argument 1");
+        rejects(&fx, &get(&[copy(7), copy(7)]), true, "takes 1");
+        rejects(&fx, &get(&[copy(8)]), true, "argument 0");
+        rejects(&fx, &get(&[copy(9)]), true, "argument 0");
+        rejects(&fx, &get(&[copy(10)]), true, "argument 0");
+        rejects(&fx, &get(&[copy(4)]), true, "argument 0");
+        // Q.Set(v) is `mut`: a `ref` borrow of a Q, then an `in int`.
+        let set = |list: &[Operand]| call_with_q(&fx, Callee::Item(fx.set), list, None);
+        assert_eq!(validate(&fx.db, &set(&[copy(8), copy(4)]), true), Ok(()));
+        rejects(&fx, &set(&[copy(7), copy(4)]), true, "argument 0");
+        rejects(&fx, &set(&[copy(8)]), true, "takes 2");
+        rejects(&fx, &set(&[copy(8), copy(1)]), true, "argument 1");
+        // Q.Take() is `move`: a Q by value.
+        let take = |list: &[Operand]| call_with_q(&fx, Callee::Item(fx.take), list, Some(place(2)));
+        assert_eq!(validate(&fx.db, &take(&[copy(9)]), true), Ok(()));
+        rejects(&fx, &take(&[copy(7)]), true, "argument 0");
     }
 
     #[test]

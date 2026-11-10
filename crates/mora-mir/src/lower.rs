@@ -1,19 +1,21 @@
 //! Lowering from checked HIR to MIR (§14.7).
 //!
-//! [`mir`] lowers the body of one owner, reading every rule the front end
-//! applied from its records: the conversions, callees, arguments and
-//! constants of [`mora_hir::Inference`]. The front end has reported every
-//! error of the program and lowering runs only on bodies without one, so
-//! anything lowering cannot handle is an internal error: it panics with a
-//! message that names the body and the expression.
+//! [`mir`] lowers the body of one owner, then each of its local functions
+//! as a body of its own, reading every rule the front end applied from its
+//! records: the conversions, callees, arguments and constants of
+//! [`mora_hir::Inference`]. The front end has reported every error of the
+//! program and lowering runs only on bodies without one, so anything
+//! lowering cannot handle is an internal error: it panics with a message
+//! that names the body and the expression.
 //!
-//! A body's locals are the return slot `_0`, the parameters, the locals of
-//! the HIR body in the order of the text, then the temporaries. A
-//! parameter of mode `in` or `ref` holds a borrow of its value, which is
-//! read and written through a dereference; an argument for it is a borrow
-//! of a place, and a value that is not one is stored in a temporary first
-//! (§10.3). Every value is copied: which copies become moves is for the
-//! move checks to decide.
+//! A body's locals are the return slot `_0`, the receiver `this` of a
+//! method, the parameters, the locals of the HIR body in the order of the
+//! text, then the temporaries. The receiver of a method that is not `move`
+//! and a parameter of mode `in` or `ref` hold a borrow of their value,
+//! which is read and written through a dereference; an argument for one is
+//! a borrow of a place, and a value that is not one is stored in a
+//! temporary first (§10.3). Every value is copied: which copies become
+//! moves is for the move checks to decide.
 //!
 //! A local of the HIR body is live from its declaration to the end of its
 //! block, and a temporary from the expression that makes it to the end of
@@ -21,24 +23,26 @@
 //! they leave first. No storage is ended where control never gets, as after
 //! a `return`, and no jump starts there: such code ends in `unreachable`.
 
+mod calls;
 mod control;
 mod expr;
+mod local;
+mod structs;
 
 use std::collections::{HashMap, HashSet};
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ParamMode, STD, Signature,
-    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, owner_name,
-    signature,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, STD, Signature, Stmt,
+    StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, owner_name, signature,
+    this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
-use crate::types::has_receiver;
+use crate::types::param_ty;
 use crate::{
-    Block, BlockId, Body, BorrowMode, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir,
-    Operand, Place, Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate,
-    write_mir,
+    Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
+    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_mir,
 };
 
 #[cfg(test)]
@@ -53,9 +57,12 @@ mod tests;
 /// should have reported, or what lowering does not handle yet.
 #[salsa::tracked(returns(ref))]
 pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Mir {
-    let mir = Mir {
-        bodies: vec![Lowerer::lower(db, project, file, owner)],
-    };
+    let shared = Owner::new(db, project, file, owner);
+    let mut bodies = vec![Lowerer::lower(&shared, &shared.shape(owner))];
+    for function in &shared.functions {
+        bodies.push(Lowerer::lower(&shared, &shared.function_shape(function)));
+    }
+    let mir = Mir { bodies };
     debug_validate(db, &mir, std_loaded(db, project));
     mir
 }
@@ -388,14 +395,17 @@ pub(crate) struct Diverged;
 /// The result of lowering part of an expression.
 pub(crate) type Lowered<T> = Result<T, Diverged>;
 
-/// The lowering of one body: what the front end knows about it, and the
-/// body being built.
-pub(crate) struct Lowerer<'a> {
+/// What every body of one owner shares: the HIR body, which holds the
+/// local functions too, what the front end knows about it, and the local
+/// functions.
+pub(crate) struct Owner<'a> {
     /// The database the front end's queries read.
     db: &'a dyn Db,
-    /// The file the body is in.
+    /// The project the owner is in.
+    project: Project,
+    /// The file the owner is in.
     file: SourceFile,
-    /// The body's name, for messages.
+    /// The owner's name.
     name: String,
     /// The HIR body.
     hir: &'a mora_hir::Body,
@@ -405,8 +415,149 @@ pub(crate) struct Lowerer<'a> {
     resolution: &'a BodyResolution,
     /// The types and records of the HIR body.
     inference: &'a Inference,
-    /// The MIR local of each parameter and local of the HIR body.
+    /// The local functions, in the order of the text: the one at `i` is
+    /// body `i + 1` of the owner's MIR.
+    functions: Vec<local::LocalFn<'a>>,
+}
+
+/// What a body is: its name, return type, receiver and parameters, and
+/// its code.
+struct BodyShape {
+    /// The name, `Owner.Local` for a local function.
+    name: String,
+    /// The type it returns.
+    ret: Ty,
+    /// The type of `this`, for a method.
+    this: Option<LocalTy>,
+    /// The locals of the HIR body that are its parameters after `this`,
+    /// with their types.
+    params: Vec<(mora_hir::LocalId, LocalTy)>,
+    /// Its code.
+    root: ExprId,
+}
+
+impl<'a> Owner<'a> {
+    fn new(db: &'a dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Owner<'a> {
+        let mut shared = Owner {
+            db,
+            project,
+            file,
+            name: owner_name(db, project, file, owner),
+            hir: body(db, file, owner),
+            map: body_source_map(db, file, owner),
+            resolution: body_resolution(db, project, file, owner),
+            inference: infer(db, project, file, owner),
+            functions: Vec::new(),
+        };
+        shared.functions = shared.local_functions();
+        shared
+    }
+
+    /// The shape of the body of `owner` itself.
+    fn shape(&self, owner: BodyOwner) -> BodyShape {
+        let name = &self.name;
+        let Some(root) = self.hir.root else {
+            panic!("internal error lowering {name}: the body has no code");
+        };
+        let (ret, this, params) = match owner {
+            BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
+            BodyOwner::Item(item) => self.function_signature(ItemId {
+                project: self.project,
+                file: self.file,
+                item,
+            }),
+            BodyOwner::Value(ty, index) => {
+                let item = ItemId {
+                    project: self.project,
+                    file: self.file,
+                    item: ty,
+                };
+                let Some(field) = structs::field_of_value(self.db, item, index) else {
+                    panic!(
+                        "internal error lowering {name}: only the initializer of a field is lowered"
+                    );
+                };
+                (field.ty.clone(), None, Vec::new())
+            }
+            _ => panic!(
+                "internal error lowering {name}: only functions, methods, field initializers and top-level statements are lowered"
+            ),
+        };
+        let params = self.hir.params.iter().copied().zip(params).collect();
+        BodyShape {
+            name: name.clone(),
+            ret,
+            this,
+            params,
+            root,
+        }
+    }
+
+    /// The return type, the type of `this` and the types of the
+    /// parameters of the function or method `item`.
+    fn function_signature(&self, item: ItemId) -> (Ty, Option<LocalTy>, Vec<LocalTy>) {
+        let name = &self.name;
+        let Signature::Function(function) = signature(self.db, item) else {
+            panic!("internal error lowering {name}: the owner is not a function");
+        };
+        if function.params.len() != self.hir.params.len() {
+            panic!(
+                "internal error lowering {name}: the signature has {} parameters but the body {}",
+                function.params.len(),
+                self.hir.params.len()
+            )
+        }
+        if function.is_async || function.is_generic {
+            panic!("internal error lowering {name}: generic and async functions are not lowered");
+        }
+        let this = function.receiver.map(|mode| match this_type(self.db, item) {
+            Some(ty) => param_ty(mode, ty),
+            None => panic!(
+                "internal error lowering {name}: a method of a type other than a struct is not lowered"
+            ),
+        });
+        let params = function
+            .params
+            .iter()
+            .map(|param| param_ty(param.mode, param.ty.clone()))
+            .collect();
+        (function.ret.clone(), this, params)
+    }
+
+    /// The span of `expr`.
+    fn span(&self, expr: ExprId) -> Span {
+        Span::new(self.file.id(self.db), self.map.expr(expr))
+    }
+
+    /// Panics with an internal error, about the code at `range`, in the
+    /// body `body`.
+    fn ice_at(&self, body: &str, range: TextRange, what: &str) -> ! {
+        let text = self.file.text(self.db);
+        let code = text
+            .get(std::ops::Range::<usize>::from(range))
+            .unwrap_or_default();
+        let (line, column) = line_column(
+            text,
+            line_index(self.db, self.file),
+            usize::from(range.start()),
+        )
+        .unwrap_or_default();
+        panic!("internal error lowering {body}: {what}: `{code}` at {line}:{column}");
+    }
+}
+
+/// The lowering of one body: what its owner shares with its other bodies,
+/// and the body being built.
+pub(crate) struct Lowerer<'a> {
+    /// The owner the body belongs to.
+    owner: &'a Owner<'a>,
+    /// The body's name, for messages.
+    name: String,
+    /// The MIR local of each parameter and local of the HIR body that the
+    /// body uses, its captures among them.
     locals: HashMap<mora_hir::LocalId, LocalId>,
+    /// The receiver `this`, in a method.
+    this: Option<LocalId>,
     /// The MIR body being built.
     builder: Builder,
     /// The loops around the statement being lowered, outermost first.
@@ -414,108 +565,64 @@ pub(crate) struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    /// The MIR body of `owner`. A local whose declaration control never
-    /// gets to is not declared: the body is lowered again without it.
-    fn lower(db: &'a dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Body {
-        let (body, declared) = Self::lower_declaring(db, project, file, owner, None);
+    /// The MIR body `shape` describes. A local whose declaration control
+    /// never gets to is not declared: the body is lowered again without it.
+    fn lower(owner: &'a Owner<'a>, shape: &BodyShape) -> Body {
+        let (body, declared) = Self::lower_declaring(owner, shape, None);
         let lowered: HashSet<mora_hir::LocalId> = body
             .blocks
             .iter()
             .flat_map(|block| &block.statements)
             .filter_map(|statement| match statement.kind {
-                StatementKind::StorageLive(local) => body.local(local).source.as_ref(),
+                StatementKind::StorageLive(local) => body.local(local).source.as_ref()?.hir,
                 _ => None,
             })
-            .map(|source| source.hir)
             .collect();
         if lowered.len() == declared {
             return body;
         }
-        Self::lower_declaring(db, project, file, owner, Some(&lowered)).0
+        Self::lower_declaring(owner, shape, Some(&lowered)).0
     }
 
-    /// The MIR body of `owner`, with the locals of `only` declared, or with
-    /// every local of the body; and how many locals of the body it declares.
+    /// The MIR body `shape` describes, with the locals of `only` declared,
+    /// or with every local of the body; and how many locals of the body it
+    /// declares.
     fn lower_declaring(
-        db: &'a dyn Db,
-        project: Project,
-        file: SourceFile,
-        owner: BodyOwner,
+        owner: &'a Owner<'a>,
+        shape: &BodyShape,
         only: Option<&HashSet<mora_hir::LocalId>>,
     ) -> (Body, usize) {
-        let hir = body(db, file, owner);
-        let map = body_source_map(db, file, owner);
-        let name = owner_name(db, project, file, owner);
-        let Some(root) = hir.root else {
-            panic!("internal error lowering {name}: the body has no code");
-        };
-        let (ret, params) = match owner {
-            BodyOwner::TopLevel => (Ty::UNIT, Vec::new()),
-            BodyOwner::Item(item) => {
-                let item = ItemId {
-                    project,
-                    file,
-                    item,
-                };
-                match signature(db, item) {
-                    Signature::Function(function) if function.params.len() != hir.params.len() => {
-                        panic!(
-                            "internal error lowering {name}: the signature has {} parameters but the body {}",
-                            function.params.len(),
-                            hir.params.len()
-                        )
-                    }
-                    Signature::Function(function)
-                        if !function.is_async
-                            && !function.is_generic
-                            && !has_receiver(db, item) =>
-                    {
-                        let params = function
-                            .params
-                            .iter()
-                            .map(|param| match param.mode {
-                                ParamMode::In => LocalTy::Borrow(BorrowMode::In, param.ty.clone()),
-                                ParamMode::Ref => {
-                                    LocalTy::Borrow(BorrowMode::Ref, param.ty.clone())
-                                }
-                                ParamMode::Move => LocalTy::Value(param.ty.clone()),
-                            })
-                            .collect();
-                        (function.ret.clone(), params)
-                    }
-                    _ => panic!(
-                        "internal error lowering {name}: methods, generic functions and async functions are not lowered"
-                    ),
-                }
-            }
-            _ => panic!(
-                "internal error lowering {name}: only functions and top-level statements are lowered"
-            ),
-        };
-        let span = Span::new(file.id(db), map.expr(root));
+        let span = owner.span(shape.root);
         let mut lowerer = Lowerer {
-            db,
-            file,
-            builder: Builder::new(name.clone(), span, ret.clone()),
-            name,
-            hir,
-            map,
-            resolution: body_resolution(db, project, file, owner),
-            inference: infer(db, project, file, owner),
+            owner,
+            name: shape.name.clone(),
             locals: HashMap::new(),
+            this: None,
+            builder: Builder::new(shape.name.clone(), span, shape.ret.clone()),
             loops: Vec::new(),
         };
-        for (&local, ty) in hir.params.iter().zip(params) {
-            let id = lowerer.builder.param(LocalDecl {
-                ty,
+        if let Some(ty) = &shape.this {
+            let this = lowerer.builder.param(LocalDecl {
+                ty: ty.clone(),
                 mutable: false,
-                source: Some(lowerer.source(local)),
+                source: Some(LocalSource {
+                    name: "this".to_owned(),
+                    hir: None,
+                }),
             });
-            lowerer.locals.insert(local, id);
+            lowerer.this = Some(this);
         }
-        let declared = lowerer.declare_locals(root, only);
-        lowerer.root(root, &ret);
-        let end = lowerer.end_span(root);
+        for (local, ty) in &shape.params {
+            let id = lowerer.builder.param(LocalDecl {
+                ty: ty.clone(),
+                mutable: false,
+                source: Some(lowerer.source(*local)),
+            });
+            lowerer.locals.insert(*local, id);
+        }
+        let declared = lowerer.declare_locals(shape.root, only);
+        lowerer.root(shape.root, &shape.ret);
+        let end = lowerer.end_span(shape.root);
         (lowerer.builder.finish(end), declared)
     }
 
@@ -523,24 +630,27 @@ impl<'a> Lowerer<'a> {
     /// them, in the order of the text, and returns how many it declared.
     fn declare_locals(&mut self, root: ExprId, only: Option<&HashSet<mora_hir::LocalId>>) -> usize {
         let mut found = Vec::new();
-        if let mora_hir::Expr::Block(stmts) = &self.hir.exprs[root] {
+        if let mora_hir::Expr::Block(stmts) = &self.owner.hir.exprs[root] {
             self.collect_locals(stmts, &mut found);
         }
         found.retain(|(local, _)| only.is_none_or(|only| only.contains(local)));
         let declared = found.len();
         for (local, init) in found {
-            let Some(ty) = self.inference.local(local) else {
+            let Some(ty) = self.owner.inference.local(local) else {
                 if let Some(init) = init {
                     self.reject_external_value(init);
                 }
                 self.ice_at(
-                    self.map.local(local),
-                    &format!("the local `{}` has no type", self.hir.locals[local].name),
+                    self.owner.map.local(local),
+                    &format!(
+                        "the local `{}` has no type",
+                        self.owner.hir.locals[local].name
+                    ),
                 );
             };
             let decl = LocalDecl {
                 ty: LocalTy::Value(ty.clone()),
-                mutable: self.hir.locals[local].kind == mora_hir::LocalKind::Var,
+                mutable: self.owner.hir.locals[local].kind == mora_hir::LocalKind::Var,
                 source: Some(self.source(local)),
             };
             let id = self.builder.local(decl);
@@ -558,7 +668,7 @@ impl<'a> Lowerer<'a> {
         found: &mut Vec<(mora_hir::LocalId, Option<ExprId>)>,
     ) {
         for &stmt in stmts {
-            match &self.hir.stmts[stmt] {
+            match &self.owner.hir.stmts[stmt] {
                 Stmt::Local { local, init } => found.push((*local, *init)),
                 Stmt::Block(inner) => self.collect_locals(inner, found),
                 Stmt::If { then, r#else, .. } => {
@@ -580,15 +690,15 @@ impl<'a> Lowerer<'a> {
     /// Where `local` comes from.
     fn source(&self, local: mora_hir::LocalId) -> LocalSource {
         LocalSource {
-            name: self.hir.locals[local].name.clone(),
-            hir: local,
+            name: self.owner.hir.locals[local].name.clone(),
+            hir: Some(local),
         }
     }
 
     /// The code of the body: a block, whose end returns `()` when control
     /// gets there, or the expression of `=> e`, which is returned.
     fn root(&mut self, root: ExprId, ret: &Ty) {
-        if let mora_hir::Expr::Block(stmts) = &self.hir.exprs[root] {
+        if let mora_hir::Expr::Block(stmts) = &self.owner.hir.exprs[root] {
             self.stmts(stmts);
             if self.builder.is_reachable() {
                 if *ret != Ty::UNIT {
@@ -618,11 +728,11 @@ impl<'a> Lowerer<'a> {
     /// Where the code of the body ends: its closing brace, or the end of
     /// its last statement or of its expression.
     fn end_span(&self, root: ExprId) -> Span {
-        let range = match self.map.ends.get(&root) {
+        let range = match self.owner.map.ends.get(&root) {
             Some(brace) => *brace,
-            None => TextRange::empty(self.map.expr(root).end()),
+            None => TextRange::empty(self.owner.map.expr(root).end()),
         };
-        Span::new(self.file.id(self.db), range)
+        Span::new(self.owner.file.id(self.owner.db), range)
     }
 
     /// The statements `stmts`, up to the first that control cannot get to:
@@ -638,7 +748,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn stmt(&mut self, stmt: StmtId) {
-        match &self.hir.stmts[stmt] {
+        match &self.owner.hir.stmts[stmt] {
             Stmt::Expr(expr) => {
                 let mark = self.builder.temp_mark();
                 // A call that does not return ends the statement, and the
@@ -648,7 +758,10 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Local { local, init } => {
                 let id = self.local(*local);
-                let at = Span::new(self.file.id(self.db), self.map.local(*local));
+                let at = Span::new(
+                    self.owner.file.id(self.owner.db),
+                    self.owner.map.local(*local),
+                );
                 self.builder.storage_live(id, at);
                 if let Some(init) = *init {
                     let mark = self.builder.temp_mark();
@@ -659,14 +772,14 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(stmts) => {
                 self.builder.enter_scope();
                 self.stmts(stmts);
-                let Some(&end) = self.map.block_ends.get(&stmt) else {
+                let Some(&end) = self.owner.map.block_ends.get(&stmt) else {
                     panic!(
                         "internal error lowering {}: a block without its closing brace",
                         self.name
                     );
                 };
                 self.builder
-                    .leave_scope(Span::new(self.file.id(self.db), end));
+                    .leave_scope(Span::new(self.owner.file.id(self.owner.db), end));
             }
             Stmt::Return(value) => {
                 let span = self.stmt_span(stmt);
@@ -697,6 +810,8 @@ impl<'a> Lowerer<'a> {
             Stmt::Break => self.loop_jump(stmt, true),
             Stmt::Continue => self.loop_jump(stmt, false),
             Stmt::Unsafe(block) => self.stmt(*block),
+            // A local function is a body of its own.
+            Stmt::Function(_) => {}
             other => panic!(
                 "internal error lowering {}: the statement {other:?} is not lowered",
                 self.name
@@ -726,10 +841,10 @@ impl<'a> Lowerer<'a> {
         match self.locals.get(&local) {
             Some(id) => *id,
             None => self.ice_at(
-                self.map.local(local),
+                self.owner.map.local(local),
                 &format!(
                     "`{}` is not a local of the body",
-                    self.hir.locals[local].name
+                    self.owner.hir.locals[local].name
                 ),
             ),
         }
@@ -737,40 +852,27 @@ impl<'a> Lowerer<'a> {
 
     /// The span of `expr`.
     fn span(&self, expr: ExprId) -> Span {
-        Span::new(self.file.id(self.db), self.map.expr(expr))
+        self.owner.span(expr)
     }
 
     /// The span of the statement `stmt`.
     fn stmt_span(&self, stmt: StmtId) -> Span {
-        let Some(&range) = self.map.stmts.get(&stmt) else {
+        let Some(&range) = self.owner.map.stmts.get(&stmt) else {
             panic!(
                 "internal error lowering {}: a statement without its range",
                 self.name
             );
         };
-        Span::new(self.file.id(self.db), range)
+        Span::new(self.owner.file.id(self.owner.db), range)
     }
 
     /// Panics with an internal error about `expr`.
     fn ice(&self, expr: ExprId, what: &str) -> ! {
-        self.ice_at(self.map.expr(expr), what)
+        self.ice_at(self.owner.map.expr(expr), what)
     }
 
     /// Panics with an internal error about the code at `range`.
     fn ice_at(&self, range: TextRange, what: &str) -> ! {
-        let text = self.file.text(self.db);
-        let code = text
-            .get(std::ops::Range::<usize>::from(range))
-            .unwrap_or_default();
-        let (line, column) = line_column(
-            text,
-            line_index(self.db, self.file),
-            usize::from(range.start()),
-        )
-        .unwrap_or_default();
-        panic!(
-            "internal error lowering {}: {what}: `{code}` at {line}:{column}",
-            self.name
-        );
+        self.owner.ice_at(&self.name, range, what)
     }
 }
