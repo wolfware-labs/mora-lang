@@ -22,12 +22,12 @@ pub(crate) fn as_numeric(ty: &Ty) -> Option<Primitive> {
 
 /// Whether `ty` is a floating-point type: `float` or `double`.
 pub(crate) fn is_floating_point(ty: Primitive) -> bool {
-    matches!(ty, Primitive::Float | Primitive::Double)
+    ty.is_floating_point()
 }
 
 /// Whether `ty` is an integer type.
 pub(crate) fn is_integer(ty: Primitive) -> bool {
-    is_numeric(ty) && !is_floating_point(ty)
+    ty.is_integer()
 }
 
 /// Whether `op` is defined only on two integer operands of one promoted

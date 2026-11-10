@@ -13,8 +13,8 @@ use mora_span::Db;
 
 use crate::types::{is_concrete, param_ty};
 use crate::{
-    AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, InterpPiece, LocalId, LocalTy,
-    Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, Const, InterpPiece, LocalId,
+    LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
 /// Checks every body of `mir` and returns every problem found, ordered by
@@ -330,8 +330,25 @@ impl Checker<'_> {
     fn operand(&mut self, at: &str, operand: &Operand) -> Option<Ty> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.place(at, place),
-            Operand::Const(constant) => Some(constant.ty()),
+            Operand::Const(constant) => Some(self.constant(at, constant)),
         }
+    }
+
+    /// The type of `constant`, after reporting a primitive type that is not
+    /// of its kind.
+    fn constant(&mut self, at: &str, constant: &Const) -> Ty {
+        match *constant {
+            Const::Int(n, primitive) if !primitive.is_integer() => self.error(
+                at,
+                format!("integer constant {n} of type {primitive:?}, which is not an integer type"),
+            ),
+            Const::Real(_, primitive) if !primitive.is_floating_point() => self.error(
+                at,
+                format!("real constant of type {primitive:?}, which is not a floating-point type"),
+            ),
+            _ => {}
+        }
+        constant.ty()
     }
 
     /// The type of the local-like value at `place`: a whole borrow local keeps
@@ -349,7 +366,7 @@ impl Checker<'_> {
     fn operand_lt(&mut self, at: &str, operand: &Operand) -> Option<LocalTy> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.place_lt(at, place),
-            Operand::Const(constant) => Some(LocalTy::Value(constant.ty())),
+            Operand::Const(constant) => Some(LocalTy::Value(self.constant(at, constant))),
         }
     }
 
@@ -578,8 +595,9 @@ impl Checker<'_> {
                     );
                 }
                 for (constant, target) in targets {
+                    let constant_ty = self.constant(at, constant);
                     if let Some(ty) = &discr_ty
-                        && constant.ty() != *ty
+                        && constant_ty != *ty
                     {
                         self.error(
                                 at,
@@ -807,7 +825,7 @@ fn local_value_ty(ty: &LocalTy) -> &Ty {
 
 /// Whether `ty` is an integer or floating-point type.
 fn is_numeric(ty: &Ty) -> bool {
-    is_integer(ty) || matches!(ty, Ty::Primitive(Primitive::Float | Primitive::Double))
+    matches!(ty, Ty::Primitive(primitive) if primitive.is_integer() || primitive.is_floating_point())
 }
 
 /// Whether `from` converts implicitly to `to`, by the rule inference uses.
@@ -820,21 +838,7 @@ fn widens(from: &Ty, to: &Ty) -> bool {
 
 /// Whether `ty` is one of the integer types.
 fn is_integer(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Primitive(
-            Primitive::Byte
-                | Primitive::SByte
-                | Primitive::Short
-                | Primitive::UShort
-                | Primitive::Int
-                | Primitive::UInt
-                | Primitive::Long
-                | Primitive::ULong
-                | Primitive::NInt
-                | Primitive::NUInt
-        )
-    )
+    matches!(ty, Ty::Primitive(primitive) if primitive.is_integer())
 }
 
 #[cfg(test)]
@@ -1565,6 +1569,61 @@ mod tests {
             &call,
             true,
             "call result stored in a place of the never type",
+        );
+    }
+
+    #[test]
+    fn rejects_a_constant_whose_primitive_is_not_of_its_kind() {
+        let fx = fx();
+        let use_of = |constant: Const| {
+            let mut mir = with_stmt(assign(
+                place(7),
+                Rvalue::Use(Operand::Const(constant.clone())),
+            ));
+            mir.bodies[0].locals.push(val(constant.ty()));
+            mir
+        };
+        for (constant, problem) in [
+            (
+                Const::Int(1, Primitive::Double),
+                "integer constant 1 of type Double, which is not an integer type",
+            ),
+            (
+                Const::Int(0, Primitive::Bool),
+                "integer constant 0 of type Bool, which is not an integer type",
+            ),
+            (
+                Const::Real(0, Primitive::Int),
+                "real constant of type Int, which is not a floating-point type",
+            ),
+        ] {
+            assert_eq!(
+                errors(&fx, &use_of(constant), true),
+                [format!("fn F bb0[0]: {problem}")]
+            );
+        }
+        for constant in [
+            Const::Int(1, Primitive::Byte),
+            Const::Int(-1, Primitive::NInt),
+            Const::Real(0, Primitive::Float),
+            Const::Real(0, Primitive::Double),
+        ] {
+            assert_eq!(validate(&fx.db, &use_of(constant), true), Ok(()));
+        }
+        // A switch's constants are checked too.
+        let mir = simple(
+            vec![],
+            TerminatorKind::Switch {
+                discr: Operand::Const(Const::Real(0, Primitive::Double)),
+                targets: vec![(Const::Real(0, Primitive::Long), BlockId(0))],
+                otherwise: BlockId(0),
+            },
+        );
+        rejects(
+            &fx,
+            &mir,
+            true,
+            "real constant of type Long, which is not a floating-point type",
         );
     }
 
@@ -2388,10 +2447,18 @@ mod tests {
     #[test]
     fn casts_follow_their_kind() {
         let fx = fx();
+        // A constant 1 of the type.
+        let one = |ty: Primitive| {
+            if ty.is_floating_point() {
+                Const::Real(1f64.to_bits(), ty)
+            } else {
+                Const::Int(1, ty)
+            }
+        };
         let cast = |kind: CastKind, from: Primitive, to: Primitive| {
             let mut mir = with_stmt(assign(
                 place(2),
-                Rvalue::Cast(kind, Operand::Const(Const::Int(1, from)), Ty::Primitive(to)),
+                Rvalue::Cast(kind, Operand::Const(one(from)), Ty::Primitive(to)),
             ));
             mir.bodies[0].locals[2] = val(Ty::Primitive(to));
             validate(&fx.db, &mir, true).is_ok()
