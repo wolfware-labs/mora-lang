@@ -398,6 +398,7 @@ Done when:
 
 - CLI tests build and run a temporary hello-world project in both profiles.
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
+- A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
 
 ### M1.17 Debug information and symbol names
 
