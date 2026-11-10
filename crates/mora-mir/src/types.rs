@@ -1,7 +1,7 @@
 //! The data types of MIR (§14.7): a control-flow graph of basic blocks per
 //! body, over typed locals and places.
 
-use mora_hir::{ItemId, Primitive, Signature, Ty, signature};
+use mora_hir::{ItemId, ItemKind, Primitive, Signature, Ty, item_tree, signature};
 use mora_span::{Db, Span};
 
 /// The MIR of one body owner.
@@ -185,6 +185,19 @@ pub enum Const {
     String(String),
     /// The unit value `()`.
     Unit,
+}
+
+impl Const {
+    /// The type of the constant.
+    pub fn ty(&self) -> Ty {
+        match self {
+            Const::Int(_, primitive) | Const::Real(_, primitive) => Ty::Primitive(*primitive),
+            Const::Bool(_) => Ty::Primitive(Primitive::Bool),
+            Const::Char(_) => Ty::Primitive(Primitive::Char),
+            Const::String(_) => Ty::String,
+            Const::Unit => Ty::UNIT,
+        }
+    }
 }
 
 /// A computation whose result is stored in a place.
@@ -438,4 +451,12 @@ impl Body {
             ),
         }
     }
+}
+
+/// Whether a call of the function `item` passes a receiver before its
+/// arguments: it is declared in a type and is not `static`.
+pub(crate) fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
+    let tree = item_tree(db, item.file);
+    let item = tree.item(item.item);
+    item.kind == ItemKind::Function && item.parent.is_some() && !item.is_static
 }

@@ -4,15 +4,13 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{
-    ItemId, ItemKind, ParamMode, Primitive, Signature, Ty, converts_implicitly, item_tree,
-    signature,
-};
+use mora_hir::{ParamMode, Primitive, Signature, Ty, converts_implicitly, signature};
 use mora_span::Db;
 
+use crate::types::has_receiver;
 use crate::{
-    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
-    LocalId, LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, InterpPiece, LocalId,
+    LocalTy, Mir, Operand, Place, Projection, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 
 /// Checks every body of `mir` and returns every problem found, ordered by
@@ -193,7 +191,7 @@ impl Checker<'_> {
     fn operand(&mut self, at: &str, operand: &Operand) -> Option<Ty> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.place(at, place),
-            Operand::Const(constant) => Some(const_ty(constant)),
+            Operand::Const(constant) => Some(constant.ty()),
         }
     }
 
@@ -212,7 +210,7 @@ impl Checker<'_> {
     fn operand_lt(&mut self, at: &str, operand: &Operand) -> Option<LocalTy> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.place_lt(at, place),
-            Operand::Const(constant) => Some(LocalTy::Value(const_ty(constant))),
+            Operand::Const(constant) => Some(LocalTy::Value(constant.ty())),
         }
     }
 
@@ -421,7 +419,7 @@ impl Checker<'_> {
                 }
                 for (constant, target) in targets {
                     if let Some(ty) = &discr_ty
-                        && const_ty(constant) != *ty
+                        && constant.ty() != *ty
                     {
                         self.error(
                                 at,
@@ -509,7 +507,7 @@ impl Checker<'_> {
         match callee {
             Callee::Item(item) => match signature(self.db, *item) {
                 Signature::Function(function) => {
-                    let receiver = self.has_receiver(*item).then_some(Param::Receiver);
+                    let receiver = has_receiver(self.db, *item).then_some(Param::Receiver);
                     let params = receiver
                         .into_iter()
                         .chain(function.params.iter().map(|param| {
@@ -563,14 +561,6 @@ impl Checker<'_> {
             Callee::External(_) => None,
         }
     }
-
-    /// Whether a call of the function passes a receiver before its
-    /// arguments: it is declared in a type and is not `static`.
-    fn has_receiver(&self, item: ItemId) -> bool {
-        let tree = item_tree(self.db, item.file);
-        let item = tree.item(item.item);
-        item.kind == ItemKind::Function && item.parent.is_some() && !item.is_static
-    }
 }
 
 /// What a call passes for one parameter.
@@ -587,17 +577,6 @@ enum Param {
 fn local_value_ty(ty: &LocalTy) -> &Ty {
     let (LocalTy::Value(ty) | LocalTy::Borrow(_, ty)) = ty;
     ty
-}
-
-/// The type of a constant.
-fn const_ty(constant: &Const) -> Ty {
-    match constant {
-        Const::Int(_, primitive) | Const::Real(_, primitive) => Ty::Primitive(*primitive),
-        Const::Bool(_) => Ty::Primitive(Primitive::Bool),
-        Const::Char(_) => Ty::Primitive(Primitive::Char),
-        Const::String(_) => Ty::String,
-        Const::Unit => Ty::UNIT,
-    }
 }
 
 /// Whether `ty` is an integer or floating-point type.

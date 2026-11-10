@@ -1,14 +1,16 @@
 //! MIR, lowering from HIR, move and borrow checks, async lowering, monomorphization, ARC passes and constant evaluation (§14.7 to §14.12).
 
 mod dump;
-mod mir;
+mod lower;
+mod types;
 mod validate;
 
 #[cfg(test)]
 mod tests;
 
 pub use dump::{write_body, write_body_in, write_mir};
-pub use mir::{
+pub use lower::{mir, mir_dump};
+pub use types::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
     LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind, UnOp,

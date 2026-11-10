@@ -438,7 +438,7 @@ impl<'a> Check<'a> {
             }
             self.argument(arg.expr, argument, parameter);
         }
-        self.calls.insert(expr, candidate.origin);
+        self.record_call(expr, candidate.origin, params);
         Some(Ty::clone(&candidate.ret))
     }
 
@@ -540,8 +540,15 @@ impl<'a> Check<'a> {
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {
             self.argument(arg.expr, argument, &candidate.params[param]);
         }
-        self.calls.insert(expr, candidate.origin);
+        self.record_call(expr, candidate.origin, params.to_vec());
         Some(Ty::clone(&candidate.ret))
+    }
+
+    /// Records that the call `expr` calls `callee`, each argument going to
+    /// the parameter at its position in `params`.
+    fn record_call(&mut self, expr: ExprId, callee: Callee, params: Vec<usize>) {
+        self.calls.insert(expr, callee);
+        self.arguments.insert(expr, params);
     }
 
     /// Checks an argument against its parameter's type: a literal takes the

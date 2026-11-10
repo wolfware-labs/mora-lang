@@ -28,7 +28,7 @@ use crate::arena::arena_index;
 use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::type_ref::TypeRef;
 
-pub use dump::{escape_char, hir_dump, item_text};
+pub use dump::{escape_char, hir_dump, item_text, owner_name};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -662,6 +662,8 @@ pub struct BodySourceMap {
     /// The closing brace of each function and local function body written
     /// as a block, by the block's expression.
     pub ends: HashMap<ExprId, TextRange>,
+    /// The closing brace of each block statement.
+    pub block_ends: HashMap<StmtId, TextRange>,
     /// The name of each capture, or its `this`, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
@@ -825,6 +827,30 @@ mod tests {
             "{dumped}"
         );
         assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_block_statement_records_its_closing_brace() {
+        let db = TestDb::new();
+        let text = "{\n    let x = 1;\n}\nlet y = 2;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let ends: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(id, _)| map.block_ends.get(&id))
+            .map(|range| &text[std::ops::Range::<usize>::from(*range)])
+            .collect();
+        assert_eq!(ends, ["}"]);
+        let block = body
+            .stmts
+            .iter()
+            .find(|(_, stmt)| matches!(stmt, Stmt::Block(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert_eq!(u32::from(map.block_ends[&block].start()), 17);
     }
 
     #[test]

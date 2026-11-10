@@ -269,6 +269,11 @@ impl Lower {
         if jump {
             self.map.jumps.insert(id, stmt.syntax().text_range());
         }
+        if let ast::Stmt::Block(block) = stmt
+            && let Some(brace) = block.r_brace_token()
+        {
+            self.map.block_ends.insert(id, brace.text_range());
+        }
         id
     }
 

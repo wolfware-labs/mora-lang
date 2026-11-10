@@ -37,6 +37,34 @@ pub fn string_value(text: &str) -> Option<(String, bool)> {
     Some((value, utf8))
 }
 
+/// The value of an [`InterpText`](crate::SyntaxKind::InterpText) token of
+/// an interpolated string that is not raw: its escapes decoded, and `{{`
+/// and `}}` each one brace.
+pub fn interp_text_value(text: &str) -> Option<String> {
+    let mut value = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        let len = match c {
+            '\\' => {
+                let (c, len) = escape(rest).ok()?;
+                value.push(c);
+                len
+            }
+            '{' | '}' if rest[1..].starts_with(c) => {
+                value.push(c);
+                2
+            }
+            '{' | '}' => return None,
+            c => {
+                value.push(c);
+                c.len_utf8()
+            }
+        };
+        rest = &rest[len..];
+    }
+    Some(value)
+}
+
 /// Decodes the escapes of a regular string's contents.
 fn regular_value(body: &str) -> Option<String> {
     let mut value = String::with_capacity(body.len());
@@ -121,5 +149,23 @@ mod tests {
         ] {
             assert_eq!(string_value(text), Some((value.to_owned(), utf8)), "{text}");
         }
+    }
+
+    #[test]
+    fn interpolated_text() {
+        for (text, value) in [
+            ("Hello, ", "Hello, "),
+            (r"a\tb\n", "a\tb\n"),
+            ("{{x}}", "{x}"),
+            (r#"\"{{"#, "\"{"),
+            (r"\u{7B}}}", "{}"),
+            (r"\\{{", "\\{"),
+            ("", ""),
+        ] {
+            assert_eq!(interp_text_value(text).as_deref(), Some(value), "{text}");
+        }
+        assert_eq!(interp_text_value(r"\q"), None);
+        assert_eq!(interp_text_value("a{b"), None);
+        assert_eq!(interp_text_value("a}b"), None);
     }
 }

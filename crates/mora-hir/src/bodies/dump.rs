@@ -57,6 +57,35 @@ pub fn hir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     out
 }
 
+/// The name the dumps give the body of `owner` in `file`: `top-level` for
+/// the top-level statements, the full name of a function, `Type.Member`
+/// for a value member, a getter, an operator or an accessor, the type's
+/// name for a constructor or a destructor, and `extension#n` for an
+/// extension block and `extension#n.Member` for its members.
+pub fn owner_name(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> String {
+    let scope = Scope::file(project, file);
+    let item = |item| item_full_name(db, scope.item(item));
+    match owner {
+        BodyOwner::TopLevel => "top-level".to_owned(),
+        BodyOwner::Item(idx) => item(idx),
+        BodyOwner::Value(ty, index) => {
+            let values = &item_tree(db, file).item(ty).values;
+            format!("{}.{}", item(ty), values[index as usize].name)
+        }
+        BodyOwner::Member(ty, _) => {
+            let body = body(db, file, owner);
+            match body.kind {
+                BodyKind::Constructor | BodyKind::Destructor => item(ty),
+                _ => format!("{}.{}", item(ty), body.name),
+            }
+        }
+        BodyOwner::Extension(index, 0) => format!("extension#{index}"),
+        BodyOwner::Extension(index, _) => {
+            format!("extension#{index}.{}", body(db, file, owner).name)
+        }
+    }
+}
+
 struct Printer<'a> {
     db: &'a dyn Db,
     body: &'a Body,
@@ -71,27 +100,13 @@ impl Printer<'_> {
         let Some(root) = self.body.root else {
             return;
         };
-        let scope = Scope::file(project, file);
-        let item = |item| item_full_name(self.db, scope.item(item));
-        let name = match owner {
-            BodyOwner::TopLevel => {
-                self.out.push_str("top-level ");
-                self.statement_body(root);
-                self.out.push('\n');
-                return;
-            }
-            BodyOwner::Item(idx) => item(idx),
-            BodyOwner::Value(ty, index) => {
-                let values = &item_tree(self.db, file).item(ty).values;
-                format!("{}.{}", item(ty), values[index as usize].name)
-            }
-            BodyOwner::Member(ty, _) => match self.body.kind {
-                BodyKind::Constructor | BodyKind::Destructor => item(ty),
-                _ => format!("{}.{}", item(ty), self.body.name),
-            },
-            BodyOwner::Extension(index, 0) => format!("extension#{index}"),
-            BodyOwner::Extension(index, _) => format!("extension#{index}.{}", self.body.name),
-        };
+        if owner == BodyOwner::TopLevel {
+            self.out.push_str("top-level ");
+            self.statement_body(root);
+            self.out.push('\n');
+            return;
+        }
+        let name = owner_name(self.db, project, file, owner);
         let keyword = match self.body.kind {
             BodyKind::TopLevel | BodyKind::Function => "fn",
             BodyKind::Initializer => "init",

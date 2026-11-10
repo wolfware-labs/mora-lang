@@ -61,6 +61,7 @@ pub(super) fn infer_body(
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
         calls: HashMap::new(),
+        arguments: HashMap::new(),
         local_functions: None,
         constants: HashMap::new(),
         conversions: HashMap::new(),
@@ -125,6 +126,7 @@ pub(super) fn infer_body(
         exprs: check.exprs,
         locals: check.locals,
         calls: check.calls,
+        arguments: check.arguments,
         constants: check.constants,
         conversions: check.conversions,
         element_conversions: check.element_conversions,
@@ -147,6 +149,8 @@ struct Check<'a> {
     locals: Vec<Option<Ty>>,
     /// The function each checked call calls, so far.
     calls: HashMap<ExprId, Callee>,
+    /// The parameter of each argument of a checked call, so far.
+    arguments: HashMap<ExprId, Vec<usize>>,
     /// The statement of each local function, found on the first call of
     /// one.
     local_functions: Option<HashMap<LocalId, StmtId>>,

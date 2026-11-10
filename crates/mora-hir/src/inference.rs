@@ -30,6 +30,7 @@ use crate::defs::ItemId;
 use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
+pub use constant::literal_constant;
 pub(crate) use diagnostic::{Source, type_error};
 
 /// The types of a body's expressions and locals, and what is wrong with
@@ -43,6 +44,8 @@ pub struct Inference {
     locals: Vec<Option<Ty>>,
     /// The function each call that is checked calls.
     calls: HashMap<ExprId, Callee>,
+    /// The parameter each argument of a checked call goes to.
+    arguments: HashMap<ExprId, Vec<usize>>,
     /// The value of each operation made only of literals that took a target
     /// type and fits it.
     constants: HashMap<ExprId, Constant>,
@@ -127,6 +130,15 @@ impl Inference {
     /// that overload resolution chose, or the one function of its name.
     pub fn callee(&self, call: ExprId) -> Option<Callee> {
         self.calls.get(&call).copied()
+    }
+
+    /// The parameter of [`Inference::callee`] that each argument of the
+    /// call `call` goes to, by position, in the order of the arguments: a
+    /// named argument goes to the parameter of its name (§6.9). A parameter
+    /// no argument goes to takes its default value. `None` when the call is
+    /// not checked.
+    pub fn arguments(&self, call: ExprId) -> Option<&[usize]> {
+        self.arguments.get(&call).map(Vec::as_slice)
     }
 
     /// The value of `expr` when it is an operation made only of literals
@@ -1833,6 +1845,45 @@ mod tests {
             .items()
             .filter(|(_, item)| item.name == "O")
             .position(|(idx, _)| Scope::file(project, file).item(idx) == called)
+    }
+
+    /// The parameter each argument of the call of `O` in the top-level
+    /// statements of `text` goes to.
+    fn bound_arguments(text: &str) -> Option<Vec<usize>> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let call = body
+            .exprs
+            .iter()
+            .find(|(_, expr)| {
+                matches!(expr, Expr::Call { callee, .. }
+                if matches!(&body.exprs[*callee], Expr::Path(path) if path.segments == ["O"]))
+            })
+            .map(|(id, _)| id)
+            .unwrap();
+        inference.arguments(call).map(<[usize]>::to_vec)
+    }
+
+    #[test]
+    fn the_parameter_of_each_argument_is_recorded() {
+        let one = "O(a: int, b: int = 2, c: int = 3): int => a;\n";
+        assert_eq!(
+            bound_arguments(&format!("{one}let x = O(1, c: 5);\n")),
+            Some(vec![0, 2])
+        );
+        assert_eq!(
+            bound_arguments(&format!("{one}let x = O(c: 5, a: 1);\n")),
+            Some(vec![2, 0])
+        );
+        let overloads = "O(x: int): int => 1;\nO(y: string, x: int): int => 2;\n";
+        assert_eq!(
+            bound_arguments(&format!("{overloads}let a = O(x: 1, y: \"s\");\n")),
+            Some(vec![1, 0])
+        );
+        assert_eq!(bound_arguments(&format!("{one}let x = O();\n")), None);
     }
 
     #[test]
