@@ -22,6 +22,7 @@ use super::{
     body, body_owners, body_resolution,
 };
 use crate::arena::arena_index;
+use crate::defs::ItemId;
 use crate::inference::{Inference, infer, is_known, ty_name};
 use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::report::{full_name, item_full_name};
@@ -792,16 +793,7 @@ impl Printer<'_> {
                     Resolved::Namespace(_) => "namespace",
                     Resolved::Functions(items) if items.len() > 1 => "overloads",
                     Resolved::Functions(_) => "fn",
-                    Resolved::Item(item) => match item_data(self.db, *item).kind {
-                        ItemKind::Struct => "struct",
-                        ItemKind::Class => "class",
-                        ItemKind::Union => "union",
-                        ItemKind::Enum => "enum",
-                        ItemKind::Interface => "interface",
-                        ItemKind::Function => "fn",
-                        ItemKind::Macro => "macro",
-                        ItemKind::Field => "value",
-                    },
+                    Resolved::Item(item) => item_kind_word(item_data(self.db, *item).kind),
                     Resolved::External => "external",
                 };
                 let name = full_name(self.db, resolved).unwrap_or_default();
@@ -823,6 +815,30 @@ impl Printer<'_> {
             }
         }
     }
+}
+
+/// The word the dump uses for an item of the kind.
+fn item_kind_word(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::Struct => "struct",
+        ItemKind::Class => "class",
+        ItemKind::Union => "union",
+        ItemKind::Enum => "enum",
+        ItemKind::Interface => "interface",
+        ItemKind::Function => "fn",
+        ItemKind::Macro => "macro",
+        ItemKind::Field => "value",
+    }
+}
+
+/// An item as the dumps print it: its full name, then its kind and full
+/// name in braces, as `App.Fib{fn App.Fib}`.
+pub fn item_text(db: &dyn Db, item: ItemId) -> String {
+    let name = item_full_name(db, item);
+    format!(
+        "{name}{{{} {name}}}",
+        item_kind_word(item_data(db, item).kind)
+    )
 }
 
 /// A type as written.

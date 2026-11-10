@@ -367,7 +367,7 @@ pub fn converts_implicitly(from: Primitive, to: Primitive) -> bool {
 }
 
 /// `ty` as code writes it, as messages and the HIR dump show it.
-pub(crate) fn ty_name(db: &dyn Db, ty: &Ty) -> String {
+pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
     match ty {
         Ty::Primitive(primitive) => primitive.keyword().to_owned(),
         Ty::String => "string".to_owned(),

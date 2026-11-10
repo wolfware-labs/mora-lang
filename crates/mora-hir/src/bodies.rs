@@ -28,7 +28,7 @@ use crate::arena::arena_index;
 use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::type_ref::TypeRef;
 
-pub use dump::hir_dump;
+pub use dump::{hir_dump, item_text};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -1567,6 +1567,41 @@ get extension#0.Empty(items#0) => items#0[0];
             dump("F() {\n    G(x: int = 1): int => x;\n    let h = (y: int = 2) => y;\n}\n");
         assert!(dumped.contains("G#0(x#1 = 1): int => x#1;"), "{dumped}");
         assert!(dumped.contains("let h#3 = (y#2 = 2) => y#2;"), "{dumped}");
+    }
+
+    #[test]
+    fn item_text_names_an_item_and_its_kind() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "struct P {\n    public X: int;\n}\n\nFib(n: int): int => n;\n",
+            )],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let texts: Vec<String> = tree
+            .items()
+            .map(|(item, _)| {
+                item_text(
+                    &db,
+                    ItemId {
+                        project,
+                        file,
+                        item,
+                    },
+                )
+            })
+            .collect();
+        assert!(
+            texts.contains(&"UsersApi.P{struct UsersApi.P}".to_owned()),
+            "{texts:?}"
+        );
+        assert!(
+            texts.contains(&"UsersApi.Fib{fn UsersApi.Fib}".to_owned()),
+            "{texts:?}"
+        );
     }
 
     /// Every prefix of `text`, cut at each character, lowers and reports

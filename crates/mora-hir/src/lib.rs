@@ -47,14 +47,14 @@ pub use bodies::{
     CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
     LocalKind, MatchArm, Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId,
     Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution, body_source_map,
-    hir_dump,
+    hir_dump, item_text,
 };
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
 pub use diverging::is_diverging;
 pub use inference::{
-    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer,
+    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer, ty_name,
 };
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
