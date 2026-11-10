@@ -133,6 +133,20 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
     (signature, lower.source)
 }
 
+/// The mode of the parameter `param` as its modifiers write it (§10.3):
+/// `ref`, `move`, or `in` when neither is written.
+pub(crate) fn param_mode(param: &ast::Param) -> ParamMode {
+    let mut mode = ParamMode::In;
+    for token in param.modifiers().filter_map(|modifier| modifier.kind()) {
+        match token.kind() {
+            SyntaxKind::RefKw => mode = ParamMode::Ref,
+            SyntaxKind::MoveKw => mode = ParamMode::Move,
+            _ => {}
+        }
+    }
+    mode
+}
+
 /// How a method with the modifiers `modifiers` takes `this` (§10.3):
 /// `ref` when it is `mut`, `move` when it is `move`, `in` otherwise.
 fn receiver_mode<'a>(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> ParamMode {
@@ -170,19 +184,13 @@ impl LowerTypes {
     }
 
     fn param(&mut self, param: &ast::Param) -> ParamRef {
-        let mut mode = ParamMode::In;
-        let mut is_params = false;
-        for token in param.modifiers().filter_map(|modifier| modifier.kind()) {
-            match token.kind() {
-                SyntaxKind::RefKw => mode = ParamMode::Ref,
-                SyntaxKind::MoveKw => mode = ParamMode::Move,
-                SyntaxKind::ParamsKw => is_params = true,
-                _ => {}
-            }
-        }
+        let is_params = param
+            .modifiers()
+            .filter_map(|modifier| modifier.kind())
+            .any(|token| token.kind() == SyntaxKind::ParamsKw);
         ParamRef {
             name: name_of(param.name()).unwrap_or_default(),
-            mode,
+            mode: param_mode(param),
             is_params,
             has_default: param.default().is_some(),
             ty: self.optional(param.ty().as_ref()),

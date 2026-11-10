@@ -135,6 +135,14 @@ pub struct ValueMember {
     pub is_static: bool,
 }
 
+impl ValueMember {
+    /// Whether it is a field stored in each value of its type: a field
+    /// that is neither `static` nor a constant.
+    pub fn is_instance_field(&self) -> bool {
+        self.kind == ValueKind::Field && !self.is_static
+    }
+}
+
 /// What a [`ValueMember`] declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueKind {

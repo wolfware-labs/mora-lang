@@ -33,9 +33,9 @@ use std::collections::{HashMap, HashSet};
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, STD, Signature, Stmt,
-    StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, owner_name, signature,
-    this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemKind, STD, Signature,
+    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, item_tree,
+    owner_name, signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
@@ -418,6 +418,8 @@ pub(crate) struct Owner<'a> {
     /// The local functions, in the order of the text: the one at `i` is
     /// body `i + 1` of the owner's MIR.
     functions: Vec<local::LocalFn<'a>>,
+    /// The type of `this`, in a method of a struct.
+    this_ty: Option<Ty>,
 }
 
 /// What a body is: its name, return type, receiver and parameters, and
@@ -448,8 +450,19 @@ impl<'a> Owner<'a> {
             resolution: body_resolution(db, project, file, owner),
             inference: infer(db, project, file, owner),
             functions: Vec::new(),
+            this_ty: match owner {
+                BodyOwner::Item(item) => this_type(
+                    db,
+                    ItemId {
+                        project,
+                        file,
+                        item,
+                    },
+                ),
+                _ => None,
+            },
         };
-        shared.functions = shared.local_functions();
+        shared.functions = shared.local_functions(owner);
         shared
     }
 
@@ -510,11 +523,21 @@ impl<'a> Owner<'a> {
         if function.is_async || function.is_generic {
             panic!("internal error lowering {name}: generic and async functions are not lowered");
         }
-        let this = function.receiver.map(|mode| match this_type(self.db, item) {
-            Some(ty) => param_ty(mode, ty),
-            None => panic!(
-                "internal error lowering {name}: a method of a type other than a struct is not lowered"
-            ),
+        let this = function.receiver.map(|mode| match &self.this_ty {
+            Some(ty) => param_ty(mode, ty.clone()),
+            None => {
+                let tree = item_tree(self.db, item.file);
+                let generic_struct = tree
+                    .item(item.item)
+                    .parent
+                    .is_some_and(|parent| tree.item(parent).kind == ItemKind::Struct);
+                if generic_struct {
+                    panic!("internal error lowering {name}: a method of a generic struct is not lowered");
+                }
+                panic!(
+                    "internal error lowering {name}: a method of a type other than a struct is not lowered"
+                )
+            }
         });
         let params = function
             .params

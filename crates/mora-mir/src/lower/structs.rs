@@ -2,8 +2,8 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, ValueKind, ValueMember,
-    body, item_tree, signature, struct_field,
+    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Target, Ty, body, field_member,
+    item_tree, signature, struct_field,
 };
 use mora_span::Db;
 
@@ -40,6 +40,7 @@ impl Lowerer<'_> {
             self.operands(&values)?.into_iter().map(Some).collect();
         let mut operands = Vec::with_capacity(fields.len());
         for (n, field) in fields.iter().enumerate() {
+            self.instance_field(expr, item, n);
             let init = inits.iter().position(|(name, _)| *name == field.name);
             operands.push(match init.and_then(|init| written[init].take()) {
                 Some(operand) => operand,
@@ -59,15 +60,7 @@ impl Lowerer<'_> {
         n: usize,
         field: &Field,
     ) -> Lowered<Operand> {
-        let Some((index, member)) = value_of_field(self.owner.db, item, n) else {
-            self.ice(expr, "a field that is not a value member")
-        };
-        if member.is_static || member.kind != ValueKind::Field {
-            self.ice(
-                expr,
-                "a struct with a static or constant field is not lowered",
-            );
-        }
+        let index = self.instance_field(expr, item, n);
         let owner = BodyOwner::Value(item.item, index);
         if body(self.owner.db, item.file, owner).root.is_none() {
             self.ice(expr, "a field without an initializer is left out");
@@ -91,21 +84,40 @@ impl Lowerer<'_> {
     /// The place of the field `name` of the struct at `base`, which `expr`
     /// names.
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
-        let n = match self.builder.body().place_ty(&base, self.owner.db) {
+        let field = match self.builder.body().place_ty(&base, self.owner.db) {
             Ty::Struct(item) => match signature(self.owner.db, item) {
-                Signature::Struct(fields) => fields.iter().position(|field| field.name == name),
+                Signature::Struct(fields) => fields
+                    .iter()
+                    .position(|field| field.name == name)
+                    .map(|n| (item, n)),
                 _ => None,
             },
             _ => None,
         };
-        let Some(n) = n.and_then(|n| u32::try_from(n).ok()) else {
+        let Some((item, n)) = field else {
             self.ice(
                 expr,
                 "a member that is not a field of a struct is not lowered",
             )
         };
+        self.instance_field(expr, item, n);
+        let Ok(n) = u32::try_from(n) else {
+            self.ice(expr, "a struct with more than u32::MAX fields")
+        };
         base.projections.push(Projection::Field(n));
         base
+    }
+
+    /// The position among the value members of the struct `item` of its
+    /// `n`-th field, which `expr` uses. Static and constant members are
+    /// not stored in a value, and lowering them is for the static state
+    /// of M1.11.
+    fn instance_field(&self, expr: ExprId, item: ItemId, n: usize) -> u32 {
+        match field_member(self.owner.db, item, n) {
+            Some((index, member)) if member.is_instance_field() => index,
+            Some(_) => self.ice(expr, "a static or constant member is not lowered (M1.11)"),
+            None => self.ice(expr, "a field that is not a value member"),
+        }
     }
 
     /// The place `path` names: a field of `this`, then the fields its
@@ -118,8 +130,7 @@ impl Lowerer<'_> {
                     .item(value.ty.item)
                     .values
                     .get(value.index)?;
-                (member.kind == ValueKind::Field && !member.is_static)
-                    .then(|| (member.name.clone(), resolution.segments.max(1)))
+                Some((member.name.clone(), resolution.segments.max(1)))
             }
             _ => None,
         });
@@ -134,25 +145,14 @@ impl Lowerer<'_> {
     }
 }
 
-/// The value member that declares the `n`-th field of the struct `item`,
-/// with its position among the value members.
-fn value_of_field(db: &dyn Db, item: ItemId, n: usize) -> Option<(u32, &ValueMember)> {
-    let values = &item_tree(db, item.file).item(item.item).values;
-    (0..values.len()).find_map(|index| {
-        let index = u32::try_from(index).ok()?;
-        let (field, _) = struct_field(db, item, index)?;
-        (field == n).then(|| (index, &values[index as usize]))
-    })
-}
-
 /// The field of the struct `item` whose initializer is the body of the
-/// value member at `index`: a field that is not `static`.
+/// value member at `index`: an instance field.
 pub(super) fn field_of_value(db: &dyn Db, item: ItemId, index: u32) -> Option<&Field> {
     let member = item_tree(db, item.file)
         .item(item.item)
         .values
         .get(index as usize)?;
-    if member.kind != ValueKind::Field || member.is_static {
+    if !member.is_instance_field() {
         return None;
     }
     struct_field(db, item, index).map(|(_, field)| field)

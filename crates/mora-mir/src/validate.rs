@@ -4,7 +4,7 @@
 //! first, and never panics on a malformed body: each place is checked before
 //! its type is read.
 
-use mora_hir::{Primitive, Signature, Ty, converts_implicitly, signature, this_type};
+use mora_hir::{Primitive, Signature, Ty, converts_implicitly, field_member, signature, this_type};
 use mora_span::Db;
 
 use crate::types::param_ty;
@@ -296,7 +296,19 @@ impl Checker<'_> {
                 ));
             }
         };
-        (n as usize >= len).then(|| format!("field {n} out of range of {what} {len} fields"))
+        if n as usize >= len {
+            return Some(format!("field {n} out of range of {what} {len} fields"));
+        }
+        // A static or constant member is not stored in the value.
+        match ty {
+            Ty::Struct(item)
+                if !field_member(self.db, *item, n as usize)
+                    .is_some_and(|(_, member)| member.is_instance_field()) =>
+            {
+                Some(format!("field {n} of a struct is not an instance field"))
+            }
+            _ => None,
+        }
     }
 
     fn operand(&mut self, at: &str, operand: &Operand) -> Option<Ty> {
@@ -773,7 +785,8 @@ mod tests {
         class C {\n    M(a: int): int { return a; }\n    static S(a: int): int { return a; }\n}\n\
         Mix(in a: int, ref b: int, move c: int): int { return c; }\n\
         struct Q {\n    public V: int;\n    Get(): int { return V; }\n    mut Set(v: int) {}\n    \
-        move Take(): int { return V; }\n}\n";
+        move Take(): int { return V; }\n}\n\
+        struct R {\n    public V: int;\n    public static S: int = 1;\n    public const K: int = 2;\n}\n";
 
     /// The items of [`SOURCE`].
     struct Fx {
@@ -788,6 +801,7 @@ mod tests {
         set: ItemId,
         take: ItemId,
         q: ItemId,
+        r: ItemId,
     }
 
     fn fx() -> Fx {
@@ -809,7 +823,7 @@ mod tests {
         let (p, add, nop, method, static_method) =
             (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
         let (mix, get, set) = (find("Mix"), find("Get"), find("Set"));
-        let (take, q) = (find("Take"), find("Q"));
+        let (take, q, r) = (find("Take"), find("Q"), find("R"));
         Fx {
             db,
             p,
@@ -822,6 +836,7 @@ mod tests {
             set,
             take,
             q,
+            r,
         }
     }
 
@@ -1416,6 +1431,25 @@ mod tests {
     fn rejects_field_out_of_range() {
         let fx = fx();
         rejects(&fx, &field_out_of_range(&fx), true, "field 2 out of range");
+    }
+
+    #[test]
+    fn a_field_projection_names_an_instance_field() {
+        let fx = fx();
+        let mut mir = with_stmt(assign(
+            place(1),
+            Rvalue::Use(Operand::Copy(proj(7, vec![Projection::Field(0)]))),
+        ));
+        mir.bodies[0].locals.push(val(Ty::Struct(fx.r)));
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        for n in [1, 2] {
+            let mut bad = mir.clone();
+            bad.bodies[0].blocks[0].statements[0] = assign(
+                place(1),
+                Rvalue::Use(Operand::Copy(proj(7, vec![Projection::Field(n)]))),
+            );
+            rejects(&fx, &bad, true, "not an instance field");
+        }
     }
 
     #[test]

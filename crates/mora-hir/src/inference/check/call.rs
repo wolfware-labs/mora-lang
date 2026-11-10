@@ -40,8 +40,8 @@ struct Candidate<'a> {
 struct Parameter<'a> {
     /// Its name.
     name: &'a str,
-    /// Its mode, `None` when it is not known, as for a local function.
-    mode: Option<ParamMode>,
+    /// Its mode.
+    mode: ParamMode,
     /// Whether it has a default value.
     has_default: bool,
     /// Its type.
@@ -53,8 +53,8 @@ impl Parameter<'_> {
     /// parameter's type (§10.3), any other converts to it.
     fn context(&self) -> Context {
         match self.mode {
-            Some(ParamMode::Ref) => Context::Ref,
-            Some(ParamMode::In | ParamMode::Move) | None => Context::Value,
+            ParamMode::Ref => Context::Ref,
+            ParamMode::In | ParamMode::Move => Context::Value,
         }
     }
 }
@@ -341,7 +341,7 @@ impl<'a> Check<'a> {
                 .iter()
                 .map(|param| Parameter {
                     name: &param.name,
-                    mode: Some(param.mode),
+                    mode: param.mode,
                     has_default: param.has_default,
                     ty: Cow::Borrowed(&param.ty),
                 })
@@ -383,10 +383,10 @@ impl<'a> Check<'a> {
             params: function
                 .params
                 .iter()
-                .map(|&param| Parameter {
+                .zip(&function.modes)
+                .map(|(&param, &mode)| Parameter {
                     name: &body.locals[param].name,
-                    // Local functions do not record their parameters' modes.
-                    mode: None,
+                    mode,
                     has_default: function.defaults.iter().any(|&(at, _)| at == param),
                     ty: Cow::Owned(self.locals[arena_index(param)].clone().unwrap_or(Ty::Error)),
                 })
@@ -444,7 +444,7 @@ impl<'a> Check<'a> {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),
                     param: parameter.name.to_owned(),
-                    needs: parameter.mode.unwrap_or(ParamMode::In),
+                    needs: parameter.mode,
                     given: arg.mode,
                     fixable,
                 });
@@ -602,9 +602,9 @@ impl<'a> Check<'a> {
             .iter()
             .map(|param| {
                 let mode = match param.mode {
-                    Some(ParamMode::Ref) => "ref ",
-                    Some(ParamMode::Move) => "move ",
-                    _ => "",
+                    ParamMode::Ref => "ref ",
+                    ParamMode::Move => "move ",
+                    ParamMode::In => "",
                 };
                 let default = if param.has_default { " = ..." } else { "" };
                 let ty = ty_name(self.db, &param.ty);
@@ -677,14 +677,13 @@ fn bind(candidate: &Candidate<'_>, args: &[Arg]) -> Result<Vec<usize>, Unbound> 
 
 /// Whether an argument written with `given` before it suits a parameter of
 /// mode `needs` (§10.3): `ref` exactly for a `ref` parameter, and `in` or
-/// `move` only for a parameter of that mode. An unknown mode suits any.
-fn mode_fits(needs: Option<ParamMode>, given: Option<ArgMode>) -> bool {
+/// `move` only for a parameter of that mode.
+fn mode_fits(needs: ParamMode, given: Option<ArgMode>) -> bool {
     match (needs, given) {
-        (None, _) => true,
-        (Some(ParamMode::Ref), given) => given == Some(ArgMode::Ref),
-        (Some(_), None) => true,
-        (Some(ParamMode::In), Some(given)) => given == ArgMode::In,
-        (Some(ParamMode::Move), Some(given)) => given == ArgMode::Move,
+        (ParamMode::Ref, given) => given == Some(ArgMode::Ref),
+        (_, None) => true,
+        (ParamMode::In, Some(given)) => given == ArgMode::In,
+        (ParamMode::Move, Some(given)) => given == ArgMode::Move,
     }
 }
 
@@ -776,17 +775,16 @@ mod tests {
 
     #[test]
     fn markers_suit_their_modes() {
-        assert!(mode_fits(Some(ParamMode::Ref), Some(ArgMode::Ref)));
-        assert!(!mode_fits(Some(ParamMode::Ref), None));
-        assert!(!mode_fits(Some(ParamMode::Ref), Some(ArgMode::In)));
-        assert!(mode_fits(Some(ParamMode::In), None));
-        assert!(mode_fits(Some(ParamMode::In), Some(ArgMode::In)));
-        assert!(!mode_fits(Some(ParamMode::In), Some(ArgMode::Ref)));
-        assert!(!mode_fits(Some(ParamMode::In), Some(ArgMode::Move)));
-        assert!(mode_fits(Some(ParamMode::Move), Some(ArgMode::Move)));
-        assert!(mode_fits(Some(ParamMode::Move), None));
-        assert!(!mode_fits(Some(ParamMode::Move), Some(ArgMode::In)));
-        assert!(mode_fits(None, Some(ArgMode::Ref)));
+        assert!(mode_fits(ParamMode::Ref, Some(ArgMode::Ref)));
+        assert!(!mode_fits(ParamMode::Ref, None));
+        assert!(!mode_fits(ParamMode::Ref, Some(ArgMode::In)));
+        assert!(mode_fits(ParamMode::In, None));
+        assert!(mode_fits(ParamMode::In, Some(ArgMode::In)));
+        assert!(!mode_fits(ParamMode::In, Some(ArgMode::Ref)));
+        assert!(!mode_fits(ParamMode::In, Some(ArgMode::Move)));
+        assert!(mode_fits(ParamMode::Move, Some(ArgMode::Move)));
+        assert!(mode_fits(ParamMode::Move, None));
+        assert!(!mode_fits(ParamMode::Move, Some(ArgMode::In)));
     }
 
     #[test]

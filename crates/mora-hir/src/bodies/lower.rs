@@ -14,7 +14,7 @@ use super::{
 };
 use crate::items::Written;
 use crate::name::{name_ref_of, token_name};
-use crate::type_ref::{LowerTypes, TypeRef, predefined, type_param_names};
+use crate::type_ref::{LowerTypes, TypeRef, param_mode, predefined, type_param_names};
 
 /// Lowers one body.
 pub(super) struct Lower {
@@ -429,6 +429,14 @@ impl Lower {
             })
         });
         let is_async = Written::of(function.modifiers()).is_async;
+        // A parameter without a name declares no local.
+        let modes = function
+            .param_list()
+            .iter()
+            .flat_map(|list| list.params())
+            .filter(|param| param.name().and_then(|name| name.ident_token()).is_some())
+            .map(|param| param_mode(&param))
+            .collect();
         self.scoped(|this| {
             let params: Vec<_> = function
                 .param_list()
@@ -441,6 +449,7 @@ impl Lower {
             LocalFunction {
                 local,
                 params,
+                modes,
                 defaults,
                 ret,
                 is_async,

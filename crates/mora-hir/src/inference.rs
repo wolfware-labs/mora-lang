@@ -2025,11 +2025,14 @@ mod tests {
         assert_eq!(fixed.remaining, Vec::<String>::new());
         let expected = "Bump(ref n);\nBump(ref n);\nRead(n);\nRead(n);\n";
         assert!(fixed.text.contains(expected), "{}", fixed.text);
-        // A local function's modes are not recorded, so its markers are not
-        // checked.
+        // A local function's markers are checked against its modes too.
         assert_eq!(
             reported("F() {\n    G(x: int) {}\n    var n = 1;\n    G(ref n);\n}\n"),
-            Vec::<String>::new()
+            ["MR0205"]
+        );
+        assert_eq!(
+            reported("F() {\n    G(ref x: int) {}\n    var n = 1;\n    G(n);\n    G(ref n);\n}\n"),
+            ["MR0205"]
         );
     }
 

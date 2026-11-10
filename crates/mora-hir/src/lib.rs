@@ -24,6 +24,7 @@
 
 mod arena;
 mod bodies;
+mod captures;
 mod defs;
 mod diverging;
 mod inference;
@@ -49,6 +50,7 @@ pub use bodies::{
     Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution, body_source_map,
     escape_char, hir_dump, item_text, owner_name,
 };
+pub use captures::{Captured, LocalFunctionCaptures, local_functions};
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
@@ -67,7 +69,7 @@ pub use resolve::{
     ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, is_visible,
     resolve_path,
 };
-pub use signature::{signature, struct_field, this_type};
+pub use signature::{field_member, signature, struct_field, this_type};
 pub use ty::{
     Construct, Field, FnSignature, Param, ParamMode, Primitive, Signature, TupleElem, Ty,
     Unsupported,

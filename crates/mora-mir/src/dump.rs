@@ -6,12 +6,12 @@
 //! `Console.WriteLine{external}`, and a type is written as code writes it.
 //! A local with a source name is `name#n`, where `n` is the index of the
 //! HIR local it comes from, so it reads the same in both dumps; the
-//! receiver, which no HIR local stands for, is `this`. Any other local is `_n`, where `n` is its index in
-//! the body, so `_0` is the return slot and the parameters come next. The
-//! `let` lines list the locals in the body's order, which shows the
-//! mapping. The output is a pure function of
-//! the body and the database: no map is iterated, so the same input gives
-//! the same bytes.
+//! receiver, which no HIR local stands for, is `this`. Any other local is
+//! `_n`, where `n` is its index in the body, so `_0` is the return slot and
+//! the parameters come next. The `let` lines list the locals in the body's
+//! order, which shows the mapping. The output is a pure function of the
+//! body and the database: no map is iterated, so the same input gives the
+//! same bytes.
 //!
 //! # Layout
 //!
@@ -87,7 +87,10 @@
 //! * `[place = ]call callee(args) -> bbN;`, with `-> !` when the call does
 //!   not return. The callee is an item as above, the name of the body for
 //!   a local function (`Owner.Local`, from [`write_mir`]; `local#n` when
-//!   the other bodies are not known), `Item{kind path}.X{init}` for the
+//!   the other bodies are not known). Local functions of one name in the
+//!   same body, in blocks side by side, are `Owner.Local`, then
+//!   `Owner.Local#2` and so on in the order of the text. The callee is
+//!   `Item{kind path}.X{init}` for the
 //!   initializer of a field (by index when the item has no such field), or
 //!   the path of a standard-library function with `{external}`.
 

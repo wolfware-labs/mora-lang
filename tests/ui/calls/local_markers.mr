@@ -1,0 +1,13 @@
+// A local function's argument has the marker its parameter's mode needs (§10.3).
+F() {
+    var n = 1;
+    Bump(ref x: int) { x += 1; }
+    Take(move x: int) {}
+    Bump(ref n);
+    Bump(n); //~ ERROR MR0205
+    Take(n);
+    Take(move n);
+    Take(ref n); //~ ERROR MR0205
+}
+
+F();

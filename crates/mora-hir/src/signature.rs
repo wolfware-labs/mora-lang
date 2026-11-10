@@ -27,16 +27,34 @@ pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Fi
         return None;
     };
     let values = &item_tree(db, item.file).item(item.item).values;
-    let declares =
-        |member: &ValueMember| matches!(member.kind, ValueKind::Field | ValueKind::Const);
-    if !declares(values.get(index as usize)?) {
+    if !declares_field(values.get(index as usize)?) {
         return None;
     }
     let n = values[..index as usize]
         .iter()
-        .filter(|member| declares(member))
+        .filter(|member| declares_field(member))
         .count();
     Some((n, fields.get(n)?))
+}
+
+/// The value member that declares the field at position `n` of
+/// [`Signature::Struct`] of `item`, with its position among the value
+/// members: the inverse of [`struct_field`].
+pub fn field_member(db: &dyn Db, item: ItemId, n: usize) -> Option<(u32, &ValueMember)> {
+    let (index, member) = item_tree(db, item.file)
+        .item(item.item)
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| declares_field(member))
+        .nth(n)?;
+    Some((u32::try_from(index).ok()?, member))
+}
+
+/// Whether `member` declares a field of [`Signature::Struct`]: a field or a
+/// constant.
+fn declares_field(member: &ValueMember) -> bool {
+    matches!(member.kind, ValueKind::Field | ValueKind::Const)
 }
 
 /// The type of `this` in the method `item`: the struct it is declared in
@@ -461,6 +479,25 @@ mod tests {
             struct_field(&db, item_named(&db, project, file, "C"), 0),
             None
         );
+    }
+
+    #[test]
+    fn a_field_finds_the_value_member_that_declares_it() {
+        let db = TestDb::new();
+        let text = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
+                    static S: long = 2;\n    Y: string;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let p = item_named(&db, project, file, "P");
+        let found = |n: usize| {
+            field_member(&db, p, n)
+                .map(|(index, member)| (index, member.name.clone(), member.is_instance_field()))
+        };
+        assert_eq!(found(0), Some((0, "X".to_owned(), true)));
+        assert_eq!(found(1), Some((2, "K".to_owned(), false)));
+        assert_eq!(found(2), Some((3, "S".to_owned(), false)));
+        assert_eq!(found(3), Some((4, "Y".to_owned(), true)));
+        assert_eq!(found(4), None);
     }
 
     #[test]

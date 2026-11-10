@@ -1,22 +1,18 @@
-//! Local functions (§7.10). A local function is not a value and cannot
-//! outlive the body it is declared in, so it is lowered as a body of its
-//! own that takes what it uses of the bodies around it as extra
-//! parameters: an `in` borrow of each local it reads, a `ref` borrow of
-//! each it assigns. A call passes those borrows after the arguments.
+//! Local functions (§7.10). A local function is lowered as a body of its
+//! own, which takes what it uses of the bodies around it as extra
+//! parameters, as [`mora_hir::local_functions`] gives them: `this` first,
+//! as a borrow, then its own parameters, then a borrow of each local it
+//! takes. A call passes the arguments and those borrows in that order.
 //!
-//! An expression, a local or a local function is inside a local function
-//! when its text is.
+//! A local function's body is named after the body it is declared in, a
+//! dot and its own name, as `App.F.G`. Local functions of one name in the
+//! same body, in blocks side by side, are told apart by a suffix after the
+//! first: `App.F.G#2` for the second in the order of the text.
 
-use std::collections::{BTreeMap, HashSet};
-
-use mora_hir::{
-    ArgMode, Expr, ExprId, LocalFunction, LocalKind, ParamMode, Signature, Stmt, Ty, UnaryOp,
-    arena_index, signature,
-};
-use mora_span::TextRange;
+use mora_hir::{Captured, LocalFunction, ParamMode, Stmt, Ty, local_functions};
 
 use super::{BodyShape, Owner};
-use crate::{BorrowMode, LocalTy};
+use crate::types::param_ty;
 
 /// A local function of an owner.
 pub(crate) struct LocalFn<'a> {
@@ -24,167 +20,50 @@ pub(crate) struct LocalFn<'a> {
     pub(super) local: mora_hir::LocalId,
     /// Its declaration.
     pub(super) def: &'a LocalFunction,
-    /// Its name: the name of the body it is declared in, a dot, and its own.
+    /// The name of its body.
     name: String,
-    /// The locals of the bodies around it that it uses, in the order of
-    /// their declarations, each with the borrow it takes of it.
-    pub(super) captures: Vec<(mora_hir::LocalId, BorrowMode)>,
-}
-
-/// What a local function uses of the bodies around it.
-struct Uses {
-    /// Where its text is.
-    range: TextRange,
-    /// The locals it uses, by their position, each with the borrow it
-    /// takes of it.
-    captures: BTreeMap<usize, (mora_hir::LocalId, BorrowMode)>,
-    /// The local functions it uses that are not inside it.
-    functions: Vec<mora_hir::LocalId>,
+    /// What it takes from the bodies around it, `this` first, each with the
+    /// mode of its borrow.
+    pub(super) captures: &'a [(Captured, ParamMode)],
 }
 
 impl<'a> Owner<'a> {
-    /// The local functions of the body, in the order of the text, with
-    /// what each uses of the bodies around it.
-    pub(super) fn local_functions(&self) -> Vec<LocalFn<'a>> {
+    /// The local functions of the body, in the order of the text.
+    pub(super) fn local_functions(&self, owner: mora_hir::BodyOwner) -> Vec<LocalFn<'a>> {
         let hir = self.hir;
-        let mut found: Vec<(TextRange, &'a LocalFunction)> = hir
-            .stmts
-            .iter()
-            .filter_map(|(id, stmt)| match stmt {
-                Stmt::Function(function) => Some((self.stmt_range(id), function)),
-                _ => None,
-            })
-            .collect();
-        found.sort_by_key(|(range, _)| range.start());
-        let mut uses: Vec<Uses> = found.iter().map(|&(range, _)| self.uses(range)).collect();
-        // What a local function calls takes what it uses too, unless it is
-        // declared in the caller. A local function is declared before the
-        // code that calls it, so it comes first in the text, and one pass
-        // in that order is enough.
-        let position = |local| found.iter().position(|(_, def)| def.local == local);
-        for caller in 0..uses.len() {
-            for callee in uses[caller].functions.clone() {
-                let Some(callee) = position(callee) else {
-                    continue;
-                };
-                let inherited: Vec<_> = uses[callee].captures.values().copied().collect();
-                for (local, mode) in inherited {
-                    if !self.declared_in(uses[caller].range, local) {
-                        capture(&mut uses[caller].captures, local, mode);
-                    }
-                }
-            }
-        }
+        let found = local_functions(self.db, self.project, self.file, owner);
         let mut functions: Vec<LocalFn<'a>> = Vec::with_capacity(found.len());
-        for (index, ((range, def), uses)) in found.iter().zip(uses).enumerate() {
-            let outer = found[..index]
-                .iter()
-                .rposition(|(outer, _)| outer.contains_range(*range));
-            let prefix = outer.map_or(&self.name, |outer| &functions[outer].name);
-            let name = format!("{prefix}.{}", hir.locals[def.local].name);
+        // The name each function would have without a suffix.
+        let mut bases: Vec<String> = Vec::with_capacity(found.len());
+        for function in found {
+            let Stmt::Function(def) = &hir.stmts[function.stmt] else {
+                panic!(
+                    "internal error lowering {}: a local function that is not one",
+                    self.name
+                );
+            };
+            let prefix = function
+                .outer
+                .map_or(&self.name, |outer| &functions[outer].name);
+            let base = format!("{prefix}.{}", hir.locals[def.local].name);
+            let earlier = bases.iter().filter(|&earlier| *earlier == base).count();
+            let name = match earlier {
+                0 => base.clone(),
+                _ => format!("{base}#{}", earlier + 1),
+            };
+            bases.push(base);
             functions.push(LocalFn {
                 local: def.local,
                 def,
                 name,
-                captures: uses.captures.into_values().collect(),
+                captures: &function.captures,
             });
         }
         functions
     }
 
-    /// What the local function whose text is at `range` uses itself of the
-    /// bodies around it.
-    fn uses(&self, range: TextRange) -> Uses {
-        let hir = self.hir;
-        let inside = |expr: ExprId| range.contains_range(self.map.expr(expr));
-        let mut read = Vec::new();
-        let mut assigned = HashSet::new();
-        let mut functions = Vec::new();
-        for (id, expr) in hir.exprs.iter().filter(|&(id, _)| inside(id)) {
-            match expr {
-                Expr::Local(local) if !self.declared_in(range, *local) => {
-                    if hir.locals[*local].kind == LocalKind::Function {
-                        functions.push(*local);
-                    } else {
-                        read.push(*local);
-                    }
-                }
-                Expr::Assign { lhs, .. } => self.roots(*lhs, &mut assigned),
-                Expr::Unary {
-                    op: UnaryOp::PreIncrement | UnaryOp::PreDecrement,
-                    expr: target,
-                }
-                | Expr::Postfix { expr: target, .. } => self.roots(*target, &mut assigned),
-                Expr::Call { callee, args } => {
-                    for arg in args.iter().filter(|arg| arg.mode == Some(ArgMode::Ref)) {
-                        self.roots(arg.expr, &mut assigned);
-                    }
-                    if let Expr::Member { receiver, .. } = &hir.exprs[*callee]
-                        && self.takes_ref_receiver(id)
-                    {
-                        self.roots(*receiver, &mut assigned);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut captures = BTreeMap::new();
-        for local in read {
-            let mode = if assigned.contains(&local) {
-                BorrowMode::Ref
-            } else {
-                BorrowMode::In
-            };
-            capture(&mut captures, local, mode);
-        }
-        Uses {
-            range,
-            captures,
-            functions,
-        }
-    }
-
-    /// Whether the call `call` calls a `mut` method.
-    fn takes_ref_receiver(&self, call: ExprId) -> bool {
-        let Some(item) = self.inference.callee(call).and_then(mora_hir::Callee::item) else {
-            return false;
-        };
-        matches!(
-            signature(self.db, item),
-            Signature::Function(function) if function.receiver == Some(ParamMode::Ref)
-        )
-    }
-
-    /// Adds to `out` the local the place `place` is in: a local, or a
-    /// field of one.
-    fn roots(&self, place: ExprId, out: &mut HashSet<mora_hir::LocalId>) {
-        match &self.hir.exprs[place] {
-            Expr::Local(local) => {
-                out.insert(*local);
-            }
-            Expr::Member { receiver, .. } => self.roots(*receiver, out),
-            _ => {}
-        }
-    }
-
-    /// Whether `local` is declared inside the text at `range`.
-    fn declared_in(&self, range: TextRange, local: mora_hir::LocalId) -> bool {
-        range.contains_range(self.map.local(local))
-    }
-
-    /// Where the text of the statement `stmt` is.
-    fn stmt_range(&self, stmt: mora_hir::StmtId) -> TextRange {
-        match self.map.stmts.get(&stmt) {
-            Some(range) => *range,
-            None => panic!(
-                "internal error lowering {}: a statement without its range",
-                self.name
-            ),
-        }
-    }
-
-    /// The shape of the body of the local function `function`: its own
-    /// parameters, `in` (§10.3), then what it uses of the bodies around it.
+    /// The shape of the body of the local function `function`: `this`, its
+    /// own parameters, then the locals it takes.
     pub(super) fn function_shape(&self, function: &LocalFn<'_>) -> BodyShape {
         let def = function.def;
         let at = self.map.local(def.local);
@@ -194,22 +73,29 @@ impl<'a> Owner<'a> {
         if def.is_async {
             self.ice_at(&function.name, at, "an async local function is not lowered");
         }
+        let mut this = None;
+        let mut captures = Vec::new();
+        for &(captured, mode) in function.captures {
+            match captured {
+                Captured::This => match &self.this_ty {
+                    Some(ty) => this = Some(param_ty(mode, ty.clone())),
+                    None => self.ice_at(&function.name, at, "`this` outside a method"),
+                },
+                Captured::Local(local) => captures.push((local, mode)),
+            }
+        }
         let params = def
             .params
             .iter()
-            .map(|&param| (param, BorrowMode::In))
-            .chain(function.captures.iter().copied())
-            .map(|(local, mode)| {
-                (
-                    local,
-                    LocalTy::Borrow(mode, self.local_ty(&function.name, local)),
-                )
-            })
+            .copied()
+            .zip(def.modes.iter().copied())
+            .chain(captures)
+            .map(|(local, mode)| (local, param_ty(mode, self.local_ty(&function.name, local))))
             .collect();
         BodyShape {
             name: function.name.clone(),
             ret: self.resolution.return_type(def.ret),
-            this: None,
+            this,
             params,
             root,
         }
@@ -235,18 +121,5 @@ impl<'a> Owner<'a> {
             .iter()
             .position(|function| function.local == local)?;
         Some((index + 1, &self.functions[index]))
-    }
-}
-
-/// Records that a local function uses `local` with a borrow of `mode`: a
-/// `ref` borrow when any use needs one.
-fn capture(
-    captures: &mut BTreeMap<usize, (mora_hir::LocalId, BorrowMode)>,
-    local: mora_hir::LocalId,
-    mode: BorrowMode,
-) {
-    let (_, recorded) = captures.entry(arena_index(local)).or_insert((local, mode));
-    if mode == BorrowMode::Ref {
-        *recorded = BorrowMode::Ref;
     }
 }

@@ -4,8 +4,8 @@
 //! the parameters (§7, §10.3).
 
 use mora_hir::{
-    Arg, ArgMode, BodyOwner, Expr, ExprId, Inference, ItemId, ParamMode, Resolved, Signature,
-    Target, Ty, body, calls_diverging, infer, signature,
+    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, LocalKind, ParamMode, Resolved,
+    Signature, Target, Ty, body, calls_diverging, infer, signature,
 };
 use mora_span::Span;
 
@@ -34,6 +34,16 @@ impl Lowerer<'_> {
                 {
                     self.operand(*receiver)?;
                     self.ice(expr, "a value of the never type was made");
+                }
+                // Calls of generic and async local functions are not checked
+                // yet, so they have no callee.
+                if let Expr::Local(local) = &self.owner.hir.exprs[callee]
+                    && self.owner.hir.locals[*local].kind == LocalKind::Function
+                {
+                    self.ice(
+                        expr,
+                        "a call of a generic or async local function is not lowered",
+                    );
                 }
                 let Some(path) = self.external_path(callee) else {
                     self.ice(expr, "the call has no callee")
@@ -165,8 +175,9 @@ impl Lowerer<'_> {
         ))
     }
 
-    /// A call of the local function `local`: its arguments, `in` (§10.3),
-    /// then a borrow of each local of the bodies around it that it uses.
+    /// A call of the local function `local`: a borrow of `this` when it
+    /// takes it, its arguments, then a borrow of each local of the bodies
+    /// around it that it takes.
     fn local_call(
         &mut self,
         expr: ExprId,
@@ -178,22 +189,22 @@ impl Lowerer<'_> {
         let Some((index, function)) = owner.function(local) else {
             self.ice(expr, "the callee is not a local function of the body")
         };
-        // The parameters of a local function have no recorded modes, so
-        // each takes the default.
-        if args
-            .iter()
-            .any(|arg| matches!(arg.mode, Some(ArgMode::Ref | ArgMode::Move)))
-        {
-            self.ice(
-                expr,
-                "a `ref` or `move` argument of a local function is not lowered",
-            );
-        }
         let def = function.def;
+        let span = self.span(expr);
         let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
-        let modes = vec![ParamMode::In; def.params.len()];
-        let passed = self.arguments(expr, &values, &modes)?;
         let mut operands = Vec::with_capacity(def.params.len() + function.captures.len());
+        // `this` first, then the arguments, then the locals it takes.
+        let mut locals = Vec::with_capacity(function.captures.len());
+        for &(captured, mode) in function.captures {
+            match captured {
+                Captured::This => {
+                    let this = Operand::Copy(self.this_place(expr));
+                    operands.push(self.pass(this, mode, span));
+                }
+                Captured::Local(local) => locals.push((local, mode)),
+            }
+        }
+        let passed = self.arguments(expr, &values, &def.modes)?;
         for (index, operand) in passed.into_iter().enumerate() {
             operands.push(match operand {
                 Some(operand) => operand,
@@ -203,14 +214,13 @@ impl Lowerer<'_> {
                     owner.inference,
                     Some(def.params[index]),
                     &def.defaults,
-                    ParamMode::In,
+                    def.modes[index],
                 ),
             });
         }
-        let span = self.span(expr);
-        for &(captured, mode) in &function.captures {
-            let place = self.local_place(captured);
-            operands.push(self.borrow(mode, place, span));
+        for (local, mode) in locals {
+            let place = Operand::Copy(self.local_place(local));
+            operands.push(self.pass(place, mode, span));
         }
         let ret = owner.resolution.return_type(def.ret);
         Ok(self.finish_call(expr, Callee::Local(index), operands, ret, dest))

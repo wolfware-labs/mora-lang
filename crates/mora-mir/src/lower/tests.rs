@@ -2149,23 +2149,6 @@ fn a_local_function_takes_its_default_arguments() {
 }
 
 #[test]
-#[should_panic(expected = "a `ref` or `move` argument of a local function is not lowered")]
-fn a_marked_argument_of_a_local_function_is_not_lowered() {
-    let lowered = lowered("F() {\n    var x = 1;\n    G(k: int) {}\n    G(ref x);\n}\n");
-    lowered.mir("F");
-}
-
-#[test]
-#[should_panic(expected = "`this` is not lowered outside a method")]
-fn this_in_a_local_function_is_not_lowered() {
-    let lowered = lowered(
-        "struct P {\n    X: int;\n    Get(): int {\n        G(): int => X;\n        \
-         return G();\n    }\n}\n",
-    );
-    lowered.mir("Get");
-}
-
-#[test]
 fn a_method_named_alone_takes_this() {
     let lowered = lowered(
         "struct P {\n    public mut X: int;\n    Plus(k: int): int => X + k;\n    \
@@ -2259,7 +2242,7 @@ fn a_step_of_a_field_whose_value_is_used_keeps_the_old_value() {
 }
 
 #[test]
-#[should_panic(expected = "a struct with a static or constant field is not lowered")]
+#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
 fn a_struct_with_a_static_field_is_not_built() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public static S: int = 1;\n}\n\
@@ -2299,11 +2282,150 @@ fn the_initializer_of_a_static_field_is_not_lowered() {
 }
 
 #[test]
-#[should_panic(expected = "a name that is not a field of `this` is not lowered")]
+#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
 fn a_static_field_named_in_a_method_is_not_lowered() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public static S: int = 1;\n    \
          Get(): int => S;\n}\n",
     );
     lowered.mir("Get");
+}
+
+#[test]
+fn local_function_parameters_take_their_modes() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n}\nF(): int {\n    var x = 1;\n    \
+         G(ref k: int) { k += 1; }\n    G(ref x);\n    let p = new P { X = 1 };\n    \
+         H(move q: P): int => q.X;\n    let a = H(p);\n    M(move q: int): int => q;\n    \
+         return a + M(move x);\n}\n",
+    );
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    let headers: Vec<&str> = out.lines().filter(|line| line.starts_with("fn ")).collect();
+    assert_eq!(
+        headers,
+        [
+            "fn UsersApi.F() -> int {",
+            "fn UsersApi.F.G(k#2: ref int) -> () {",
+            "fn UsersApi.F.H(q#5: P) -> int {",
+            "fn UsersApi.F.M(q#8: int) -> int {",
+        ]
+    );
+    assert_in_order(&body_code(&lowered, "F", 1), &["(*k#2) = copy (*k#2) + 1;"]);
+    assert_eq!(body_code(&lowered, "F", 2), ["_0 = copy q#5.X;", "return;"]);
+    assert_in_order(
+        &body_code(&lowered, "F", 0),
+        &[
+            "_4 = &ref x#0;",
+            "call UsersApi.F.G(copy _4) -> bb1;",
+            "a#6 = call UsersApi.F.H(copy p#3) -> bb2;",
+            "_6 = call UsersApi.F.M(copy x#0) -> bb3;",
+        ],
+    );
+}
+
+#[test]
+fn this_in_a_local_function_is_lifted() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    \
+         Get(): int {\n        G(): int => X;\n        return G();\n    }\n    \
+         mut Set() {\n        H() { X = 2; }\n        H();\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.bodies("Get"),
+        ["UsersApi.P.Get", "UsersApi.P.Get.G"]
+    );
+    let mut out = String::new();
+    write_mir(
+        &mut out,
+        &lowered.db,
+        Some(lowered.file),
+        lowered.mir("Get"),
+    );
+    assert!(
+        out.contains("fn UsersApi.P.Get.G(this: in P) -> int {"),
+        "{out}"
+    );
+    assert_eq!(
+        body_code(&lowered, "Get", 1),
+        ["_0 = copy (*this).X;", "return;"]
+    );
+    assert_in_order(
+        &body_code(&lowered, "Get", 0),
+        &[
+            "_2 = &in (*this);",
+            "_0 = call UsersApi.P.Get.G(copy _2) -> bb1;",
+        ],
+    );
+    let mut out = String::new();
+    write_mir(
+        &mut out,
+        &lowered.db,
+        Some(lowered.file),
+        lowered.mir("Set"),
+    );
+    assert!(
+        out.contains("fn UsersApi.P.Set.H(this: ref P) -> () {"),
+        "{out}"
+    );
+    assert_in_order(&body_code(&lowered, "Set", 1), &["(*this).X = 2;"]);
+    assert_in_order(
+        &body_code(&lowered, "Set", 0),
+        &[
+            "_2 = &ref (*this);",
+            "call UsersApi.P.Set.H(copy _2) -> bb1;",
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+fn a_constant_read_through_a_value_is_not_lowered() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public const K: int = 2;\n}\nF(p: P): int => p.K;\n",
+    );
+    lowered.mir("F");
+}
+
+#[test]
+#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+fn a_static_read_through_this_is_not_lowered() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public static mut N: int = 2;\n    \
+         Get(): int => this.N;\n}\n",
+    );
+    lowered.mir("Get");
+}
+
+#[test]
+fn local_functions_of_one_name_get_their_own_names() {
+    let lowered = lowered(
+        "F(a: bool): int {\n    if (a) {\n        G(): int => 1;\n        return G();\n    } else {\n        \
+         G(): int => 2;\n        return G();\n    }\n}\n",
+    );
+    assert_eq!(
+        lowered.bodies("F"),
+        ["UsersApi.F", "UsersApi.F.G", "UsersApi.F.G#2"]
+    );
+    assert_in_order(
+        &body_code(&lowered, "F", 0),
+        &[
+            "_0 = call UsersApi.F.G() -> bb3;",
+            "_0 = call UsersApi.F.G#2() -> bb6;",
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a method of a generic struct is not lowered")]
+fn a_method_of_a_generic_struct_is_not_lowered() {
+    let lowered = lowered("struct B<T> {\n    M() {}\n}\n");
+    lowered.mir("M");
+}
+
+#[test]
+#[should_panic(expected = "a call of a generic or async local function is not lowered")]
+fn a_call_of_a_generic_local_function_is_not_lowered() {
+    let lowered = lowered("F(): int {\n    Id<T>(move x: T): T => x;\n    return Id(1);\n}\n");
+    lowered.mir("F");
 }
