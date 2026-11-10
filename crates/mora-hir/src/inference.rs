@@ -46,6 +46,8 @@ pub struct Inference {
     /// The value of each operation made only of literals that took a target
     /// type and fits it.
     constants: HashMap<ExprId, Constant>,
+    /// The conversion applied to each expression that changes type.
+    conversions: HashMap<ExprId, Conversion>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
 }
@@ -72,7 +74,34 @@ impl std::fmt::Display for Constant {
     }
 }
 
+/// How a value changes type where inference converts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversionKind {
+    /// A widening that needs no cast (§5.10, §7.12).
+    Implicit,
+    /// A numeric conversion that a cast writes, or that a compound
+    /// assignment applies to its result.
+    Numeric,
+}
+
+/// A conversion of an expression's value to another type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conversion {
+    /// The type the value converts to.
+    pub to: Ty,
+    /// How the conversion comes about.
+    pub kind: ConversionKind,
+}
+
 impl Inference {
+    /// The conversion applied to the value of `expr`, when it changes type:
+    /// to the type its context expects, to the promoted type of its
+    /// operation, or by a cast. A compound assignment carries the cast
+    /// back of its result to the type of its place.
+    pub fn conversion(&self, expr: ExprId) -> Option<&Conversion> {
+        self.conversions.get(&expr)
+    }
+
     /// What the call `call` calls, when the call is checked: the overload
     /// that overload resolution chose, or the one function of its name.
     pub fn callee(&self, call: ExprId) -> Option<Callee> {
@@ -361,6 +390,142 @@ mod tests {
                 format!("{}: {ty}", data.name)
             })
             .collect()
+    }
+
+    /// The conversions inference records in the top-level statements of
+    /// `text`, in expression order, as `<expression>: <kind> <type>`; a
+    /// local shows as its name, an assignment as `=`, any other expression
+    /// as `_`.
+    fn conversions(text: &str) -> Vec<String> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        body.exprs
+            .iter()
+            .filter_map(|(id, expr)| {
+                let conversion = inference.conversion(id)?;
+                let label = match expr {
+                    Expr::Local(local) => body.locals[*local].name.clone(),
+                    Expr::Assign { .. } => "=".to_owned(),
+                    _ => "_".to_owned(),
+                };
+                let kind = match conversion.kind {
+                    ConversionKind::Implicit => "Implicit",
+                    ConversionKind::Numeric => "Numeric",
+                };
+                Some(format!(
+                    "{label}: {kind} {}",
+                    super::ty_name(&db, &conversion.to)
+                ))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn records_coerce_widening() {
+        assert_eq!(
+            conversions("let n: int = 1;\nlet x: long = n;\n"),
+            ["n: Implicit long"]
+        );
+    }
+
+    #[test]
+    fn records_struct_initializer_widening() {
+        let text = "struct S { public L: long; }\nlet n: int = 1;\nlet s = new S { L = n };\n";
+        assert_eq!(conversions(text), ["n: Implicit long"]);
+    }
+
+    #[test]
+    fn records_binary_promotion() {
+        let text = "let b1: byte = 1;\nlet b2: byte = 2;\nlet r = b1 + b2;\n";
+        assert_eq!(conversions(text), ["b1: Implicit int", "b2: Implicit int"]);
+    }
+
+    #[test]
+    fn records_only_the_operand_that_widens() {
+        let text = "let i: int = 1;\nlet l: long = 2;\nlet r = i < l;\n";
+        assert_eq!(conversions(text), ["i: Implicit long"]);
+    }
+
+    #[test]
+    fn records_unary_widening() {
+        assert_eq!(
+            conversions("let u: uint = 1u;\nlet r = -u;\n"),
+            ["u: Implicit long"]
+        );
+        assert_eq!(
+            conversions("let b: byte = 1;\nlet r = ~b;\n"),
+            ["b: Implicit int"]
+        );
+    }
+
+    #[test]
+    fn a_step_records_nothing() {
+        assert_eq!(
+            conversions("let b: byte = 1;\nb++;\n++b;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn records_shift_left_operand() {
+        let text = "let small: byte = 1;\nlet r = small << 2;\n";
+        assert_eq!(conversions(text), ["small: Implicit int"]);
+        let text = "let n: int = 1;\nlet c: byte = 2;\nlet r = n << c;\n";
+        assert_eq!(conversions(text), ["c: Implicit int"]);
+    }
+
+    #[test]
+    fn records_conditional_branch() {
+        let text = "let c = true;\nlet i: int = 1;\nlet l: long = 2;\nlet r = c ? i : l;\n";
+        assert_eq!(conversions(text), ["i: Implicit long"]);
+        let text = "let c = true;\nlet i: int = 1;\nlet l: long = 2;\nlet r = c ? l : i;\n";
+        assert_eq!(conversions(text), ["i: Implicit long"]);
+    }
+
+    #[test]
+    fn records_targeted_conditional_branches_once() {
+        let text = "let c = true;\nlet i: int = 1;\nlet r: long = c ? i : 2;\n";
+        assert_eq!(conversions(text), ["i: Implicit long"]);
+    }
+
+    #[test]
+    fn records_explicit_cast() {
+        assert_eq!(
+            conversions("let n: int = 1;\nlet r = (byte)n;\n"),
+            ["n: Numeric byte"]
+        );
+        assert_eq!(
+            conversions("let n: int = 1;\nlet r = (int)n;\n"),
+            ["n: Numeric int"]
+        );
+    }
+
+    #[test]
+    fn records_compound_cast_back() {
+        let text = "let b: byte = 1;\nb += 1;\n";
+        assert_eq!(
+            conversions(text),
+            ["b: Implicit int", "_: Implicit int", "=: Numeric byte"]
+        );
+    }
+
+    #[test]
+    fn a_compound_assignment_of_one_type_records_no_cast_back() {
+        assert_eq!(
+            conversions("let n: int = 1;\nn += 2;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn same_type_records_nothing() {
+        assert_eq!(
+            conversions("let n: int = 1;\nlet x: int = n;\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

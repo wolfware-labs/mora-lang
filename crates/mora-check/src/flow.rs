@@ -10,15 +10,10 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
     ExprId, InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
-    Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree,
-    signature,
+    Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, is_diverging,
+    item_tree, signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
-
-/// The names of the standard library's functions of the never type (§11.4),
-/// which a path ends at. Until the standard library is loaded they are
-/// recognised by name (D-138).
-const DIVERGING: [&str; 3] = ["panic", "Unreachable", "Todo"];
 
 /// A set of locals, by their index.
 #[derive(Clone, PartialEq, Eq)]
@@ -875,7 +870,7 @@ impl Flow<'_> {
             },
             _ => return false,
         };
-        DIVERGING.contains(&name.as_str())
+        is_diverging(std::slice::from_ref(name))
             && self.resolution.paths.get(&path).is_some_and(|resolution| {
                 matches!(resolution.target, Target::Item(Resolved::External))
             })

@@ -10,7 +10,8 @@ use mora_syntax::lexer::number::{
 };
 
 use super::{
-    Callee, Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same,
+    Callee, Constant, Context, Conversion, ConversionKind, Inference, TypeError, constant,
+    converts, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -62,6 +63,7 @@ pub(super) fn infer_body(
         calls: HashMap::new(),
         local_functions: None,
         constants: HashMap::new(),
+        conversions: HashMap::new(),
         errors: Vec::new(),
         ret: None,
         scope: body_scope(project, file, owner),
@@ -123,6 +125,7 @@ pub(super) fn infer_body(
         locals: check.locals,
         calls: check.calls,
         constants: check.constants,
+        conversions: check.conversions,
         errors: check.errors,
     }
 }
@@ -147,6 +150,8 @@ struct Check<'a> {
     local_functions: Option<HashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
     constants: HashMap<ExprId, Constant>,
+    /// The conversions applied so far.
+    conversions: HashMap<ExprId, Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
@@ -210,15 +215,31 @@ impl Check<'_> {
         if let Some(found) = found
             && is_known(found)
             && is_known(expected)
-            && !context.accepts(found, expected)
         {
-            self.errors.push(TypeError::Mismatch {
-                expr,
-                expected: expected.clone(),
-                found: found.clone(),
-                context,
-            });
+            if !context.accepts(found, expected) {
+                self.errors.push(TypeError::Mismatch {
+                    expr,
+                    expected: expected.clone(),
+                    found: found.clone(),
+                    context,
+                });
+            } else {
+                self.widen(expr, found, expected);
+            }
         }
+    }
+
+    /// Records that `expr`, of type `from`, converts to `to` where it is
+    /// used, when the types differ.
+    fn widen(&mut self, expr: ExprId, from: &Ty, to: &Ty) {
+        if !same(from, to) {
+            self.convert(expr, to.clone(), ConversionKind::Implicit);
+        }
+    }
+
+    /// Records the conversion of `expr` to `to`.
+    fn convert(&mut self, expr: ExprId, to: Ty, kind: ConversionKind) {
+        self.conversions.insert(expr, Conversion { to, kind });
     }
 
     fn block(&mut self, stmts: &[StmtId]) {
@@ -819,7 +840,11 @@ impl Check<'_> {
         result: Option<Primitive>,
     ) -> Option<Ty> {
         match result {
-            Some(ty) => Some(Ty::Primitive(ty)),
+            Some(result) => {
+                let result = Ty::Primitive(result);
+                self.widen(operand, &ty, &result);
+                Some(result)
+            }
             None => {
                 self.errors.push(TypeError::Unary {
                     expr,
@@ -901,7 +926,11 @@ impl Check<'_> {
                 self.coerce(rhs, count.as_ref(), &INT, Context::Value);
                 let value = value?;
                 return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
-                    Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
+                    Some(ty) => {
+                        let widened = Ty::Primitive(numeric::widen_small(ty));
+                        self.widen(lhs, &value, &widened);
+                        Some(widened)
+                    }
                     None if !is_known(&value) => None,
                     None => {
                         self.errors.push(TypeError::Binary {
@@ -946,7 +975,16 @@ impl Check<'_> {
             return None;
         }
         match operator(op, &l, &r) {
-            Some(ty) => Some(ty),
+            Some(ty) => {
+                if let (Some(a), Some(b)) = (numeric::as_numeric(&l), numeric::as_numeric(&r))
+                    && let Some(promoted) = numeric::promote(a, b)
+                {
+                    let promoted = Ty::Primitive(promoted);
+                    self.widen(lhs, &l, &promoted);
+                    self.widen(rhs, &r, &promoted);
+                }
+                Some(ty)
+            }
             None => {
                 self.errors.push(TypeError::Binary {
                     expr,
@@ -971,7 +1009,17 @@ impl Check<'_> {
                 self.deconstruct(lhs, &places, rhs);
             }
             Some(op) => {
-                self.binary(expr, op, lhs, rhs);
+                let result = self.binary(expr, op, lhs, rhs);
+                // The result converts back to the type of the place as a
+                // cast would (§7.12).
+                let place = self.exprs[arena_index(lhs)].clone();
+                if let (Some(result), Some(place)) = (result, place)
+                    && is_known(&result)
+                    && is_known(&place)
+                    && !same(&result, &place)
+                {
+                    self.convert(expr, place, ConversionKind::Numeric);
+                }
             }
         }
     }
@@ -1107,15 +1155,17 @@ impl Check<'_> {
         if let Some(from) = self.infer(operand)
             && is_known(&from)
             && is_known(&to)
-            && !same(&from, &to)
-            && (numeric::as_numeric(&from).is_none() || numeric::as_numeric(&to).is_none())
         {
-            self.errors.push(TypeError::Cast {
-                expr,
-                operand,
-                from,
-                to: to.clone(),
-            });
+            if numeric::as_numeric(&from).is_some() && numeric::as_numeric(&to).is_some() {
+                self.convert(operand, to.clone(), ConversionKind::Numeric);
+            } else if !same(&from, &to) {
+                self.errors.push(TypeError::Cast {
+                    expr,
+                    operand,
+                    from,
+                    to: to.clone(),
+                });
+            }
         }
         Some(to)
     }
@@ -1142,8 +1192,10 @@ impl Check<'_> {
             return None;
         }
         if converts(&b, &a) {
+            self.widen(r#else, &b, &a);
             Some(a)
         } else if converts(&a, &b) {
+            self.widen(then, &a, &b);
             Some(b)
         } else {
             self.errors.push(TypeError::Mismatch {
