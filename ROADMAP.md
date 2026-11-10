@@ -385,6 +385,8 @@ Done when:
 
 - §2.1 prints `Hello, world!`.
 - Run tests interpolate every primitive type.
+- MIR has no `External` callee and no `Interpolate` rvalue, and diverging calls are known from their declarations: the M1.10 stand-ins are removed.
+- The strings run test prints `name.Length`.
 
 ### M1.16 Driver and the build, run and check commands
 
@@ -1073,6 +1075,7 @@ Done when:
 
 - Modifying a list inside `foreach` panics with `collection was modified during enumeration`.
 - A method returning `IEnumerable<User>` works with `foreach` and the sequence operators.
+- A run test iterates the collection expression `["a", "b", "c"]` with `foreach`.
 
 ### M5.7 Sequence operators
 

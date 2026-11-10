@@ -844,6 +844,7 @@ let options = new Options { Port = 8080, Retries = 5 };
 ```
 
 - `new T { F = v, ... }` MUST assign every field that has no initializer (`MR0143`). It may also assign a field that has one, and the value given replaces the initializer. A getter, plain or `stored`, is never assigned.
+- The written field values run left to right, then the initializers of the omitted fields run in declaration order (D-142).
 - Read-only fields may be assigned, because creating a value is not mutating it.
 - `new() { F = v, ... }` does the same where the target type is known. On such a type, `new T()` and `new()` name no fields.
 - Memberwise creation is available only where every field without an initializer is visible. Where one is not, `new T { ... }` is error `MR0144`. A library type that keeps such a field private is created only through what the library provides.
@@ -2134,6 +2135,20 @@ Terminator = Goto(b) | Switch(Operand, [(value, b)], otherwise) | Return | Call 
 
 Before monomorphization, types may contain type parameters. `Retain` and `Release` appear only after ARC insertion (§14.11); `Await` disappears in async lowering (§14.9). Every MIR statement carries a span for diagnostics and debug line tables. A textual MIR dump (`mora build --emit mir`) is stable enough to be used in snapshot tests.
 
+**Numbering.** In the first compiler, `Field(n)` counts the fields of a struct by declaration order, from zero.
+
+**Arithmetic.** `Add`, `Sub`, `Mul` and unary `-` are checked by meaning: a result that does not fit its type panics. The wrapping forms `+%`, `-%` and `*%` wrap. `Div` and `Rem` include the panic for division by zero. Code generation applies the build profile (§17.2), so MIR does not depend on it.
+
+**Conversions.** Every conversion that inference applies is a `Cast` of kind `Implicit`. A written cast, and the cast back that a compound assignment applies to its result (§7.12), is a `Cast` of kind `Numeric`.
+
+**Parameter modes.** An `in` or `ref` argument, and `this`, is passed as a borrow: a `Borrow` rvalue stores it in a temporary and the call takes that temporary. A parameter of those modes holds a borrow, and its value is reached through `Deref`. A local function's captures are passed as `in` and `ref` parameters, before its own parameters; a captured `this` is `ref` when the local function writes through it and `in` otherwise.
+
+**Diverging calls.** A `Call` with no `next` does not return, as a call of a function that never returns does (D-138). The block after the call is unreachable, so lowering emits none for it.
+
+**M1 stand-ins.** Until the standard library is loaded (M1.15), a call whose target is a `Std` name the compiler cannot see has an `External` callee naming its path and no result, and an interpolated string is an `Interpolate` rvalue of text pieces and operands. The validator rejects both once `Std` is loaded.
+
+**Validation.** A validator checks that every place and operand is typed and consistent and that every block ends in one terminator. Debug builds of the compiler run it after every pass.
+
 ### 14.8 MIR checks
 
 Run on generic MIR, before async lowering, in this order:
@@ -3144,7 +3159,7 @@ The domain is `moralang.org` (D-130).
 |---|---|---|
 | Unit | Rust tests inside each crate | `crates/*/src`, `crates/*/tests` |
 | UI | A `.mr` file per case, with `//~ ERROR MR0310` annotations on the lines that must report; the rendered output is snapshot-tested | `tests/ui/` |
-| Run | A `.mr` program with `// expect:` stdout, optional `// exit:` code; built, run through the JIT and through an AOT build, outputs compared (differential) | `tests/run/` |
+| Run | A `.mr` program with `// expect:` stdout, optional `// exit:` code; built, run through the JIT and through an AOT build, outputs compared (differential); its HIR and MIR are snapshot-tested beside it (`.hir`, `.mir`) | `tests/run/` |
 | Memory | The suite of §20.3 | `tests/memory/` |
 | MIR snapshots | `--emit mir` after ARC optimization for the guarantees of §10.13 | `tests/mir/` |
 | Spec examples | §20.4 | extracted |
@@ -3383,6 +3398,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-139 | Deconstruction is an assignment as well as a declaration: `(a, b) = value;` assigns each place on the left, locals, fields, elements and nested tuples, with `_` discarding an element only there; a tuple literal is checked element by element against the places, and another value by its type, element by element; `_` counts toward the number of elements, and a value of another shape, one that is not a tuple or has another number of elements, is `MR0203`, except a positional struct, whose deconstruction is not checked yet, as in a declaration; an assignment to something that is not a place, as in `1 = 2;` or `(a, F()) = pair;`, is not reported until places are checked (M2) | user | 5.5, 6.5, 7.10 |
 | D-140 | A `services` block may be generic, with type parameters and constraints; an instantiation such as `SqlStore<UsersDb>` is a base, two instantiations with different type arguments are two bases whose bindings combine under D-124, and one instantiation reached through several paths counts once; associated types and `override` match services after substitution, so a type parameter never names an associated type and an `override` with no match is `MR0702`; a generic block is checked once with each type parameter standing for an unknown type that meets its constraints, and what depends on the type argument is checked per instantiation in each final composition; diagnostics name the instantiation; a final composition must not be generic (`MR0716`); a block that reaches itself through its bases by name, whatever the type arguments, is `MR0717`, so instantiation ends; there is no run-time cost | user | 16.4 |
 | D-141 | An assignment is accepted only where nothing uses its value: an expression statement, a `for` update, an arm of a `match` statement, the whole expression body of a function, constructor, destructor, setter, local function or lambda whose result is `()` (for a lambda, only where a function type is expected), and the branches of a conditional in such a place; used as a value, including in an interpolation hole, it is `MR0185`, with a fix that splits `x = y = 5;` into `y = 5; x = y;` where a statement fits before it, and `x++` stays allowed as a value; a `ref` parameter cannot have a default value (`MR0209`), with a fix that removes the default and one that removes `ref` | user | 7.11, 10.3 |
+| D-142 | In `new T { ... }`, the written field values run left to right, then the initializers of the omitted fields run in declaration order | user | 6.9 |
 
 ## 24. Open questions
 
