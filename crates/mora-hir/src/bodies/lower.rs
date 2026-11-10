@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use mora_span::TextRange;
 use mora_syntax::ast::{self, AstNode};
+use mora_syntax::lexer::literal::{interp_text_value, raw_interp_text_values};
 use mora_syntax::{SyntaxKind, SyntaxToken};
 
 use super::{
@@ -363,7 +364,11 @@ impl Lower {
                 let block = match it.block() {
                     Some(block) => {
                         let stmts = self.block_stmts(&block);
-                        self.alloc_stmt(Stmt::Block(stmts))
+                        let id = self.alloc_stmt(Stmt::Block(stmts));
+                        if let Some(brace) = block.r_brace_token() {
+                            self.map.block_ends.insert(id, brace.text_range());
+                        }
+                        id
                     }
                     None => self.alloc_stmt(Stmt::Missing),
                 };
@@ -509,12 +514,13 @@ impl Lower {
                 .value()
                 .map_or(Expr::Missing, |token| Expr::Literal(literal(token))),
             ast::Expr::InterpString(it) => {
-                let parts = it
+                let mut parts: Vec<InterpPart> = it
                     .interp_parts()
                     .map(|part| match part {
-                        ast::InterpPart::InterpTextPart(text) => {
-                            InterpPart::Text(text.syntax().text())
-                        }
+                        ast::InterpPart::InterpTextPart(text) => InterpPart::Text {
+                            text: text.syntax().text(),
+                            value: None,
+                        },
                         ast::InterpPart::InterpHole(hole) => {
                             let at = hole.syntax().text_range();
                             InterpPart::Hole {
@@ -527,6 +533,10 @@ impl Lower {
                         }
                     })
                     .collect();
+                let raw = it
+                    .interp_start_token()
+                    .is_some_and(|start| start.text().contains('`'));
+                interp_values(&mut parts, raw);
                 Expr::Interpolated(parts)
             }
             ast::Expr::PathExpr(it) => return self.path_expr(it.path(), range),
@@ -1114,4 +1124,38 @@ fn assign_op(kind: SyntaxKind) -> Option<BinaryOp> {
         K::StarPercentEq => B::WrappingMul,
         _ => return None,
     })
+}
+
+/// Sets the value of each text of an interpolated string, raw or not,
+/// from the text as written (§3.5); a text whose value cannot be read,
+/// which the lexer reports, keeps none.
+fn interp_values(parts: &mut [InterpPart], raw: bool) {
+    let values: Vec<Option<String>> = if raw {
+        let texts: Vec<Option<&str>> = parts
+            .iter()
+            .map(|part| match part {
+                InterpPart::Text { text, .. } => Some(text.as_str()),
+                InterpPart::Hole { .. } => None,
+            })
+            .collect();
+        match raw_interp_text_values(&texts) {
+            Some(values) => values.into_iter().map(Some).collect(),
+            None => return,
+        }
+    } else {
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                InterpPart::Text { text, .. } => Some(interp_text_value(text)),
+                InterpPart::Hole { .. } => None,
+            })
+            .collect()
+    };
+    let texts = parts.iter_mut().filter_map(|part| match part {
+        InterpPart::Text { value, .. } => Some(value),
+        InterpPart::Hole { .. } => None,
+    });
+    for (slot, value) in texts.zip(values) {
+        *slot = value;
+    }
 }

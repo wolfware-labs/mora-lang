@@ -242,8 +242,16 @@ pub enum AggregateKind {
 pub enum InterpPiece {
     /// Literal text.
     Text(String),
-    /// A value to format.
-    Operand(Operand),
+    /// A value to format, from a hole `{value,alignment:format}`.
+    Operand {
+        /// The value.
+        value: Operand,
+        /// The width it is padded to, an integer: right-aligned when
+        /// positive, left-aligned when negative.
+        alignment: Option<Operand>,
+        /// The format, as written after the colon.
+        format: Option<String>,
+    },
 }
 
 /// A binary operator.

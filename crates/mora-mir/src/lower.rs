@@ -261,8 +261,14 @@ impl Builder {
 
     /// Closes the innermost scope, ending the storage of its locals in the
     /// reverse order of their declarations.
+    ///
+    /// # Panics
+    ///
+    /// When no scope is open.
     pub(crate) fn leave_scope(&mut self, span: Span) {
-        let locals = self.scopes.pop().unwrap_or_default();
+        let Some(locals) = self.scopes.pop() else {
+            panic!("body {}: a scope left that is not open", self.body.name);
+        };
         self.storage_dead(locals.into_iter().rev(), span);
     }
 
@@ -352,16 +358,23 @@ fn index_u32(index: usize) -> u32 {
 /// The lowering of one body: what the front end knows about it, and the
 /// body being built.
 pub(crate) struct Lowerer<'a> {
+    /// The database the front end's queries read.
     db: &'a dyn Db,
+    /// The file the body is in.
     file: SourceFile,
     /// The body's name, for messages.
     name: String,
+    /// The HIR body.
     hir: &'a mora_hir::Body,
+    /// Where the parts of the HIR body are.
     map: &'a BodySourceMap,
+    /// What the paths of the HIR body name.
     resolution: &'a BodyResolution,
+    /// The types and records of the HIR body.
     inference: &'a Inference,
     /// The MIR local of each parameter and local of the HIR body.
     locals: HashMap<mora_hir::LocalId, LocalId>,
+    /// The MIR body being built.
     builder: Builder,
 }
 
@@ -383,11 +396,17 @@ impl<'a> Lowerer<'a> {
                     item,
                 };
                 match signature(db, item) {
+                    Signature::Function(function) if function.params.len() != hir.params.len() => {
+                        panic!(
+                            "internal error lowering {name}: the signature has {} parameters but the body {}",
+                            function.params.len(),
+                            hir.params.len()
+                        )
+                    }
                     Signature::Function(function)
                         if !function.is_async
                             && !function.is_generic
-                            && !has_receiver(db, item)
-                            && function.params.len() == hir.params.len() =>
+                            && !has_receiver(db, item) =>
                     {
                         let params = function
                             .params
@@ -549,7 +568,12 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(stmts) => {
                 self.builder.enter_scope();
                 self.stmts(stmts);
-                let end = self.map.block_ends.get(&stmt).copied().unwrap_or_default();
+                let Some(&end) = self.map.block_ends.get(&stmt) else {
+                    panic!(
+                        "internal error lowering {}: a block without its closing brace",
+                        self.name
+                    );
+                };
                 self.builder
                     .leave_scope(Span::new(self.file.id(self.db), end));
             }

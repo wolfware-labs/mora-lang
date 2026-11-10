@@ -7,7 +7,7 @@ use mora_hir::{
     is_diverging, literal_constant, signature,
 };
 use mora_span::Span;
-use mora_syntax::lexer::literal::{char_value, interp_text_value, string_value};
+use mora_syntax::lexer::literal::{char_value, string_value};
 
 use super::Lowerer;
 use crate::types::has_receiver;
@@ -357,43 +357,42 @@ impl Lowerer<'_> {
     /// An interpolated string as [`Rvalue::Interpolate`], which stands in
     /// until the standard library formats values.
     fn interpolate(&mut self, expr: ExprId, parts: &[InterpPart]) -> Rvalue {
-        let text = self.file.text(self.db);
-        let start = usize::from(self.map.expr(expr).start());
-        let raw = text
-            .get(start..)
-            .is_some_and(|rest| rest.trim_start_matches('$').starts_with('`'));
-        if raw {
-            self.ice(expr, "a raw interpolated string is not lowered");
-        }
+        // Each hole's value, then its alignment, from left to right.
         let mut values = Vec::new();
         for part in parts {
             if let InterpPart::Hole {
-                value,
-                alignment,
-                format,
+                value, alignment, ..
             } = part
             {
-                if alignment.is_some() || format.is_some() {
-                    self.ice(
-                        *value,
-                        "a hole with an alignment or a format is not lowered",
-                    );
-                }
                 values.push(*value);
+                values.extend(alignment);
             }
         }
         let mut operands = self.operands(&values).into_iter();
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             pieces.push(match part {
-                InterpPart::Text(text) => match interp_text_value(text) {
-                    Some(value) => InterpPiece::Text(value),
+                InterpPart::Text { value, .. } => match value {
+                    Some(value) => InterpPiece::Text(value.clone()),
                     None => self.ice(expr, "the text of the string has no value"),
                 },
-                InterpPart::Hole { .. } => match operands.next() {
-                    Some(operand) => InterpPiece::Operand(operand),
-                    None => self.ice(expr, "a hole without its value"),
-                },
+                InterpPart::Hole {
+                    alignment, format, ..
+                } => {
+                    let value = operands.next();
+                    let aligned = alignment.map(|_| operands.next());
+                    let (Some(value), None | Some(Some(_))) = (value, &aligned) else {
+                        self.ice(expr, "a hole without its value")
+                    };
+                    let alignment = aligned.flatten();
+                    InterpPiece::Operand {
+                        value,
+                        alignment,
+                        format: format
+                            .as_deref()
+                            .map(|format| format.strip_prefix(':').unwrap_or(format).to_owned()),
+                    }
+                }
             });
         }
         Rvalue::Interpolate(pieces)
@@ -498,6 +497,11 @@ impl Lowerer<'_> {
             self.ice(expr, "the arguments of the call are not bound")
         };
         let values: Vec<ExprId> = args.iter().map(|arg| arg.expr).collect();
+        debug_assert_eq!(
+            bound.len(),
+            values.len(),
+            "every argument goes to a parameter"
+        );
         let mut passed: Vec<Option<Operand>> = vec![None; function.params.len()];
         for (index, (&value, &param)) in values.iter().zip(bound).enumerate() {
             let mode = function.params[param].mode;
@@ -625,38 +629,20 @@ impl Lowerer<'_> {
     }
 }
 
-/// The constant `expr` of `hir` stands for: a literal, a negated number
-/// literal, or an operation on literals whose value inference records.
+/// The constant `expr` of `hir` stands for: a literal, or an operation
+/// on literals, whose value inference records for a number.
 fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId) -> Option<Const> {
     let ty = inference.expr(expr)?;
-    if let (Some(value), Ty::Primitive(primitive)) = (inference.constant(expr), ty) {
+    if let Ty::Primitive(primitive) = ty
+        && let Some(value) = inference.constant(expr).or(inference.literal(expr))
+    {
         return Some(numeric(value, *primitive));
     }
     match &hir.exprs[expr] {
-        Expr::Literal(literal) => literal_const(literal, false, ty),
-        // `-` before a number literal belongs to it (§3.5), unless the
-        // literal is converted first, as `-1u` is.
-        Expr::Unary {
-            op: UnaryOp::Neg,
-            expr: operand,
-        } if inference.conversion(*operand).is_none() => match &hir.exprs[*operand] {
-            Expr::Literal(literal @ (Literal::Int(_) | Literal::Real(_))) => {
-                literal_const(literal, true, ty)
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The value of `literal`, of the type `ty` inference gave it.
-fn literal_const(literal: &Literal, negated: bool, ty: &Ty) -> Option<Const> {
-    match (literal, ty) {
-        (Literal::Bool(value), _) => Some(Const::Bool(*value)),
-        (Literal::Char(text), _) => char_value(text).map(Const::Char),
-        (Literal::String(text), _) => string_value(text).map(|(value, _)| Const::String(value)),
-        (Literal::Int(_) | Literal::Real(_), Ty::Primitive(primitive)) => {
-            literal_constant(literal, negated, *primitive).map(|value| numeric(value, *primitive))
+        Expr::Literal(Literal::Bool(value)) => Some(Const::Bool(*value)),
+        Expr::Literal(Literal::Char(text)) => char_value(text).map(Const::Char),
+        Expr::Literal(Literal::String(text)) => {
+            string_value(text).map(|(value, _)| Const::String(value))
         }
         _ => None,
     }

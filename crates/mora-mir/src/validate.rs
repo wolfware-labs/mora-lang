@@ -314,11 +314,26 @@ impl Checker<'_> {
                 if self.std_loaded {
                     self.error(at, "interpolation is not lowered once std is loaded");
                 }
-                let operands = pieces.iter().filter_map(|piece| match piece {
-                    InterpPiece::Operand(operand) => Some(operand),
-                    InterpPiece::Text(_) => None,
-                });
-                self.operands(at, operands).map(|_| Ty::String)
+                let mut fine = true;
+                for piece in pieces {
+                    let InterpPiece::Operand {
+                        value, alignment, ..
+                    } = piece
+                    else {
+                        continue;
+                    };
+                    fine &= self.operand(at, value).is_some();
+                    let Some(alignment) = alignment else { continue };
+                    match self.operand(at, alignment) {
+                        Some(ty) if is_integer(&ty) => {}
+                        Some(ty) => {
+                            self.error(at, format!("alignment of type {ty:?}, not an integer"));
+                            fine = false;
+                        }
+                        None => fine = false,
+                    }
+                }
+                fine.then_some(Ty::String)
             }
         };
         value.map(LocalTy::Value)
@@ -1377,8 +1392,16 @@ mod tests {
             place(2),
             Rvalue::Interpolate(vec![
                 InterpPiece::Text("n=".into()),
-                InterpPiece::Operand(copy(1)),
-                InterpPiece::Operand(copy(3)),
+                InterpPiece::Operand {
+                    value: copy(1),
+                    alignment: Some(copy(1)),
+                    format: Some("x".into()),
+                },
+                InterpPiece::Operand {
+                    value: copy(3),
+                    alignment: Some(Operand::Const(Const::Int(-4, Primitive::Long))),
+                    format: None,
+                },
             ]),
         ));
         mir.bodies[0].locals[2] = val(Ty::String);
@@ -1389,9 +1412,40 @@ mod tests {
         // Bad operands inside are reported.
         let bad = with_stmt(assign(
             place(2),
-            Rvalue::Interpolate(vec![InterpPiece::Operand(copy(9))]),
+            Rvalue::Interpolate(vec![InterpPiece::Operand {
+                value: copy(9),
+                alignment: None,
+                format: None,
+            }]),
         ));
         rejects(&fx, &bad, false, "no local _9");
+        // The bad operand is the one problem: the string's type is unknown.
+        let mut into_int = bad.clone();
+        into_int.bodies[0].locals[2] = val(int());
+        assert_eq!(
+            validate(&fx.db, &into_int, false).map_err(|problems| problems.len()),
+            Err(1)
+        );
+        let bad = with_stmt(assign(
+            place(2),
+            Rvalue::Interpolate(vec![InterpPiece::Operand {
+                value: copy(1),
+                alignment: Some(copy(8)),
+                format: None,
+            }]),
+        ));
+        rejects(&fx, &bad, false, "no local _8");
+        let bad = with_stmt(assign(
+            place(2),
+            Rvalue::Interpolate(vec![InterpPiece::Operand {
+                value: copy(1),
+                alignment: Some(Operand::Const(Const::Bool(true))),
+                format: None,
+            }]),
+        ));
+        let mut fine = bad.clone();
+        fine.bodies[0].locals[2] = val(Ty::String);
+        rejects(&fx, &fine, false, "alignment of type");
     }
 
     #[test]

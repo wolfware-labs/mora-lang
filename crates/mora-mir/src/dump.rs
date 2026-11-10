@@ -372,8 +372,19 @@ impl Printer<'_> {
                                 }
                             }
                         }
-                        InterpPiece::Operand(operand) => {
-                            let _ = write!(text, "{{{}}}", self.operand(operand));
+                        InterpPiece::Operand {
+                            value,
+                            alignment,
+                            format,
+                        } => {
+                            let _ = write!(text, "{{{}", self.operand(value));
+                            if let Some(alignment) = alignment {
+                                let _ = write!(text, ",{}", self.operand(alignment));
+                            }
+                            if let Some(format) = format {
+                                let _ = write!(text, ":{format}");
+                            }
+                            text.push('}');
                         }
                     }
                 }
@@ -1095,11 +1106,38 @@ fn Fib(n#0: int, this#2: in P) -> int {
                 &fx,
                 Rvalue::Interpolate(vec![
                     InterpPiece::Text("x = {\"".into()),
-                    InterpPiece::Operand(copy(2)),
+                    InterpPiece::Operand {
+                        value: copy(2),
+                        alignment: None,
+                        format: None,
+                    },
                     InterpPiece::Text("}\n".into()),
                 ])
             ),
             "$\"x = {{\\\"{copy _2}}}\\n\""
+        );
+        assert_eq!(
+            rvalue_text(
+                &fx,
+                Rvalue::Interpolate(vec![
+                    InterpPiece::Operand {
+                        value: copy(2),
+                        alignment: Some(int_const(-5)),
+                        format: Some("x4".into()),
+                    },
+                    InterpPiece::Operand {
+                        value: copy(2),
+                        alignment: Some(copy(1)),
+                        format: None,
+                    },
+                    InterpPiece::Operand {
+                        value: copy(2),
+                        alignment: None,
+                        format: Some("F2".into()),
+                    },
+                ])
+            ),
+            "$\"{copy _2,-5:x4}{copy _2,copy _1}{copy _2:F2}\""
         );
     }
 

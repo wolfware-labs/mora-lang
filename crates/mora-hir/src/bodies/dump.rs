@@ -409,7 +409,7 @@ impl Printer<'_> {
                 self.out.push_str("$\"");
                 for part in parts {
                     match part {
-                        InterpPart::Text(text) => self.out.push_str(text),
+                        InterpPart::Text { text, .. } => self.out.push_str(text),
                         InterpPart::Hole {
                             value,
                             alignment,

@@ -49,6 +49,8 @@ pub struct Inference {
     /// The value of each operation made only of literals that took a target
     /// type and fits it.
     constants: HashMap<ExprId, Constant>,
+    /// The value of each number literal and negated number literal.
+    literals: HashMap<ExprId, Constant>,
     /// The conversion applied to each expression that changes type.
     conversions: HashMap<ExprId, Conversion>,
     /// The conversion applied to an element of a value that an assignment
@@ -145,6 +147,15 @@ impl Inference {
     /// that took its target type (§3.5): what the operation evaluates to.
     pub fn constant(&self, expr: ExprId) -> Option<Constant> {
         self.constants.get(&expr).copied()
+    }
+
+    /// The value of `expr` when it is a number literal, or `-` before one
+    /// (§3.5), as the type inference gave it holds it. A literal whose
+    /// value its type does not hold, which is reported, has none. The
+    /// literals of an operation that has a [`Inference::constant`] have no
+    /// value of their own.
+    pub fn literal(&self, expr: ExprId) -> Option<Constant> {
+        self.literals.get(&expr).copied()
     }
 
     /// The type of `expr`: `None` while it is unknown, because a later
@@ -432,6 +443,46 @@ mod tests {
                 format!("{}: {ty}", data.name)
             })
             .collect()
+    }
+
+    /// The value inference records for each number literal and negated
+    /// number literal in the top-level statements of `text`, in expression
+    /// order.
+    fn literal_values(text: &str) -> Vec<Constant> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        body.exprs
+            .iter()
+            .filter_map(|(id, _)| inference.literal(id))
+            .collect()
+    }
+
+    #[test]
+    fn records_the_value_of_each_literal_in_its_type() {
+        assert_eq!(
+            literal_values(
+                "let b: sbyte = -128;\nlet x: long = -1;\nlet d: double = 2;\nlet f: float = 0.1;\n\
+                 let r = -1.5;\nlet k = -1u;\nlet c = 'a';\n"
+            ),
+            [
+                Constant::Int(-128),
+                Constant::Int(-1),
+                Constant::Real(2.0f64.to_bits()),
+                Constant::Real(f64::from(0.1f32).to_bits()),
+                Constant::Real((-1.5f64).to_bits()),
+                Constant::Int(1),
+            ]
+        );
+        // A literal that does not fit its type has no value, and the parts
+        // of an operation on literals are not values of their own.
+        assert_eq!(literal_values("let b: byte = 256;\n"), []);
+        assert_eq!(
+            literal_values("let b: byte = 200 + 55;\nlet n = 2L;\n"),
+            [Constant::Int(2)]
+        );
     }
 
     /// The conversions inference records in the top-level statements of

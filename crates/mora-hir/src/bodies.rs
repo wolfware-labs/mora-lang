@@ -343,8 +343,9 @@ pub enum Literal {
 /// A part of an interpolated string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterpPart {
-    /// Text as written.
-    Text(String),
+    /// Text: as written, and its value, `None` when the lexer reported
+    /// that it has none.
+    Text { text: String, value: Option<String> },
     /// `{value,alignment:format}`.
     Hole {
         value: ExprId,
@@ -851,6 +852,62 @@ mod tests {
             .map(|(id, _)| id)
             .unwrap();
         assert_eq!(u32::from(map.block_ends[&block].start()), 17);
+    }
+
+    #[test]
+    fn an_unsafe_block_records_its_closing_brace() {
+        let db = TestDb::new();
+        let text = "unsafe {\n    let x = 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let block = body
+            .stmts
+            .iter()
+            .find(|(_, stmt)| matches!(stmt, Stmt::Block(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert_eq!(
+            map.block_ends
+                .get(&block)
+                .map(|range| u32::from(range.start())),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn interpolated_text_keeps_its_value() {
+        let db = TestDb::new();
+        let text = "let n = 1;\nlet a = $\"x\\t{{{n}}}\";\nlet b = $`\\q {n}`;\nlet c = $`\n    a {n}\n      b\n    `;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let values: Vec<Vec<(String, Option<String>)>> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, expr)| match expr {
+                Expr::Interpolated(parts) => Some(
+                    parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            InterpPart::Text { text, value } => Some((text.clone(), value.clone())),
+                            InterpPart::Hole { .. } => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect();
+        let part = |text: &str, value: &str| (text.to_owned(), Some(value.to_owned()));
+        assert_eq!(
+            values,
+            [
+                vec![part("x\\t{{", "x\t{"), part("}}", "}")],
+                vec![part("\\q ", "\\q ")],
+                vec![part("\n    a ", "a "), part("\n      b\n    ", "\n  b")],
+            ]
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
 
+use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, TypeError, constant,
     converts, is_known, numeric, same,
@@ -64,6 +65,7 @@ pub(super) fn infer_body(
         arguments: HashMap::new(),
         local_functions: None,
         constants: HashMap::new(),
+        literals: HashMap::new(),
         conversions: HashMap::new(),
         element_conversions: HashMap::new(),
         errors: Vec::new(),
@@ -128,6 +130,7 @@ pub(super) fn infer_body(
         calls: check.calls,
         arguments: check.arguments,
         constants: check.constants,
+        literals: check.literals,
         conversions: check.conversions,
         element_conversions: check.element_conversions,
         errors: check.errors,
@@ -156,6 +159,8 @@ struct Check<'a> {
     local_functions: Option<HashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
     constants: HashMap<ExprId, Constant>,
+    /// The value of each number literal and negated literal so far.
+    literals: HashMap<ExprId, Constant>,
     /// The conversions applied so far.
     conversions: HashMap<ExprId, Conversion>,
     /// The conversions of deconstructed elements so far.
@@ -447,7 +452,9 @@ impl Check<'_> {
                 if matches!(body.exprs[*operand], Expr::Literal(_))
         );
         if let Some(value) = fitting {
-            if !negated_literal {
+            if negated_literal {
+                self.literals.insert(expr, value);
+            } else {
                 self.constants.insert(expr, value);
             }
         } else {
@@ -676,7 +683,7 @@ impl Check<'_> {
     ) -> Option<Ty> {
         let ty = match literal {
             Literal::Int(text) => return self.integer(expr, text, negated, expect),
-            Literal::Real(text) => return self.real(expr, text, expect),
+            Literal::Real(text) => return self.real(expr, text, negated, expect),
             Literal::Char(_) => Primitive::Char,
             Literal::Bool(_) => Primitive::Bool,
             Literal::String(_) => return Some(Ty::String),
@@ -736,12 +743,14 @@ impl Check<'_> {
         if suffix != IntSuffix::None && !numeric::holds(ty, value) {
             self.errors.push(TypeError::Literal { expr, ty: Some(ty) });
         }
+        self.record_literal(expr, Value::Int(value), ty);
         Some(Ty::Primitive(ty))
     }
 
-    /// A real literal (§3.5): its suffix's type, `float` when its context
-    /// asks for one, or `double`.
-    fn real(&mut self, expr: ExprId, text: &str, expect: Expect<'_>) -> Option<Ty> {
+    /// A real literal (§3.5), negated when it is the operand of unary `-`:
+    /// its suffix's type, `float` when its context asks for one, or
+    /// `double`.
+    fn real(&mut self, expr: ExprId, text: &str, negated: bool, expect: Expect<'_>) -> Option<Ty> {
         // The lexer reported a literal it cannot read or that is too large
         // for its suffix's type or for a `double`.
         let Some((value, suffix)) = real_value(text).filter(|(value, _)| value.is_finite()) else {
@@ -764,7 +773,17 @@ impl Check<'_> {
             }
             _ => Primitive::Double,
         };
+        let value = if negated { -value } else { value };
+        self.record_literal(expr, Value::Real(value), ty);
         Some(Ty::Primitive(ty))
+    }
+
+    /// Records the value of the literal `expr` in its type `ty`, when the
+    /// type holds it.
+    fn record_literal(&mut self, expr: ExprId, value: Value, ty: Primitive) {
+        if let Some(value) = value.of_type(ty) {
+            self.literals.insert(expr, value);
+        }
     }
 
     /// Unary `+`, `-`, `~`, `!`, `^`, `++` and `--` (§7.12).

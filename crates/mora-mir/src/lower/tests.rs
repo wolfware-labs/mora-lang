@@ -1,12 +1,12 @@
 //! Tests of lowering, each from source text through the front end.
 
 use mora_hir::test_support::{TestDb, app, codes, file_named};
-use mora_hir::{BodyOwner, diagnostics, item_tree};
+use mora_hir::{BodyOwner, diagnostics, item_tree, parse};
 use mora_span::{Dependency, Project, ProjectKind, SourceFile};
 
 use crate::{Callee, Const, Mir, Operand, TerminatorKind, mir, mir_dump, validate, write_mir};
 
-/// A file of an app, checked by the front end without a diagnostic.
+/// A file of an app that the front end reads and checks without an error.
 struct Lowered {
     db: TestDb,
     project: Project,
@@ -22,6 +22,12 @@ fn lowered(text: &str) -> Lowered {
 
 fn in_project(db: TestDb, project: Project) -> Lowered {
     let file = file_named(&db, project, "src/Program.mr");
+    let syntax: Vec<String> = parse(&db, file)
+        .errors()
+        .iter()
+        .map(|error| error.code.to_string())
+        .collect();
+    assert_eq!(syntax, Vec::<String>::new(), "{}", file.text(&db));
     assert_eq!(
         codes(diagnostics(&db, project)),
         Vec::<String>::new(),
@@ -85,6 +91,12 @@ fn assert_in_order(lines: &[String], expected: &[&str]) {
             lines.join("\n")
         );
     }
+}
+
+#[test]
+#[should_panic(expected = "MR0016")]
+fn the_helper_rejects_a_lexical_error() {
+    lowered("let n = 1;\nlet s = $$\"{{n}} {n}\";\n");
 }
 
 #[test]
@@ -196,6 +208,22 @@ fn unary_operators_and_negated_literals() {
             "k#10 = -copy _13;",
         ],
     );
+}
+
+#[test]
+fn a_negated_literal_is_one_constant() {
+    let lowered = lowered("let b: sbyte = -128;\nlet x: long = -1;\nlet r = -2.5;\n");
+    assert_in_order(
+        &lowered.code("top-level"),
+        &["b#0 = -128;", "x#1 = -1;", "r#2 = -2.5;"],
+    );
+    let body = &lowered.mir("top-level").bodies[0];
+    let stored = |n: usize| match &body.blocks[0].statements[n].kind {
+        crate::StatementKind::Assign(_, crate::Rvalue::Use(Operand::Const(value))) => value.clone(),
+        other => panic!("not a constant: {other:?}"),
+    };
+    assert_eq!(stored(1), Const::Int(-128, mora_hir::Primitive::SByte));
+    assert_eq!(stored(3), Const::Int(-1, mora_hir::Primitive::Long));
 }
 
 #[test]
@@ -450,6 +478,23 @@ fn a_call_inference_does_not_check_is_an_internal_error() {
 }
 
 #[test]
+#[should_panic(expected = "the signature has 1 parameters but the body 0")]
+fn a_parameter_without_a_local_is_an_internal_error() {
+    // The parser recovers from the missing name, and the body declares no
+    // local for the parameter; lowering never sees such a body from the
+    // driver, which stops at the syntax error.
+    let db = TestDb::new();
+    let project = app(&db, &[("src/Program.mr", "F(: int) {}\n")]);
+    let file = file_named(&db, project, "src/Program.mr");
+    let tree = item_tree(&db, file);
+    let (item, _) = tree
+        .items()
+        .find(|(_, item)| item.name == "F")
+        .expect("the function");
+    mir(&db, project, file, BodyOwner::Item(item));
+}
+
+#[test]
 fn a_var_is_a_mutable_local() {
     let dump = lowered("var i = 1;\nlet j = 2;\n").dump("top-level");
     assert!(dump.contains("    let mut i#0: int;\n"), "{dump}");
@@ -499,24 +544,46 @@ fn interpolation_is_a_stand_in() {
 }
 
 #[test]
-#[should_panic(expected = "raw")]
-fn raw_interpolation_is_an_internal_error() {
-    let lowered = lowered("let n = 3;\nlet s = $`n = {n}`;\n");
-    lowered.mir("top-level");
+fn raw_interpolation_is_a_stand_in_too() {
+    let lowered = lowered(
+        "let s = $`n = {1}`;\nlet t = $`\\q {1}`;\nlet u = $`\n    a {2}\n      b\n    `;\n",
+    );
+    assert_in_order(
+        &lowered.code("top-level"),
+        &[
+            "s#0 = $\"n = {1}\";",
+            "t#1 = $\"\\\\q {1}\";",
+            "u#2 = $\"a {2}\\n  b\";",
+        ],
+    );
 }
 
 #[test]
-#[should_panic(expected = "a hole with an alignment or a format is not lowered")]
-fn a_formatted_hole_is_an_internal_error() {
-    let lowered = lowered("let n = 3;\nlet s = $\"{n:x}\";\n");
-    lowered.mir("top-level");
+fn a_hole_keeps_its_alignment_and_format() {
+    let lowered =
+        lowered("let n = 3;\nlet w: byte = 6;\nlet s = $\"{n:x}|{n,5}|{n,-w:F2}|{n,1 + 2}\";\n");
+    assert_in_order(
+        &lowered.code("top-level"),
+        &[
+            "_4 = (implicit int)copy w#1;",
+            "_5 = -copy _4;",
+            "s#2 = $\"{copy n#0:x}|{copy n#0,5}|{copy n#0,copy _5:F2}|{copy n#0,3}\";",
+        ],
+    );
 }
 
 #[test]
-#[should_panic(expected = "a hole with an alignment or a format is not lowered")]
-fn an_aligned_hole_is_an_internal_error() {
-    let lowered = lowered("let n = 3;\nlet s = $\"{n,4}\";\n");
-    lowered.mir("top-level");
+fn an_alignment_after_a_place_with_effects_copies_the_place() {
+    let lowered = lowered("var n = 3;\nlet s = $\"{n,n++}\";\n");
+    assert_in_order(
+        &lowered.code("top-level"),
+        &[
+            "_3 = copy n#0;",
+            "_4 = copy n#0;",
+            "n#0 = copy n#0 + 1;",
+            "s#1 = $\"{copy _3,copy _4}\";",
+        ],
+    );
 }
 
 #[test]
