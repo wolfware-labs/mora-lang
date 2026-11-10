@@ -1308,10 +1308,9 @@ impl Check<'_> {
             self.args(args);
         }
         let written = ty.map(|ty| self.resolution.written(ty));
+        // A struct type names a struct that is not generic.
         let item = match &written {
-            Some(Ty::Struct(item)) if matches!(signature(self.db, *item), Signature::Struct(_)) => {
-                Some(*item)
-            }
+            Some(Ty::Struct(item)) => Some(*item),
             _ => None,
         };
         let (Some(written), Some(item)) = (written, item) else {

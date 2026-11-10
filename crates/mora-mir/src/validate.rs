@@ -2692,6 +2692,19 @@ mod tests {
     }
 
     #[test]
+    fn a_marker_on_a_parameter_or_a_missing_local_is_reported_once() {
+        let fx = fx();
+        let mir = simple(vec![live(1), live(99)], TerminatorKind::Return);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            [
+                "fn F bb0[0]: storage statement names _1, which is the return slot or a parameter",
+                "fn F bb0[1]: no local _99",
+            ]
+        );
+    }
+
+    #[test]
     fn accepts_paired_markers_on_every_path() {
         let fx = fx();
         // A loop that makes `_2` live and ends it each time round, and a
