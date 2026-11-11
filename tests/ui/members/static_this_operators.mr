@@ -1,0 +1,23 @@
+// Operators are static, and so is a static implementation of an interface
+// member: neither has `this`.
+public interface IMake {
+    static abstract Make(): int;
+}
+
+public interface IRead {
+    Read(): int;
+}
+
+public struct Point : IMake, IRead {
+    public mut X: int;
+
+    public static operator +(a: Point, b: Point): Point => new Point { X = X + b.X }; //~ ERROR MR0149
+    public static operator -(a: Point): Point => this; //~ ERROR MR0149
+    public static operator *(a: Point, b: Point): Point {
+        return this; //~ ERROR MR0149
+    }
+    static IMake.Make(): int => X; //~ ERROR MR0149
+    public static Zero: int = 0;
+    public static operator /(a: Point, b: Point): Point => new Point { X = a.X / b.X + Zero };
+    IRead.Read(): int => X + this.X;
+}

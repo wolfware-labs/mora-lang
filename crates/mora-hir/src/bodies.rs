@@ -143,6 +143,10 @@ pub struct Body {
     /// Whether that declaration is `async`; `false` when the item tree
     /// holds its signature, which says it ([`crate::FnSignature::is_async`]).
     pub is_async: bool,
+    /// Whether that declaration is `static`: an operator, or a `static`
+    /// implementation of an interface member. `false` when the item tree
+    /// holds it, which says it ([`crate::Item::is_static`]).
+    pub is_static: bool,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a

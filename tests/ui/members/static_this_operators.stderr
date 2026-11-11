@@ -1,0 +1,31 @@
+error[MR0149]: a static member has no `this`, so it cannot use the instance field `X`
+  --> tests/ui/members/static_this_operators.mr:14:76
+   |
+14 |     public static operator +(a: Point, b: Point): Point => new Point { X = X + b.X }; //~ ERROR MR0149
+   |                                                                            ^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`
+  --> tests/ui/members/static_this_operators.mr:15:50
+   |
+15 |     public static operator -(a: Point): Point => this; //~ ERROR MR0149
+   |                                                  ^^^^ there is no value of the type here
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`
+  --> tests/ui/members/static_this_operators.mr:17:16
+   |
+17 |         return this; //~ ERROR MR0149
+   |                ^^^^ there is no value of the type here
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`, so it cannot use the instance field `X`
+  --> tests/ui/members/static_this_operators.mr:19:33
+   |
+19 |     static IMake.Make(): int => X; //~ ERROR MR0149
+   |                                 ^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it

@@ -39,8 +39,9 @@ impl Check<'_> {
         }
     }
 
-    /// Whether `owner` is a static member of a type: a static function, or
-    /// the initializer or getter of a static or constant value.
+    /// Whether `owner` is a static member of a type: a static function, an
+    /// operator, a static implementation of an interface member, or the
+    /// initializer or getter of a static or constant value.
     fn is_static_member(&self, owner: BodyOwner) -> bool {
         let tree = item_tree(self.db, self.scope.file);
         match owner {
@@ -53,7 +54,8 @@ impl Check<'_> {
                 .values
                 .get(index as usize)
                 .is_some_and(|value| value.is_static),
-            _ => false,
+            BodyOwner::Member(..) => self.body.is_static,
+            BodyOwner::TopLevel | BodyOwner::Extension(..) => false,
         }
     }
 
