@@ -10,9 +10,10 @@ use super::expr::Dest;
 use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
 
-/// The internal error for a static or constant member, which the static
-/// state of M1.11 lowers.
-const STATIC_MEMBER: &str = "a static or constant member is not lowered (M1.11)";
+/// The internal error for a static or constant member: statics come with
+/// M3.13, and constants with the constant evaluation of M1.11.
+const STATIC_MEMBER: &str =
+    "a static member is not lowered until M3.13, nor a constant until M1.11";
 
 impl Lowerer<'_> {
     /// `new T { F = v, ... }` for the struct `T`: every instance field in
@@ -80,7 +81,7 @@ impl Lowerer<'_> {
 
     /// The place of the field `name` of the struct at `base`, which `expr`
     /// names. Static and constant members are not stored in a value, and
-    /// lowering them is for the static state of M1.11.
+    /// lowering them is for M3.13 (statics) and M1.11 (constants).
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
         let db = self.owner.db;
         let Ty::Struct(item) = self.builder.body().place_ty(&base, db) else {

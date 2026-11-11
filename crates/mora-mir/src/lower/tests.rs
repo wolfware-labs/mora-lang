@@ -2325,7 +2325,7 @@ fn an_initializer_of_plain_values_lowers() {
 }
 
 #[test]
-#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
 fn a_constant_in_an_initializer_is_not_lowered_yet() {
     let lowered = lowered(
         "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n}\n\
@@ -2344,7 +2344,7 @@ fn a_getter_read_is_not_lowered() {
 }
 
 #[test]
-#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
 fn a_static_field_named_in_a_method_is_not_lowered() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public static S: int = 1;\n    \
@@ -2455,7 +2455,7 @@ fn this_in_a_local_function_is_lifted() {
 }
 
 #[test]
-#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
 fn a_constant_read_through_a_value_is_not_lowered() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public const K: int = 2;\n}\nF(p: P): int => p.K;\n",
@@ -2464,7 +2464,7 @@ fn a_constant_read_through_a_value_is_not_lowered() {
 }
 
 #[test]
-#[should_panic(expected = "a static or constant member is not lowered (M1.11)")]
+#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
 fn a_static_read_through_this_is_not_lowered() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public static mut N: int = 2;\n    \
