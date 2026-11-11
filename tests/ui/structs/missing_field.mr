@@ -8,3 +8,5 @@ public struct Point {
 let a = new Point { X = 1, Y = 2 };
 let b = new Point { X = 1 }; //~ ERROR MR0143
 let c = new Point { Y = 2, Z = 3 }; //~ ERROR MR0143
+// Empty parentheses on a struct without a constructor are memberwise too.
+let d = new Point(); //~ ERROR MR0143

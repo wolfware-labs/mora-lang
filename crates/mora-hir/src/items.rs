@@ -118,7 +118,7 @@ pub struct Item {
     pub values: Vec<ValueMember>,
     /// Whether it is a positional struct, `struct User(Id: int);` (§6.5).
     pub is_positional: bool,
-    /// Whether it declares a constructor, `new(...)` (§6.9).
+    /// Whether it declares a constructor, `T(...) { ... }` (§6.9).
     pub has_constructor: bool,
 }
 

@@ -12,13 +12,13 @@ use crate::report::{Declared, not_visible};
 use crate::resolve::Scope;
 use crate::ty::Ty;
 
-/// `MR0143`: `new T { ... }` leaves a field without an initializer
-/// unassigned.
+/// `MR0143`: the memberwise creation of `T`, `new T { ... }` or `new T()`,
+/// leaves a field without an initializer unassigned.
 pub(super) fn missing_field(source: &Source<'_>, expr: ExprId, ty: &Ty, field: &str) -> Diagnostic {
     let t = source.name(ty);
     Diagnostic::error(
         codes::MR0143,
-        format!("`new {t} {{ ... }}` does not assign `{field}`"),
+        format!("memberwise creation of `{t}` does not assign `{field}`"),
         Label::new(
             source.span(expr),
             format!("`{field}` has no initializer, so it needs a value here"),
@@ -27,8 +27,8 @@ pub(super) fn missing_field(source: &Source<'_>, expr: ExprId, ty: &Ty, field: &
     .with_note("give the field an initializer, or assign it in the `new` expression")
 }
 
-/// `MR0144`: `new T { ... }` where the field `field` of `T`, which has no
-/// initializer, is not visible, so no memberwise creation can assign it.
+/// `MR0144`: memberwise creation of `T` where its field `field`, which has
+/// no initializer, is not visible, so no memberwise creation can assign it.
 pub(super) fn no_memberwise(
     source: &Source<'_>,
     expr: ExprId,
@@ -50,7 +50,7 @@ pub(super) fn no_memberwise(
     ))
 }
 
-/// `MR0129`: `new T { ... }`, in `from`, assigns `value` to the field
+/// `MR0129`: memberwise creation, in `from`, assigns `value` to the field
 /// `name`, `field`, which the expression cannot see. It reads as any
 /// declaration the use cannot see (§4.5).
 pub(super) fn hidden_field(

@@ -1358,10 +1358,9 @@ impl Check<'_> {
                     self.check(*init, &field.ty);
                     // A repeated field is reported as repeated (`MR0148`)
                     // alone: its first assignment reports it hidden.
-                    let repeated = inits[..position].iter().any(|(earlier, _)| earlier == name);
                     if memberwise
                         && hidden.is_none()
-                        && !repeated
+                        && assigned_before(inits, position).is_none()
                         && !self.field_visible(item, index)
                     {
                         self.errors.push(TypeError::HiddenField {
@@ -1431,12 +1430,9 @@ impl Check<'_> {
             return None;
         }
         if instance_fields(self.db, item).any(|(_, field)| field.name == *name) {
-            let (_, first) = inits[..position]
-                .iter()
-                .find(|(earlier, _)| earlier == name)?;
             return Some(TypeError::RepeatedField {
                 value: *value,
-                first: *first,
+                first: assigned_before(inits, position)?,
                 previous: inits[position - 1].1,
                 ty: ty.clone(),
                 name: name.clone(),
@@ -1544,6 +1540,16 @@ fn same_shape(a: &Ty, b: &Ty) -> bool {
         (Ty::Tuple(_), _) | (_, Ty::Tuple(_)) => false,
         _ => true,
     }
+}
+
+/// The value of the first initializer of `inits` that assigns the name of
+/// the one at `position`, when one before it does.
+fn assigned_before(inits: &[(String, ExprId)], position: usize) -> Option<ExprId> {
+    let (name, _) = &inits[position];
+    inits[..position]
+        .iter()
+        .find(|(earlier, _)| earlier == name)
+        .map(|&(_, value)| value)
 }
 
 /// Whether `ty` is a struct, which may declare operators (§6.9).

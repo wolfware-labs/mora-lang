@@ -2668,7 +2668,10 @@ mod tests {
         let project = app(&db, &[("src/Program.mr", &text)]);
         let found = diagnostics(&db, project);
         assert_eq!(codes(found), ["MR0143"]);
-        assert_eq!(found[0].message, "`new Point { ... }` does not assign `Y`");
+        assert_eq!(
+            found[0].message,
+            "memberwise creation of `Point` does not assign `Y`"
+        );
         assert_eq!(&text[found[0].primary.span.range], "new Point { X = 3 }");
         // The first missing field in declaration order is named.
         let text = format!("{POINT}let p = new Point {{}};\n");
@@ -2676,7 +2679,10 @@ mod tests {
         let project = app(&db, &[("src/Program.mr", &text)]);
         let found = diagnostics(&db, project);
         assert_eq!(codes(found), ["MR0143"]);
-        assert_eq!(found[0].message, "`new Point { ... }` does not assign `X`");
+        assert_eq!(
+            found[0].message,
+            "memberwise creation of `Point` does not assign `X`"
+        );
     }
 
     #[test]

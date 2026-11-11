@@ -16,7 +16,7 @@ error[MR0203]: mismatched types: expected `int`, found `string`
 7 |         public Mk(): In => new In { N = "s" }; //~ ERROR MR0203
   |                                         ^^^ this is `string`
 
-error[MR0143]: `new In { ... }` does not assign `N`
+error[MR0143]: memberwise creation of `In` does not assign `N`
  --> tests/ui/structs/nested_in_generic.mr:8:29
   |
 8 |         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
