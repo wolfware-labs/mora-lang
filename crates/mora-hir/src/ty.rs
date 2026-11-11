@@ -62,6 +62,26 @@ impl Primitive {
         self.is_numeric() && !self.is_floating_point()
     }
 
+    /// The smallest and largest value of an integer type; `None` for any
+    /// other. `nint` and `nuint` have the range they have on every target,
+    /// that of `int` and `uint`.
+    pub fn integer_range(self) -> Option<(i128, i128)> {
+        let range = match self {
+            Primitive::Byte => (0, u8::MAX.into()),
+            Primitive::SByte => (i8::MIN.into(), i8::MAX.into()),
+            Primitive::Short => (i16::MIN.into(), i16::MAX.into()),
+            Primitive::UShort => (0, u16::MAX.into()),
+            Primitive::Int | Primitive::NInt => (i32::MIN.into(), i32::MAX.into()),
+            Primitive::UInt | Primitive::NUInt => (0, u32::MAX.into()),
+            Primitive::Long => (i64::MIN.into(), i64::MAX.into()),
+            Primitive::ULong => (0, u64::MAX.into()),
+            Primitive::Bool | Primitive::Float | Primitive::Double | Primitive::Char => {
+                return None;
+            }
+        };
+        Some(range)
+    }
+
     /// The keyword that names the type.
     pub fn keyword(self) -> &'static str {
         match self {

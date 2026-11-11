@@ -335,13 +335,22 @@ impl Checker<'_> {
     }
 
     /// The type of `constant`, after reporting a primitive type that is not
-    /// of its kind.
+    /// of its kind, or an integer out of the range of its type.
     fn constant(&mut self, at: &str, constant: &Const) -> Ty {
         match *constant {
-            Const::Int(n, primitive) if !primitive.is_integer() => self.error(
-                at,
-                format!("integer constant {n} of type {primitive:?}, which is not an integer type"),
-            ),
+            Const::Int(n, primitive) => match primitive.integer_range() {
+                None => self.error(
+                    at,
+                    format!(
+                        "integer constant {n} of type {primitive:?}, which is not an integer type"
+                    ),
+                ),
+                Some((min, max)) if !(min..=max).contains(&n) => self.error(
+                    at,
+                    format!("integer constant {n} out of the range of {primitive:?}"),
+                ),
+                Some(_) => {}
+            },
             Const::Real(_, primitive) if !primitive.is_floating_point() => self.error(
                 at,
                 format!("real constant of type {primitive:?}, which is not a floating-point type"),
@@ -1555,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_constant_whose_primitive_is_not_of_its_kind() {
+    fn rejects_a_constant_not_of_its_kind_or_out_of_its_range() {
         let fx = fx();
         let use_of = |constant: Const| {
             let mut mir = with_stmt(assign(
@@ -1578,6 +1587,18 @@ mod tests {
                 Const::Real(0, Primitive::Int),
                 "real constant of type Int, which is not a floating-point type",
             ),
+            (
+                Const::Int(256, Primitive::Byte),
+                "integer constant 256 out of the range of Byte",
+            ),
+            (
+                Const::Int(-1, Primitive::UInt),
+                "integer constant -1 out of the range of UInt",
+            ),
+            (
+                Const::Int(i128::from(i32::MIN) - 1, Primitive::NInt),
+                "integer constant -2147483649 out of the range of NInt",
+            ),
         ] {
             assert_eq!(
                 errors(&fx, &use_of(constant), true),
@@ -1586,7 +1607,10 @@ mod tests {
         }
         for constant in [
             Const::Int(1, Primitive::Byte),
+            Const::Int(255, Primitive::Byte),
             Const::Int(-1, Primitive::NInt),
+            Const::Int(u64::MAX.into(), Primitive::ULong),
+            Const::Int(i64::MIN.into(), Primitive::Long),
             Const::Real(0, Primitive::Float),
             Const::Real(0, Primitive::Double),
         ] {

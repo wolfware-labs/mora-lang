@@ -503,7 +503,7 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
         )
         .with_note(note);
     }
-    match numeric::integer_range(ty) {
+    match ty.integer_range() {
         Some((min, max)) => Diagnostic::error(
             codes::MR0010,
             format!("{what} `{text}` does not fit in `{keyword}`"),

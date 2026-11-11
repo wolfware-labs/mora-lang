@@ -76,23 +76,6 @@ pub(crate) fn widen_small(ty: Primitive) -> Primitive {
     }
 }
 
-/// The smallest and largest value of an integer type. `nint` and `nuint`
-/// have the range they have on every target, that of `int` and `uint`.
-pub(crate) fn integer_range(ty: Primitive) -> Option<(i128, i128)> {
-    let range = match ty {
-        Primitive::Byte => (0, u8::MAX.into()),
-        Primitive::SByte => (i8::MIN.into(), i8::MAX.into()),
-        Primitive::Short => (i16::MIN.into(), i16::MAX.into()),
-        Primitive::UShort => (0, u16::MAX.into()),
-        Primitive::Int | Primitive::NInt => (i32::MIN.into(), i32::MAX.into()),
-        Primitive::UInt | Primitive::NUInt => (0, u32::MAX.into()),
-        Primitive::Long => (i64::MIN.into(), i64::MAX.into()),
-        Primitive::ULong => (0, u64::MAX.into()),
-        _ => return None,
-    };
-    Some(range)
-}
-
 /// Whether the integer `value` is a value of `ty` exactly: in the range of
 /// an integer type, or exact as a `float` or `double`.
 pub(crate) fn holds(ty: Primitive, value: i128) -> bool {
@@ -108,7 +91,9 @@ pub(crate) fn holds(ty: Primitive, value: i128) -> bool {
             let rounded = value as f64;
             rounded < i128::MAX as f64 && rounded as i128 == value
         }
-        _ => integer_range(ty).is_some_and(|(min, max)| (min..=max).contains(&value)),
+        _ => ty
+            .integer_range()
+            .is_some_and(|(min, max)| (min..=max).contains(&value)),
     }
 }
 
