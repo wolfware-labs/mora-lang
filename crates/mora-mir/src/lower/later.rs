@@ -266,14 +266,13 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
                         signature_later(db, function),
                     ]);
                 }
-                _ if data.kind == ItemKind::Field && data.is_static => {
-                    ("the initializer of a static".to_owned(), STATICS)
-                }
-                _ if data.kind == ItemKind::Field => (
+                // Besides functions, only a constant or a static at
+                // namespace level owns an item body.
+                _ if data.is_static => ("the initializer of a static".to_owned(), STATICS),
+                _ => (
                     "the initializer of a constant".to_owned(),
                     CONSTANT_EVALUATION,
                 ),
-                _ => return None,
             };
             let types = match sig {
                 Signature::Value(ty) => vec![ty.clone()],
