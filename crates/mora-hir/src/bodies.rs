@@ -785,18 +785,10 @@ mod tests {
     fn a_local_function_records_the_modes_of_its_parameters() {
         let db = TestDb::new();
         let text = "F() {\n    G(ref a: int, b: int, move c: int, in d: int) {}\n}\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
-        let tree = item_tree(&db, file);
-        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
-        let body = body(&db, file, BodyOwner::Item(f));
-        let modes: Vec<_> = body
-            .stmts
+        let (_, functions) = local_functions_of_f(&db, text);
+        let modes: Vec<_> = functions
             .iter()
-            .filter_map(|(_, stmt)| match stmt {
-                Stmt::Function(function) => Some(function.modes.clone()),
-                _ => None,
-            })
+            .map(|function| function.modes.clone())
             .collect();
         assert_eq!(
             modes,
@@ -815,24 +807,16 @@ mod tests {
         // declares no local and has no mode.
         let db = TestDb::new();
         let text = "F() {\n    G(ref a: int, move : int, move c: int) {}\n}\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
-        let tree = item_tree(&db, file);
-        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
-        let body = body(&db, file, BodyOwner::Item(f));
-        let found: Vec<_> = body
-            .stmts
+        let (body, functions) = local_functions_of_f(&db, text);
+        let found: Vec<_> = functions
             .iter()
-            .filter_map(|(_, stmt)| match stmt {
-                Stmt::Function(function) => Some(
-                    function
-                        .params
-                        .iter()
-                        .zip(&function.modes)
-                        .map(|(&param, &mode)| (body.locals[param].name.clone(), mode))
-                        .collect::<Vec<_>>(),
-                ),
-                _ => None,
+            .map(|function| {
+                function
+                    .params
+                    .iter()
+                    .zip(&function.modes)
+                    .map(|(&param, &mode)| (body.locals[param].name.clone(), mode))
+                    .collect::<Vec<_>>()
             })
             .collect();
         assert_eq!(
@@ -842,15 +826,7 @@ mod tests {
                 ("c".to_owned(), ParamMode::Move)
             ]]
         );
-        let Stmt::Function(function) = body
-            .stmts
-            .iter()
-            .find_map(|(_, stmt)| matches!(stmt, Stmt::Function(_)).then_some(stmt))
-            .expect("G")
-        else {
-            unreachable!()
-        };
-        assert_eq!(function.params.len(), function.modes.len());
+        assert_eq!(functions[0].params.len(), functions[0].modes.len());
     }
 
     #[test]
@@ -858,20 +834,14 @@ mod tests {
         let db = TestDb::new();
         let text = "F() {\n    A() {}\n    B<T>() {}\n    C() {\n        D() {}\n    }\n    \
                     E<T>() {\n        G() {}\n    }\n}\n";
-        let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
-        let tree = item_tree(&db, file);
-        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
-        let body = body(&db, file, BodyOwner::Item(f));
-        let mut generic: Vec<(String, bool)> = body
-            .stmts
+        let (body, functions) = local_functions_of_f(&db, text);
+        let mut generic: Vec<(String, bool)> = functions
             .iter()
-            .filter_map(|(_, stmt)| match stmt {
-                Stmt::Function(function) => Some((
+            .map(|function| {
+                (
                     body.locals[function.local].name.clone(),
                     function.is_generic,
-                )),
-                _ => None,
+                )
             })
             .collect();
         generic.sort();
@@ -886,6 +856,28 @@ mod tests {
                 ("G".to_owned(), true),
             ]
         );
+    }
+
+    /// The body of `F` in `src/Program.mr` alone in an app, and every local
+    /// function declared in it.
+    fn local_functions_of_f<'db>(
+        db: &'db TestDb,
+        text: &str,
+    ) -> (&'db Body, Vec<&'db LocalFunction>) {
+        let project = app(db, &[("src/Program.mr", text)]);
+        let file = file_named(db, project, "src/Program.mr");
+        let tree = item_tree(db, file);
+        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let body = body(db, file, BodyOwner::Item(f));
+        let functions = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Function(function) => Some(function),
+                _ => None,
+            })
+            .collect();
+        (body, functions)
     }
 
     /// The HIR of `src/Program.mr` alone in an app.

@@ -5,10 +5,13 @@
 //! A body comes later for what it is, as a getter; for a type in its
 //! signature, as a class type; or for a local function in it that comes
 //! later, since a local function is lowered with the body it is declared
-//! in.
+//! in. When several milestones apply, the latest of them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
+
+use std::fmt;
+use std::iter;
 
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
@@ -19,11 +22,61 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::structs::field_of_value;
 
-/// The milestone that lowers generic code: monomorphization.
-const GENERIC: &str = "M3.9";
+/// A milestone of the roadmap, as `M3.9`. A later milestone compares
+/// greater.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Milestone {
+    /// The phase, as `3` in `M3.9`.
+    phase: u8,
+    /// The milestone within the phase, as `9` in `M3.9`.
+    number: u8,
+}
 
-/// The milestone that lowers async functions.
-const ASYNC: &str = "M6.2";
+impl fmt::Display for Milestone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "M{}.{}", self.phase, self.number)
+    }
+}
+
+/// The milestone of the roadmap numbered `M<phase>.<number>`.
+const fn milestone(phase: u8, number: u8) -> Milestone {
+    Milestone { phase, number }
+}
+
+/// M1.11, constant evaluation.
+pub(super) const CONSTANT_EVALUATION: Milestone = milestone(1, 11);
+/// M1.15, the standard library bootstrap.
+const STD_BOOTSTRAP: Milestone = milestone(1, 15);
+/// M2.1, classes, fields, getters and constructors.
+const CLASSES: Milestone = milestone(2, 1);
+/// M2.6, destructors and drop order.
+const DESTRUCTORS: Milestone = milestone(2, 6);
+/// M2.10, weak references.
+const WEAK_REFERENCES: Milestone = milestone(2, 10);
+/// M2.11, closures and function types.
+const CLOSURES: Milestone = milestone(2, 11);
+/// M3.1, unions.
+const UNIONS: Milestone = milestone(3, 1);
+/// M3.2, enums.
+const ENUMS: Milestone = milestone(3, 2);
+/// M3.5, options.
+const OPTIONS: Milestone = milestone(3, 5);
+/// M3.6, operators, conversions and indexers.
+const OPERATORS: Milestone = milestone(3, 6);
+/// M3.9, monomorphization, which lowers generic code.
+const MONOMORPHIZATION: Milestone = milestone(3, 9);
+/// M3.10, interfaces and static dispatch.
+const INTERFACES: Milestone = milestone(3, 10);
+/// M3.11, dynamic interface values.
+const DYNAMIC_INTERFACES: Milestone = milestone(3, 11);
+/// M3.12, tuples, collection expressions and smaller expressions.
+const SMALLER_EXPRESSIONS: Milestone = milestone(3, 12);
+/// M3.13, statics.
+pub(super) const STATICS: Milestone = milestone(3, 13);
+/// M4.4, macro expansion, ordering and hygiene.
+const EXPANSION: Milestone = milestone(4, 4);
+/// M6.2, async lowering.
+const ASYNC: Milestone = milestone(6, 2);
 
 /// A body that is not lowered yet: what it is and the milestone of the
 /// roadmap that lowers it.
@@ -32,15 +85,22 @@ pub(crate) struct Later {
     /// What the body is, as `a getter`.
     pub(crate) what: String,
     /// The milestone, as `M2.1`.
-    pub(crate) milestone: &'static str,
+    pub(crate) milestone: Milestone,
+}
+
+impl Later {
+    /// A body that is `what` and that `milestone` lowers.
+    fn new(what: impl Into<String>, milestone: Milestone) -> Self {
+        Self {
+            what: what.into(),
+            milestone,
+        }
+    }
 }
 
 /// What a body is that a later milestone lowers.
-fn later(what: impl Into<String>, milestone: &'static str) -> Option<Later> {
-    Some(Later {
-        what: what.into(),
-        milestone,
-    })
+fn later(what: impl Into<String>, milestone: Milestone) -> Option<Later> {
+    Some(Later::new(what, milestone))
 }
 
 /// A kind of type, or of declaration a member is in, that a later
@@ -50,7 +110,46 @@ struct Kind {
     /// How a message names it, as `a class type`.
     what: &'static str,
     /// The milestone.
-    milestone: &'static str,
+    milestone: Milestone,
+}
+
+impl Kind {
+    /// A body that comes later for this kind, which `phrase` names from
+    /// the name of the kind.
+    fn later(self, phrase: impl FnOnce(&str) -> String) -> Option<Later> {
+        later(phrase(self.what), self.milestone)
+    }
+}
+
+/// What a milestone of the roadmap lowers.
+trait Due {
+    /// The milestone that lowers it.
+    fn milestone(&self) -> Milestone;
+}
+
+impl Due for Later {
+    fn milestone(&self) -> Milestone {
+        self.milestone
+    }
+}
+
+impl Due for Kind {
+    fn milestone(&self) -> Milestone {
+        self.milestone
+    }
+}
+
+/// The one of `candidates` that the latest milestone lowers, the first of
+/// them on a tie: a body is lowered once every milestone that applies to
+/// it is done.
+fn latest<T: Due>(candidates: impl IntoIterator<Item = Option<T>>) -> Option<T> {
+    candidates.into_iter().flatten().reduce(|latest, next| {
+        if next.milestone() > latest.milestone() {
+            next
+        } else {
+            latest
+        }
+    })
 }
 
 /// The milestone that lowers the body of `owner`, `None` when this one
@@ -61,8 +160,10 @@ pub(crate) fn lowered_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    let later =
-        owner_later(db, project, file, owner).or_else(|| local_later(db, project, file, owner))?;
+    let later = latest([
+        owner_later(db, project, file, owner),
+        local_later(db, project, file, owner),
+    ])?;
     Some(in_generic_struct(db, project, file, owner, later))
 }
 
@@ -93,22 +194,13 @@ fn in_generic_struct(
                 },
             )
     });
-    if generic && milestone_order(later.milestone) < milestone_order(GENERIC) {
-        return Later {
-            what: format!("{} of a generic struct", later.what),
-            milestone: GENERIC,
-        };
+    if generic && later.milestone < MONOMORPHIZATION {
+        return Later::new(
+            format!("{} of a generic struct", later.what),
+            MONOMORPHIZATION,
+        );
     }
     later
-}
-
-/// The position of `milestone`, as `M3.9`, in the order of the roadmap.
-fn milestone_order(milestone: &str) -> (u32, u32) {
-    let number = |part: &str| part.parse().unwrap_or(u32::MAX);
-    match milestone.trim_start_matches('M').split_once('.') {
-        Some((major, minor)) => (number(major), number(minor)),
-        None => (u32::MAX, u32::MAX),
-    }
 }
 
 /// The milestone that lowers the body of `owner` for what it is or for a
@@ -125,20 +217,20 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
         BodyOwner::Item(item) => {
             let data = tree.item(item);
             match signature(db, id(item)) {
-                Signature::Function(function) => function_later(function)
-                    .or_else(|| {
-                        if function.receiver.is_some() && this_type(db, id(item)).is_none() {
-                            method_later(data.parent.map(|parent| tree.item(parent).kind))
-                        } else {
-                            None
-                        }
-                    })
-                    .or_else(|| signature_later(function)),
+                Signature::Function(function) => {
+                    let method = if function.receiver.is_some() && this_type(db, id(item)).is_none()
+                    {
+                        method_later(data.parent.map(|parent| tree.item(parent).kind))
+                    } else {
+                        None
+                    };
+                    latest([function_later(function), method, signature_later(function)])
+                }
                 _ if data.kind == ItemKind::Field && data.is_static => {
-                    later("the initializer of a static", "M3.13")
+                    later("the initializer of a static", STATICS)
                 }
                 _ if data.kind == ItemKind::Field => {
-                    later("the initializer of a constant", "M1.11")
+                    later("the initializer of a constant", CONSTANT_EVALUATION)
                 }
                 _ => None,
             }
@@ -148,70 +240,62 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
             let value = data.values.get(index as usize)?;
             match value.kind {
                 ValueKind::Field if value.is_static => {
-                    later("the initializer of a static field", "M3.13")
+                    later("the initializer of a static field", STATICS)
                 }
                 ValueKind::Field => match parent_later(data.kind) {
-                    Some(parent) => later(
-                        format!("the initializer of a field of {}", parent.what),
-                        parent.milestone,
-                    ),
-                    None => {
-                        let kind = type_later(&field_of_value(db, id(ty), index)?.ty)?;
-                        later(
-                            format!("the initializer of a field with {}", kind.what),
-                            kind.milestone,
-                        )
+                    Some(parent) => {
+                        parent.later(|what| format!("the initializer of a field of {what}"))
                     }
+                    None => type_later(&field_of_value(db, id(ty), index)?.ty)?
+                        .later(|what| format!("the initializer of a field with {what}")),
                 },
-                ValueKind::Const => later("the initializer of a constant", "M1.11"),
+                ValueKind::Const => later("the initializer of a constant", CONSTANT_EVALUATION),
                 ValueKind::Getter => match parent_later(data.kind) {
                     Some(parent) if data.kind != ItemKind::Class => {
-                        later(format!("a getter of {}", parent.what), parent.milestone)
+                        parent.later(|what| format!("a getter of {what}"))
                     }
-                    _ => later("a getter", "M2.1"),
+                    _ => later("a getter", CLASSES),
                 },
-                ValueKind::EnumMember => later("the value of an enum member", "M3.2"),
-                ValueKind::UnionCase => later("a union case", "M3.1"),
+                ValueKind::EnumMember => later("the value of an enum member", ENUMS),
+                ValueKind::UnionCase => later("a union case", UNIONS),
             }
         }
         BodyOwner::Member(..) => match body(db, file, owner).kind {
-            BodyKind::Constructor => later("a constructor", "M2.1"),
-            BodyKind::Destructor => later("a destructor", "M2.6"),
-            BodyKind::Operator => later("an operator", "M3.6"),
-            BodyKind::Get | BodyKind::Set => later("an indexer", "M3.6"),
+            BodyKind::Constructor => later("a constructor", CLASSES),
+            BodyKind::Destructor => later("a destructor", DESTRUCTORS),
+            BodyKind::Operator => later("an operator", OPERATORS),
+            BodyKind::Get | BodyKind::Set => later("an indexer", OPERATORS),
             BodyKind::Function | BodyKind::Getter => {
-                later("an explicit interface implementation", "M3.10")
+                later("an explicit interface implementation", INTERFACES)
             }
             BodyKind::TopLevel | BodyKind::Initializer | BodyKind::Extension | BodyKind::Case => {
                 None
             }
         },
-        BodyOwner::Extension(_, 0) => later("an extension block", "M3.12"),
-        BodyOwner::Extension(..) => later("an extension member", "M3.12"),
+        BodyOwner::Extension(_, 0) => later("an extension block", SMALLER_EXPRESSIONS),
+        BodyOwner::Extension(..) => later("an extension member", SMALLER_EXPRESSIONS),
     }
 }
 
 /// The milestone that lowers a function with the signature `function`,
 /// `None` when this one does: generic and async functions come later.
 fn function_later(function: &FnSignature) -> Option<Later> {
-    if function.is_generic {
-        return later("a generic function", GENERIC);
-    }
-    if function.is_async {
-        return later("an async function", ASYNC);
-    }
-    None
+    latest([
+        function
+            .is_generic
+            .then(|| Later::new("a generic function", MONOMORPHIZATION)),
+        function
+            .is_async
+            .then(|| Later::new("an async function", ASYNC)),
+    ])
 }
 
 /// The milestone that lowers a method that takes `this` in a type of the
 /// kind `parent` whose `this` has no type yet: a struct's is generic.
 fn method_later(parent: Option<ItemKind>) -> Option<Later> {
     match parent? {
-        ItemKind::Struct => later("a method of a generic struct", GENERIC),
-        kind => {
-            let parent = parent_later(kind)?;
-            later(format!("a method of {}", parent.what), parent.milestone)
-        }
+        ItemKind::Struct => later("a method of a generic struct", MONOMORPHIZATION),
+        kind => parent_later(kind)?.later(|what| format!("a method of {what}")),
     }
 }
 
@@ -220,10 +304,10 @@ fn method_later(parent: Option<ItemKind>) -> Option<Later> {
 /// not a type.
 fn parent_later(kind: ItemKind) -> Option<Kind> {
     let (what, milestone) = match kind {
-        ItemKind::Class => ("a class", "M2.1"),
-        ItemKind::Union => ("a union", "M3.1"),
-        ItemKind::Enum => ("an enum", "M3.2"),
-        ItemKind::Interface => ("an interface", "M3.10"),
+        ItemKind::Class => ("a class", CLASSES),
+        ItemKind::Union => ("a union", UNIONS),
+        ItemKind::Enum => ("an enum", ENUMS),
+        ItemKind::Interface => ("an interface", INTERFACES),
         ItemKind::Struct | ItemKind::Function | ItemKind::Macro | ItemKind::Field => return None,
     };
     Some(Kind { what, milestone })
@@ -233,76 +317,71 @@ fn parent_later(kind: ItemKind) -> Option<Kind> {
 /// the types of its parameters and its return type, `None` when this one
 /// does.
 fn signature_later(function: &FnSignature) -> Option<Later> {
-    let kind = function
-        .params
-        .iter()
-        .map(|param| &param.ty)
-        .chain([&function.ret])
-        .find_map(type_later)?;
-    later(format!("a signature with {}", kind.what), kind.milestone)
+    let types = function.params.iter().map(|param| &param.ty);
+    latest(types.chain([&function.ret]).map(type_later))?
+        .later(|what| format!("a signature with {what}"))
 }
 
-/// The milestone that lowers the first local function of the body of
-/// `owner`, in the order of the text, that comes later: a generic or async
-/// one, or one with a type in its signature that comes later. `None` when
-/// this one lowers them all.
+/// The milestone that lowers the local functions of the body of `owner`,
+/// generic and async ones and those with a type in their signature that
+/// comes later; the first in the order of the text names it on a tie.
+/// `None` when this one lowers them all.
 fn local_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let functions = local_functions(db, project, file, owner);
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
-    functions.iter().find_map(|function| {
+    latest(functions.iter().map(|function| {
         let Stmt::Function(def) = &hir.stmts[function.stmt] else {
             return None;
         };
         let name = &hir.locals[def.local].name;
-        if def.is_generic {
-            return later(format!("the generic local function `{name}`"), GENERIC);
-        }
-        if def.is_async {
-            return later(format!("the async local function `{name}`"), ASYNC);
-        }
         let ret = resolution.return_type(def.ret);
-        let kind = def
+        let types = def
             .params
             .iter()
-            .filter_map(|&param| inference.local(param))
-            .chain([&ret])
-            .find_map(type_later)?;
-        later(
-            format!(
-                "the local function `{name}` with {} in its signature",
-                kind.what
-            ),
-            kind.milestone,
-        )
-    })
+            .filter_map(|&param| inference.local(param));
+        let signature = latest(types.chain([&ret]).map(type_later)).and_then(|kind| {
+            kind.later(|what| format!("the local function `{name}` with {what} in its signature"))
+        });
+        latest([
+            def.is_generic.then(|| {
+                Later::new(
+                    format!("the generic local function `{name}`"),
+                    MONOMORPHIZATION,
+                )
+            }),
+            def.is_async
+                .then(|| Later::new(format!("the async local function `{name}`"), ASYNC)),
+            signature,
+        ])
+    }))
 }
 
 /// The milestone that lowers a body with the type `ty` in its signature,
-/// `None` when this one does. The first element of a tuple that comes
-/// later decides for the tuple, and the outer type decides for the types
-/// inside it, as for `C[]`, an array type.
+/// `None` when this one does. A type inside another one decides when its
+/// milestone is later, as for `B<int>[]`, an array of a generic type.
 fn type_later(ty: &Ty) -> Option<Kind> {
-    let construct = match ty {
+    let ty = match ty {
         Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never | Ty::Error => return None,
-        Ty::Tuple(elems) => return elems.iter().find_map(|elem| type_later(&elem.ty)),
-        Ty::Unsupported(ty) => ty.construct,
+        Ty::Tuple(elems) => return latest(elems.iter().map(|elem| type_later(&elem.ty))),
+        Ty::Unsupported(ty) => ty,
     };
-    let (what, milestone) = match construct {
-        Construct::Array => ("an array type", "M1.11"),
-        Construct::External => ("a type of the standard library", "M1.15"),
-        Construct::Class => ("a class type", "M2.1"),
-        Construct::Weak => ("a weak reference type", "M2.10"),
-        Construct::Function => ("a function type", "M2.11"),
-        Construct::Union => ("a union type", "M3.1"),
-        Construct::Enum => ("an enum type", "M3.2"),
-        Construct::Optional => ("an option type", "M3.5"),
-        Construct::TypeParam => ("a type parameter", GENERIC),
-        Construct::Generic => ("a generic type", GENERIC),
-        Construct::Interface => ("an interface type", "M3.10"),
-        Construct::Any => ("an interface value type", "M3.11"),
-        Construct::Splice => ("a spliced type", "M4.4"),
+    let (what, milestone) = match ty.construct {
+        Construct::Array => ("an array type", CONSTANT_EVALUATION),
+        Construct::External => ("a type of the standard library", STD_BOOTSTRAP),
+        Construct::Class => ("a class type", CLASSES),
+        Construct::Weak => ("a weak reference type", WEAK_REFERENCES),
+        Construct::Function => ("a function type", CLOSURES),
+        Construct::Union => ("a union type", UNIONS),
+        Construct::Enum => ("an enum type", ENUMS),
+        Construct::Optional => ("an option type", OPTIONS),
+        Construct::TypeParam => ("a type parameter", MONOMORPHIZATION),
+        Construct::Generic => ("a generic type", MONOMORPHIZATION),
+        Construct::Interface => ("an interface type", INTERFACES),
+        Construct::Any => ("an interface value type", DYNAMIC_INTERFACES),
+        Construct::Splice => ("a spliced type", EXPANSION),
     };
-    Some(Kind { what, milestone })
+    let own = Some(Kind { what, milestone });
+    latest(iter::once(own).chain(ty.parts.iter().map(type_later)))
 }

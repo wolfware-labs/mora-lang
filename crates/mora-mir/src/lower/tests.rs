@@ -2619,20 +2619,6 @@ mod numbering {
 }
 
 #[test]
-#[should_panic(expected = "UsersApi.F: a signature with an array type is not lowered until M1.11")]
-fn a_parameter_of_no_concrete_type_is_an_internal_error() {
-    let lowered = lowered("F(xs: int[]) {}\n");
-    lowered.mir("F");
-}
-
-#[test]
-#[should_panic(expected = "UsersApi.F: a signature with an array type is not lowered until M1.11")]
-fn a_return_type_that_is_not_concrete_is_an_internal_error() {
-    let lowered = lowered("F(): int[] => Todo();\n");
-    lowered.mir("F");
-}
-
-#[test]
 fn a_call_reads_the_body_of_its_callee_only_for_a_default() {
     use salsa::Setter;
 
@@ -2924,7 +2910,7 @@ type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 49] = [
+    let cases: [LaterCase; 58] = [
         (
             LOWERED_LATER,
             |l| l.initializer("P", "Get"),
@@ -3170,6 +3156,51 @@ fn every_owner_lowered_later_names_its_milestone() {
             "F() {\n    G(): int? => 1;\n}\n",
             |l| l.owner("F"),
             "UsersApi.F: the local function `G` with an option type in its signature is not lowered until M3.5",
+        ),
+        (
+            "F(): int[] => Todo();\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+        ),
+        (
+            "class C {}\nF(a: int[], c: C) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nF(c: C, d: C) {\n    G(e: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nF(t: (int[], C)) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "struct B<T> {}\nF(a: B<int>[]) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a generic type is not lowered until M3.9",
+        ),
+        (
+            "async F<T>() {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: an async function is not lowered until M6.2",
+        ),
+        (
+            "F(a: int[]) {\n    G<T>() {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the generic local function `G` is not lowered until M3.9",
+        ),
+        (
+            "F() {\n    async G<T>() {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the async local function `G` is not lowered until M6.2",
+        ),
+        (
+            "class C {}\nF() {\n    G(a: int[]) {}\n    H(c: C) {}\n    K(d: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `H` with a class type in its signature is not lowered until M2.1",
         ),
     ];
     for (text, owner, message) in cases {

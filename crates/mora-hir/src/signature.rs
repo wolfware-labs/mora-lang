@@ -329,10 +329,7 @@ impl ResolveTypes<'_> {
                 },
             ));
         }
-        let generic = path.generic
-            || !signature_refs(self.db, item.file)[arena_index(item.item)]
-                .type_params
-                .is_empty();
+        let generic = path.generic || is_generic_type(self.db, item);
         if construct == Construct::Generic && !generic {
             return Ty::Struct(item);
         }

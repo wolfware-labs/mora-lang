@@ -7,13 +7,17 @@ use mora_hir::{
 use mora_span::Db;
 
 use super::expr::Dest;
+use super::later::{CONSTANT_EVALUATION, STATICS};
 use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
 
 /// The internal error for a static or constant member: statics come with
-/// M3.13, and constants with the constant evaluation of M1.11.
-const STATIC_MEMBER: &str =
-    "a static member is not lowered until M3.13, nor a constant until M1.11";
+/// [`STATICS`], and constants with [`CONSTANT_EVALUATION`].
+fn static_member() -> String {
+    format!(
+        "a static member is not lowered until {STATICS}, nor a constant until {CONSTANT_EVALUATION}"
+    )
+}
 
 impl Lowerer<'_> {
     /// `new T { F = v, ... }` for the struct `T`: every instance field in
@@ -99,7 +103,7 @@ impl Lowerer<'_> {
                 _ => false,
             };
             if declared {
-                self.ice(expr, STATIC_MEMBER);
+                self.ice(expr, &static_member());
             }
             self.ice(
                 expr,
@@ -124,7 +128,7 @@ impl Lowerer<'_> {
             self.ice(expr, "a name that is not a field of `this` is not lowered")
         };
         if member.is_static {
-            self.ice(expr, STATIC_MEMBER);
+            self.ice(expr, &static_member());
         }
         let mut place = self.field_place(expr, self.this_place(expr), &member.name);
         for segment in path.segments.iter().skip(named) {
