@@ -2300,6 +2300,19 @@ fn an_initializer_that_uses_an_instance_member_stops_in_the_front_end() {
 }
 
 #[test]
+fn a_nested_type_that_uses_the_type_around_it_stops_in_the_front_end() {
+    let db = TestDb::new();
+    let project = app(
+        &db,
+        &[(
+            "src/Program.mr",
+            "struct P {\n    public X: int;\n    struct In {\n        R(): int => X;\n    }\n}\n",
+        )],
+    );
+    assert_eq!(codes(diagnostics(&db, project)), ["MR0149"]);
+}
+
+#[test]
 fn an_initializer_of_plain_values_lowers() {
     let lowered = lowered(
         "struct P {\n    Z: int;\n    public Y: int = 2 + 3;\n}\n\

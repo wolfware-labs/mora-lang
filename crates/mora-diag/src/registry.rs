@@ -117,7 +117,7 @@ registry! {
     MR0146 = 146: "two members of one type with the same name, other than overloaded methods",
     MR0147 = 147: "memberwise `new T { ... }` assigns a name that is not an instance field of `T`",
     MR0148 = 148: "memberwise `new T { ... }` assigns a field twice",
-    MR0149 = 149: "a static member uses `this` or an instance member of its type",
+    MR0149 = 149: "a static member uses `this` or an instance member of its type, or a nested type's member uses one of a type around it",
     MR0150 = 150: "a union contains itself without `indirect`",
     MR0151 = 151: "`@From` on a field of an `indirect` case or of a case of an `indirect union`",
     MR0152 = 152: "the initializer of an instance field uses `this` or an instance member of its type",

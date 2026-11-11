@@ -1,5 +1,6 @@
-//! A static member and the initializer of an instance field have no `this`:
-//! what they may not use (`MR0149`, `MR0152`).
+//! What a member of a type may use of a value of the type: a static member
+//! and the initializer of an instance field have no `this`, and a member of
+//! a nested type has no value of the types around it (`MR0149`, `MR0152`).
 
 use std::collections::HashSet;
 
@@ -14,16 +15,27 @@ use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
 use crate::ty::Signature;
 
+/// The type a body is a member of, and what of a value of it the body has.
+struct Member {
+    /// The type the body is a member of.
+    ty: ItemId,
+    /// Whether the body is static, so it has no `this`.
+    is_static: bool,
+    /// The name of the instance field whose initializer the body is, which
+    /// runs before the value exists.
+    field: Option<String>,
+}
+
 impl Check<'_> {
-    /// Reports each use of `this`, or of an instance member of the type by
-    /// its bare name, in the body of a static member of that type
-    /// (`MR0149`) or in the initializer of one of its instance fields
-    /// (`MR0152`).
+    /// Reports each use of `this`, or of an instance member by its bare
+    /// name, in a body that has no value to use it on: a static member
+    /// (`MR0149`), the initializer of an instance field (`MR0152`), or a
+    /// member of a nested type naming an instance member of a type around
+    /// it (`MR0149`).
     pub(super) fn instance_uses(&mut self, owner: BodyOwner) {
-        let field = self.initialized_field(owner);
-        if field.is_none() && !self.is_static_member(owner) {
+        let Some(member) = self.member(owner) else {
             return;
-        }
+        };
         let body = self.body;
         // The call reports a callee that names an instance method; any other
         // path that names one is a method group.
@@ -37,7 +49,7 @@ impl Check<'_> {
             .collect();
         for (expr, node) in body.exprs.iter() {
             let (at, used) = match node {
-                Expr::This => (expr, Some(InstanceUse::This)),
+                Expr::This => (expr, Some((member.ty, InstanceUse::This))),
                 Expr::Path(_) => (
                     expr,
                     self.instance_value(expr).or_else(|| {
@@ -49,52 +61,63 @@ impl Check<'_> {
                 Expr::Call { callee, .. } => (*callee, self.instance_method(expr, *callee)),
                 _ => continue,
             };
-            let Some(used) = used else { continue };
-            self.errors.push(match &field {
-                Some(field) => TypeError::InitializerThis {
+            let Some((ty, used)) = used else { continue };
+            let error = if let Some(field) = &member.field {
+                TypeError::InitializerThis {
                     expr: at,
                     used,
                     field: field.clone(),
-                },
-                None => TypeError::StaticThis { expr: at, used },
-            });
+                }
+            } else if ty != member.ty {
+                TypeError::NestedThis {
+                    expr: at,
+                    used,
+                    outer: item_data(self.db, ty).name.clone(),
+                    nested: item_data(self.db, member.ty).name.clone(),
+                }
+            } else if member.is_static {
+                TypeError::StaticThis { expr: at, used }
+            } else {
+                continue;
+            };
+            self.errors.push(error);
         }
     }
 
-    /// Whether `owner` is a static member of a type: a static function, an
-    /// operator, a static implementation of an interface member, or the
-    /// initializer or getter of a static or constant value.
-    fn is_static_member(&self, owner: BodyOwner) -> bool {
+    /// The type `owner` is a member of, if it is one. A static member is a
+    /// static function, an operator, a static implementation of an
+    /// interface member, or the initializer or getter of a static or
+    /// constant value.
+    fn member(&self, owner: BodyOwner) -> Option<Member> {
         let tree = item_tree(self.db, self.scope.file);
-        match owner {
+        let (ty, is_static, field) = match owner {
             BodyOwner::Item(item) => {
                 let data = tree.item(item);
-                data.is_static && data.parent.is_some()
+                (data.parent?, data.is_static, None)
             }
-            BodyOwner::Value(item, index) => tree
-                .item(item)
-                .values
-                .get(index as usize)
-                .is_some_and(|value| value.is_static),
-            BodyOwner::Member(..) => self.body.is_static,
-            BodyOwner::TopLevel | BodyOwner::Extension(..) => false,
-        }
+            BodyOwner::Value(ty, index) => {
+                let value = tree.item(ty).values.get(index as usize)?;
+                let field = value.is_instance_field().then(|| value.name.clone());
+                (ty, value.is_static, field)
+            }
+            BodyOwner::Member(ty, _) => (ty, self.body.is_static, None),
+            // An extension member reaches its receiver as a parameter.
+            BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
+        };
+        Some(Member {
+            ty: self.scope.item(ty),
+            is_static,
+            field,
+        })
     }
 
-    /// The name of the instance field whose initializer `owner` is, if it
-    /// is one.
-    fn initialized_field(&self, owner: BodyOwner) -> Option<String> {
-        let BodyOwner::Value(item, index) = owner else {
+    /// The instance field or getter the path `path` names, if it does, with
+    /// the type that declares it.
+    fn instance_value(&self, path: ExprId) -> Option<(ItemId, InstanceUse)> {
+        let Target::Value(value) = self.resolution.paths.get(&path)?.target else {
             return None;
         };
-        let tree = item_tree(self.db, self.scope.file);
-        let value = tree.item(item).values.get(index as usize)?;
-        value.is_instance_field().then(|| value.name.clone())
-    }
-
-    /// The instance field or getter the path `path` names, if it does.
-    fn instance_value(&self, path: ExprId) -> Option<InstanceUse> {
-        let member = self.resolution.value_member(self.db, path)?;
+        let member = value.member(self.db)?;
         if member.is_static {
             return None;
         }
@@ -104,37 +127,42 @@ impl Check<'_> {
             // These belong to the type, and are `static` already.
             ValueKind::Const | ValueKind::EnumMember | ValueKind::UnionCase => return None,
         };
-        Some(InstanceUse::Member {
+        let used = InstanceUse::Member {
             kind,
             name: member.name.clone(),
-        })
+        };
+        Some((value.ty, used))
     }
 
     /// The instance method that the path `path` names as a method group,
-    /// outside a call. Inference picks no overload for a method group, so a
-    /// set of overloads names one only when each of them takes a receiver.
-    fn instance_method_group(&self, path: ExprId) -> Option<InstanceUse> {
+    /// outside a call, with the type that declares it. Inference picks no
+    /// overload for a method group, so a set of overloads names one only
+    /// when each of them takes a receiver.
+    fn instance_method_group(&self, path: ExprId) -> Option<(ItemId, InstanceUse)> {
         let Target::Item(Resolved::Functions(items)) = &self.resolution.paths.get(&path)?.target
         else {
             return None;
         };
         let first = *items.first()?;
-        items
-            .iter()
-            .all(|&item| has_receiver(self.db, item))
-            .then(|| method(self.db, first))
+        if !items.iter().all(|&item| has_receiver(self.db, item)) {
+            return None;
+        }
+        method(self.db, first)
     }
 
     /// The instance method that the call `call` of a bare name calls, if it
-    /// does.
-    fn instance_method(&self, call: ExprId, callee: ExprId) -> Option<InstanceUse> {
+    /// does, with the type that declares it.
+    fn instance_method(&self, call: ExprId, callee: ExprId) -> Option<(ItemId, InstanceUse)> {
         if !matches!(self.body.exprs[callee], Expr::Path(_)) {
             return None;
         }
         let Some(Callee::Item(item)) = self.calls.get(&call).copied() else {
             return None;
         };
-        has_receiver(self.db, item).then(|| method(self.db, item))
+        if !has_receiver(self.db, item) {
+            return None;
+        }
+        method(self.db, item)
     }
 }
 
@@ -144,10 +172,18 @@ fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
         && matches!(signature(db, item), Signature::Function(function) if function.receiver.is_some())
 }
 
-/// The use of the instance method `item`.
-fn method(db: &dyn Db, item: ItemId) -> InstanceUse {
-    InstanceUse::Member {
+/// The use of the instance method `item`, with the type that declares it.
+fn method(db: &dyn Db, item: ItemId) -> Option<(ItemId, InstanceUse)> {
+    let parent = item_tree(db, item.file).item(item.item).parent?;
+    let used = InstanceUse::Member {
         kind: InstanceMember::Method,
         name: item_data(db, item).name.clone(),
-    }
+    };
+    Some((
+        ItemId {
+            item: parent,
+            ..item
+        },
+        used,
+    ))
 }

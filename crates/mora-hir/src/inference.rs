@@ -208,8 +208,8 @@ pub(crate) enum NotAField {
     Constant,
 }
 
-/// What a static member or a field initializer uses that only a value of
-/// its type has (`MR0149`, `MR0152`).
+/// What a static member, a field initializer or a member of a nested type
+/// uses that only a value of a type it has none of has (`MR0149`, `MR0152`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InstanceUse {
     /// `this`.
@@ -357,6 +357,15 @@ pub(crate) enum TypeError {
     /// The body of a static member uses `this` or an instance member at
     /// `expr`, which names it (`MR0149`).
     StaticThis { expr: ExprId, used: InstanceUse },
+    /// A member of the type `nested` uses, at `expr`, an instance member
+    /// of `outer`, a type it is nested in, which needs a value of `outer`
+    /// that it does not have (`MR0149`).
+    NestedThis {
+        expr: ExprId,
+        used: InstanceUse,
+        outer: String,
+        nested: String,
+    },
     /// The initializer of the instance field `field` uses `this` or an
     /// instance member at `expr`, which names it (`MR0152`).
     InitializerThis {
@@ -2745,6 +2754,75 @@ mod tests {
         }
         let text = format!("{head}    public Z: int = Take(Twice);\n}}\n");
         assert_eq!(reported(&text), Vec::<String>::new(), "{text}");
+    }
+
+    #[test]
+    fn a_nested_type_has_no_value_of_the_type_around_it() {
+        let head = "struct S {\n    public mut X: int;\n    public Y: int => X;\n    \
+                    Get(): int => X;\n    static N: int = 1;\n    \
+                    struct In {\n        public Z: int;\n";
+        for member in [
+            "R(): int => X;",
+            "R(): int => Y;",
+            "R(): int => Get();",
+            "R() { var f = Get; }",
+            "mut R() { X = 1; }",
+            "public W: int => X;",
+            "R(): int { G(): int => X; return G(); }",
+            "R(): int { var f = () => X; return f(); }",
+            "static R(): int => X;",
+            "static R(): int => Get();",
+        ] {
+            let text = format!("{head}        {member}\n    }}\n}}\n");
+            assert_eq!(reported(&text), ["MR0149"], "{text}");
+        }
+        // The nested type's own members and `this`, the static members
+        // around it, and locals and parameters that take a field's name.
+        for member in [
+            "R(): int => Z + this.Z + N;",
+            "R(X: int): int => X;",
+            "R(): int { var X = 1; return X; }",
+            "R(): int => [1].Count((X) => X > 0);",
+        ] {
+            let text = format!("{head}        {member}\n    }}\n}}\n");
+            assert_eq!(reported(&text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_nested_type_that_uses_the_type_around_it_says_what_it_uses() {
+        let head = "struct Outer {\n    public X: int;\n    Get(): int => X;\n    \
+                    struct Inner {\n";
+        let [field, method, from_static] = [
+            ("R(): int => X;", "X"),
+            ("R(): int => Get();", "Get"),
+            ("static R(): int => X;", "X"),
+        ]
+        .map(|(member, used)| {
+            let d = instance_use(&format!("{head}        {member}\n    }}\n}}\n"), used);
+            assert_eq!(
+                d.note.as_deref(),
+                Some(
+                    "a nested type is a type of its own: its members have no value of the \
+                     type it is nested in"
+                )
+            );
+            (d.message, d.primary.message.expect("label"))
+        });
+        assert_eq!(
+            field,
+            (
+                "a member of `Inner` has no value of `Outer`, so it cannot use the instance \
+                 field `X`"
+                    .to_owned(),
+                "needs a value of `Outer`".to_owned()
+            )
+        );
+        assert_eq!(
+            method.0,
+            "a member of `Inner` has no value of `Outer`, so it cannot use the instance method `Get`"
+        );
+        assert_eq!(from_static, field);
     }
 
     #[test]

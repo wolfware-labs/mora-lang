@@ -1,8 +1,9 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
 //! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`]. A static
-//! member that uses `this` is `MR0149`, and an instance field's initializer
-//! that does is `MR0152`.
+//! member that uses `this` is `MR0149`, and so is a member of a nested type
+//! that uses an instance member of a type around it; an instance field's
+//! initializer that uses `this` is `MR0152`.
 
 mod call;
 mod struct_new;
@@ -202,6 +203,12 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             name,
         } => struct_new::repeated_field(source, [*first, *previous, *value], ty, name),
         TypeError::StaticThis { expr, used } => static_this(source, *expr, used),
+        TypeError::NestedThis {
+            expr,
+            used,
+            outer,
+            nested,
+        } => nested_this(source, *expr, used, outer, nested),
         TypeError::InitializerThis { expr, used, field } => {
             initializer_this(source, *expr, used, field)
         }
@@ -230,6 +237,33 @@ fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnos
     };
     Diagnostic::error(codes::MR0149, message, Label::new(source.span(expr), label))
         .with_note("a `static` member belongs to the type, not to a value of it")
+}
+
+/// `MR0149`: a member of the type `nested` uses, at `expr`, an instance
+/// member of `outer`, a type it is nested in.
+fn nested_this(
+    source: &Source<'_>,
+    expr: ExprId,
+    used: &InstanceUse,
+    outer: &str,
+    nested: &str,
+) -> Diagnostic {
+    let InstanceUse::Member { kind, name } = used else {
+        unreachable!("`this` is a value of the nested type");
+    };
+    Diagnostic::error(
+        codes::MR0149,
+        format!(
+            "a member of `{nested}` has no value of `{outer}`, so it cannot use the instance {} \
+             `{name}`",
+            kind.word()
+        ),
+        Label::new(source.span(expr), format!("needs a value of `{outer}`")),
+    )
+    .with_note(
+        "a nested type is a type of its own: its members have no value of the type it is \
+         nested in",
+    )
 }
 
 /// `MR0152`: the initializer of the instance field `field` uses `this`, or

@@ -1,0 +1,23 @@
+// A nested type is a type of its own: its members have no value of the type
+// they are nested in, so they cannot use its instance members.
+public struct Outer {
+    public mut Count: int;
+    public Twice: int => Count * 2;
+    public static Limit: int = 10;
+
+    Value(): int => Count;
+
+    public struct Inner {
+        public Own: int;
+
+        public FromField(): int => Count; //~ ERROR MR0149
+        public FromGetter(): int => Twice; //~ ERROR MR0149
+        public FromMethod(): int => Value(); //~ ERROR MR0149
+        public FromGroup(): (() => int) => Value; //~ ERROR MR0149
+        public mut Write() {
+            Count = 1; //~ ERROR MR0149
+        }
+        public static FromStatic(): int => Count; //~ ERROR MR0149
+        public Fine(Count: int): int => Count + Own + this.Own + Limit;
+    }
+}
