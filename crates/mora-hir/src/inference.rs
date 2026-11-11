@@ -2719,6 +2719,22 @@ mod tests {
     }
 
     #[test]
+    fn operators_and_static_implementations_have_no_this() {
+        let head = "interface IMake {\n    static abstract Make(): int;\n}\n\
+                    interface IUnit {\n    static abstract Unit: int;\n}\n\
+                    struct S : IMake, IUnit {\n    public X: int;\n";
+        for member in [
+            "public static operator -(a: S): S => this;",
+            "public static operator +(a: S, b: S): S { return this; }",
+            "static IMake.Make(): int => X;",
+            "static IUnit.Unit: int => X;",
+        ] {
+            let text = format!("{head}    {member}\n}}\n");
+            assert_eq!(reported(&text), ["MR0149"], "{text}");
+        }
+    }
+
+    #[test]
     fn a_static_member_cannot_name_an_instance_method_group() {
         let head = "struct S {\n    public X: int;\n    Get(): int => X;\n    \
                     static Take(f: () => int): int => 1;\n";
