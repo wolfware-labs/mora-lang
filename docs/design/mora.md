@@ -1047,6 +1047,8 @@ public Sort<T>(items: List<T>, compare: (T, T) => int uses none) { ... }
 
 Expressions are evaluated left to right: operands before the operator, the receiver before the arguments, and arguments in order, unless this section says otherwise. Their syntax is in the grammar (§14.4) and this section.
 
+In a method call the receiver expression is evaluated before the arguments. A receiver the method takes by `in`, or by `ref` as a `mut` method does (§10.3), is borrowed after the arguments and the default values, so the method sees what the arguments did to it: in `p.Show(p.Bump())`, `Show` reads `p` as `Bump` left it. A receiver taken by `move` is a value, taken when it is evaluated, as a `move` argument is: in `p.Take(p.Bump())`, `Take` gets `p` as it was before `Bump` ran (D-146).
+
 ### 7.1 Operator precedence
 
 From highest to lowest:
@@ -2145,7 +2147,7 @@ Before monomorphization, types may contain type parameters. `Retain` and `Releas
 
 **Conversions.** Every conversion that inference applies is a `Cast` of kind `Implicit`. A written cast, and the cast back that a compound assignment applies to its result (§7.12), is a `Cast` of kind `Numeric`.
 
-**Parameter modes.** An `in` or `ref` argument, and `this`, is passed as a borrow: a `Borrow` rvalue stores it in a temporary and the call takes that temporary. A parameter of those modes holds a borrow, and its value is reached through `Deref`. A local function's captured locals are passed as `in` and `ref` parameters after its own parameters. A captured `this` comes before them all, and is `ref` when the local function writes through it and `in` otherwise.
+**Parameter modes.** An `in` or `ref` argument, and `this`, is passed as a borrow: a `Borrow` rvalue stores it in a temporary and the call takes that temporary. A parameter of those modes holds a borrow, and its value is reached through `Deref`. A local function's captured locals are passed as `in` and `ref` parameters after its own parameters. A captured `this` comes before them all, and is `ref` when the local function writes through it and `in` otherwise. A method's receiver is the first argument. Its expression is evaluated before the other arguments; a receiver taken by `in` or `ref` is borrowed after them and after the default values, as a captured `this` is, and a `move` receiver is copied into a temporary before them when a later argument may change it (D-146).
 
 **Callees.** A `Call` targets an `Item`, a function or method of the program; a `Local(n)`, a local function, by the position `n` of its body in its owner's MIR, which holds the owner's body first and then those of its local functions in the order of the text; an `Initializer(T, n)`, the initializer of the `n`-th instance field of the struct `T`, a body of its own that takes no argument and gives the field's value, called for a field that `new T { ... }` leaves out; or, as an M1 stand-in, an `External` function. **Call results.** The arguments are evaluated before the call, and the result is stored in `dest` after the callee returns. When `dest` overlaps a place that an argument borrows, as in `p = p.Scaled(2);` where the receiver borrows `p`, the callee reads the old value throughout, and code generation stores the result through a temporary.
 
@@ -3408,6 +3410,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-143 | In memberwise `new T { ... }`, each name is an instance field of `T` and is assigned once: a name that is no member, a getter, a `static` field or a constant is `MR0147`, suggesting the closest unassigned field, and a repeated field is `MR0148`, with a fix that removes the repetition; `new T(args) { ... }` runs a constructor and assigns the members afterwards, so these rules do not apply to it | author | 6.9 |
 | D-144 | A static member has no `this`: its body, and a local function or lambda inside it, that writes `this` or names an instance field, getter or method of the type is `MR0149`, with no fix, because passing the value as a parameter and dropping `static` both keep the program meaningful; a member of a nested type, `static` or not, has no value of the types around it, so naming one of their instance members is `MR0149` too | author | 6.10 |
 | D-145 | The initializer of an instance field has no `this`: it, and a lambda or local function inside it, that writes `this` or names an instance field, getter or method of the type is `MR0152`, with no fix; `static` members and constants stay allowed, because they need no value of the type | user | 6.9 |
+| D-146 | A method call evaluates its receiver expression before its arguments; a receiver taken by `in` or `ref` (a `mut` method) is borrowed after the arguments and default values, so the method sees what they did to it, while a `move` receiver, like every argument, is a value taken in order; this matches how a local function borrows a captured `this` after its arguments, and the borrow is what the callee reads, while a moved value is the callee's own copy from that point | author | 7, 14.7 |
 
 ## 24. Open questions
 
