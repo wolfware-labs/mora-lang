@@ -2916,7 +2916,7 @@ type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 64] = [
+    let cases: &[LaterCase] = &[
         (
             LOWERED_LATER,
             |l| l.initializer("P", "Get"),
@@ -3238,8 +3238,124 @@ fn every_owner_lowered_later_names_its_milestone() {
             |l| l.owner("F"),
             "UsersApi.F: the local function `H` with a class type in its signature is not lowered until M2.1",
         ),
+        (
+            "struct B<T> {\n    struct In {\n        public X: T;\n        M(): int {\n            let a = this;\n            return 1;\n        }\n    }\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.B.In.M: a method of a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {\n    struct In {\n        public X: T;\n        Y: int = 1;\n    }\n}\n",
+            |l| l.initializer("In", "Y"),
+            "UsersApi.B.In.Y: the initializer of a field of a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {\n    static Get: int => 1;\n}\n",
+            |l| l.initializer("B", "Get"),
+            "UsersApi.B.Get: a getter is not lowered until M2.1",
+        ),
+        (
+            "struct B<T> {}\nstruct S {\n    public X: int;\n    Get: B<int> => Todo();\n}\n",
+            |l| l.initializer("S", "Get"),
+            "UsersApi.S.Get: a getter with a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct S {\n    public X: int;\n    Get: int? => 1;\n}\n",
+            |l| l.initializer("S", "Get"),
+            "UsersApi.S.Get: a getter with an option type is not lowered until M3.5",
+        ),
+        (
+            "interface I {}\nstruct S {\n    public X: int;\n    Get: any I => Todo();\n}\n",
+            |l| l.initializer("S", "Get"),
+            "UsersApi.S.Get: a getter with an interface value type is not lowered until M3.11",
+        ),
+        (
+            "interface I {}\nunion U { A, B;\n    Get: any I => Todo();\n}\n",
+            |l| l.initializer("U", "Get"),
+            "UsersApi.U.Get: a getter of a union with an interface value type is not lowered until M3.11",
+        ),
+        (
+            "struct B<T> {}\nclass C {\n    X: B<int> = Todo();\n}\n",
+            |l| l.initializer("C", "X"),
+            "UsersApi.C.X: the initializer of a field of a class with a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {}\nclass S {\n    S(b: B<int>) {}\n}\n",
+            |l| l.member("S", 0),
+            "UsersApi.S: a constructor with a generic type is not lowered until M3.9",
+        ),
+        (
+            "interface I {}\nclass S {\n    S(b: any I) {}\n}\n",
+            |l| l.member("S", 0),
+            "UsersApi.S: a constructor with an interface value type is not lowered until M3.11",
+        ),
+        (
+            "interface I {}\nstruct V {\n    public X: int;\n    static operator +(a: V, b: any I): V => a;\n}\n",
+            |l| l.member("V", 0),
+            "UsersApi.V.+: an operator with an interface value type is not lowered until M3.11",
+        ),
+        (
+            "struct B<T> {}\nstruct V {\n    public X: int;\n    static operator +(a: V, b: B<int>): V => a;\n}\n",
+            |l| l.member("V", 0),
+            "UsersApi.V.+: an operator with a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {}\nstruct S {\n    public X: int;\n    public this[b: B<int>]: int { get => X; }\n}\n",
+            |l| l.member("S", 0),
+            "UsersApi.S.this[]: an indexer with a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct S {\n    public X: int;\n    public this[i: int]: int { get => X; }\n}\n\
+             struct B<T> {}\nstruct R {\n    public X: int;\n    public this[b: B<int>]: int { get => X; set {} }\n}\n",
+            |l| l.member("R", 1),
+            "UsersApi.R.this[]: an indexer with a generic type is not lowered until M3.9",
+        ),
+        (
+            "enum E { A, B }\nconst K: E = E.A;\n",
+            |l| l.owner("K"),
+            "UsersApi.K: the initializer of a constant with an enum type is not lowered until M3.2",
+        ),
+        (
+            "struct S {\n    public c: int?;\n}\nF(s: S): int => 1;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an option type is not lowered until M3.5",
+        ),
+        (
+            "class C {}\nstruct S {\n    public c: C;\n}\nF(): S => Todo();\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "struct P {\n    public c: int?;\n    static S: int = 1;\n}\nstruct S {\n    public p: P;\n}\nF(s: S): int => 1;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an option type is not lowered until M3.5",
+        ),
+        (
+            "struct S {\n    public s: S[];\n}\nF(s: S): int => 1;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+        ),
+        (
+            "struct S {\n    public c: int?;\n}\nF() {\n    G(s: S) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with an option type in its signature is not lowered until M3.5",
+        ),
+        (
+            "struct S {\n    public c: int?;\n}\nF() {\n    let s: S = Todo();\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local `s` with an option type is not lowered until M3.5",
+        ),
+        (
+            "struct S {\n    public c: int?;\n}\nstruct T {\n    public X: int;\n    M(s: S) {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.T.M: a signature with an option type is not lowered until M3.5",
+        ),
+        (
+            "static K: $t = 1;\n",
+            |l| l.owner("K"),
+            "UsersApi.K: the initializer of a static with a spliced type is not lowered until M4.4",
+        ),
     ];
-    for (text, owner, message) in cases {
+    for &(text, owner, message) in cases {
         assert_eq!(
             later_error(text, owner),
             format!("internal error lowering {message}"),

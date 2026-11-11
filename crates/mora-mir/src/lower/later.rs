@@ -2,25 +2,28 @@
 //! on one with an internal error that names the milestone, and
 //! [`mir_dump`] writes a line in its place.
 //!
-//! A body comes later for what it is, as a getter; for a type in its
-//! signature, as a class type; for a `this` of a generic type, as in a
-//! method of `struct B<T>`; or for a local function in it that comes
-//! later, since a local function is lowered with the body it is declared
-//! in. When several milestones apply, the latest of them lowers the body.
+//! A body comes later for what it is, as a getter; for a type it
+//! declares, as a class type among its parameters or the type of a field;
+//! for the type of one of its locals; for a `this` of a generic type, as in
+//! a method of `struct B<T>` or of a struct nested in it; or for a local
+//! function in it that comes later, since a local function is lowered with
+//! the body it is declared in. A struct type comes as late as the types of
+//! its instance fields, which its layout holds. When several milestones
+//! apply, the latest of them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
 
+use std::collections::HashSet;
 use std::fmt;
 use std::iter;
 
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
-    body, body_resolution, infer, is_generic_type, item_tree, local_functions, signature,
+    body, body_resolution, infer, instance_fields, is_generic_type, item_tree, local_functions,
+    signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
-
-use super::structs::field_of_value;
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -164,15 +167,18 @@ pub(crate) fn lowered_later(
         owner_later(db, project, file, owner),
         local_later(db, project, file, owner),
         this_later(db, project, file, owner),
+        locals_later(db, project, file, owner),
     ])
 }
 
 /// The milestone of generic code when the body of `owner` has a `this` of
-/// a generic type: a method, a getter, a field initializer, a constructor,
-/// a destructor, an indexer or an interface implementation that is not
-/// `static`, in a type with type parameters. `None` for any other body: a
-/// static member of a generic type is lowered for what it is, and a type
-/// parameter in its signature comes later for that type.
+/// a generic type: a method, a getter or a field initializer that is not
+/// `static`, a constructor, a destructor, an indexer or an interface
+/// implementation, in a type with type parameters or nested in one. `None`
+/// for any other body: a static member of a generic type is lowered for
+/// what it is, and a type parameter in its signature comes later for that
+/// type. A `static` interface implementation is counted too, as it comes
+/// later still for what it is.
 fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let tree = item_tree(db, file);
     let id = |item| ItemId {
@@ -200,11 +206,7 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
             }
         }
         BodyOwner::Member(ty, _) => {
-            let hir = body(db, file, owner);
-            if hir.is_static {
-                return None;
-            }
-            let what = match hir.kind {
+            let what = match body(db, file, owner).kind {
                 BodyKind::Constructor => "a constructor",
                 BodyKind::Destructor => "a destructor",
                 BodyKind::Get | BodyKind::Set => "an indexer",
@@ -224,7 +226,7 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
 }
 
 /// The milestone that lowers the body of `owner` for what it is or for a
-/// type in its signature, `None` when this one does.
+/// type it declares, `None` when this one does.
 fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let tree = item_tree(db, file);
     let id = |item| ItemId {
@@ -232,68 +234,125 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
         file,
         item,
     };
-    match owner {
-        BodyOwner::TopLevel => None,
+    let declared = || declared_types(db, project, file, owner);
+    let (what, own, types) = match owner {
+        BodyOwner::TopLevel => return None,
         BodyOwner::Item(item) => {
             let data = tree.item(item);
-            match signature(db, id(item)) {
+            let sig = signature(db, id(item));
+            let (what, own) = match sig {
                 Signature::Function(function) => {
                     let method = function
                         .receiver
                         .and(data.parent)
                         .and_then(|parent| parent_later(tree.item(parent).kind))
                         .and_then(|kind| kind.later(|what| format!("a method of {what}")));
-                    latest([function_later(function), method, signature_later(function)])
+                    return latest([
+                        function_later(function),
+                        method,
+                        signature_later(db, function),
+                    ]);
                 }
                 _ if data.kind == ItemKind::Field && data.is_static => {
-                    later("the initializer of a static", STATICS)
+                    ("the initializer of a static".to_owned(), STATICS)
                 }
-                _ if data.kind == ItemKind::Field => {
-                    later("the initializer of a constant", CONSTANT_EVALUATION)
-                }
-                _ => None,
-            }
+                _ if data.kind == ItemKind::Field => (
+                    "the initializer of a constant".to_owned(),
+                    CONSTANT_EVALUATION,
+                ),
+                _ => return None,
+            };
+            let types = match sig {
+                Signature::Value(ty) => vec![ty.clone()],
+                _ => Vec::new(),
+            };
+            (what, Some(own), types)
         }
         BodyOwner::Value(ty, index) => {
             let data = tree.item(ty);
             let value = data.values.get(index as usize)?;
-            match value.kind {
-                ValueKind::Field if value.is_static => {
-                    later("the initializer of a static field", STATICS)
-                }
+            let (what, own) = match value.kind {
+                ValueKind::Field if value.is_static => (
+                    "the initializer of a static field".to_owned(),
+                    Some(STATICS),
+                ),
                 ValueKind::Field => match parent_later(data.kind) {
-                    Some(parent) => {
-                        parent.later(|what| format!("the initializer of a field of {what}"))
-                    }
-                    None => type_later(&field_of_value(db, id(ty), index)?.ty)?
-                        .later(|what| format!("the initializer of a field with {what}")),
+                    Some(parent) => (
+                        format!("the initializer of a field of {}", parent.what),
+                        Some(parent.milestone),
+                    ),
+                    None => ("the initializer of a field".to_owned(), None),
                 },
-                ValueKind::Const => later("the initializer of a constant", CONSTANT_EVALUATION),
+                ValueKind::Const => (
+                    "the initializer of a constant".to_owned(),
+                    Some(CONSTANT_EVALUATION),
+                ),
                 ValueKind::Getter => match parent_later(data.kind) {
-                    Some(parent) if data.kind != ItemKind::Class => {
-                        parent.later(|what| format!("a getter of {what}"))
-                    }
-                    _ => later("a getter", CLASSES),
+                    Some(parent) if data.kind != ItemKind::Class => (
+                        format!("a getter of {}", parent.what),
+                        Some(parent.milestone),
+                    ),
+                    _ => ("a getter".to_owned(), Some(CLASSES)),
                 },
-                ValueKind::EnumMember => later("the value of an enum member", ENUMS),
-                ValueKind::UnionCase => later("a union case", UNIONS),
-            }
+                ValueKind::EnumMember => ("the value of an enum member".to_owned(), Some(ENUMS)),
+                ValueKind::UnionCase => ("a union case".to_owned(), Some(UNIONS)),
+            };
+            // A struct's fields are in its signature, a getter's type and
+            // any other type's fields with the body.
+            let field = struct_field(db, id(ty), index).map(|(_, field)| field.ty.clone());
+            (what, own, field.into_iter().chain(declared()).collect())
         }
-        BodyOwner::Member(..) => match body(db, file, owner).kind {
-            BodyKind::Constructor => later("a constructor", CLASSES),
-            BodyKind::Destructor => later("a destructor", DESTRUCTORS),
-            BodyKind::Operator => later("an operator", OPERATORS),
-            BodyKind::Get | BodyKind::Set => later("an indexer", OPERATORS),
-            BodyKind::Function | BodyKind::Getter => {
-                later("an explicit interface implementation", INTERFACES)
-            }
-            BodyKind::TopLevel | BodyKind::Initializer | BodyKind::Extension | BodyKind::Case => {
-                None
-            }
-        },
-        BodyOwner::Extension(_, 0) => later("an extension block", SMALLER_EXPRESSIONS),
-        BodyOwner::Extension(..) => later("an extension member", SMALLER_EXPRESSIONS),
+        BodyOwner::Member(..) => {
+            let (what, own) = match body(db, file, owner).kind {
+                BodyKind::Constructor => ("a constructor", CLASSES),
+                BodyKind::Destructor => ("a destructor", DESTRUCTORS),
+                BodyKind::Operator => ("an operator", OPERATORS),
+                BodyKind::Get | BodyKind::Set => ("an indexer", OPERATORS),
+                BodyKind::Function | BodyKind::Getter => {
+                    ("an explicit interface implementation", INTERFACES)
+                }
+                BodyKind::TopLevel
+                | BodyKind::Initializer
+                | BodyKind::Extension
+                | BodyKind::Case => return None,
+            };
+            (what.to_owned(), Some(own), declared())
+        }
+        BodyOwner::Extension(_, 0) => (
+            "an extension block".to_owned(),
+            Some(SMALLER_EXPRESSIONS),
+            declared(),
+        ),
+        BodyOwner::Extension(..) => (
+            "an extension member".to_owned(),
+            Some(SMALLER_EXPRESSIONS),
+            declared(),
+        ),
+    };
+    let typed =
+        types_later(db, &types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")));
+    latest([own.map(|own| Later::new(what, own)), typed])
+}
+
+/// The parameter, return, getter and field types that the body of `owner`
+/// declares and checks itself, because the item tree does not hold them.
+/// An accessor of an indexer after the first declares none: the first
+/// one checks the indexer's types, so they are taken from it.
+fn declared_types(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Vec<Ty> {
+    let mut owner = owner;
+    let mut hir = body(db, file, owner);
+    while let BodyOwner::Member(ty, member @ 1..) = owner
+        && matches!(hir.kind, BodyKind::Get | BodyKind::Set)
+        && hir.signature_types.is_empty()
+    {
+        owner = BodyOwner::Member(ty, member - 1);
+        hir = body(db, file, owner);
     }
+    let resolution = body_resolution(db, project, file, owner);
+    hir.signature_types
+        .iter()
+        .map(|&ty| resolution.written(ty))
+        .collect()
 }
 
 /// The milestone that lowers a function with the signature `function`,
@@ -326,10 +385,9 @@ fn parent_later(kind: ItemKind) -> Option<Kind> {
 /// The milestone that lowers a function with the signature `function` for
 /// the types of its parameters and its return type, `None` when this one
 /// does.
-fn signature_later(function: &FnSignature) -> Option<Later> {
+fn signature_later(db: &dyn Db, function: &FnSignature) -> Option<Later> {
     let types = function.params.iter().map(|param| &param.ty);
-    latest(types.chain([&function.ret]).map(type_later))?
-        .later(|what| format!("a signature with {what}"))
+    types_later(db, types.chain([&function.ret]))?.later(|what| format!("a signature with {what}"))
 }
 
 /// The milestone that lowers the local functions of the body of `owner`,
@@ -351,7 +409,7 @@ fn local_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
             .params
             .iter()
             .filter_map(|&param| inference.local(param));
-        let signature = latest(types.chain([&ret]).map(type_later)).and_then(|kind| {
+        let signature = types_later(db, types.chain([&ret])).and_then(|kind| {
             kind.later(|what| format!("the local function `{name}` with {what} in its signature"))
         });
         latest([
@@ -368,13 +426,51 @@ fn local_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
     }))
 }
 
+/// The milestone that lowers the locals of the body of `owner` for their
+/// types, the first in the order of the body on a tie; `None` when this
+/// one does. The name of a local function has no type: [`local_later`]
+/// looks into its signature.
+fn locals_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    let mut seen = HashSet::new();
+    latest(hir.locals.iter().map(|(id, local)| {
+        type_later(db, inference.local(id)?, &mut seen)?
+            .later(|what| format!("the local `{}` with {what}", local.name))
+    }))
+}
+
+/// The milestone that lowers a body with `types` in its signature, `None`
+/// when this one does; the first of them names it on a tie.
+fn types_later<'a>(db: &dyn Db, types: impl IntoIterator<Item = &'a Ty>) -> Option<Kind> {
+    let mut seen = HashSet::new();
+    latest(types.into_iter().map(|ty| type_later(db, ty, &mut seen)))
+}
+
 /// The milestone that lowers a body with the type `ty` in its signature,
 /// `None` when this one does. A type inside another one decides when its
-/// milestone is later, as for `B<int>[]`, an array of a generic type.
-fn type_later(ty: &Ty) -> Option<Kind> {
+/// milestone is later, as for `B<int>[]`, an array of a generic type, and
+/// so do the types of a struct's instance fields, which its layout holds.
+/// `seen` holds the structs already looked into, so that a struct whose
+/// fields lead back to it is looked into once.
+fn type_later(db: &dyn Db, ty: &Ty, seen: &mut HashSet<ItemId>) -> Option<Kind> {
     let ty = match ty {
-        Ty::Primitive(_) | Ty::String | Ty::Struct(_) | Ty::Never | Ty::Error => return None,
-        Ty::Tuple(elems) => return latest(elems.iter().map(|elem| type_later(&elem.ty))),
+        Ty::Primitive(_) | Ty::String | Ty::Never | Ty::Error => return None,
+        Ty::Struct(item) => {
+            if !seen.insert(*item) {
+                return None;
+            }
+            let fields = instance_fields(db, *item);
+            return latest(fields.map(|(_, field)| type_later(db, &field.ty, seen)));
+        }
+        Ty::Tuple(elems) => {
+            return latest(elems.iter().map(|elem| type_later(db, &elem.ty, seen)));
+        }
         Ty::Unsupported(ty) => ty,
     };
     let (what, milestone) = match ty.construct {
@@ -393,5 +489,5 @@ fn type_later(ty: &Ty) -> Option<Kind> {
         Construct::Splice => ("a spliced type", EXPANSION),
     };
     let own = Some(Kind { what, milestone });
-    latest(iter::once(own).chain(ty.parts.iter().map(type_later)))
+    latest(iter::once(own).chain(ty.parts.iter().map(|part| type_later(db, part, seen))))
 }

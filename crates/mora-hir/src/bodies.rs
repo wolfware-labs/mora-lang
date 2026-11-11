@@ -610,8 +610,12 @@ pub struct LocalFunction {
     pub ret: Option<TypeId>,
     /// Whether it is `async`.
     pub is_async: bool,
-    /// Whether type parameters are in scope in it: it declares its own, or
-    /// a local function or declaration around it does.
+    /// Whether it declares type parameters, or a local function around it
+    /// does, or the member whose body holds it does when that body
+    /// declares its own signature: an explicit interface implementation or
+    /// an extension member, with the extension's. The type parameters of a
+    /// function item or of a type around the body are not counted: the
+    /// item's own signature says whether it is generic.
     pub is_generic: bool,
     /// The block or the expression of `=> e`.
     pub body: Option<ExprId>,
@@ -856,6 +860,23 @@ mod tests {
                 ("G".to_owned(), true),
             ]
         );
+    }
+
+    #[test]
+    fn a_local_function_is_not_generic_for_the_item_around_it() {
+        let db = TestDb::new();
+        let text = "F<T>() {\n    G() {}\n    H<U>() {}\n}\n";
+        let (body, functions) = local_functions_of_f(&db, text);
+        let generic: Vec<(&str, bool)> = functions
+            .iter()
+            .map(|function| {
+                (
+                    body.locals[function.local].name.as_str(),
+                    function.is_generic,
+                )
+            })
+            .collect();
+        assert_eq!(generic, [("G", false), ("H", true)]);
     }
 
     /// The body of `F` in `src/Program.mr` alone in an app, and every local

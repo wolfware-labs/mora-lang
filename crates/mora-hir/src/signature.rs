@@ -65,8 +65,8 @@ fn declares_field(member: &ValueMember) -> bool {
 
 /// The type of `this` in the method `item`: the struct it is declared in
 /// (§10.3). `None` for a function that takes no receiver, and for a method
-/// of any other type, or of a generic struct, whose type is not a
-/// [`Ty::Struct`].
+/// of any other type, or of a generic struct or one nested in a generic
+/// type, whose type is not a [`Ty::Struct`].
 pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
     let Signature::Function(function) = signature(db, item) else {
         return None;
@@ -77,11 +77,13 @@ pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
         .then_some(Ty::Struct(parent))
 }
 
-/// Whether the type `item` declares type parameters (§8.1).
+/// Whether the type `item` is generic (§8.1): it declares type parameters,
+/// or a type it is nested in does, whose type parameters it can use, so
+/// its layout and its members depend on them too.
 pub fn is_generic_type(db: &dyn Db, item: ItemId) -> bool {
-    !signature_refs(db, item.file)[arena_index(item.item)]
-        .type_params
-        .is_empty()
+    let refs = signature_refs(db, item.file);
+    enclosing_types(item_tree(db, item.file), Some(item.item))
+        .any(|idx| !refs[arena_index(idx)].type_params.is_empty())
 }
 
 /// What is wrong with the types of an item's signature.
@@ -506,7 +508,7 @@ mod tests {
     fn this_has_the_type_of_the_struct_of_its_method() {
         let db = TestDb::new();
         let text = "struct P {\n    M() {}\n    static S() {}\n}\nclass C {\n    M() {}\n}\n\
-                    struct G<T> {\n    M() {}\n}\nF() {}\n";
+                    struct G<T> {\n    M() {}\n    struct In {\n        N() {}\n    }\n}\nF() {}\n";
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
         let tree = item_tree(&db, file);
@@ -529,6 +531,8 @@ mod tests {
         assert_eq!(this_type(&db, item("S", "P")), None);
         assert_eq!(this_type(&db, item("M", "C")), None);
         assert_eq!(this_type(&db, item("M", "G")), None);
+        assert_eq!(this_type(&db, item("N", "In")), None);
+        assert!(is_generic_type(&db, item("In", "G")));
         assert_eq!(this_type(&db, item_named(&db, project, file, "F")), None);
     }
 
