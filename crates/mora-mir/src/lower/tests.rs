@@ -3382,6 +3382,17 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.G.F: a signature with a generic type is not lowered until M3.9",
         ),
         (
+            "interface IF {}\nstruct G<T> {\n    public struct In {\n        public i: any IF;\n        \
+             M(): int => 1;\n    }\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.G.In.M: a method whose `this` holds an interface value type is not lowered until M3.11",
+        ),
+        (
+            "interface IF {}\nstruct B<T> {\n    public i: any IF;\n    M(): int => 1;\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.B.M: a method whose `this` holds an interface value type is not lowered until M3.11",
+        ),
+        (
             "static K: $t = 1;\n",
             |l| l.owner("K"),
             "UsersApi.K: the initializer of a static with a spliced type is not lowered until M4.4",

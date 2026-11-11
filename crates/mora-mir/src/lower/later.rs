@@ -218,16 +218,19 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
         BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
     };
     let ty = id(ty);
-    if in_generic_type(db, ty) {
-        return later(format!("{what} of a generic type"), MONOMORPHIZATION);
-    }
-    if tree.item(ty.item).kind != ItemKind::Struct {
-        return None;
-    }
-    let this = Ty::Struct(ty);
-    TypeWalk::new(db)
-        .later(&this)?
-        .later(|kind| format!("{what} whose `this` holds {kind}"))
+    let generic = in_generic_type(db, ty)
+        .then(|| later(format!("{what} of a generic type"), MONOMORPHIZATION))
+        .flatten();
+    // The layout of a struct's `this` can hold a type that comes even
+    // later than monomorphization, so both count.
+    let layout = (tree.item(ty.item).kind == ItemKind::Struct)
+        .then(|| {
+            TypeWalk::new(db)
+                .later(&Ty::Struct(ty))?
+                .later(|kind| format!("{what} whose `this` holds {kind}"))
+        })
+        .flatten();
+    latest([generic, layout])
 }
 
 /// Whether the type `item` declares type parameters or is nested in a type
