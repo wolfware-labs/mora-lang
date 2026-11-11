@@ -1,10 +1,10 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
 //! creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with `MR0129` for a
-//! field it cannot see, in [`struct_new`]. A static
-//! member that uses `this` is `MR0149`, and so is a member of a nested type
-//! that uses an instance member of a type around it; an instance field's
-//! initializer that uses `this` is `MR0152`.
+//! field it cannot see, in [`struct_new`]. A static member that uses `this`
+//! is `MR0149`, and so is a member of a nested type that uses an instance
+//! member of a type around it; an instance field's initializer that uses
+//! `this` is `MR0152`.
 
 mod call;
 mod struct_new;

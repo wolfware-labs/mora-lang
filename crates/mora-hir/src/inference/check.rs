@@ -1316,11 +1316,11 @@ impl Check<'_> {
     }
 
     /// `new T(args) { F = v }`. For a struct built memberwise, each name
-    /// is an instance field, assigned once, whose value is checked against
-    /// its type, and every field without an initializer of its own must be
-    /// assigned (§6.9); its type is the struct. A call with arguments runs
-    /// a constructor, which assigns the fields. Other targets have no type
-    /// yet.
+    /// is an instance field visible from the body, assigned once, whose
+    /// value is checked against its type, and every field without an
+    /// initializer of its own must be visible and assigned (§6.9); its type
+    /// is the struct. A call with arguments runs a constructor, which
+    /// assigns the fields. Other targets have no type yet.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1346,7 +1346,8 @@ impl Check<'_> {
         };
         let inits = inits.unwrap_or_default();
         // Memberwise creation needs every required field visible (`MR0144`);
-        // where one is hidden, that error replaces the others of the names.
+        // where one is hidden, that error replaces `MR0129` for the hidden
+        // fields assigned and `MR0143` for those left out.
         let hidden = instance_fields(self.db, item)
             .filter(|_| !has_args)
             .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
