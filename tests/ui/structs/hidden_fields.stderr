@@ -29,3 +29,33 @@ help: mark `Retries` `internal`
 10 -     private Retries: int = 3;
 10 +     internal Retries: int = 3;
    |
+
+error[MR0129]: `Retries` is private to the type that declares it
+  --> tests/ui/structs/hidden_fields.mr:20:36
+   |
+10 |     private Retries: int = 3;
+   |             ------- declared here
+...
+20 | let e = new Settings { Name = "x", Retries = 5, Retries = 6 }; //~ ERROR MR0129 //~ ERROR MR0148
+   |                                    ^^^^^^^ not visible here
+   |
+   = note: a `private` member is visible only inside its type
+help: mark `Retries` `internal`
+   |
+10 -     private Retries: int = 3;
+10 +     internal Retries: int = 3;
+   |
+
+error[MR0148]: `new Settings { ... }` assigns `Retries` twice
+  --> tests/ui/structs/hidden_fields.mr:20:49
+   |
+20 | let e = new Settings { Name = "x", Retries = 5, Retries = 6 }; //~ ERROR MR0129 //~ ERROR MR0148
+   |                                    -------      ^^^^^^^ assigned again here
+   |                                    |
+   |                                    first assigned here
+   |
+help: remove the repeated assignment
+   |
+20 - let e = new Settings { Name = "x", Retries = 5, Retries = 6 }; //~ ERROR MR0129 //~ ERROR MR0148
+20 + let e = new Settings { Name = "x", Retries = 5 }; //~ ERROR MR0129 //~ ERROR MR0148
+   |

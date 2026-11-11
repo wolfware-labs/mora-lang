@@ -1355,7 +1355,14 @@ impl Check<'_> {
             match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
                 Some((index, field)) => {
                     self.check(*init, &field.ty);
-                    if !has_args && hidden.is_none() && !self.field_visible(item, index) {
+                    // A repeated field is reported as repeated (`MR0148`)
+                    // alone: its first assignment reports it hidden.
+                    let repeated = inits[..position].iter().any(|(earlier, _)| earlier == name);
+                    if !has_args
+                        && hidden.is_none()
+                        && !repeated
+                        && !self.field_visible(item, index)
+                    {
                         self.errors.push(TypeError::HiddenField {
                             value: *init,
                             item,
