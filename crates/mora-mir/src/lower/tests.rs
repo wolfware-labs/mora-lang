@@ -2208,6 +2208,37 @@ fn a_method_call_evaluates_its_receiver_first_and_borrows_it_last() {
 }
 
 #[test]
+fn a_move_receiver_is_a_value_taken_before_the_arguments() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    move Take(k: int): int => X + k;\n    \
+         mut Bump(): int { X += 1; return X; }\n    mut Run(): int => Take(Bump());\n}\n\
+         F(): int {\n    var p = new P { X = 1 };\n    return p.Take(p.Bump());\n}\n",
+    );
+    // `p` is copied before `Bump` changes it, so `Take` sees `X = 1`.
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_2 = copy p#0;",
+            "_3 = &ref p#0;",
+            "_4 = call UsersApi.P.Bump{fn UsersApi.P.Bump}(copy _3) -> bb1;",
+            "_5 = &in _4;",
+            "_0 = call UsersApi.P.Take{fn UsersApi.P.Take}(copy _2, copy _5) -> bb2;",
+        ],
+    );
+    // `this` is copied before `Bump` too.
+    assert_in_order(
+        &lowered.code("Run"),
+        &[
+            "_2 = copy (*this);",
+            "_3 = &ref (*this);",
+            "_4 = call UsersApi.P.Bump{fn UsersApi.P.Bump}(copy _3) -> bb1;",
+            "_5 = &in _4;",
+            "_0 = call UsersApi.P.Take{fn UsersApi.P.Take}(copy _2, copy _5) -> bb2;",
+        ],
+    );
+}
+
+#[test]
 fn a_field_of_a_field_and_of_a_value_are_places() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n}\nstruct Q {\n    public Inner: P;\n    \

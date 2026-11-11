@@ -1,8 +1,9 @@
 //! Calls: of functions and methods, of local functions, and of the
 //! standard library while it is not loaded. Arguments are evaluated in the
 //! order they are written, after the receiver, and passed in the order of
-//! the parameters (§7, §10.3). A method's receiver is borrowed once the
-//! arguments are evaluated, so an argument may still change it.
+//! the parameters (§7, §10.3). A receiver taken by `in`, `ref` or `mut` is
+//! borrowed once the arguments are evaluated, so an argument may still
+//! change it; a `move` receiver is a value taken before them (D-146).
 
 use mora_hir::{
     Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Resolved, Signature,
@@ -135,10 +136,11 @@ impl Lowerer<'_> {
             self.ice(expr, "the callee is not a function")
         };
         let values = arg_values(args);
-        // The receiver is evaluated first, and borrowed once the arguments
-        // are, as a local function borrows `this`.
+        // The receiver is evaluated first. One taken by `in`, `ref` or `mut`
+        // is borrowed once the arguments are, as a local function borrows
+        // `this`; a `move` receiver is a value, taken before them (D-146).
         let receiver = match function.receiver {
-            Some(mode) => Some((self.receiver(expr, callee, mode)?, mode)),
+            Some(mode) => Some((self.receiver(expr, callee, mode, &values)?, mode)),
             None => None,
         };
         let modes: Vec<ParamMode> = function.params.iter().map(|param| param.mode).collect();
@@ -266,28 +268,35 @@ impl Lowerer<'_> {
     }
 
     /// The receiver of the call `call` of a method through `callee`, which
-    /// takes it by `mode`, evaluated but not yet passed, with its span: the
-    /// place of the value `callee` is a member of for `ref`, that value for
-    /// `in` and `move`, or `this` for a method named alone.
+    /// takes it by `mode`, before the arguments `later`, evaluated but not
+    /// yet passed, with its span: the place of the value `callee` is a
+    /// member of for `ref`, that value for `in` and `move`, or `this` for a
+    /// method named alone. A `move` receiver is a value read here, as a
+    /// `move` argument is, so the arguments cannot change it (D-146).
     fn receiver(
         &mut self,
         call: ExprId,
         callee: ExprId,
         mode: ParamMode,
+        later: &[ExprId],
     ) -> Lowered<(Operand, Span)> {
         let hir = self.owner.hir;
-        match &hir.exprs[callee] {
+        let (value, span) = match &hir.exprs[callee] {
             Expr::Member { receiver, .. } => {
                 let span = self.span(*receiver);
                 let value = match mode {
                     ParamMode::Ref => Operand::Copy(self.place(*receiver)?),
                     ParamMode::In | ParamMode::Move => self.operand(*receiver)?,
                 };
-                Ok((value, span))
+                (value, span)
             }
-            Expr::Path(_) => Ok((Operand::Copy(self.this_place(callee)), self.span(callee))),
+            Expr::Path(_) => (Operand::Copy(self.this_place(callee)), self.span(callee)),
             _ => self.ice(call, "a method call without its receiver"),
+        };
+        if mode == ParamMode::Move {
+            return Ok((self.stable(value, later, span), span));
         }
+        Ok((value, span))
     }
 
     /// Ends the current block with the call of `callee` that `expr` makes,
