@@ -1,4 +1,5 @@
-//! The diagnostics of memberwise creation: `MR0143`, `MR0147` and `MR0148`.
+//! The diagnostics of memberwise creation: `MR0129` for a field it cannot
+//! see, `MR0143`, `MR0144`, `MR0147` and `MR0148`.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Span, TextRange};
@@ -6,6 +7,7 @@ use mora_span::{Span, TextRange};
 use super::Source;
 use crate::bodies::ExprId;
 use crate::inference::NotAField;
+use crate::items::Visibility;
 use crate::ty::Ty;
 
 /// `MR0143`: `new T { ... }` leaves a field without an initializer
@@ -21,6 +23,59 @@ pub(super) fn missing_field(source: &Source<'_>, expr: ExprId, ty: &Ty, field: &
         ),
     )
     .with_note("give the field an initializer, or assign it in the `new` expression")
+}
+
+/// `MR0144`: `new T { ... }` where the field `field` of `T`, which has no
+/// initializer, is not visible, so no memberwise creation can assign it.
+pub(super) fn no_memberwise(
+    source: &Source<'_>,
+    expr: ExprId,
+    ty: &Ty,
+    field: &str,
+    visibility: Visibility,
+) -> Diagnostic {
+    let t = source.name(ty);
+    Diagnostic::error(
+        codes::MR0144,
+        format!("`{t}` cannot be created memberwise here"),
+        Label::new(
+            source.span(expr),
+            format!("`{field}` has no initializer and {}", hidden(&t, visibility)),
+        ),
+    )
+    .with_note(format!(
+        "memberwise creation needs every field without an initializer visible; create `{t}` through what its type provides"
+    ))
+}
+
+/// `MR0129`: `new T { ... }` assigns `value` to the field `name`, which
+/// the expression cannot see.
+pub(super) fn hidden_field(
+    source: &Source<'_>,
+    value: ExprId,
+    ty: &Ty,
+    name: &str,
+    visibility: Visibility,
+) -> Diagnostic {
+    let t = source.name(ty);
+    Diagnostic::error(
+        codes::MR0129,
+        format!("the field `{name}` of `{t}` is not visible here"),
+        Label::new(name_span(source, value), "not visible here"),
+    )
+    .with_note(format!("`{name}` {}", hidden(&t, visibility)))
+}
+
+/// Why a field of visibility `visibility` of the type named `t` is hidden.
+fn hidden(t: &str, visibility: Visibility) -> String {
+    match visibility {
+        Visibility::Private => format!("is private to `{t}`"),
+        Visibility::File => format!("is visible only in the file that declares `{t}`"),
+        Visibility::Folder => format!("is visible only in the folder that declares `{t}`"),
+        Visibility::Internal | Visibility::Public => {
+            format!("is visible only in the project that declares `{t}`")
+        }
+    }
 }
 
 /// `MR0147`: `new T { ... }` assigns `value` to `name`, which is `member`

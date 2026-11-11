@@ -1,6 +1,7 @@
 //! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
-//! creation, `MR0143`, `MR0147` and `MR0148`, in [`struct_new`]. A static
+//! creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with `MR0129` for a
+//! field it cannot see, in [`struct_new`]. A static
 //! member that uses `this` is `MR0149`, and so is a member of a nested type
 //! that uses an instance member of a type around it; an instance field's
 //! initializer that uses `this` is `MR0152`.
@@ -188,6 +189,18 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         TypeError::MissingField { expr, ty, field } => {
             struct_new::missing_field(source, *expr, ty, field)
         }
+        TypeError::NoMemberwise {
+            expr,
+            ty,
+            field,
+            visibility,
+        } => struct_new::no_memberwise(source, *expr, ty, field, *visibility),
+        TypeError::HiddenField {
+            value,
+            ty,
+            name,
+            visibility,
+        } => struct_new::hidden_field(source, *value, ty, name, *visibility),
         TypeError::NotAField {
             value,
             ty,

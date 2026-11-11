@@ -1,0 +1,23 @@
+error[MR0144]: `Account` cannot be created memberwise here
+  --> tests/ui/structs/hidden_fields.mr:15:9
+   |
+15 | let a = new Account { Owner = "ana" }; //~ ERROR MR0144
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Balance` has no initializer and is private to `Account`
+   |
+   = note: memberwise creation needs every field without an initializer visible; create `Account` through what its type provides
+
+error[MR0144]: `Account` cannot be created memberwise here
+  --> tests/ui/structs/hidden_fields.mr:16:9
+   |
+16 | let b = new Account { Owner = "ana", Balance = 10 }; //~ ERROR MR0144
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Balance` has no initializer and is private to `Account`
+   |
+   = note: memberwise creation needs every field without an initializer visible; create `Account` through what its type provides
+
+error[MR0129]: the field `Retries` of `Settings` is not visible here
+  --> tests/ui/structs/hidden_fields.mr:18:36
+   |
+18 | let d = new Settings { Name = "x", Retries = 5 }; //~ ERROR MR0129
+   |                                    ^^^^^^^ not visible here
+   |
+   = note: `Retries` is private to `Settings`

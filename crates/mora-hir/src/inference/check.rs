@@ -23,7 +23,7 @@ use crate::bodies::{
 };
 use crate::defs::ItemId;
 use crate::items::{ValueKind, item_tree};
-use crate::resolve::{Resolved, Scope, item_data};
+use crate::resolve::{Resolved, Scope, item_data, value_visible};
 use crate::signature::{instance_fields, signature, struct_field, this_type};
 use crate::suggest::closest;
 use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
@@ -1345,9 +1345,24 @@ impl Check<'_> {
             return None;
         };
         let inits = inits.unwrap_or_default();
+        // Memberwise creation needs every required field visible (`MR0144`);
+        // where one is hidden, that error replaces the others of the names.
+        let hidden = instance_fields(self.db, item)
+            .filter(|_| !has_args)
+            .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
         for (position, (name, init)) in inits.iter().enumerate() {
             match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
-                Some((_, field)) => self.check(*init, &field.ty),
+                Some((index, field)) => {
+                    self.check(*init, &field.ty);
+                    if !has_args && hidden.is_none() && !self.field_visible(item, index) {
+                        self.errors.push(TypeError::HiddenField {
+                            value: *init,
+                            ty: written.clone(),
+                            name: name.clone(),
+                            visibility: field.visibility,
+                        });
+                    }
+                }
                 None => {
                     self.infer(*init);
                 }
@@ -1356,6 +1371,15 @@ impl Check<'_> {
             if !has_args && let Some(error) = self.init_name(item, &written, inits, position) {
                 self.errors.push(error);
             }
+        }
+        if let Some((_, hidden)) = hidden {
+            self.errors.push(TypeError::NoMemberwise {
+                expr,
+                ty: written.clone(),
+                field: hidden.name.clone(),
+                visibility: hidden.visibility,
+            });
+            return Some(written);
         }
         let missing = instance_fields(self.db, item)
             .filter(|_| !has_args)
@@ -1370,6 +1394,13 @@ impl Check<'_> {
             });
         }
         Some(written)
+    }
+
+    /// Whether the body sees the value member at `index` of the struct
+    /// `item`, one of its instance fields (§4.5).
+    fn field_visible(&self, item: ItemId, index: u32) -> bool {
+        let member = &item_tree(self.db, item.file).item(item.item).values[index as usize];
+        value_visible(self.db, item, member, self.scope)
     }
 
     /// What is wrong with the name of the initializer at `position` of

@@ -27,6 +27,7 @@ use mora_span::{Db, Project, SourceFile};
 use crate::arena::arena_index;
 use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, UnaryOp};
 use crate::defs::ItemId;
+use crate::items::Visibility;
 use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
@@ -334,6 +335,24 @@ pub(crate) enum TypeError {
     /// The memberwise creation `expr` of a struct, `ty`, does not assign
     /// the field `field`, which has no initializer (`MR0143`).
     MissingField { expr: ExprId, ty: Ty, field: String },
+    /// The memberwise creation `expr` of a struct, `ty`, is not available
+    /// here: its field `field`, which has no initializer, has the
+    /// visibility `visibility` and is not visible from the body (`MR0144`).
+    NoMemberwise {
+        expr: ExprId,
+        ty: Ty,
+        field: String,
+        visibility: Visibility,
+    },
+    /// The memberwise creation of the struct `ty` assigns `value` to the
+    /// field `name`, of the visibility `visibility`, which is not visible
+    /// from the body (`MR0129`).
+    HiddenField {
+        value: ExprId,
+        ty: Ty,
+        name: String,
+        visibility: Visibility,
+    },
     /// The memberwise creation of the struct `ty` assigns `value` to
     /// `name`, which is not an instance field of it but `member`; for a
     /// name that is no member, `suggestion` is the closest field not
