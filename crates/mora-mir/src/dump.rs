@@ -67,6 +67,15 @@
 //! characters as diagnostics count it, where its source starts, or `// ?`
 //! when the span names no position in the file (see [`write_body_in`]).
 //!
+//! A file's dump ([`mir_dump`](crate::mir_dump)) is the bodies of its
+//! owners in order, one blank line between them. An owner whose body a
+//! later milestone of the roadmap lowers, such as a getter, is one line in
+//! place of its bodies:
+//!
+//! ```text
+//! // UsersApi.Point.Length: not lowered until M2.1
+//! ```
+//!
 //! # Statements
 //!
 //! * `place = rvalue;`, `storage_live(local);`, `storage_dead(local);` and

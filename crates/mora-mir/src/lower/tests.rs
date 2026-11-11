@@ -69,7 +69,12 @@ impl Lowered {
     /// The message of the internal error that lowering the body of `name`
     /// panics with.
     fn internal_error(&self, name: &str) -> String {
-        let owner = self.owner(name);
+        self.internal_error_of(self.owner(name))
+    }
+
+    /// The message of the internal error that lowering the body of `owner`
+    /// panics with.
+    fn internal_error_of(&self, owner: BodyOwner) -> String {
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             mir(&self.db, self.project, self.file, owner);
         }))
@@ -93,6 +98,12 @@ impl Lowered {
             .position(|value| value.name == field)
             .expect("the field");
         BodyOwner::Value(item, u32::try_from(index).expect("a small index"))
+    }
+
+    /// The owner of the member at `index` of the type `ty` that is neither
+    /// an item nor a value member: a constructor, an operator and the like.
+    fn member(&self, ty: &str, index: u32) -> BodyOwner {
+        BodyOwner::Member(self.item(ty).item, index)
     }
 
     /// The names of the bodies of `name`, in order.
@@ -545,20 +556,6 @@ fn a_var_is_a_mutable_local() {
     let dump = lowered("var i = 1;\nlet j = 2;\n").dump("top-level");
     assert!(dump.contains("    let mut i#0: int;\n"), "{dump}");
     assert!(dump.contains("    let j#1: int;\n"), "{dump}");
-}
-
-#[test]
-#[should_panic(expected = "generic and async functions are not lowered")]
-fn a_generic_function_is_not_lowered_yet() {
-    let lowered = lowered("Id<T>(move x: T): T => x;\n");
-    lowered.mir("Id");
-}
-
-#[test]
-#[should_panic(expected = "generic and async functions are not lowered")]
-fn an_async_function_is_not_lowered_yet() {
-    let lowered = lowered("async Wait() {}\n");
-    lowered.mir("Wait");
 }
 
 #[test]
@@ -2338,33 +2335,12 @@ fn a_constant_in_an_initializer_is_not_lowered_yet() {
 }
 
 #[test]
-#[should_panic(expected = "only the initializer of a field is lowered")]
-fn a_getter_is_not_lowered() {
-    let lowered = lowered("struct P {\n    public X: int;\n    public Get: int => X;\n}\n");
-    lowered.mir_of(lowered.initializer("P", "Get"));
-}
-
-#[test]
-#[should_panic(expected = "a method of a type other than a struct is not lowered")]
-fn a_method_of_a_class_is_not_lowered() {
-    let lowered = lowered("class C {\n    M() {}\n}\n");
-    lowered.mir("M");
-}
-
-#[test]
 #[should_panic(expected = "a member that is not a field of a struct is not lowered")]
 fn a_getter_read_is_not_lowered() {
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public Get: int => X;\n}\nF(p: P): int => p.Get;\n",
     );
     lowered.mir("F");
-}
-
-#[test]
-#[should_panic(expected = "only the initializer of a field is lowered")]
-fn the_initializer_of_a_static_field_is_not_lowered() {
-    let lowered = lowered("struct P {\n    public X: int;\n    public static S: int = 1;\n}\n");
-    lowered.mir_of(lowered.initializer("P", "S"));
 }
 
 #[test]
@@ -2514,13 +2490,6 @@ fn local_functions_of_one_name_get_their_own_names() {
             "_0 = call UsersApi.F.G#2() -> bb4;",
         ],
     );
-}
-
-#[test]
-#[should_panic(expected = "a method of a generic struct is not lowered")]
-fn a_method_of_a_generic_struct_is_not_lowered() {
-    let lowered = lowered("struct B<T> {\n    M() {}\n}\n");
-    lowered.mir("M");
 }
 
 #[test]
@@ -2861,4 +2830,165 @@ fn a_captured_this_is_borrowed_after_the_arguments() {
         .unwrap_or_else(|| panic!("{code:#?}"));
     assert!(inc < borrow && borrow < call, "{code:#?}");
     assert!(code[call].contains("(copy _"), "{code:#?}");
+}
+
+/// A struct with a member of each kind that a later milestone lowers, and
+/// a function that this one lowers.
+const LOWERED_LATER: &str = "struct P {\n    public X: int;\n    public Get: int => X;\n    \
+     public static S: int = 1;\n    public const C: int = 2;\n    \
+     public P(x: int) { X = x; }\n    \
+     public static operator -(p: P): P => p;\n}\nOne(): int => 1;\n";
+
+#[test]
+fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
+    let lowered = lowered(LOWERED_LATER);
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    let one = lowered.dump("One");
+    assert_eq!(
+        dump,
+        format!(
+            "// UsersApi.P.Get: not lowered until M2.1\n\n\
+             // UsersApi.P.S: not lowered until M3.13\n\n\
+             // UsersApi.P.C: not lowered until M1.11\n\n\
+             // UsersApi.P: not lowered until M2.1\n\n\
+             // UsersApi.P.-: not lowered until M3.6\n\n\
+             {one}"
+        )
+    );
+}
+
+#[test]
+fn mir_names_the_milestone_of_each_owner_lowered_later() {
+    let lowered = lowered(LOWERED_LATER);
+    let cases = [
+        (
+            lowered.initializer("P", "Get"),
+            "UsersApi.P.Get: a getter",
+            "M2.1",
+        ),
+        (
+            lowered.initializer("P", "S"),
+            "UsersApi.P.S: the initializer of a static field",
+            "M3.13",
+        ),
+        (
+            lowered.initializer("P", "C"),
+            "UsersApi.P.C: the initializer of a constant",
+            "M1.11",
+        ),
+        (lowered.member("P", 0), "UsersApi.P: a constructor", "M2.1"),
+        (lowered.member("P", 1), "UsersApi.P.-: an operator", "M3.6"),
+    ];
+    for (owner, what, milestone) in cases {
+        assert_eq!(
+            lowered.internal_error_of(owner),
+            format!("internal error lowering {what} is not lowered until {milestone}")
+        );
+    }
+}
+
+/// The internal error that lowering the owner `owner` picks in the file
+/// `text` panics with.
+fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String {
+    let lowered = lowered(text);
+    let owner = owner(&lowered);
+    lowered.internal_error_of(owner)
+}
+
+/// A file, the owner in it that a later milestone lowers, and the message
+/// lowering it stops with, after `internal error lowering `.
+type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
+
+#[test]
+fn every_owner_lowered_later_names_its_milestone() {
+    let cases: [LaterCase; 16] = [
+        (
+            "union U { C(x: int), D }\n",
+            |l| l.initializer("U", "C"),
+            "UsersApi.U.C: a union case is not lowered until M3.1",
+        ),
+        (
+            "union U { A, B;\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.U.M: a method of a union is not lowered until M3.1",
+        ),
+        (
+            "interface I {\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.I.M: a method of an interface is not lowered until M3.10",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nextension (p: P) {\n    Twice(): int => p.X + p.X;\n}\n",
+            |_| BodyOwner::Extension(0, 0),
+            "extension#0: an extension block is not lowered until M3.12",
+        ),
+        (
+            "struct P {\n    public X: int;\n    ~P() {}\n}\n",
+            |l| l.member("P", 0),
+            "UsersApi.P: a destructor is not lowered until M2.6",
+        ),
+        (
+            "struct P {\n    public X: int;\n    public this[i: int]: int { get => X + i; }\n}\n",
+            |l| l.member("P", 0),
+            "UsersApi.P.this[]: an indexer is not lowered until M3.6",
+        ),
+        (
+            "interface IShape {\n    Area(): float;\n}\n\
+             struct Sq : IShape {\n    public X: float;\n    IShape.Area(): float => X;\n}\n",
+            |l| l.member("Sq", 0),
+            "UsersApi.Sq.IShape.Area: an explicit interface implementation is not lowered until M3.10",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nextension (p: P) {\n    Twice(): int => p.X + p.X;\n}\n",
+            |_| BodyOwner::Extension(0, 1),
+            "extension#0.Twice: an extension member is not lowered until M3.12",
+        ),
+        (
+            "const K: int = 1;\n",
+            |l| l.owner("K"),
+            "UsersApi.K: the initializer of a constant is not lowered until M1.11",
+        ),
+        (
+            "static S: int = 1;\n",
+            |l| l.owner("S"),
+            "UsersApi.S: the initializer of a static is not lowered until M3.13",
+        ),
+        (
+            "Id<T>(move x: T): T => x;\n",
+            |l| l.owner("Id"),
+            "UsersApi.Id: a generic function is not lowered until M3.8",
+        ),
+        (
+            "async Wait() {}\n",
+            |l| l.owner("Wait"),
+            "UsersApi.Wait: an async function is not lowered until M6.2",
+        ),
+        (
+            "class C {\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.C.M: a method of a class is not lowered until M2.1",
+        ),
+        (
+            "class C {\n    X: int = 1;\n}\n",
+            |l| l.initializer("C", "X"),
+            "UsersApi.C.X: the initializer of a field of a class is not lowered until M2.1",
+        ),
+        (
+            "struct B<T> {\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.B.M: a method of a generic struct is not lowered until M3.8",
+        ),
+        (
+            "enum Level { Low = 1, High = 2 }\n",
+            |l| l.initializer("Level", "Low"),
+            "UsersApi.Level.Low: the value of an enum member is not lowered until M3.2",
+        ),
+    ];
+    for (text, owner, message) in cases {
+        assert_eq!(
+            later_error(text, owner),
+            format!("internal error lowering {message}"),
+            "{text}"
+        );
+    }
 }

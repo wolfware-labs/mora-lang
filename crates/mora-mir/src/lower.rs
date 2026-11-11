@@ -26,6 +26,7 @@
 mod calls;
 mod control;
 mod expr;
+mod later;
 mod local;
 mod structs;
 
@@ -33,9 +34,9 @@ use std::collections::{HashMap, HashSet};
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, ItemKind, STD,
-    Signature, Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer,
-    is_known, item_tree, owner_name, signature, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Signature,
+    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known,
+    owner_name, signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
@@ -59,9 +60,19 @@ const STATEMENT_NOT_LOWERED: &str = "the statement is not lowered";
 /// # Panics
 ///
 /// When the body holds what lowering cannot handle: what the front end
-/// should have reported, or what lowering does not handle yet.
+/// should have reported, or what lowering does not handle yet. A body that
+/// a later milestone lowers, such as a getter, panics with a message that
+/// names the milestone.
 #[salsa::tracked(returns(ref))]
 pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Mir {
+    if let Some(later) = later::lowered_later(db, project, file, owner) {
+        panic!(
+            "internal error lowering {}: {} is not lowered until {}",
+            owner_name(db, project, file, owner),
+            later.what,
+            later.milestone
+        );
+    }
     let shared = Owner::new(db, project, file, owner);
     let mut bodies = vec![Lowerer::lower(&shared, &shared.shape(owner))];
     for function in &shared.functions {
@@ -73,11 +84,13 @@ pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) ->
 }
 
 /// The text of the MIR of every body of `file` that has code, in the order
-/// of [`body_owners`], one blank line between them.
+/// of [`body_owners`], one blank line between them. A body that a later
+/// milestone lowers is the line `// Name: not lowered until M2.1` instead,
+/// with the name of its owner and the milestone.
 ///
 /// # Panics
 ///
-/// As [`mir`] does.
+/// As [`mir`] does, for a body this milestone lowers.
 pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     let mut out = String::new();
     for owner in body_owners(db, file) {
@@ -87,7 +100,16 @@ pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        write_mir(&mut out, db, Some(file), mir(db, project, file, owner));
+        match later::lowered_later(db, project, file, owner) {
+            Some(later) => {
+                let name = owner_name(db, project, file, owner);
+                out.push_str(&format!(
+                    "// {name}: not lowered until {}\n",
+                    later.milestone
+                ));
+            }
+            None => write_mir(&mut out, db, Some(file), mir(db, project, file, owner)),
+        }
     }
     out
 }
@@ -565,24 +587,9 @@ impl<'a> Owner<'a> {
                 self.hir.params.len()
             )
         }
-        if function.is_async || function.is_generic {
-            panic!("internal error lowering {name}: generic and async functions are not lowered");
-        }
         let this = function.receiver.map(|mode| match &self.this_ty {
             Some(ty) => param_ty(mode, ty.clone()),
-            None => {
-                let tree = item_tree(self.db, item.file);
-                let generic_struct = tree
-                    .item(item.item)
-                    .parent
-                    .is_some_and(|parent| tree.item(parent).kind == ItemKind::Struct);
-                if generic_struct {
-                    panic!("internal error lowering {name}: a method of a generic struct is not lowered");
-                }
-                panic!(
-                    "internal error lowering {name}: a method of a type other than a struct is not lowered"
-                )
-            }
+            None => panic!("internal error lowering {name}: `this` has no type"),
         });
         let mut params = Vec::with_capacity(function.params.len());
         for param in &function.params {
