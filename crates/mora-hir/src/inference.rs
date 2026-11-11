@@ -3016,6 +3016,7 @@ mod tests {
             "c ? match (d) { true => x = 1, false => x = 2 } : \
              match (d) { true => x = 3, false => x = 4 };",
             "c ? (match (d) { true => x = 1, false => x = 2 }) : x = 3;",
+            "c ? (match (d) { true => x = 1, false => x++ }) : x++;",
             "c ? (match (d) { true => d ? x = 1 : x = 2, false => x = 3 }) : \
              (d ? (match (c) { true => x = 4, false => x = 5 }) : x = 6);",
         ] {

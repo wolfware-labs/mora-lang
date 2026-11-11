@@ -8,7 +8,7 @@ use mora_hir::{
 use mora_span::Span;
 use mora_syntax::lexer::literal::{char_value, string_value};
 
-use super::{Lowered, Lowerer};
+use super::{Lowered, Lowerer, STATEMENT_NOT_LOWERED};
 use crate::{
     AggregateKind, BinOp, CastKind, Const, InterpPiece, LocalId, LocalTy, Operand, Place,
     Projection, Rvalue, UnOp,
@@ -47,8 +47,8 @@ impl Lowerer<'_> {
                 r#else,
             } => self.statement_conditional(expr, *condition, *then, *r#else)?,
             // A `match` in statement position is a statement, which is not
-            // lowered yet; inference leaves it untyped when its arms assign.
-            node @ Expr::Match { .. } => self.statement_not_lowered(node),
+            // lowered yet; inference leaves it untyped when an arm assigns.
+            Expr::Match { .. } => self.ice(expr, STATEMENT_NOT_LOWERED),
             // Anything else, a prefix step among them, is evaluated and its
             // value dropped.
             _ => {

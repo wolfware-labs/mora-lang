@@ -48,6 +48,11 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+/// The internal error for a statement that is not lowered yet, such as a
+/// `match` statement, whether it stands alone or is a branch of a
+/// statement conditional.
+const STATEMENT_NOT_LOWERED: &str = "the statement is not lowered";
+
 /// The MIR of the body of `owner` in `file`. It is checked by
 /// [`debug_validate`] before it is returned.
 ///
@@ -889,17 +894,8 @@ impl<'a> Lowerer<'a> {
             Stmt::Unsafe(block) => self.stmt(*block),
             // A local function is a body of its own.
             Stmt::Function(_) => {}
-            other => self.statement_not_lowered(other),
+            _ => self.ice_at(self.stmt_span(stmt).range, STATEMENT_NOT_LOWERED),
         }
-    }
-
-    /// Panics with the internal error for a statement that is not lowered
-    /// yet, such as a `match` statement.
-    fn statement_not_lowered(&self, statement: &dyn std::fmt::Debug) -> ! {
-        panic!(
-            "internal error lowering {}: the statement {statement:?} is not lowered",
-            self.name
-        )
     }
 
     /// `return` of `()`.

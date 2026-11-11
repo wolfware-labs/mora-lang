@@ -43,15 +43,13 @@ fn widening(from: &Ty, to: &Ty) -> Option<Conversion> {
 
 /// Whether `expr` assigns, so that the branches of a conditional that has
 /// it as a branch are statements when it is one (D-141): an assignment, a
-/// conditional with a branch that assigns, or a `match` whose arms all
-/// assign.
+/// conditional with a branch that assigns, or a `match` with an arm that
+/// assigns.
 fn assigns(body: &Body, expr: ExprId) -> bool {
     match &body.exprs[expr] {
         Expr::Assign { .. } => true,
         Expr::Conditional { then, r#else, .. } => assigns(body, *then) || assigns(body, *r#else),
-        Expr::Match { arms, .. } => {
-            !arms.is_empty() && arms.iter().all(|arm| assigns(body, arm.body))
-        }
+        Expr::Match { arms, .. } => arms.iter().any(|arm| assigns(body, arm.body)),
         _ => false,
     }
 }

@@ -66,6 +66,20 @@ impl Lowered {
         mir
     }
 
+    /// The message of the internal error that lowering the body of `name`
+    /// panics with.
+    fn internal_error(&self, name: &str) -> String {
+        let owner = self.owner(name);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mir(&self.db, self.project, self.file, owner);
+        }))
+        .expect_err("an internal error");
+        panic
+            .downcast_ref::<String>()
+            .expect("a formatted message")
+            .clone()
+    }
+
     /// The owner of the initializer of the field `field` of the type `ty`.
     fn initializer(&self, ty: &str, field: &str) -> BodyOwner {
         let tree = item_tree(&self.db, self.file);
@@ -671,16 +685,8 @@ fn untyped_local_is_internal_error() {
 #[test]
 fn the_message_names_the_body_and_the_expression() {
     let lowered = lowered("F() {\n    Console.WriteLine([1, 2]);\n}\n");
-    let owner = lowered.owner("F");
-    let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mir(&lowered.db, lowered.project, lowered.file, owner);
-    }))
-    .expect_err("an internal error");
-    let message = message
-        .downcast_ref::<String>()
-        .expect("a formatted message");
     assert_eq!(
-        message,
+        lowered.internal_error("F"),
         "internal error lowering UsersApi.F: the value has no type: `[1, 2]` at 2:23"
     );
 }
@@ -1005,12 +1011,7 @@ fn a_dependency_on_std_rejects_the_stand_ins() {
         }],
     );
     let lowered = in_project(db, project);
-    let owner = lowered.owner("top-level");
-    let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mir(&lowered.db, lowered.project, lowered.file, owner);
-    }))
-    .expect_err("the validator rejects the stand-in");
-    let message = message.downcast_ref::<String>().expect("a message");
+    let message = lowered.internal_error("top-level");
     assert!(
         message.contains("interpolation is not lowered once std is loaded"),
         "{message}"
@@ -2761,40 +2762,29 @@ fn a_conditional_of_conditionals_of_assignments_is_a_statement() {
     );
 }
 
-/// The internal error lowering the body of `F` in `text` panics with.
-fn internal_error(text: &str) -> String {
-    let lowered = lowered(text);
-    let owner = lowered.owner("F");
-    let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        mir(&lowered.db, lowered.project, lowered.file, owner);
-    }))
-    .expect_err("an internal error");
-    message
-        .downcast_ref::<String>()
-        .expect("a formatted message")
-        .clone()
-}
-
 #[test]
-fn a_match_of_assignments_in_a_conditional_is_not_lowered_yet() {
-    // A match statement is not lowered yet, and neither is a match that a
-    // conditional of assignments has as a branch: both end in the same
-    // internal error, not in a value with no type.
-    let statement = internal_error(
+fn a_match_statement_is_not_lowered_yet() {
+    // A match statement is not lowered yet, alone or as the branch of a
+    // conditional whose branches are statements because an arm assigns:
+    // both end in the same internal error, not in a value with no type.
+    let statement = lowered(
         "F(d: bool) {\n    var x = 0;\n    \
          match (d) { true => x = 1, false => x = 2 }\n}\n",
     );
-    let branch = internal_error(
-        "F(c: bool, d: bool) {\n    var x = 0;\n    \
-         c ? (match (d) { true => x = 1, false => x = 2 }) : x = 3;\n}\n",
+    assert_eq!(
+        statement.internal_error("F"),
+        "internal error lowering UsersApi.F: the statement is not lowered: \
+         `match (d) { true => x = 1, false => x = 2 }` at 3:5"
     );
-    for message in [&statement, &branch] {
-        assert!(
-            message.starts_with("internal error lowering UsersApi.F: the statement Match {")
-                && message.contains("is not lowered"),
-            "{message}"
-        );
-    }
+    let branch = lowered(
+        "F(c: bool, d: bool) {\n    var x = 0;\n    \
+         c ? (match (d) { true => x = 1, false => x++ }) : x++;\n}\n",
+    );
+    assert_eq!(
+        branch.internal_error("F"),
+        "internal error lowering UsersApi.F: the statement is not lowered: \
+         `match (d) { true => x = 1, false => x++ }` at 3:10"
+    );
 }
 
 #[test]
