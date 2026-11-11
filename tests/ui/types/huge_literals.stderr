@@ -1,0 +1,29 @@
+error[MR0010]: the literal is larger than `ulong.MaxValue`
+ --> tests/ui/types/huge_literals.mr:2:14
+  |
+2 | let a: int = 92233720368547758071; //~ ERROR MR0010
+  |              ^^^^^^^^^^^^^^^^^^^^
+
+error[MR0010]: the literal is larger than `ulong.MaxValue`
+ --> tests/ui/types/huge_literals.mr:3:15
+  |
+3 | let b: long = 92233720368547758071; //~ ERROR MR0010
+  |               ^^^^^^^^^^^^^^^^^^^^
+
+error[MR0010]: the literal is larger than `ulong.MaxValue`
+ --> tests/ui/types/huge_literals.mr:4:16
+  |
+4 | let c: ulong = 184467440737095516151; //~ ERROR MR0010
+  |                ^^^^^^^^^^^^^^^^^^^^^
+
+error[MR0010]: the literal is larger than `ulong.MaxValue`
+ --> tests/ui/types/huge_literals.mr:5:15
+  |
+5 | let d: nint = 184467440737095516151; //~ ERROR MR0010
+  |               ^^^^^^^^^^^^^^^^^^^^^
+
+error[MR0010]: the literal is larger than `ulong.MaxValue`
+ --> tests/ui/types/huge_literals.mr:6:16
+  |
+6 | let e: nuint = 184467440737095516151; //~ ERROR MR0010
+  |                ^^^^^^^^^^^^^^^^^^^^^

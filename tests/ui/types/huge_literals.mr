@@ -1,0 +1,6 @@
+// A literal larger than any integer type is MR0010 whatever its target.
+let a: int = 92233720368547758071; //~ ERROR MR0010
+let b: long = 92233720368547758071; //~ ERROR MR0010
+let c: ulong = 184467440737095516151; //~ ERROR MR0010
+let d: nint = 184467440737095516151; //~ ERROR MR0010
+let e: nuint = 184467440737095516151; //~ ERROR MR0010
