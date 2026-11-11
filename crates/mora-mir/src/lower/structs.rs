@@ -2,7 +2,8 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Ty, body, instance_fields, signature,
+    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Ty, body, instance_fields,
+    is_memberwise, signature,
 };
 use mora_span::Db;
 
@@ -20,25 +21,26 @@ fn static_member() -> String {
 }
 
 impl Lowerer<'_> {
-    /// `new T { F = v, ... }` for the struct `T`: every instance field in
-    /// the order of the declaration. The written values are evaluated in
-    /// the order of the text; a field left out then takes the value of its
-    /// initializer, which is a body of its own.
+    /// `new T { F = v, ... }` for the struct `T`, or `new T() { ... }`
+    /// when `T` has no constructor: every instance field in the order of
+    /// the declaration. The written values are evaluated in the order of
+    /// the text; a field left out then takes the value of its initializer,
+    /// which is a body of its own.
     pub(super) fn new_struct(
         &mut self,
         expr: ExprId,
         args: Option<&[Arg]>,
         inits: Option<&[(String, ExprId)]>,
     ) -> Lowered<Rvalue> {
-        if args.is_some() {
-            self.ice(expr, "a constructor call is not lowered");
-        }
         let Ty::Struct(item) = self.ty(expr) else {
             self.ice(
                 expr,
                 "the creation of a value that is not a struct is not lowered",
             )
         };
+        if !is_memberwise(self.owner.db, item, args) {
+            self.ice(expr, "a constructor call is not lowered");
+        }
         let inits = inits.unwrap_or_default();
         let values: Vec<ExprId> = inits.iter().map(|&(_, value)| value).collect();
         let mut written: Vec<Option<Operand>> =

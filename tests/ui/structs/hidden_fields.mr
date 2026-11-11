@@ -16,5 +16,8 @@ let a = new Account { Owner = "ana" }; //~ ERROR MR0144
 let b = new Account { Owner = "ana", Balance = 10 }; //~ ERROR MR0144
 let c = new Settings { Name = "x" };
 let d = new Settings { Name = "x", Retries = 5 }; //~ ERROR MR0129
+// Empty parentheses on a struct without a constructor are memberwise too.
+let f = new Settings() { Name = "x", Retries = 5 }; //~ ERROR MR0129
+let g = new Account(); //~ ERROR MR0144
 // A hidden field assigned twice is hidden once and repeated once.
 let e = new Settings { Name = "x", Retries = 5, Retries = 6 }; //~ ERROR MR0129 //~ ERROR MR0148

@@ -2371,6 +2371,30 @@ fn a_nested_type_that_uses_the_type_around_it_stops_in_the_front_end() {
 }
 
 #[test]
+fn new_with_empty_parentheses_on_a_struct_without_a_constructor_is_memberwise() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public Y: int = 2;\n}\n\
+         F(): P => new P() { X = 1 };\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1);",
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "a constructor call is not lowered")]
+fn new_with_empty_parentheses_calls_a_declared_constructor() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public P() { X = 1; }\n}\nF(): P => new P();\n",
+    );
+    lowered.mir("F");
+}
+
+#[test]
 fn an_initializer_of_plain_values_lowers() {
     let lowered = lowered(
         "struct P {\n    Z: int;\n    public Y: int = 2 + 3;\n}\n\

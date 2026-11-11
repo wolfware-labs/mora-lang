@@ -24,7 +24,7 @@ use crate::bodies::{
 use crate::defs::ItemId;
 use crate::items::{ValueKind, item_tree};
 use crate::resolve::{Resolved, Scope, item_data, value_visible};
-use crate::signature::{instance_fields, signature, struct_field, this_type};
+use crate::signature::{instance_fields, is_memberwise, signature, struct_field, this_type};
 use crate::suggest::closest;
 use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
@@ -1319,8 +1319,9 @@ impl Check<'_> {
     /// is an instance field visible from the body, assigned once, whose
     /// value is checked against its type, and every field without an
     /// initializer of its own must be visible and assigned (§6.9); its type
-    /// is the struct. A call with arguments runs a constructor, which
-    /// assigns the fields. Other targets have no type yet.
+    /// is the struct. A call of a constructor assigns the fields itself;
+    /// empty parentheses on a struct without one are memberwise creation.
+    /// Other targets have no type yet.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1328,7 +1329,6 @@ impl Check<'_> {
         args: Option<&[Arg]>,
         inits: Option<&[(String, ExprId)]>,
     ) -> Option<Ty> {
-        let has_args = args.is_some();
         if let Some(args) = args {
             self.args(args);
         }
@@ -1345,11 +1345,12 @@ impl Check<'_> {
             return None;
         };
         let inits = inits.unwrap_or_default();
+        let memberwise = is_memberwise(self.db, item, args);
         // Memberwise creation needs every required field visible (`MR0144`);
         // where one is hidden, that error replaces `MR0129` for the hidden
         // fields assigned and `MR0143` for those left out.
         let hidden = instance_fields(self.db, item)
-            .filter(|_| !has_args)
+            .filter(|_| memberwise)
             .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
         for (position, (name, init)) in inits.iter().enumerate() {
             match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
@@ -1358,7 +1359,7 @@ impl Check<'_> {
                     // A repeated field is reported as repeated (`MR0148`)
                     // alone: its first assignment reports it hidden.
                     let repeated = inits[..position].iter().any(|(earlier, _)| earlier == name);
-                    if !has_args
+                    if memberwise
                         && hidden.is_none()
                         && !repeated
                         && !self.field_visible(item, index)
@@ -1377,7 +1378,7 @@ impl Check<'_> {
                 }
             }
             // A constructor call assigns the members as plain assignments.
-            if !has_args && let Some(error) = self.init_name(item, &written, inits, position) {
+            if memberwise && let Some(error) = self.init_name(item, &written, inits, position) {
                 self.errors.push(error);
             }
         }
@@ -1391,7 +1392,7 @@ impl Check<'_> {
             return Some(written);
         }
         let missing = instance_fields(self.db, item)
-            .filter(|_| !has_args)
+            .filter(|_| memberwise)
             .find(|(_, field)| {
                 field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
             });

@@ -118,6 +118,8 @@ pub struct Item {
     pub values: Vec<ValueMember>,
     /// Whether it is a positional struct, `struct User(Id: int);` (§6.5).
     pub is_positional: bool,
+    /// Whether it declares a constructor, `new(...)` (§6.9).
+    pub has_constructor: bool,
 }
 
 /// A member of a type that an expression reads as a value (§14.5).
@@ -345,7 +347,11 @@ impl Lowered {
         let mut decl = decl(node, parent.is_some())?;
         let name = decl.name?.ident_token()?;
         let written = Written::of(decl.modifiers.iter().copied());
-        let (values, value_ranges) = std::mem::take(&mut decl.values).into_iter().unzip();
+        let (values, value_sources) = std::mem::take(&mut decl.values).into_iter().unzip();
+        let has_constructor = decl
+            .members
+            .iter()
+            .any(|member| matches!(member, ast::Member::ConstructorDecl(_)));
         let idx = self.tree.items.alloc(Item {
             name: token_name(name),
             kind: decl.kind,
@@ -355,12 +361,13 @@ impl Lowered {
             members: Vec::new(),
             values,
             is_positional: decl.is_positional,
+            has_constructor,
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
             visibility: written.visibility.map(|(_, token)| token.text_range()),
-            values: value_ranges,
+            values: value_sources,
         });
         let (signature, source) = type_ref::signature(node);
         self.signatures.push(signature);

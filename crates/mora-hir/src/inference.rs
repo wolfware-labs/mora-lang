@@ -2696,9 +2696,22 @@ mod tests {
     }
 
     #[test]
-    fn new_with_empty_parentheses_on_a_struct_is_typed_and_unchecked() {
+    fn new_with_empty_parentheses_on_a_struct_without_a_constructor_is_memberwise() {
+        // `new T()` names no fields (§6.9), so a required field is missing.
         let text = "struct S {\n    public N: int;\n}\nlet s = new S();\n";
         assert_eq!(local_types(text), ["s: S"]);
+        assert_eq!(reported(text), ["MR0143"]);
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S() { N = 1 };\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S() { N = 1, N = 2, M = 3 };\n";
+        assert_eq!(reported(text), ["MR0148", "MR0147"]);
+    }
+
+    #[test]
+    fn new_with_empty_parentheses_calls_a_declared_constructor() {
+        let text = "struct S {\n    public N: int;\n    public S() { N = 1; }\n}\n\
+                    let s = new S() { N = 1, N = 2, M = 3 };\nlet t = new S();\n";
+        assert_eq!(local_types(text), ["s: S", "t: S"]);
         assert_eq!(reported(text), Vec::<String>::new());
     }
 

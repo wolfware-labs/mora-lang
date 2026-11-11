@@ -1,6 +1,7 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
+use crate::bodies::Arg;
 use crate::defs::ItemId;
 use crate::items::{
     ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree, signature_refs,
@@ -55,6 +56,15 @@ pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, 
         .zip(fields)
         .filter(|((member, _), _)| member.is_instance_field())
         .map(|((_, index), field)| (index, field))
+}
+
+/// Whether `new T(args) { ... }` of the struct `item`, with `args` when
+/// it has parentheses, is memberwise creation: without parentheses, or
+/// with empty ones when `T` has no constructor, declared or the one of a
+/// positional struct (§6.9). Otherwise it calls a constructor.
+pub fn is_memberwise(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> bool {
+    let data = item_data(db, item);
+    args.is_none_or(|args| args.is_empty() && !data.has_constructor && !data.is_positional)
 }
 
 /// Whether `member` declares a field of [`Signature::Struct`]: a field or a
