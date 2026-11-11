@@ -62,13 +62,10 @@ impl Check<'_> {
                 _ => continue,
             };
             let Some((ty, used)) = used else { continue };
-            let error = if let Some(field) = &member.field {
-                TypeError::InitializerThis {
-                    expr: at,
-                    used,
-                    field: field.clone(),
-                }
-            } else if ty != member.ty
+            // A member of a type around the body's own needs a value of
+            // that type, which no member of the nested type has, an
+            // initializer included.
+            let error = if ty != member.ty
                 && let InstanceUse::Member { kind, name } = used
             {
                 TypeError::NestedThis {
@@ -77,6 +74,12 @@ impl Check<'_> {
                     name,
                     outer: item_data(self.db, ty).name.clone(),
                     nested: item_data(self.db, member.ty).name.clone(),
+                }
+            } else if let Some(field) = &member.field {
+                TypeError::InitializerThis {
+                    expr: at,
+                    used,
+                    field: field.clone(),
                 }
             } else if member.is_static {
                 TypeError::StaticThis { expr: at, used }

@@ -45,3 +45,19 @@ error[MR0149]: a member of `Inner` has no value of `Outer`, so it cannot use the
    |                                            ^^^^^ needs a value of `Outer`
    |
    = note: a nested type is a type of its own: its members have no value of the type it is nested in
+
+error[MR0149]: a member of `Inner` has no value of `Outer`, so it cannot use the instance field `Count`
+  --> tests/ui/members/nested_this.mr:21:31
+   |
+21 |         public Initial: int = Count; //~ ERROR MR0149
+   |                               ^^^^^ needs a value of `Outer`
+   |
+   = note: a nested type is a type of its own: its members have no value of the type it is nested in
+
+error[MR0149]: a member of `Inner` has no value of `Outer`, so it cannot use the instance method `Value`
+  --> tests/ui/members/nested_this.mr:22:44
+   |
+22 |         public InitialGroup: (() => int) = Value; //~ ERROR MR0149
+   |                                            ^^^^^ needs a value of `Outer`
+   |
+   = note: a nested type is a type of its own: its members have no value of the type it is nested in

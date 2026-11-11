@@ -18,6 +18,8 @@ public struct Outer {
             Count = 1; //~ ERROR MR0149
         }
         public static FromStatic(): int => Count; //~ ERROR MR0149
+        public Initial: int = Count; //~ ERROR MR0149
+        public InitialGroup: (() => int) = Value; //~ ERROR MR0149
         public Fine(Count: int): int => Count + Own + this.Own + Limit;
     }
 }

@@ -2771,6 +2771,8 @@ mod tests {
             "R() { var f = Get; }",
             "mut R() { X = 1; }",
             "public W: int => X;",
+            "public W: int = X;",
+            "public F: (() => int) = Get;",
             "R(): int { G(): int => X; return G(); }",
             "R(): int { var f = () => X; return f(); }",
             "static R(): int => X;",
