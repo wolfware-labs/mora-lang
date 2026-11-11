@@ -2517,6 +2517,30 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_field_without_an_initializer_says_why_it_is_hidden() {
+        for (modifier, why) in [
+            ("private ", "is private to `S`"),
+            ("", "is visible only in the folder that declares `S`"),
+            ("file ", "is visible only in the file that declares `S`"),
+        ] {
+            let store = format!("public struct S {{\n    {modifier}X: int;\n}}\n");
+            let program = "let s = new UsersApi.Store.S {};\n";
+            let db = TestDb::new();
+            let project = app(
+                &db,
+                &[("src/Program.mr", program), ("src/Store/S.mr", &store)],
+            );
+            let found = diagnostics(&db, project);
+            assert_eq!(codes(found), ["MR0144"], "{store}");
+            assert_eq!(found[0].message, "`S` cannot be created memberwise here");
+            assert_eq!(
+                found[0].primary.message,
+                Some(format!("`X` has no initializer and {why}"))
+            );
+        }
+    }
+
+    #[test]
     fn ref_is_offered_only_for_known_types() {
         let text = "Bump(ref x: int?) {}\nTake(ref x: int) {}\nvar n: int? = 1;\nBump(n);\n\
                     var u = Console.ReadLine();\nTake(u);\n";
