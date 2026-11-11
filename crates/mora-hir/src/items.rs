@@ -232,8 +232,19 @@ pub struct ItemSource {
     pub modifiers_start: TextSize,
     /// The visibility modifier, when there is one.
     pub visibility: Option<TextRange>,
-    /// The name of each of [`Item::values`], in the same order.
-    pub values: Vec<TextRange>,
+    /// Each of [`Item::values`], in the same order.
+    pub values: Vec<ValueSource>,
+}
+
+/// Where a value member is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueSource {
+    /// The declared name.
+    pub name: TextRange,
+    /// Where a modifier goes, as for [`ItemSource::modifiers_start`].
+    pub modifiers_start: TextSize,
+    /// The visibility modifier, when there is one.
+    pub visibility: Option<TextRange>,
 }
 
 /// Where a `using` directive is.
@@ -275,7 +286,7 @@ struct Decl<'a> {
     name: Option<ast::Name<'a>>,
     modifiers: Vec<ast::Modifier<'a>>,
     members: Vec<ast::Member<'a>>,
-    values: Vec<(ValueMember, TextRange)>,
+    values: Vec<(ValueMember, ValueSource)>,
     is_positional: bool,
 }
 
@@ -442,7 +453,7 @@ fn decl<'a>(node: &SyntaxNode<'a>, member: bool) -> Option<Decl<'a>> {
 }
 
 /// The fields, getters and constants among `members`.
-fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
+fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, ValueSource)> {
     members
         .iter()
         .filter_map(|member| {
@@ -471,13 +482,18 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
                 // A constant belongs to its type.
                 is_static: written.is_const || written.is_static,
             };
-            Some((value, token.text_range()))
+            let source = ValueSource {
+                name: token.text_range(),
+                modifiers_start: modifiers_start(member.syntax()),
+                visibility: written.visibility.map(|(_, token)| token.text_range()),
+            };
+            Some((value, source))
         })
         .collect()
 }
 
 /// An enum member or a union case, which is as visible as its type.
-fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, TextRange)> {
+fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, ValueSource)> {
     let token = name?.ident_token()?;
     let value = ValueMember {
         name: token_name(token),
@@ -485,7 +501,13 @@ fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, 
         visibility: Visibility::Public,
         is_static: true,
     };
-    Some((value, token.text_range()))
+    let range = token.text_range();
+    let source = ValueSource {
+        name: range,
+        modifiers_start: range.start(),
+        visibility: None,
+    };
+    Some((value, source))
 }
 
 /// The visibility a modifier keyword writes, if it writes one.

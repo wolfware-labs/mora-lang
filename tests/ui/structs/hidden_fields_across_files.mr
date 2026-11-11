@@ -1,0 +1,24 @@
+// A field that memberwise creation cannot see is reported as any hidden
+// declaration is: with where it is visible, where it is declared, and a
+// fix that widens it.
+//@ project name=users-api
+//@ file src/Program.mr
+using UsersApi.Store;
+
+let a = new Account { Owner = "ana", Note = "x" }; //~ ERROR MR0129
+let b = new Outer.Inner { Name = "x", Rank = 2 }; //~ ERROR MR0129
+//@ file src/Store/Account.mr
+internal struct Account {
+    public Owner: string;
+    Note: string = "";
+    file Code: int = 0;
+}
+
+internal struct Outer {
+    internal struct Inner {
+        public Name: string;
+        Rank: int = 0;
+    }
+}
+//@ file src/Store/Reader.mr
+Open(): Account => new Account { Owner = "ana", Note = "x", Code = 1 }; //~ ERROR MR0129

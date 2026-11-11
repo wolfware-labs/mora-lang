@@ -1,0 +1,54 @@
+error[MR0129]: `Note` is visible only in `UsersApi.Store`, not in `UsersApi`
+ --> src/Program.mr:3:38
+  |
+3 | let a = new Account { Owner = "ana", Note = "x" }; //~ ERROR MR0129
+  |                                      ^^^^ not visible here
+  |
+ ::: src/Store/Account.mr:3:5
+  |
+3 |     Note: string = "";
+  |     ---- declared here
+  |
+  = note: a declaration without a visibility modifier is visible only in its folder; mark it `internal` to use it from `UsersApi`
+help: mark `Note` `internal`
+ --> src/Store/Account.mr:3:5
+  |
+3 |     internal Note: string = "";
+  |     ++++++++
+
+error[MR0129]: `Rank` is visible only in `UsersApi.Store`, not in `UsersApi`
+  --> src/Program.mr:4:39
+   |
+ 4 | let b = new Outer.Inner { Name = "x", Rank = 2 }; //~ ERROR MR0129
+   |                                       ^^^^ not visible here
+   |
+  ::: src/Store/Account.mr:10:9
+   |
+10 |         Rank: int = 0;
+   |         ---- declared here
+   |
+   = note: a declaration without a visibility modifier is visible only in its folder; mark it `internal` to use it from `UsersApi`
+help: mark `Rank` `internal`
+  --> src/Store/Account.mr:10:9
+   |
+10 |         internal Rank: int = 0;
+   |         ++++++++
+
+error[MR0129]: `Code` is visible only in `src/Store/Account.mr`
+ --> src/Store/Reader.mr:1:61
+  |
+1 | Open(): Account => new Account { Owner = "ana", Note = "x", Code = 1 }; //~ ERROR MR0129
+  |                                                             ^^^^ not visible here
+  |
+ ::: src/Store/Account.mr:4:10
+  |
+4 |     file Code: int = 0;
+  |          ---- declared here
+  |
+  = note: a `file` declaration is visible only in the file that declares it
+help: mark `Code` `internal`
+ --> src/Store/Account.mr:4:5
+  |
+4 -     file Code: int = 0;
+4 +     internal Code: int = 0;
+  |

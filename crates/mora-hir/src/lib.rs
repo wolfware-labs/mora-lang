@@ -61,7 +61,7 @@ pub use inference::{
 };
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
-    ValueMember, Visibility, item_source_map, item_tree, parse,
+    ValueMember, ValueSource, Visibility, item_source_map, item_tree, parse,
 };
 pub use name::pascal_case;
 pub use report::diagnostics;

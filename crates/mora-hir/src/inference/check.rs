@@ -1358,9 +1358,10 @@ impl Check<'_> {
                     if !has_args && hidden.is_none() && !self.field_visible(item, index) {
                         self.errors.push(TypeError::HiddenField {
                             value: *init,
-                            ty: written.clone(),
+                            item,
+                            index,
                             name: name.clone(),
-                            visibility: field.visibility,
+                            from: self.scope,
                         });
                     }
                 }

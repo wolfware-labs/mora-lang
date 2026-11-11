@@ -7,7 +7,7 @@ use super::Source;
 use crate::bodies::{ArgMode, ExprId};
 use crate::defs::ItemId;
 use crate::inference::NamedProblem;
-use crate::report::item_name_span;
+use crate::report::{Declared, item_name_span};
 use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Ty};
 
@@ -214,7 +214,7 @@ pub(super) fn not_visible(
         from,
         name,
         Span::new(source.file.id(source.db), span),
-        item,
+        Declared::Item(item),
     )
 }
 

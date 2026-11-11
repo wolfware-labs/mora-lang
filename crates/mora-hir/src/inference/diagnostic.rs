@@ -14,6 +14,7 @@ use mora_span::{Db, SourceFile, Span};
 
 use super::{Context, InstanceMember, InstanceUse, TypeError, constant, numeric, ty_name};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
+use crate::report::Declared;
 use crate::ty::{Primitive, Ty};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
@@ -197,10 +198,11 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         } => struct_new::no_memberwise(source, *expr, ty, field, *visibility),
         TypeError::HiddenField {
             value,
-            ty,
+            item,
+            index,
             name,
-            visibility,
-        } => struct_new::hidden_field(source, *value, ty, name, *visibility),
+            from,
+        } => struct_new::hidden_field(source, *value, Declared::Value(*item, *index), name, *from),
         TypeError::NotAField {
             value,
             ty,

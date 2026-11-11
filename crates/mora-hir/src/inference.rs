@@ -344,14 +344,15 @@ pub(crate) enum TypeError {
         field: String,
         visibility: Visibility,
     },
-    /// The memberwise creation of the struct `ty` assigns `value` to the
-    /// field `name`, of the visibility `visibility`, which is not visible
-    /// from the body (`MR0129`).
+    /// The memberwise creation of the struct `item` assigns `value` to its
+    /// field `name`, the value member at `index`, which is not visible from
+    /// `from` (`MR0129`).
     HiddenField {
         value: ExprId,
-        ty: Ty,
+        item: ItemId,
+        index: u32,
         name: String,
-        visibility: Visibility,
+        from: Scope,
     },
     /// The memberwise creation of the struct `ty` assigns `value` to
     /// `name`, which is not an instance field of it but `member`; for a

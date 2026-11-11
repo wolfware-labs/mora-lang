@@ -339,7 +339,7 @@ fn member_names(db: &dyn Db, file: SourceFile, out: &mut Vec<Diagnostic>) {
             item.values
                 .iter()
                 .zip(&map.item(idx).values)
-                .map(|(value, &range)| (value.name.as_str(), range, false)),
+                .map(|(value, source)| (value.name.as_str(), source.name, false)),
         );
         members.sort_by_key(|&(_, range, _)| range.start());
         for (index, &(name, range, method)) in members.iter().enumerate() {
@@ -391,7 +391,9 @@ fn resolve_error(
             unresolved(db, name, span, within, suggestion)
         }
         ResolveErrorKind::Ambiguous(candidates) => ambiguous(db, name, span, &candidates),
-        ResolveErrorKind::NotVisible(item) => not_visible(db, scope, name, span, item),
+        ResolveErrorKind::NotVisible(item) => {
+            not_visible(db, scope, name, span, Declared::Item(item))
+        }
     }
 }
 
@@ -460,7 +462,7 @@ fn less_visible(
     if let Some(keyword) = keyword.filter(|_| parents_allow) {
         diagnostic = diagnostic.with_fix(Fix::new(
             format!("mark `{name}` `{keyword}`"),
-            vec![widen(db, ty, keyword)],
+            vec![widen(db, Declared::Item(ty), keyword)],
         ));
     }
     diagnostic
@@ -512,17 +514,72 @@ fn ambiguous(db: &dyn Db, name: &str, span: Span, candidates: &[Resolved]) -> Di
     diagnostic
 }
 
+/// A declaration a use may not see: an item, or the value member at an
+/// index of a type, such as a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Declared {
+    Item(ItemId),
+    Value(ItemId, u32),
+}
+
+impl Declared {
+    /// The item, or the type that declares the value member.
+    fn item(self) -> ItemId {
+        match self {
+            Self::Item(item) | Self::Value(item, _) => item,
+        }
+    }
+
+    /// The visibility after the types around the declaration narrow it.
+    fn visibility(self, db: &dyn Db) -> Visibility {
+        match self {
+            Self::Item(item) => effective_visibility(db, item),
+            Self::Value(ty, index) => item_tree(db, ty.file).item(ty.item).values[index as usize]
+                .visibility
+                .min(effective_visibility(db, ty)),
+        }
+    }
+
+    /// Where its name is written.
+    fn name_span(self, db: &dyn Db) -> Span {
+        match self {
+            Self::Item(item) => item_name_span(db, item),
+            Self::Value(ty, index) => {
+                let source = item_source_map(db, ty.file).item(ty.item);
+                Span::new(ty.file.id(db), source.values[index as usize].name)
+            }
+        }
+    }
+
+    /// Its visibility modifier, when it has one, and where a modifier goes.
+    fn modifiers(self, db: &dyn Db) -> (Option<TextRange>, TextSize) {
+        let item = self.item();
+        let source = item_source_map(db, item.file).item(item.item);
+        match self {
+            Self::Item(_) => (source.visibility, source.modifiers_start),
+            Self::Value(_, index) => {
+                let value = &source.values[index as usize];
+                (value.visibility, value.modifiers_start)
+            }
+        }
+    }
+}
+
+/// `MR0129`: the use at `span`, in `scope`, names `name`, the declaration
+/// `declared`, which it cannot see. Names where the declaration is visible
+/// and where the use is, and offers to widen it (§4.5).
 pub(crate) fn not_visible(
     db: &dyn Db,
     scope: Scope,
     name: &str,
     span: Span,
-    item: ItemId,
+    declared: Declared,
 ) -> Diagnostic {
+    let item = declared.item();
     let declared_in = file_namespace(db, item.project, item.file).unwrap_or_default();
     let used_in = file_namespace(db, scope.project, scope.file).unwrap_or_default();
     let same_project = item.project == scope.project;
-    let (message, note) = match effective_visibility(db, item) {
+    let (message, note) = match declared.visibility(db) {
         _ if !same_project => (
             format!("`{name}` is not public, so `{used_in}` cannot see it"),
             format!(
@@ -546,23 +603,22 @@ pub(crate) fn not_visible(
     };
     let keyword = if same_project { "internal" } else { "public" };
     Diagnostic::error(codes::MR0129, message, Label::new(span, "not visible here"))
-        .with_secondary(Label::new(item_name_span(db, item), "declared here"))
+        .with_secondary(Label::new(declared.name_span(db), "declared here"))
         .with_note(note)
         .with_fix(Fix::new(
             format!("mark `{name}` `{keyword}`"),
-            vec![widen(db, item, keyword)],
+            vec![widen(db, declared, keyword)],
         ))
 }
 
-/// The edit that gives `item` the visibility modifier `keyword`. Only the
-/// item needs it: a type around it that the use cannot see fails the lookup
-/// first.
-fn widen(db: &dyn Db, item: ItemId, keyword: &str) -> TextEdit {
-    let source = item_source_map(db, item.file).item(item.item);
-    let file = item.file.id(db);
-    match source.visibility {
-        Some(range) => TextEdit::replace(Span::new(file, range), keyword),
-        None => TextEdit::insert(file, source.modifiers_start, format!("{keyword} ")),
+/// The edit that gives `declared` the visibility modifier `keyword`. Only
+/// the declaration needs it: a type around it that the use cannot see
+/// fails the lookup first.
+fn widen(db: &dyn Db, declared: Declared, keyword: &str) -> TextEdit {
+    let file = declared.item().file.id(db);
+    match declared.modifiers(db) {
+        (Some(range), _) => TextEdit::replace(Span::new(file, range), keyword),
+        (None, start) => TextEdit::insert(file, start, format!("{keyword} ")),
     }
 }
 
@@ -855,6 +911,46 @@ mod tests {
         );
         assert_eq!(reported[0].fixes[0].message, "mark `Lexer` `public`");
         assert_eq!(reported[0].fixes[0].edits[0].replacement, "public");
+    }
+
+    #[test]
+    fn a_dependency_field_that_is_not_public_gets_a_public_fix() {
+        let db = TestDb::new();
+        let core = db.project(
+            "core",
+            ProjectKind::Lib,
+            &[(
+                "src/Text/Token.mr",
+                "public struct Token {\n    public Kind: int;\n    internal Width: int = 1;\n}\n",
+            )],
+            Vec::new(),
+        );
+        let project = db.project(
+            "users-api",
+            ProjectKind::App,
+            &[(
+                "src/Program.mr",
+                "using Core.Text;\nlet t = new Token { Kind = 1, Width = 2 };\n",
+            )],
+            vec![Dependency {
+                name: "Core".into(),
+                project: core,
+            }],
+        );
+        let reported = diagnostics(&db, project);
+        assert_eq!(codes(reported), ["MR0129"]);
+        assert_eq!(
+            reported[0].message,
+            "`Width` is not public, so `UsersApi` cannot see it"
+        );
+        assert_eq!(
+            reported[0].secondary[0].message.as_deref(),
+            Some("declared here")
+        );
+        assert_eq!(reported[0].fixes[0].message, "mark `Width` `public`");
+        let edit = &reported[0].fixes[0].edits[0];
+        assert_eq!(edit.replacement, "public");
+        assert_eq!(u32::from(edit.span.range.len()), 8);
     }
 
     #[test]

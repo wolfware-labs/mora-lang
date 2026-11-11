@@ -8,6 +8,8 @@ use super::Source;
 use crate::bodies::ExprId;
 use crate::inference::NotAField;
 use crate::items::Visibility;
+use crate::report::{Declared, not_visible};
+use crate::resolve::Scope;
 use crate::ty::Ty;
 
 /// `MR0143`: `new T { ... }` leaves a field without an initializer
@@ -48,22 +50,17 @@ pub(super) fn no_memberwise(
     ))
 }
 
-/// `MR0129`: `new T { ... }` assigns `value` to the field `name`, which
-/// the expression cannot see.
+/// `MR0129`: `new T { ... }`, in `from`, assigns `value` to the field
+/// `name`, `field`, which the expression cannot see. It reads as any
+/// declaration the use cannot see (§4.5).
 pub(super) fn hidden_field(
     source: &Source<'_>,
     value: ExprId,
-    ty: &Ty,
+    field: Declared,
     name: &str,
-    visibility: Visibility,
+    from: Scope,
 ) -> Diagnostic {
-    let t = source.name(ty);
-    Diagnostic::error(
-        codes::MR0129,
-        format!("the field `{name}` of `{t}` is not visible here"),
-        Label::new(name_span(source, value), "not visible here"),
-    )
-    .with_note(format!("`{name}` {}", hidden(&t, visibility)))
+    not_visible(source.db, from, name, name_span(source, value), field)
 }
 
 /// Why a field of visibility `visibility` of the type named `t` is hidden.

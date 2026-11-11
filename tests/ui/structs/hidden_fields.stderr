@@ -14,10 +14,18 @@ error[MR0144]: `Account` cannot be created memberwise here
    |
    = note: memberwise creation needs every field without an initializer visible; create `Account` through what its type provides
 
-error[MR0129]: the field `Retries` of `Settings` is not visible here
+error[MR0129]: `Retries` is private to the type that declares it
   --> tests/ui/structs/hidden_fields.mr:18:36
    |
+10 |     private Retries: int = 3;
+   |             ------- declared here
+...
 18 | let d = new Settings { Name = "x", Retries = 5 }; //~ ERROR MR0129
    |                                    ^^^^^^^ not visible here
    |
-   = note: `Retries` is private to `Settings`
+   = note: a `private` member is visible only inside its type
+help: mark `Retries` `internal`
+   |
+10 -     private Retries: int = 3;
+10 +     internal Retries: int = 3;
+   |
