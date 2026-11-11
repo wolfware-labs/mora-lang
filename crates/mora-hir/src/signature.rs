@@ -73,10 +73,15 @@ pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
     };
     function.receiver?;
     let parent = declaring_type(db, item)?;
-    let generic = !signature_refs(db, item.file)[arena_index(parent.item)]
+    (item_data(db, parent).kind == ItemKind::Struct && !is_generic_type(db, parent))
+        .then_some(Ty::Struct(parent))
+}
+
+/// Whether the type `item` declares type parameters (§8.1).
+pub fn is_generic_type(db: &dyn Db, item: ItemId) -> bool {
+    !signature_refs(db, item.file)[arena_index(item.item)]
         .type_params
-        .is_empty();
-    (item_data(db, parent).kind == ItemKind::Struct && !generic).then_some(Ty::Struct(parent))
+        .is_empty()
 }
 
 /// What is wrong with the types of an item's signature.

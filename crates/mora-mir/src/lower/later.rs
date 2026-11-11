@@ -12,7 +12,8 @@
 
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
-    body, body_resolution, infer, item_tree, local_functions, signature, this_type,
+    body, body_resolution, infer, is_generic_type, item_tree, local_functions, signature,
+    this_type,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -60,7 +61,54 @@ pub(crate) fn lowered_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    owner_later(db, project, file, owner).or_else(|| local_later(db, project, file, owner))
+    let later =
+        owner_later(db, project, file, owner).or_else(|| local_later(db, project, file, owner))?;
+    Some(in_generic_struct(db, project, file, owner, later))
+}
+
+/// `later` for a body of `owner`, or the milestone of generic code when
+/// the owner is a member of a generic struct and `later` names an earlier
+/// one: the latest of the milestones that apply lowers the body.
+fn in_generic_struct(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    later: Later,
+) -> Later {
+    let tree = item_tree(db, file);
+    let ty = match owner {
+        BodyOwner::Item(item) => tree.item(item).parent,
+        BodyOwner::Value(ty, _) | BodyOwner::Member(ty, _) => Some(ty),
+        BodyOwner::TopLevel | BodyOwner::Extension(..) => None,
+    };
+    let generic = ty.is_some_and(|ty| {
+        tree.item(ty).kind == ItemKind::Struct
+            && is_generic_type(
+                db,
+                ItemId {
+                    project,
+                    file,
+                    item: ty,
+                },
+            )
+    });
+    if generic && milestone_order(later.milestone) < milestone_order(GENERIC) {
+        return Later {
+            what: format!("{} of a generic struct", later.what),
+            milestone: GENERIC,
+        };
+    }
+    later
+}
+
+/// The position of `milestone`, as `M3.9`, in the order of the roadmap.
+fn milestone_order(milestone: &str) -> (u32, u32) {
+    let number = |part: &str| part.parse().unwrap_or(u32::MAX);
+    match milestone.trim_start_matches('M').split_once('.') {
+        Some((major, minor)) => (number(major), number(minor)),
+        None => (u32::MAX, u32::MAX),
+    }
 }
 
 /// The milestone that lowers the body of `owner` for what it is or for a

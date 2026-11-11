@@ -2924,7 +2924,7 @@ type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 47] = [
+    let cases: [LaterCase; 49] = [
         (
             LOWERED_LATER,
             |l| l.initializer("P", "Get"),
@@ -3120,6 +3120,16 @@ fn every_owner_lowered_later_names_its_milestone() {
             "class C {}\nF(w: weak C) {}\n",
             |l| l.owner("F"),
             "UsersApi.F: a signature with a weak reference type is not lowered until M2.10",
+        ),
+        (
+            "struct B<T> {\n    Get: int => 1;\n}\n",
+            |l| l.initializer("B", "Get"),
+            "UsersApi.B.Get: a getter of a generic struct is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {\n    static S: int = 1;\n}\n",
+            |l| l.initializer("B", "S"),
+            "UsersApi.B.S: the initializer of a static field is not lowered until M3.13",
         ),
         (
             "F(l: List<int>) {}\n",
