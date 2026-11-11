@@ -110,6 +110,11 @@ impl Check<'_> {
             // An extension member reaches its receiver as a parameter.
             BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
         };
+        // An instance member of a top-level type has `this`, and no type
+        // around it, so nothing it names can be reported.
+        if !is_static && field.is_none() && tree.item(ty).parent.is_none() {
+            return None;
+        }
         Some(Member {
             ty: self.scope.item(ty),
             is_static,
