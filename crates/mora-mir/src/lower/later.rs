@@ -4,12 +4,14 @@
 //!
 //! A body comes later for what it is, as a getter; for a type it
 //! declares, as a class type among its parameters or the type of a field;
-//! for the type of one of its locals; for a `this` of a generic type, as in
-//! a method of `struct B<T>` or of a struct nested in it; or for a local
-//! function in it that comes later, since a local function is lowered with
-//! the body it is declared in. A struct type comes as late as the types of
-//! its instance fields, which its layout holds. When several milestones
-//! apply, the latest of them lowers the body.
+//! for the type of one of its locals or expressions; for its `this`, of a
+//! generic type, as in a method of `struct B<T>` or of a struct nested in
+//! it, or of a struct whose fields come later; or for a local function in
+//! it that comes later, since a local function is lowered with the body it
+//! is declared in. A struct type comes as late as the types of its instance
+//! fields, which its layout holds, and a struct nested in a generic type
+//! comes with generic code. When several milestones apply, the latest of
+//! them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
@@ -166,18 +168,19 @@ pub(crate) fn lowered_later(
         owner_later(db, project, file, owner),
         local_functions_later(db, project, file, owner),
         this_later(db, project, file, owner),
-        locals_later(db, project, file, owner),
+        body_types_later(db, project, file, owner),
     ])
 }
 
-/// The milestone of generic code when the body of `owner` has a `this` of
-/// a generic type: a method, a getter or a field initializer that is not
-/// `static`, a constructor, a destructor, an indexer or an interface
-/// implementation, in a type with type parameters or nested in one. `None`
-/// for any other body: a static member of a generic type is lowered for
-/// what it is, and a type parameter in its signature comes later for that
-/// type. A `static` interface implementation is counted too, as it comes
-/// later still for what it is.
+/// The milestone that lowers the body of `owner` for its `this`: a method,
+/// a getter or a field initializer that is not `static`, a constructor, a
+/// destructor, an indexer or an interface implementation. Generic code
+/// when it is in a type with type parameters or nested in one; in a struct,
+/// as late as the struct's instance fields, which `this` holds. `None` for
+/// any other body: a static member of a generic type is lowered for what it
+/// is, and a type parameter in its signature comes later for that type. A
+/// `static` interface implementation is counted too, as it comes later
+/// still for what it is.
 fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let tree = item_tree(db, file);
     let id = |item| ItemId {
@@ -214,8 +217,26 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
         }
         BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
     };
-    is_generic_type(db, id(ty))
-        .then(|| Later::new(format!("{what} of a generic type"), MONOMORPHIZATION))
+    let ty = id(ty);
+    if in_generic_type(db, ty) {
+        return later(format!("{what} of a generic type"), MONOMORPHIZATION);
+    }
+    if tree.item(ty.item).kind != ItemKind::Struct {
+        return None;
+    }
+    let this = Ty::Struct(ty);
+    TypeWalk::new(db)
+        .later(&this)?
+        .later(|kind| format!("{what} whose `this` holds {kind}"))
+}
+
+/// Whether the type `item` declares type parameters or is nested in a type
+/// that does, whose type parameters it can use: its layout and its members
+/// are generic code either way.
+fn in_generic_type(db: &dyn Db, item: ItemId) -> bool {
+    let tree = item_tree(db, item.file);
+    std::iter::successors(Some(item.item), |&idx| tree.item(idx).parent)
+        .any(|idx| is_generic_type(db, ItemId { item: idx, ..item }))
 }
 
 /// The milestone that lowers the body of `owner` for what it is or for a
@@ -427,11 +448,12 @@ fn local_functions_later(
     }))
 }
 
-/// The milestone that lowers the locals of the body of `owner` for their
-/// types, the first in the order of the body on a tie; `None` when this
-/// one does. The name of a local function has no type: [`local_functions_later`]
-/// looks into its signature.
-fn locals_later(
+/// The milestone that lowers the body of `owner` for the types of its
+/// locals and of its expressions, temporaries included; `None` when this
+/// one does. On a tie the locals name it before the expressions, each in
+/// the order of the body. The name of a local function has no type:
+/// [`local_functions_later`] looks into its signature.
+fn body_types_later(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
@@ -440,10 +462,16 @@ fn locals_later(
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let mut walk = TypeWalk::new(db);
-    latest(hir.locals.iter().map(|(id, local)| {
+    let locals = hir.locals.iter().map(|(id, local)| {
         walk.later(inference.local(id)?)?
             .later(|what| format!("the local `{}` with {what}", local.name))
-    }))
+    });
+    let locals = latest(locals);
+    let exprs = latest(hir.exprs.iter().map(|(id, _)| {
+        walk.later(inference.expr(id)?)?
+            .later(|what| format!("an expression with {what}"))
+    }));
+    latest([locals, exprs])
 }
 
 /// The milestone that lowers a body with `types` in it, `None` when this
@@ -456,7 +484,8 @@ fn types_later<'a>(db: &'a dyn Db, types: impl IntoIterator<Item = &'a Ty>) -> O
 /// A walk over types for the milestone that lowers them. A type inside
 /// another one decides when its milestone is later, as for `B<int>[]`, an
 /// array of a generic type, and so do the types of a struct's instance
-/// fields, which its layout holds. It keeps a stack rather than recursing,
+/// fields, which its layout holds. A struct nested in a generic type is
+/// generic code. It keeps a stack rather than recursing,
 /// since a chain of structs that each hold the next is as long as the
 /// program makes it.
 struct TypeWalk<'a> {
@@ -491,6 +520,10 @@ impl<'a> TypeWalk<'a> {
                 Ty::Primitive(_) | Ty::String | Ty::Never | Ty::Error => {}
                 Ty::Struct(item) => {
                     if self.seen.insert(*item) {
+                        if in_generic_type(self.db, *item) {
+                            let generic = construct_later(Construct::Generic);
+                            found = latest([found, Some(generic)]);
+                        }
                         let fields = instance_fields(self.db, *item);
                         self.stack.extend(fields.map(|(_, field)| &field.ty));
                     }

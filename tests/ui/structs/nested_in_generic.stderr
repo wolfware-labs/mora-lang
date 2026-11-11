@@ -1,0 +1,68 @@
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/structs/nested_in_generic.mr:6:40
+  |
+6 |         public Wrong(o: In): string => o.N; //~ ERROR MR0203
+  |                                        ^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+6 |         public Wrong(o: In): string => $"{o.N}"; //~ ERROR MR0203
+  |                                        +++   ++
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+ --> tests/ui/structs/nested_in_generic.mr:7:41
+  |
+7 |         public Mk(): In => new In { N = "s" }; //~ ERROR MR0203
+  |                                         ^^^ this is `string`
+
+error[MR0143]: `new In { ... }` does not assign `N`
+ --> tests/ui/structs/nested_in_generic.mr:8:29
+  |
+8 |         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
+  |                             ^^^^^^^^^^^^^^^^ `N` has no initializer, so it needs a value here
+  |
+  = note: give the field an initializer, or assign it in the `new` expression
+
+error[MR0147]: `In` has no field named `Q`
+ --> tests/ui/structs/nested_in_generic.mr:8:38
+  |
+8 |         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
+  |                                      ^ not a field of `In`
+  |
+  = note: `new In { ... }` assigns the fields that each value holds
+help: did you mean `N`?
+  |
+8 -         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
+8 +         public Mk2(): In => new In { N = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
+  |
+
+error[MR0203]: mismatched types: expected `In`, found `int`
+ --> tests/ui/structs/nested_in_generic.mr:9:29
+  |
+9 |         public Bad(): In => 3; //~ ERROR MR0203
+  |                             ^ this is `int`
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+  --> tests/ui/structs/nested_in_generic.mr:11:32
+   |
+11 |     public M(i: In): string => i.N; //~ ERROR MR0203
+   |                                ^^^ this is `int`
+   |
+   = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+   |
+11 |     public M(i: In): string => $"{i.N}"; //~ ERROR MR0203
+   |                                +++   ++
+
+error[MR0203]: mismatched types: expected `int`, found `string`
+  --> tests/ui/structs/nested_in_generic.mr:12:36
+   |
+12 |     public K(): In => new In { N = "x" }; //~ ERROR MR0203
+   |                                    ^^^ this is `string`
+
+error[MR0203]: mismatched types: expected `In`, found `int`
+  --> tests/ui/structs/nested_in_generic.mr:13:23
+   |
+13 |     public L(): In => 5; //~ ERROR MR0203
+   |                       ^ this is `int`

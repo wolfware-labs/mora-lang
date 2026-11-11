@@ -3365,6 +3365,23 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.T.M: a signature with an option type is not lowered until M3.5",
         ),
         (
+            "class C {}\nstruct S {\n    public c: C;\n    public N: int;\n    public Get(): int => N;\n}\n",
+            |l| l.owner("Get"),
+            "UsersApi.S.Get: a method whose `this` holds a class type is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nstruct S {\n    public c: C;\n    public N: int;\n}\n\
+             Mk(): S => Todo();\nUse(): int => Mk().N;\n",
+            |l| l.owner("Use"),
+            "UsersApi.Use: an expression with a class type is not lowered until M2.1",
+        ),
+        (
+            "struct G<T> {\n    public struct In {\n        public N: int;\n    }\n    \
+             static F(i: In): int => i.N;\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.G.F: a signature with a generic type is not lowered until M3.9",
+        ),
+        (
             "static K: $t = 1;\n",
             |l| l.owner("K"),
             "UsersApi.K: the initializer of a static with a spliced type is not lowered until M4.4",
