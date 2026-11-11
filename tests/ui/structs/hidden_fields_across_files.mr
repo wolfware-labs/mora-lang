@@ -7,6 +7,8 @@ using UsersApi.Store;
 
 let a = new Account { Owner = "ana", Note = "x" }; //~ ERROR MR0129
 let b = new Outer.Inner { Name = "x", Rank = 2 }; //~ ERROR MR0129
+// A field the use cannot see is not offered for a name it misspells.
+let c = new Account { Owner = "ana", Nte = "x" }; //~ ERROR MR0147
 //@ file src/Store/Account.mr
 internal struct Account {
     public Owner: string;

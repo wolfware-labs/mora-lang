@@ -1407,7 +1407,9 @@ impl Check<'_> {
 
     /// What is wrong with the name of the initializer at `position` of
     /// `inits`, the memberwise creation of the struct `item` of type `ty`:
-    /// a name that is not an instance field, or one assigned before.
+    /// a name that is not an instance field, or one assigned before. A
+    /// name that is no member gets the closest visible field not assigned
+    /// as a suggestion.
     fn init_name(
         &self,
         item: ItemId,
@@ -1445,7 +1447,9 @@ impl Check<'_> {
                 ValueKind::EnumMember | ValueKind::UnionCase => NotAField::Unknown,
             });
         let suggestion = if member == NotAField::Unknown {
+            // Only a field the use can see is worth suggesting.
             let unassigned: Vec<String> = instance_fields(self.db, item)
+                .filter(|&(index, _)| self.field_visible(item, index))
                 .map(|(_, field)| field.name.clone())
                 .filter(|field| !inits.iter().any(|(name, _)| name == field))
                 .collect();
