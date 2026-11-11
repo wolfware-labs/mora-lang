@@ -85,9 +85,13 @@ impl Compiler for Fake {
         };
         for (_, word, rest) in statements(text) {
             match word {
-                "print" => output.stdout.push_str(&format!("{rest}\n")),
+                "print" => {
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
+                }
                 "jit-print" if backend == Backend::Jit => {
-                    output.stdout.push_str(&format!("{rest}\n"));
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
                 }
                 "exit" => output.exit = rest.parse().unwrap(),
                 _ => {}

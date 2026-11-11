@@ -61,9 +61,10 @@
 //! the type of a borrow. A block is `bbN: {`, its statements, its
 //! terminator, and `}`, one per line, with a blank line before each block.
 //! Every block is written; lowering numbers a body's blocks without gaps
-//! and drops the empty ones that nothing jumps to. A real constant is written with a decimal point, as
-//! `5.0`, in the shortest digits of its type. Every statement and terminator ends in
-//! `// line:col`, the one-based line and the one-based column, counted in
+//! and drops the empty ones that nothing jumps to. A real constant is
+//! written with a decimal point, as `5.0`, in the shortest digits of its
+//! type. Every statement and terminator ends in `// line:col`, the
+//! one-based line and the one-based column, counted in
 //! characters as diagnostics count it, where its source starts, or `// ?`
 //! when the span names no position in the file (see [`write_body_in`]).
 //!

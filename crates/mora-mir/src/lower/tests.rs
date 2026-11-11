@@ -2857,36 +2857,6 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
     );
 }
 
-#[test]
-fn mir_names_the_milestone_of_each_owner_lowered_later() {
-    let lowered = lowered(LOWERED_LATER);
-    let cases = [
-        (
-            lowered.initializer("P", "Get"),
-            "UsersApi.P.Get: a getter",
-            "M2.1",
-        ),
-        (
-            lowered.initializer("P", "S"),
-            "UsersApi.P.S: the initializer of a static field",
-            "M3.13",
-        ),
-        (
-            lowered.initializer("P", "C"),
-            "UsersApi.P.C: the initializer of a constant",
-            "M1.11",
-        ),
-        (lowered.member("P", 0), "UsersApi.P: a constructor", "M2.1"),
-        (lowered.member("P", 1), "UsersApi.P.-: an operator", "M3.6"),
-    ];
-    for (owner, what, milestone) in cases {
-        assert_eq!(
-            lowered.internal_error_of(owner),
-            format!("internal error lowering {what} is not lowered until {milestone}")
-        );
-    }
-}
-
 /// The internal error that lowering the owner `owner` picks in the file
 /// `text` panics with.
 fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String {
@@ -2901,7 +2871,32 @@ type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 16] = [
+    let cases: [LaterCase; 21] = [
+        (
+            LOWERED_LATER,
+            |l| l.initializer("P", "Get"),
+            "UsersApi.P.Get: a getter is not lowered until M2.1",
+        ),
+        (
+            LOWERED_LATER,
+            |l| l.initializer("P", "S"),
+            "UsersApi.P.S: the initializer of a static field is not lowered until M3.13",
+        ),
+        (
+            LOWERED_LATER,
+            |l| l.initializer("P", "C"),
+            "UsersApi.P.C: the initializer of a constant is not lowered until M1.11",
+        ),
+        (
+            LOWERED_LATER,
+            |l| l.member("P", 0),
+            "UsersApi.P: a constructor is not lowered until M2.1",
+        ),
+        (
+            LOWERED_LATER,
+            |l| l.member("P", 1),
+            "UsersApi.P.-: an operator is not lowered until M3.6",
+        ),
         (
             "union U { C(x: int), D }\n",
             |l| l.initializer("U", "C"),

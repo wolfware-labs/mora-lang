@@ -31,6 +31,7 @@ mod local;
 mod structs;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
@@ -103,10 +104,8 @@ pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
         match later::lowered_later(db, project, file, owner) {
             Some(later) => {
                 let name = owner_name(db, project, file, owner);
-                out.push_str(&format!(
-                    "// {name}: not lowered until {}\n",
-                    later.milestone
-                ));
+                // Writing to a `String` cannot fail.
+                let _ = writeln!(out, "// {name}: not lowered until {}", later.milestone);
             }
             None => write_mir(&mut out, db, Some(file), mir(db, project, file, owner)),
         }

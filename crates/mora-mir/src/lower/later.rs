@@ -86,7 +86,9 @@ pub(crate) fn lowered_later(
             BodyKind::Function | BodyKind::Getter => {
                 later("an explicit interface implementation", "M3.10")
             }
-            _ => None,
+            BodyKind::TopLevel | BodyKind::Initializer | BodyKind::Extension | BodyKind::Case => {
+                None
+            }
         },
         BodyOwner::Extension(_, 0) => later("an extension block", "M3.12"),
         BodyOwner::Extension(..) => later("an extension member", "M3.12"),

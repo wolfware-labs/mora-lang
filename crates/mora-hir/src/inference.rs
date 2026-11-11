@@ -533,6 +533,8 @@ pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
     use salsa::Setter;
 
     use crate::test_db::{TestDb, app, codes, file_named, messages};
@@ -1433,10 +1435,12 @@ mod tests {
         for place in NUMERIC {
             for value in NUMERIC {
                 for op in OPERATORS {
-                    text.push_str(&format!(
+                    // Writing to a `String` cannot fail.
+                    let _ = write!(
+                        text,
                         "F{index}(p: {place}, x: {value}) {{\n    var q = p;\n    q {op}= x;\n    \
                          let r = p {op} x;\n}}\n"
-                    ));
+                    );
                     index += 1;
                 }
             }
