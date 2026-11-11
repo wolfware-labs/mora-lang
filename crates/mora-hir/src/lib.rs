@@ -66,8 +66,8 @@ pub use items::{
 pub use name::pascal_case;
 pub use report::diagnostics;
 pub use resolve::{
-    ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, is_visible,
-    resolve_path,
+    ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types,
+    is_visible, resolve_path,
 };
 pub use signature::{instance_fields, is_generic_type, signature, struct_field, this_type};
 pub use ty::{

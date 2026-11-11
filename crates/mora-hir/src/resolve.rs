@@ -631,7 +631,7 @@ fn reaches(
 }
 
 /// `start` and the types around it, from the innermost out.
-pub(crate) fn enclosing_types(
+pub fn enclosing_types(
     tree: &ItemTree,
     start: Option<ItemIdx>,
 ) -> impl Iterator<Item = ItemIdx> + '_ {

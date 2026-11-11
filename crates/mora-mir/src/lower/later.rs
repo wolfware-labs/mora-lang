@@ -21,8 +21,8 @@ use std::fmt;
 
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
-    body, body_resolution, infer, instance_fields, is_generic_type, item_tree, local_functions,
-    signature, struct_field,
+    body, body_resolution, enclosing_types, infer, instance_fields, is_generic_type, item_tree,
+    local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -234,8 +234,7 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
 /// that does, whose type parameters it can use: its layout and its members
 /// are generic code either way.
 fn in_generic_type(db: &dyn Db, item: ItemId) -> bool {
-    let tree = item_tree(db, item.file);
-    std::iter::successors(Some(item.item), |&idx| tree.item(idx).parent)
+    enclosing_types(item_tree(db, item.file), Some(item.item))
         .any(|idx| is_generic_type(db, ItemId { item: idx, ..item }))
 }
 
@@ -462,11 +461,10 @@ fn body_types_later(
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let mut walk = TypeWalk::new(db);
-    let locals = hir.locals.iter().map(|(id, local)| {
+    let locals = latest(hir.locals.iter().map(|(id, local)| {
         walk.later(inference.local(id)?)?
             .later(|what| format!("the local `{}` with {what}", local.name))
-    });
-    let locals = latest(locals);
+    }));
     let exprs = latest(hir.exprs.iter().map(|(id, _)| {
         walk.later(inference.expr(id)?)?
             .later(|what| format!("an expression with {what}"))
@@ -485,9 +483,8 @@ fn types_later<'a>(db: &'a dyn Db, types: impl IntoIterator<Item = &'a Ty>) -> O
 /// another one decides when its milestone is later, as for `B<int>[]`, an
 /// array of a generic type, and so do the types of a struct's instance
 /// fields, which its layout holds. A struct nested in a generic type is
-/// generic code. It keeps a stack rather than recursing,
-/// since a chain of structs that each hold the next is as long as the
-/// program makes it.
+/// generic code. It keeps a stack rather than recursing, since a chain of
+/// structs that each hold the next is as long as the program makes it.
 struct TypeWalk<'a> {
     /// The database the fields of structs come from.
     db: &'a dyn Db,
