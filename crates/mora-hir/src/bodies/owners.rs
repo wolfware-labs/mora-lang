@@ -364,6 +364,7 @@ fn member_bodies(
             // A method is an item, unless it implements an interface member.
             ast::Member::FunctionDecl(it) if it.explicit_impl().is_some() => {
                 let name = name_of(it.name()).unwrap_or_default();
+                let written = Written::of(it.modifiers());
                 let body = callable(
                     BodyKind::Function,
                     explicit(&name, it.explicit_impl()),
@@ -372,8 +373,8 @@ fn member_bodies(
                         type_params: it.type_param_list().into_iter().collect(),
                         check_types: true,
                         ret: it.ret(),
-                        is_async: Written::of(it.modifiers()).is_async,
-                        is_static: Written::of(it.modifiers()).is_static,
+                        is_async: written.is_async,
+                        is_static: written.is_static,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()

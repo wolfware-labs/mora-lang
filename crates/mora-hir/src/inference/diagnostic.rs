@@ -11,7 +11,7 @@ mod struct_new;
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
-use super::{Context, InstanceUse, TypeError, constant, numeric, ty_name};
+use super::{Context, InstanceMember, InstanceUse, TypeError, constant, numeric, ty_name};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
 use crate::ty::{Primitive, Ty};
 
@@ -205,10 +205,11 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         TypeError::StaticThis { expr, used } => static_this(source, *expr, used),
         TypeError::NestedThis {
             expr,
-            used,
+            kind,
+            name,
             outer,
             nested,
-        } => nested_this(source, *expr, used, outer, nested),
+        } => nested_this(source, *expr, *kind, name, outer, nested),
         TypeError::InitializerThis { expr, used, field } => {
             initializer_this(source, *expr, used, field)
         }
@@ -239,18 +240,16 @@ fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnos
         .with_note("a `static` member belongs to the type, not to a value of it")
 }
 
-/// `MR0149`: a member of the type `nested` uses, at `expr`, an instance
-/// member of `outer`, a type it is nested in.
+/// `MR0149`: a member of the type `nested` uses, at `expr`, the instance
+/// `kind` `name` of `outer`, a type it is nested in.
 fn nested_this(
     source: &Source<'_>,
     expr: ExprId,
-    used: &InstanceUse,
+    kind: InstanceMember,
+    name: &str,
     outer: &str,
     nested: &str,
 ) -> Diagnostic {
-    let InstanceUse::Member { kind, name } = used else {
-        unreachable!("`this` is a value of the nested type");
-    };
     Diagnostic::error(
         codes::MR0149,
         format!(

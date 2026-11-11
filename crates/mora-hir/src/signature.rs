@@ -6,8 +6,8 @@ use crate::items::{
     ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree, signature_refs,
 };
 use crate::resolve::{
-    ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, item_data,
-    resolve_path,
+    ResolveErrorKind, Resolved, Scope, declaring_type, effective_visibility, enclosing_types,
+    item_data, resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
 use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
@@ -72,14 +72,10 @@ pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
         return None;
     };
     function.receiver?;
-    let parent = item_tree(db, item.file).item(item.item).parent?;
-    let generic = !signature_refs(db, item.file)[arena_index(parent)]
+    let parent = declaring_type(db, item)?;
+    let generic = !signature_refs(db, item.file)[arena_index(parent.item)]
         .type_params
         .is_empty();
-    let parent = ItemId {
-        item: parent,
-        ..item
-    };
     (item_data(db, parent).kind == ItemKind::Struct && !generic).then_some(Ty::Struct(parent))
 }
 

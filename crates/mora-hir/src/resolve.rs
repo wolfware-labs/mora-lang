@@ -557,6 +557,15 @@ pub(crate) fn item_data(db: &dyn Db, item: ItemId) -> &Item {
     item_tree(db, item.file).item(item.item)
 }
 
+/// The type that declares `item`, if a type does.
+pub(crate) fn declaring_type(db: &dyn Db, item: ItemId) -> Option<ItemId> {
+    let parent = item_data(db, item).parent?;
+    Some(ItemId {
+        item: parent,
+        ..item
+    })
+}
+
 /// The visibility of an item after its enclosing types narrow it (§4.5).
 /// `private` at namespace level, where no type encloses the item, means
 /// the declaring file.

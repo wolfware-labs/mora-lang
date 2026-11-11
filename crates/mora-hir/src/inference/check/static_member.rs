@@ -11,7 +11,7 @@ use crate::bodies::{BodyOwner, Expr, ExprId, Target};
 use crate::defs::ItemId;
 use crate::inference::{Callee, InstanceMember, InstanceUse, TypeError};
 use crate::items::{ItemKind, ValueKind, item_tree};
-use crate::resolve::{Resolved, item_data};
+use crate::resolve::{Resolved, declaring_type, item_data};
 use crate::signature::signature;
 use crate::ty::Signature;
 
@@ -68,10 +68,13 @@ impl Check<'_> {
                     used,
                     field: field.clone(),
                 }
-            } else if ty != member.ty {
+            } else if ty != member.ty
+                && let InstanceUse::Member { kind, name } = used
+            {
                 TypeError::NestedThis {
                     expr: at,
-                    used,
+                    kind,
+                    name,
                     outer: item_data(self.db, ty).name.clone(),
                     nested: item_data(self.db, member.ty).name.clone(),
                 }
@@ -174,16 +177,10 @@ fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
 
 /// The use of the instance method `item`, with the type that declares it.
 fn method(db: &dyn Db, item: ItemId) -> Option<(ItemId, InstanceUse)> {
-    let parent = item_tree(db, item.file).item(item.item).parent?;
+    let ty = declaring_type(db, item)?;
     let used = InstanceUse::Member {
         kind: InstanceMember::Method,
         name: item_data(db, item).name.clone(),
     };
-    Some((
-        ItemId {
-            item: parent,
-            ..item
-        },
-        used,
-    ))
+    Some((ty, used))
 }

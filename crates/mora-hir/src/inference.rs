@@ -209,12 +209,13 @@ pub(crate) enum NotAField {
 }
 
 /// What a static member, a field initializer or a member of a nested type
-/// uses that only a value of a type it has none of has (`MR0149`, `MR0152`).
+/// uses that needs a value it does not have (`MR0149`, `MR0152`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InstanceUse {
     /// `this`.
     This,
-    /// An instance member of the type, found by its bare name.
+    /// An instance member of the type, or of a type around it, found by
+    /// its bare name.
     Member { kind: InstanceMember, name: String },
 }
 
@@ -357,12 +358,14 @@ pub(crate) enum TypeError {
     /// The body of a static member uses `this` or an instance member at
     /// `expr`, which names it (`MR0149`).
     StaticThis { expr: ExprId, used: InstanceUse },
-    /// A member of the type `nested` uses, at `expr`, an instance member
-    /// of `outer`, a type it is nested in, which needs a value of `outer`
-    /// that it does not have (`MR0149`).
+    /// A member of the type `nested` uses, at `expr`, the instance `kind`
+    /// `name` of `outer`, a type it is nested in, which needs a value of
+    /// `outer` that it does not have (`MR0149`). Never `this`, which is a
+    /// value of `nested`.
     NestedThis {
         expr: ExprId,
-        used: InstanceUse,
+        kind: InstanceMember,
+        name: String,
         outer: String,
         nested: String,
     },
