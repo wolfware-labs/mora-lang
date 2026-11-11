@@ -46,6 +46,9 @@ impl Lowerer<'_> {
                 then,
                 r#else,
             } => self.statement_conditional(expr, *condition, *then, *r#else)?,
+            // A `match` in statement position is a statement, which is not
+            // lowered yet; inference leaves it untyped when its arms assign.
+            node @ Expr::Match { .. } => self.statement_not_lowered(node),
             // Anything else, a prefix step among them, is evaluated and its
             // value dropped.
             _ => {

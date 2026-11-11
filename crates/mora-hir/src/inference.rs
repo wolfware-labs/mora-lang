@@ -3011,6 +3011,13 @@ mod tests {
             "c ? (d ? (c ? x = 1 : x = 2) : x = 3) : x = 4;",
             "c ? (d ? x = 1 : x = 2) : x = 3;",
             "Take(() => c ? (d ? x = 1 : x = 2) : (d ? x = 3 : x = 4));",
+            "c ? (match (d) { true => x = 1, false => x = 2 }) : \
+             (match (d) { true => x = 3, false => x = 4 });",
+            "c ? match (d) { true => x = 1, false => x = 2 } : \
+             match (d) { true => x = 3, false => x = 4 };",
+            "c ? (match (d) { true => x = 1, false => x = 2 }) : x = 3;",
+            "c ? (match (d) { true => d ? x = 1 : x = 2, false => x = 3 }) : \
+             (d ? (match (c) { true => x = 4, false => x = 5 }) : x = 6);",
         ] {
             assert_eq!(
                 reported(&format!("{head}{ok}\n")),

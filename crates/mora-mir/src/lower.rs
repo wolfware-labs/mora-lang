@@ -889,11 +889,17 @@ impl<'a> Lowerer<'a> {
             Stmt::Unsafe(block) => self.stmt(*block),
             // A local function is a body of its own.
             Stmt::Function(_) => {}
-            other => panic!(
-                "internal error lowering {}: the statement {other:?} is not lowered",
-                self.name
-            ),
+            other => self.statement_not_lowered(other),
         }
+    }
+
+    /// Panics with the internal error for a statement that is not lowered
+    /// yet, such as a `match` statement.
+    fn statement_not_lowered(&self, statement: &dyn std::fmt::Debug) -> ! {
+        panic!(
+            "internal error lowering {}: the statement {statement:?} is not lowered",
+            self.name
+        )
     }
 
     /// `return` of `()`.

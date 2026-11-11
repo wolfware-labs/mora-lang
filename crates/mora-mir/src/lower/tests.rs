@@ -2761,6 +2761,42 @@ fn a_conditional_of_conditionals_of_assignments_is_a_statement() {
     );
 }
 
+/// The internal error lowering the body of `F` in `text` panics with.
+fn internal_error(text: &str) -> String {
+    let lowered = lowered(text);
+    let owner = lowered.owner("F");
+    let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mir(&lowered.db, lowered.project, lowered.file, owner);
+    }))
+    .expect_err("an internal error");
+    message
+        .downcast_ref::<String>()
+        .expect("a formatted message")
+        .clone()
+}
+
+#[test]
+fn a_match_of_assignments_in_a_conditional_is_not_lowered_yet() {
+    // A match statement is not lowered yet, and neither is a match that a
+    // conditional of assignments has as a branch: both end in the same
+    // internal error, not in a value with no type.
+    let statement = internal_error(
+        "F(d: bool) {\n    var x = 0;\n    \
+         match (d) { true => x = 1, false => x = 2 }\n}\n",
+    );
+    let branch = internal_error(
+        "F(c: bool, d: bool) {\n    var x = 0;\n    \
+         c ? (match (d) { true => x = 1, false => x = 2 }) : x = 3;\n}\n",
+    );
+    for message in [&statement, &branch] {
+        assert!(
+            message.starts_with("internal error lowering UsersApi.F: the statement Match {")
+                && message.contains("is not lowered"),
+            "{message}"
+        );
+    }
+}
+
 #[test]
 fn a_conditional_of_assignments_in_a_local_function_is_a_statement() {
     let lowered = lowered(
