@@ -2904,13 +2904,19 @@ fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String 
     lowered.internal_error_of(owner)
 }
 
+#[test]
+fn a_static_method_of_a_generic_struct_is_lowered() {
+    let lowered = lowered("struct B<T> {\n    static F(): int => 1;\n}\n");
+    assert_eq!(lowered.bodies("F"), ["UsersApi.B.F"]);
+}
+
 /// A file, the owner in it that a later milestone lowers, and the message
 /// lowering it stops with, after `internal error lowering `.
 type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 58] = [
+    let cases: [LaterCase; 64] = [
         (
             LOWERED_LATER,
             |l| l.initializer("P", "Get"),
@@ -3010,7 +3016,37 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "struct B<T> {\n    M() {}\n}\n",
             |l| l.owner("M"),
-            "UsersApi.B.M: a method of a generic struct is not lowered until M3.9",
+            "UsersApi.B.M: a method of a generic type is not lowered until M3.9",
+        ),
+        (
+            "class C<T> {\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.C.M: a method of a generic type is not lowered until M3.9",
+        ),
+        (
+            "union U<T> { A, B;\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.U.M: a method of a generic type is not lowered until M3.9",
+        ),
+        (
+            "interface I<T> {\n    M() {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.I.M: a method of an interface is not lowered until M3.10",
+        ),
+        (
+            "class C {}\nstruct B<T> {\n    static F(c: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.B.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "struct B<T> {\n    X: int = 1;\n}\n",
+            |l| l.initializer("B", "X"),
+            "UsersApi.B.X: the initializer of a field of a generic type is not lowered until M3.9",
+        ),
+        (
+            "struct B<T> {\n    X: int;\n    B(x: int) { X = x; }\n}\n",
+            |l| l.member("B", 0),
+            "UsersApi.B: a constructor of a generic type is not lowered until M3.9",
         ),
         (
             "enum Level { Low = 1, High = 2 }\n",
@@ -3110,7 +3146,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "struct B<T> {\n    Get: int => 1;\n}\n",
             |l| l.initializer("B", "Get"),
-            "UsersApi.B.Get: a getter of a generic struct is not lowered until M3.9",
+            "UsersApi.B.Get: a getter of a generic type is not lowered until M3.9",
         ),
         (
             "struct B<T> {\n    static S: int = 1;\n}\n",

@@ -3,7 +3,8 @@
 //! [`mir_dump`] writes a line in its place.
 //!
 //! A body comes later for what it is, as a getter; for a type in its
-//! signature, as a class type; or for a local function in it that comes
+//! signature, as a class type; for a `this` of a generic type, as in a
+//! method of `struct B<T>`; or for a local function in it that comes
 //! later, since a local function is lowered with the body it is declared
 //! in. When several milestones apply, the latest of them lowers the body.
 //!
@@ -16,7 +17,6 @@ use std::iter;
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
     body, body_resolution, infer, is_generic_type, item_tree, local_functions, signature,
-    this_type,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -160,47 +160,67 @@ pub(crate) fn lowered_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    let later = latest([
+    latest([
         owner_later(db, project, file, owner),
         local_later(db, project, file, owner),
-    ])?;
-    Some(in_generic_struct(db, project, file, owner, later))
+        this_later(db, project, file, owner),
+    ])
 }
 
-/// `later` for a body of `owner`, or the milestone of generic code when
-/// the owner is a member of a generic struct and `later` names an earlier
-/// one: the latest of the milestones that apply lowers the body.
-fn in_generic_struct(
-    db: &dyn Db,
-    project: Project,
-    file: SourceFile,
-    owner: BodyOwner,
-    later: Later,
-) -> Later {
+/// The milestone of generic code when the body of `owner` has a `this` of
+/// a generic type: a method, a getter, a field initializer, a constructor,
+/// a destructor, an indexer or an interface implementation that is not
+/// `static`, in a type with type parameters. `None` for any other body: a
+/// static member of a generic type is lowered for what it is, and a type
+/// parameter in its signature comes later for that type.
+fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let tree = item_tree(db, file);
-    let ty = match owner {
-        BodyOwner::Item(item) => tree.item(item).parent,
-        BodyOwner::Value(ty, _) | BodyOwner::Member(ty, _) => Some(ty),
-        BodyOwner::TopLevel | BodyOwner::Extension(..) => None,
+    let id = |item| ItemId {
+        project,
+        file,
+        item,
     };
-    let generic = ty.is_some_and(|ty| {
-        tree.item(ty).kind == ItemKind::Struct
-            && is_generic_type(
-                db,
-                ItemId {
-                    project,
-                    file,
-                    item: ty,
-                },
-            )
-    });
-    if generic && later.milestone < MONOMORPHIZATION {
-        return Later::new(
-            format!("{} of a generic struct", later.what),
-            MONOMORPHIZATION,
-        );
-    }
-    later
+    let (ty, what) = match owner {
+        BodyOwner::Item(item) => {
+            let Signature::Function(function) = signature(db, id(item)) else {
+                return None;
+            };
+            function.receiver?;
+            (tree.item(item).parent?, "a method")
+        }
+        BodyOwner::Value(ty, index) => {
+            let value = tree.item(ty).values.get(index as usize)?;
+            if value.is_static {
+                return None;
+            }
+            match value.kind {
+                ValueKind::Field => (ty, "the initializer of a field"),
+                ValueKind::Getter => (ty, "a getter"),
+                ValueKind::Const | ValueKind::EnumMember | ValueKind::UnionCase => return None,
+            }
+        }
+        BodyOwner::Member(ty, _) => {
+            let hir = body(db, file, owner);
+            if hir.is_static {
+                return None;
+            }
+            let what = match hir.kind {
+                BodyKind::Constructor => "a constructor",
+                BodyKind::Destructor => "a destructor",
+                BodyKind::Get | BodyKind::Set => "an indexer",
+                BodyKind::Function | BodyKind::Getter => "an explicit interface implementation",
+                BodyKind::Operator
+                | BodyKind::TopLevel
+                | BodyKind::Initializer
+                | BodyKind::Extension
+                | BodyKind::Case => return None,
+            };
+            (ty, what)
+        }
+        BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
+    };
+    is_generic_type(db, id(ty))
+        .then(|| Later::new(format!("{what} of a generic type"), MONOMORPHIZATION))
 }
 
 /// The milestone that lowers the body of `owner` for what it is or for a
@@ -218,12 +238,11 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
             let data = tree.item(item);
             match signature(db, id(item)) {
                 Signature::Function(function) => {
-                    let method = if function.receiver.is_some() && this_type(db, id(item)).is_none()
-                    {
-                        method_later(data.parent.map(|parent| tree.item(parent).kind))
-                    } else {
-                        None
-                    };
+                    let method = function
+                        .receiver
+                        .and(data.parent)
+                        .and_then(|parent| parent_later(tree.item(parent).kind))
+                        .and_then(|kind| kind.later(|what| format!("a method of {what}")));
                     latest([function_later(function), method, signature_later(function)])
                 }
                 _ if data.kind == ItemKind::Field && data.is_static => {
@@ -288,15 +307,6 @@ fn function_later(function: &FnSignature) -> Option<Later> {
             .is_async
             .then(|| Later::new("an async function", ASYNC)),
     ])
-}
-
-/// The milestone that lowers a method that takes `this` in a type of the
-/// kind `parent` whose `this` has no type yet: a struct's is generic.
-fn method_later(parent: Option<ItemKind>) -> Option<Later> {
-    match parent? {
-        ItemKind::Struct => later("a method of a generic struct", MONOMORPHIZATION),
-        kind => parent_later(kind)?.later(|what| format!("a method of {what}")),
-    }
 }
 
 /// The milestone that lowers the members of a type of the kind `kind`,
