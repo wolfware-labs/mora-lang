@@ -1816,8 +1816,8 @@ fn mut_method_writes_through_ref() {
     assert_in_order(
         &lowered.code("F"),
         &[
-            "_3 = &ref p#0;",
-            "call UsersApi.P.Scale{fn UsersApi.P.Scale}(copy _3, copy _5) -> bb1;",
+            "_5 = &ref p#0;",
+            "call UsersApi.P.Scale{fn UsersApi.P.Scale}(copy _5, copy _4) -> bb1;",
             "n#1 = call UsersApi.P.Take{fn UsersApi.P.Take}(copy p#0) -> bb2;",
         ],
     );
@@ -2155,25 +2155,54 @@ fn a_method_named_alone_takes_this() {
          mut Add(k: int) { X += k; }\n    A(): int => Plus(G());\n    \
          mut B() { Add(G()); }\n}\nG(): int => 1;\n",
     );
-    // An `in` receiver is read before an argument that may change it.
+    // An `in` receiver is borrowed after the arguments, which may change it.
     assert_in_order(
         &lowered.code("A"),
         &[
-            "_2 = copy (*this);",
+            "_2 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
             "_3 = &in _2;",
-            "_4 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
-            "_5 = &in _4;",
-            "_0 = call UsersApi.P.Plus{fn UsersApi.P.Plus}(copy _3, copy _5) -> bb2;",
+            "_4 = &in (*this);",
+            "_0 = call UsersApi.P.Plus{fn UsersApi.P.Plus}(copy _4, copy _3) -> bb2;",
         ],
     );
-    // A `ref` receiver is the place itself.
+    // A `ref` receiver is the place itself, borrowed after the arguments too.
     assert_in_order(
         &lowered.code("B"),
         &[
-            "_2 = &ref (*this);",
-            "_3 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "_2 = call UsersApi.G{fn UsersApi.G}() -> bb1;",
+            "_3 = &in _2;",
+            "_4 = &ref (*this);",
+            "call UsersApi.P.Add{fn UsersApi.P.Add}(copy _4, copy _3) -> bb2;",
+        ],
+    );
+}
+
+#[test]
+fn a_method_call_evaluates_its_receiver_first_and_borrows_it_last() {
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    Show(k: int): int => X + k;\n    \
+         mut Bump(): int { X += 1; return X; }\n    mut Run(): int => this.Show(Bump());\n}\n\
+         Mk(): P => new P { X = 1 };\nG(): int => 2;\nF(): int => Mk().Show(G());\n",
+    );
+    // `Mk()` runs before `G()`, and its value is borrowed after it.
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = call UsersApi.Mk{fn UsersApi.Mk}() -> bb1;",
+            "_2 = call UsersApi.G{fn UsersApi.G}() -> bb2;",
+            "_3 = &in _2;",
+            "_4 = &in _1;",
+            "_0 = call UsersApi.P.Show{fn UsersApi.P.Show}(copy _4, copy _3) -> bb3;",
+        ],
+    );
+    // `this` is borrowed after `Bump()` changes it, so `Show` sees the change.
+    assert_in_order(
+        &lowered.code("Run"),
+        &[
+            "_3 = call UsersApi.P.Bump{fn UsersApi.P.Bump}(copy _2) -> bb1;",
             "_4 = &in _3;",
-            "call UsersApi.P.Add{fn UsersApi.P.Add}(copy _2, copy _4) -> bb2;",
+            "_5 = &in (*this);",
+            "_0 = call UsersApi.P.Show{fn UsersApi.P.Show}(copy _5, copy _4) -> bb2;",
         ],
     );
 }
@@ -2217,7 +2246,7 @@ fn fields_and_structs_without_effects_keep_earlier_places() {
     for name in ["M", "N"] {
         let code = lowered.code(name);
         assert!(
-            code.iter().any(|line| line == "_4 = &in (*k#0);"),
+            code.iter().any(|line| line == "_3 = &in (*k#0);"),
             "{name}: {code:?}"
         );
     }

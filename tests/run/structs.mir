@@ -5,9 +5,9 @@ fn top-level() -> () {
     let zero#2: Point;
     let _4: in Point;
     let _5: int;
-    let _6: in Point;
-    let _7: int;
-    let _8: in int;
+    let _6: int;
+    let _7: in int;
+    let _8: in Point;
     let _9: in Point;
     let _10: bool;
 
@@ -28,13 +28,13 @@ fn top-level() -> () {
         storage_dead(_5); // 19:1
         storage_dead(_4); // 19:1
         storage_live(q#1); // 20:5
-        storage_live(_6); // 20:9
-        _6 = &in p#0; // 20:9
+        storage_live(_6); // 20:18
+        _6 = 2; // 20:18
         storage_live(_7); // 20:18
-        _7 = 2; // 20:18
-        storage_live(_8); // 20:18
-        _8 = &in _7; // 20:18
-        q#1 = call App.Point.Scaled{fn App.Point.Scaled}(copy _6, copy _8) -> bb3; // 20:9
+        _7 = &in _6; // 20:18
+        storage_live(_8); // 20:9
+        _8 = &in p#0; // 20:9
+        q#1 = call App.Point.Scaled{fn App.Point.Scaled}(copy _8, copy _7) -> bb3; // 20:9
     }
 
     bb3: {

@@ -1,7 +1,8 @@
 //! Calls: of functions and methods, of local functions, and of the
 //! standard library while it is not loaded. Arguments are evaluated in the
 //! order they are written, after the receiver, and passed in the order of
-//! the parameters (§7, §10.3).
+//! the parameters (§7, §10.3). A method's receiver is borrowed once the
+//! arguments are evaluated, so an argument may still change it.
 
 use mora_hir::{
     Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Resolved, Signature,
@@ -134,19 +135,22 @@ impl Lowerer<'_> {
             self.ice(expr, "the callee is not a function")
         };
         let values = arg_values(args);
-        let mut operands = Vec::with_capacity(function.params.len() + 1);
-        if let Some(mode) = function.receiver {
-            operands.push(self.receiver(expr, callee, mode, &values)?);
-        }
+        // The receiver is evaluated first, and borrowed once the arguments
+        // are, as a local function borrows `this`.
+        let receiver = match function.receiver {
+            Some(mode) => Some((self.receiver(expr, callee, mode)?, mode)),
+            None => None,
+        };
         let modes: Vec<ParamMode> = function.params.iter().map(|param| param.mode).collect();
         let passed = self.arguments(expr, &values, &modes)?;
+        let mut arguments = Vec::with_capacity(passed.len());
         // The callee's body is read only for a default value, so an edit
         // inside it lowers again only the callers that use one.
         let owner = BodyOwner::Item(item.item);
         let db = self.owner.db;
         let mut callee_hir = None;
         for (index, operand) in passed.into_iter().enumerate() {
-            operands.push(match operand {
+            arguments.push(match operand {
                 Some(operand) => operand,
                 None => {
                     let (callee_body, inference) = *callee_hir.get_or_insert_with(|| {
@@ -166,6 +170,11 @@ impl Lowerer<'_> {
                 }
             });
         }
+        let mut operands = Vec::with_capacity(arguments.len() + 1);
+        if let Some(((receiver, span), mode)) = receiver {
+            operands.push(self.pass(receiver, mode, span));
+        }
+        operands.extend(arguments);
         Ok(self.finish_call(
             expr,
             Callee::Item(item),
@@ -257,27 +266,26 @@ impl Lowerer<'_> {
     }
 
     /// The receiver of the call `call` of a method through `callee`, which
-    /// takes it by `mode`, before the arguments `later`: the value `callee`
-    /// is a member of, or `this` for a method named alone.
+    /// takes it by `mode`, evaluated but not yet passed, with its span: the
+    /// place of the value `callee` is a member of for `ref`, that value for
+    /// `in` and `move`, or `this` for a method named alone.
     fn receiver(
         &mut self,
         call: ExprId,
         callee: ExprId,
         mode: ParamMode,
-        later: &[ExprId],
-    ) -> Lowered<Operand> {
+    ) -> Lowered<(Operand, Span)> {
         let hir = self.owner.hir;
         match &hir.exprs[callee] {
-            Expr::Member { receiver, .. } => self.argument(*receiver, mode, later),
-            Expr::Path(_) => {
-                let span = self.span(callee);
-                let this = Operand::Copy(self.this_place(callee));
-                let this = match mode {
-                    ParamMode::Ref => this,
-                    ParamMode::In | ParamMode::Move => self.stable(this, later, span),
+            Expr::Member { receiver, .. } => {
+                let span = self.span(*receiver);
+                let value = match mode {
+                    ParamMode::Ref => Operand::Copy(self.place(*receiver)?),
+                    ParamMode::In | ParamMode::Move => self.operand(*receiver)?,
                 };
-                Ok(self.pass(this, mode, span))
+                Ok((value, span))
             }
+            Expr::Path(_) => Ok((Operand::Copy(self.this_place(callee)), self.span(callee))),
             _ => self.ice(call, "a method call without its receiver"),
         }
     }
