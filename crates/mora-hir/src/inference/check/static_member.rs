@@ -1,11 +1,16 @@
 //! A static member and the initializer of an instance field have no `this`:
 //! what they may not use (`MR0149`, `MR0152`).
 
+use std::collections::HashSet;
+
+use mora_span::Db;
+
 use super::Check;
-use crate::bodies::{BodyOwner, Expr, ExprId};
+use crate::bodies::{BodyOwner, Expr, ExprId, Target};
+use crate::defs::ItemId;
 use crate::inference::{Callee, InstanceMember, InstanceUse, TypeError};
 use crate::items::{ItemKind, ValueKind, item_tree};
-use crate::resolve::item_data;
+use crate::resolve::{Resolved, item_data};
 use crate::signature::signature;
 use crate::ty::Signature;
 
@@ -20,10 +25,27 @@ impl Check<'_> {
             return;
         }
         let body = self.body;
+        // The call reports a callee that names an instance method; any other
+        // path that names one is a method group.
+        let callees: HashSet<ExprId> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, node)| match node {
+                Expr::Call { callee, .. } => Some(*callee),
+                _ => None,
+            })
+            .collect();
         for (expr, node) in body.exprs.iter() {
             let (at, used) = match node {
                 Expr::This => (expr, Some(InstanceUse::This)),
-                Expr::Path(_) => (expr, self.instance_value(expr)),
+                Expr::Path(_) => (
+                    expr,
+                    self.instance_value(expr).or_else(|| {
+                        (!callees.contains(&expr))
+                            .then(|| self.instance_method_group(expr))
+                            .flatten()
+                    }),
+                ),
                 Expr::Call { callee, .. } => (*callee, self.instance_method(expr, *callee)),
                 _ => continue,
             };
@@ -88,6 +110,21 @@ impl Check<'_> {
         })
     }
 
+    /// The instance method that the path `path` names as a method group,
+    /// outside a call. Inference picks no overload for a method group, so a
+    /// set of overloads names one only when each of them takes a receiver.
+    fn instance_method_group(&self, path: ExprId) -> Option<InstanceUse> {
+        let Target::Item(Resolved::Functions(items)) = &self.resolution.paths.get(&path)?.target
+        else {
+            return None;
+        };
+        let first = *items.first()?;
+        items
+            .iter()
+            .all(|&item| has_receiver(self.db, item))
+            .then(|| method(self.db, first))
+    }
+
     /// The instance method that the call `call` of a bare name calls, if it
     /// does.
     fn instance_method(&self, call: ExprId, callee: ExprId) -> Option<InstanceUse> {
@@ -97,14 +134,20 @@ impl Check<'_> {
         let Some(Callee::Item(item)) = self.calls.get(&call).copied() else {
             return None;
         };
-        let Signature::Function(function) = signature(self.db, item) else {
-            return None;
-        };
-        function.receiver?;
-        let data = item_data(self.db, item);
-        (data.kind == ItemKind::Function).then(|| InstanceUse::Member {
-            kind: InstanceMember::Method,
-            name: data.name.clone(),
-        })
+        has_receiver(self.db, item).then(|| method(self.db, item))
+    }
+}
+
+/// Whether `item` is a method that takes a receiver.
+fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
+    item_data(db, item).kind == ItemKind::Function
+        && matches!(signature(db, item), Signature::Function(function) if function.receiver.is_some())
+}
+
+/// The use of the instance method `item`.
+fn method(db: &dyn Db, item: ItemId) -> InstanceUse {
+    InstanceUse::Member {
+        kind: InstanceMember::Method,
+        name: item_data(db, item).name.clone(),
     }
 }

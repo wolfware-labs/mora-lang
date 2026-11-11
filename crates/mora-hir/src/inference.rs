@@ -2707,6 +2707,47 @@ mod tests {
     }
 
     #[test]
+    fn a_static_member_cannot_name_an_instance_method_group() {
+        let head = "struct S {\n    public X: int;\n    Get(): int => X;\n    \
+                    static Take(f: () => int): int => 1;\n";
+        for member in [
+            "static Run() { var f = Get; }",
+            "static Run(): int => Take(Get);",
+            "static Run(): (() => int) => Get;",
+            "static Run() { var f = () => Get; }",
+        ] {
+            let text = format!("{head}    {member}\n}}\n");
+            assert_eq!(reported(&text), ["MR0149"], "{text}");
+        }
+        // Every overload has a receiver.
+        let text =
+            format!("{head}    Get(k: int): int => k;\n    static Run() {{ var f = Get; }}\n}}\n");
+        assert_eq!(reported(&text), ["MR0149"], "{text}");
+        // A static method group, and overloads of which one is static: no
+        // pick is recorded for a method group, so it is reported only when
+        // every overload needs a value.
+        for member in [
+            "static Twice(): int => 2;\n    static Run(): int => Take(Twice);",
+            "static Get(k: int): int => k;\n    static Run() { var f = Get; }",
+        ] {
+            let text = format!("{head}    {member}\n}}\n");
+            assert_eq!(reported(&text), Vec::<String>::new(), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_initializer_cannot_name_an_instance_method_group() {
+        let head = "struct S {\n    public X: int;\n    Get(): int => X;\n    \
+                    static Take(f: () => int): int => 1;\n    static Twice(): int => 2;\n";
+        for field in ["public Z: int = Take(Get);", "public F: (() => int) = Get;"] {
+            let text = format!("{head}    {field}\n}}\n");
+            assert_eq!(reported(&text), ["MR0152"], "{text}");
+        }
+        let text = format!("{head}    public Z: int = Take(Twice);\n}}\n");
+        assert_eq!(reported(&text), Vec::<String>::new(), "{text}");
+    }
+
+    #[test]
     fn a_static_member_that_uses_this_says_what_it_uses() {
         let head = "struct S {\n    public X: int;\n    public Y: int => X;\n    \
                     Get(): int => X;\n";
