@@ -2910,6 +2910,21 @@ fn a_static_method_of_a_generic_struct_is_lowered() {
     assert_eq!(lowered.bodies("F"), ["UsersApi.B.F"]);
 }
 
+#[test]
+fn the_fields_of_a_long_chain_of_structs_are_looked_into() {
+    // Long enough to overflow the stack of a walk that recurses into
+    // each field.
+    const CHAIN: usize = 2_000;
+    let chain: String = (0..CHAIN)
+        .map(|n| format!("struct S{n} {{\n    public x: S{};\n}}\n", n + 1))
+        .collect();
+    let text = format!("{chain}struct S{CHAIN} {{\n    public c: int?;\n}}\nF(s: S0): int => 1;\n");
+    assert_eq!(
+        later_error(&text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a signature with an option type is not lowered until M3.5"
+    );
+}
+
 /// A file, the owner in it that a later milestone lowers, and the message
 /// lowering it stops with, after `internal error lowering `.
 type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);

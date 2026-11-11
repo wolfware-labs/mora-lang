@@ -16,7 +16,6 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::iter;
 
 use mora_hir::{
     BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
@@ -165,7 +164,7 @@ pub(crate) fn lowered_later(
 ) -> Option<Later> {
     latest([
         owner_later(db, project, file, owner),
-        local_later(db, project, file, owner),
+        local_functions_later(db, project, file, owner),
         this_later(db, project, file, owner),
         locals_later(db, project, file, owner),
     ])
@@ -206,18 +205,12 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
             }
         }
         BodyOwner::Member(ty, _) => {
-            let what = match body(db, file, owner).kind {
-                BodyKind::Constructor => "a constructor",
-                BodyKind::Destructor => "a destructor",
-                BodyKind::Get | BodyKind::Set => "an indexer",
-                BodyKind::Function | BodyKind::Getter => "an explicit interface implementation",
-                BodyKind::Operator
-                | BodyKind::TopLevel
-                | BodyKind::Initializer
-                | BodyKind::Extension
-                | BodyKind::Case => return None,
-            };
-            (ty, what)
+            let kind = body(db, file, owner).kind;
+            // An operator is static: it takes no `this`.
+            if kind == BodyKind::Operator {
+                return None;
+            }
+            (ty, member_later(kind)?.0)
         }
         BodyOwner::TopLevel | BodyOwner::Extension(..) => return None,
     };
@@ -303,19 +296,7 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
             (what, own, field.into_iter().chain(declared()).collect())
         }
         BodyOwner::Member(..) => {
-            let (what, own) = match body(db, file, owner).kind {
-                BodyKind::Constructor => ("a constructor", CLASSES),
-                BodyKind::Destructor => ("a destructor", DESTRUCTORS),
-                BodyKind::Operator => ("an operator", OPERATORS),
-                BodyKind::Get | BodyKind::Set => ("an indexer", OPERATORS),
-                BodyKind::Function | BodyKind::Getter => {
-                    ("an explicit interface implementation", INTERFACES)
-                }
-                BodyKind::TopLevel
-                | BodyKind::Initializer
-                | BodyKind::Extension
-                | BodyKind::Case => return None,
-            };
+            let (what, own) = member_later(body(db, file, owner).kind)?;
             (what.to_owned(), Some(own), declared())
         }
         BodyOwner::Extension(_, 0) => (
@@ -332,6 +313,21 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
     let typed =
         types_later(db, &types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")));
     latest([own.map(|own| Later::new(what, own)), typed])
+}
+
+/// What a member body of the kind `kind` is, as `a constructor`, and the
+/// milestone that lowers it; `None` for a kind that is not a member's.
+fn member_later(kind: BodyKind) -> Option<(&'static str, Milestone)> {
+    match kind {
+        BodyKind::Constructor => Some(("a constructor", CLASSES)),
+        BodyKind::Destructor => Some(("a destructor", DESTRUCTORS)),
+        BodyKind::Operator => Some(("an operator", OPERATORS)),
+        BodyKind::Get | BodyKind::Set => Some(("an indexer", OPERATORS)),
+        BodyKind::Function | BodyKind::Getter => {
+            Some(("an explicit interface implementation", INTERFACES))
+        }
+        BodyKind::TopLevel | BodyKind::Initializer | BodyKind::Extension | BodyKind::Case => None,
+    }
 }
 
 /// The parameter, return, getter and field types that the body of `owner`
@@ -394,7 +390,12 @@ fn signature_later(db: &dyn Db, function: &FnSignature) -> Option<Later> {
 /// generic and async ones and those with a type in their signature that
 /// comes later; the first in the order of the text names it on a tie.
 /// `None` when this one lowers them all.
-fn local_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+fn local_functions_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
     let functions = local_functions(db, project, file, owner);
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
@@ -428,7 +429,7 @@ fn local_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
 
 /// The milestone that lowers the locals of the body of `owner` for their
 /// types, the first in the order of the body on a tie; `None` when this
-/// one does. The name of a local function has no type: [`local_later`]
+/// one does. The name of a local function has no type: [`local_functions_later`]
 /// looks into its signature.
 fn locals_later(
     db: &dyn Db,
@@ -438,42 +439,79 @@ fn locals_later(
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
-    let mut seen = HashSet::new();
+    let mut walk = TypeWalk::new(db);
     latest(hir.locals.iter().map(|(id, local)| {
-        type_later(db, inference.local(id)?, &mut seen)?
+        walk.later(inference.local(id)?)?
             .later(|what| format!("the local `{}` with {what}", local.name))
     }))
 }
 
-/// The milestone that lowers a body with `types` in its signature, `None`
-/// when this one does; the first of them names it on a tie.
-fn types_later<'a>(db: &dyn Db, types: impl IntoIterator<Item = &'a Ty>) -> Option<Kind> {
-    let mut seen = HashSet::new();
-    latest(types.into_iter().map(|ty| type_later(db, ty, &mut seen)))
+/// The milestone that lowers a body with `types` in it, `None` when this
+/// one does; the first of them names it on a tie.
+fn types_later<'a>(db: &'a dyn Db, types: impl IntoIterator<Item = &'a Ty>) -> Option<Kind> {
+    let mut walk = TypeWalk::new(db);
+    latest(types.into_iter().map(|ty| walk.later(ty)))
 }
 
-/// The milestone that lowers a body with the type `ty` in its signature,
-/// `None` when this one does. A type inside another one decides when its
-/// milestone is later, as for `B<int>[]`, an array of a generic type, and
-/// so do the types of a struct's instance fields, which its layout holds.
-/// `seen` holds the structs already looked into, so that a struct whose
-/// fields lead back to it is looked into once.
-fn type_later(db: &dyn Db, ty: &Ty, seen: &mut HashSet<ItemId>) -> Option<Kind> {
-    let ty = match ty {
-        Ty::Primitive(_) | Ty::String | Ty::Never | Ty::Error => return None,
-        Ty::Struct(item) => {
-            if !seen.insert(*item) {
-                return None;
+/// A walk over types for the milestone that lowers them. A type inside
+/// another one decides when its milestone is later, as for `B<int>[]`, an
+/// array of a generic type, and so do the types of a struct's instance
+/// fields, which its layout holds. It keeps a stack rather than recursing,
+/// since a chain of structs that each hold the next is as long as the
+/// program makes it.
+struct TypeWalk<'a> {
+    /// The database the fields of structs come from.
+    db: &'a dyn Db,
+    /// The structs already looked into, so that each is looked into once,
+    /// one whose fields lead back to it included.
+    seen: HashSet<ItemId>,
+    /// The types still to look into, the next one last.
+    stack: Vec<&'a Ty>,
+}
+
+impl<'a> TypeWalk<'a> {
+    /// A walk that has looked into no struct yet.
+    fn new(db: &'a dyn Db) -> Self {
+        Self {
+            db,
+            seen: HashSet::new(),
+            stack: Vec::new(),
+        }
+    }
+
+    /// The milestone that lowers a body with the type `ty` in it, `None`
+    /// when this one does or when every struct in it was looked into
+    /// before. On a tie the outer type names it, then the first part.
+    fn later(&mut self, ty: &'a Ty) -> Option<Kind> {
+        let mut found = None;
+        self.stack.push(ty);
+        while let Some(ty) = self.stack.pop() {
+            let start = self.stack.len();
+            match ty {
+                Ty::Primitive(_) | Ty::String | Ty::Never | Ty::Error => {}
+                Ty::Struct(item) => {
+                    if self.seen.insert(*item) {
+                        let fields = instance_fields(self.db, *item);
+                        self.stack.extend(fields.map(|(_, field)| &field.ty));
+                    }
+                }
+                Ty::Tuple(elems) => self.stack.extend(elems.iter().map(|elem| &elem.ty)),
+                Ty::Unsupported(ty) => {
+                    found = latest([found, Some(construct_later(ty.construct))]);
+                    self.stack.extend(&ty.parts);
+                }
             }
-            let fields = instance_fields(db, *item);
-            return latest(fields.map(|(_, field)| type_later(db, &field.ty, seen)));
+            // Parts are pushed in order and taken from the end: reversed,
+            // the first of them is looked into first.
+            self.stack[start..].reverse();
         }
-        Ty::Tuple(elems) => {
-            return latest(elems.iter().map(|elem| type_later(db, &elem.ty, seen)));
-        }
-        Ty::Unsupported(ty) => ty,
-    };
-    let (what, milestone) = match ty.construct {
+        found
+    }
+}
+
+/// The milestone that lowers a type made with `construct`.
+fn construct_later(construct: Construct) -> Kind {
+    let (what, milestone) = match construct {
         Construct::Array => ("an array type", CONSTANT_EVALUATION),
         Construct::External => ("a type of the standard library", STD_BOOTSTRAP),
         Construct::Class => ("a class type", CLASSES),
@@ -488,6 +526,5 @@ fn type_later(db: &dyn Db, ty: &Ty, seen: &mut HashSet<ItemId>) -> Option<Kind> 
         Construct::Any => ("an interface value type", DYNAMIC_INTERFACES),
         Construct::Splice => ("a spliced type", EXPANSION),
     };
-    let own = Some(Kind { what, milestone });
-    latest(iter::once(own).chain(ty.parts.iter().map(|part| type_later(db, part, seen))))
+    Kind { what, milestone }
 }

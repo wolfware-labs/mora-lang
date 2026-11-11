@@ -838,26 +838,15 @@ mod tests {
         let db = TestDb::new();
         let text = "F() {\n    A() {}\n    B<T>() {}\n    C() {\n        D() {}\n    }\n    \
                     E<T>() {\n        G() {}\n    }\n}\n";
-        let (body, functions) = local_functions_of_f(&db, text);
-        let mut generic: Vec<(String, bool)> = functions
-            .iter()
-            .map(|function| {
-                (
-                    body.locals[function.local].name.clone(),
-                    function.is_generic,
-                )
-            })
-            .collect();
-        generic.sort();
         assert_eq!(
-            generic,
+            generic_local_functions(&db, text),
             [
-                ("A".to_owned(), false),
-                ("B".to_owned(), true),
-                ("C".to_owned(), false),
-                ("D".to_owned(), false),
-                ("E".to_owned(), true),
-                ("G".to_owned(), true),
+                ("A", false),
+                ("B", true),
+                ("C", false),
+                ("D", false),
+                ("E", true),
+                ("G", true),
             ]
         );
     }
@@ -866,8 +855,17 @@ mod tests {
     fn a_local_function_is_not_generic_for_the_item_around_it() {
         let db = TestDb::new();
         let text = "F<T>() {\n    G() {}\n    H<U>() {}\n}\n";
-        let (body, functions) = local_functions_of_f(&db, text);
-        let generic: Vec<(&str, bool)> = functions
+        assert_eq!(
+            generic_local_functions(&db, text),
+            [("G", false), ("H", true)]
+        );
+    }
+
+    /// The name of each local function in the body of `F`, in name order,
+    /// and whether it is generic.
+    fn generic_local_functions<'db>(db: &'db TestDb, text: &str) -> Vec<(&'db str, bool)> {
+        let (body, functions) = local_functions_of_f(db, text);
+        let mut generic: Vec<(&str, bool)> = functions
             .iter()
             .map(|function| {
                 (
@@ -876,7 +874,8 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(generic, [("G", false), ("H", true)]);
+        generic.sort_unstable();
+        generic
     }
 
     /// The body of `F` in `src/Program.mr` alone in an app, and every local
