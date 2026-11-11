@@ -41,6 +41,18 @@ fn widening(from: &Ty, to: &Ty) -> Option<Conversion> {
     })
 }
 
+/// Whether the conditional `expr` has a branch that assigns: an assignment,
+/// or a conditional with such a branch, so that its branches are
+/// statements when it is one (D-141).
+fn assigns(body: &Body, expr: ExprId) -> bool {
+    let Expr::Conditional { then, r#else, .. } = &body.exprs[expr] else {
+        return false;
+    };
+    [*then, *r#else]
+        .into_iter()
+        .any(|branch| matches!(body.exprs[branch], Expr::Assign { .. }) || assigns(body, branch))
+}
+
 /// Whether `place` is a name, `this` or a field of one, which can be read
 /// again without a change.
 fn is_plain_place(body: &Body, place: ExprId) -> bool {
@@ -370,10 +382,7 @@ impl Check<'_> {
                 condition,
                 then,
                 r#else,
-            } if [*then, *r#else]
-                .iter()
-                .any(|&branch| matches!(body.exprs[branch], Expr::Assign { .. })) =>
-            {
+            } if assigns(body, expr) => {
                 self.condition(*condition);
                 self.statement(*then, false);
                 self.statement(*r#else, false);

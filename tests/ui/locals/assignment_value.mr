@@ -34,3 +34,7 @@ for (var i = 0; i < 3; i += 1) {
 }
 let w = x++;
 Show(w + z);
+
+// So are the branches of a conditional in statement position, nested ones too.
+let c = x > 1;
+c ? (x > 2 ? x = 1 : x = 2) : (x > 3 ? x = 3 : x = 4);

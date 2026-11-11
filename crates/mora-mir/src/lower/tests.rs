@@ -2734,6 +2734,34 @@ fn a_conditional_of_assignments_is_a_statement() {
 }
 
 #[test]
+fn a_conditional_of_conditionals_of_assignments_is_a_statement() {
+    let lowered = lowered(
+        "F(c: bool, d: bool) {\n    var x = 0;\n    \
+         c ? (d ? x = 1 : x = 2) : (d ? x = 3 : x = 4);\n}\n",
+    );
+    // Each inner conditional joins on its own, then goes to the outer join.
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "switch copy (*d#1) [false -> bb4] otherwise bb3;",
+            "switch copy (*d#1) [false -> bb8] otherwise bb7;",
+            "x#2 = 1;",
+            "goto bb5;",
+            "x#2 = 2;",
+            "goto bb5;",
+            "goto bb6;",
+            "return;",
+            "x#2 = 3;",
+            "goto bb9;",
+            "x#2 = 4;",
+            "goto bb9;",
+            "goto bb6;",
+        ],
+    );
+}
+
+#[test]
 fn a_conditional_of_assignments_in_a_local_function_is_a_statement() {
     let lowered = lowered(
         "F(c: bool) {\n    var x = 0;\n    var y = 0;\n    G() => c ? x = 1 : y = 2;\n    G();\n}\n",

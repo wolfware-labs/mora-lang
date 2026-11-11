@@ -2998,6 +2998,29 @@ mod tests {
     }
 
     #[test]
+    fn a_conditional_of_conditionals_of_assignments_is_a_statement() {
+        let head = "Take(f: () => ()) {}\nlet c = true;\nlet d = false;\nvar x = 0;\n";
+        for ok in [
+            "c ? (d ? x = 1 : x = 2) : (d ? x = 3 : x = 4);",
+            "c ? d ? x = 1 : x = 2 : d ? x = 3 : x = 4;",
+            "c ? (d ? (c ? x = 1 : x = 2) : x = 3) : x = 4;",
+            "c ? (d ? x = 1 : x = 2) : x = 3;",
+            "Take(() => c ? (d ? x = 1 : x = 2) : (d ? x = 3 : x = 4));",
+        ] {
+            assert_eq!(
+                reported(&format!("{head}{ok}\n")),
+                Vec::<String>::new(),
+                "{ok}"
+            );
+        }
+        // Used as a value, each assignment is still reported.
+        assert_eq!(
+            reported(&format!("{head}let z = c ? (d ? x = 1 : x = 2) : 3;\n")),
+            ["MR0185", "MR0185"]
+        );
+    }
+
+    #[test]
     fn only_a_function_type_makes_a_lambda_body_a_statement() {
         let text = "struct Box<T> {}\nTakeBox(b: Box<()>) {}\nvar x = 0;\nTakeBox(() => x = 1);\n";
         assert_eq!(reported(text), ["MR0185"]);
