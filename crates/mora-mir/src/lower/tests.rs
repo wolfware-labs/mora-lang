@@ -2493,7 +2493,7 @@ fn local_functions_of_one_name_get_their_own_names() {
 }
 
 #[test]
-#[should_panic(expected = "a call of a generic or async local function is not lowered")]
+#[should_panic(expected = "UsersApi.F: the generic local function `Id` is not lowered until M3.9")]
 fn a_call_of_a_generic_local_function_is_not_lowered() {
     let lowered = lowered("F(): int {\n    Id<T>(move x: T): T => x;\n    return Id(1);\n}\n");
     lowered.mir("F");
@@ -2619,14 +2619,14 @@ mod numbering {
 }
 
 #[test]
-#[should_panic(expected = "the parameter `xs` has a type that is not lowered")]
+#[should_panic(expected = "UsersApi.F: a signature with an array type is not lowered until M1.11")]
 fn a_parameter_of_no_concrete_type_is_an_internal_error() {
     let lowered = lowered("F(xs: int[]) {}\n");
     lowered.mir("F");
 }
 
 #[test]
-#[should_panic(expected = "the return type is not lowered")]
+#[should_panic(expected = "UsersApi.F: a signature with an array type is not lowered until M1.11")]
 fn a_return_type_that_is_not_concrete_is_an_internal_error() {
     let lowered = lowered("F(): int[] => Todo();\n");
     lowered.mir("F");
@@ -2857,6 +2857,59 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
     );
 }
 
+/// A file with an owner of each kind whose body, signature or local
+/// function a later milestone lowers, and a function that this one lowers.
+const LATER_SIGNATURES: &str = "union U { A, B;\n    X: int = 1;\n    Get: int => 1;\n}\n\
+     interface I {\n    X: int = 1;\n    Get: int => 1;\n}\n\
+     class C {}\nstruct B<T> {}\nenum E { A, B }\n\
+     struct S {\n    X: C = new C();\n}\n\
+     ClassParam(c: C) {}\nClassReturn(): C => new C();\n\
+     ArrayParam(a: int[]) {}\nTupleParam(t: (int, int[])) {}\n\
+     OptionParam(a: int?) {}\nFuncParam(f: (int) => int) {}\n\
+     GenericParam(b: B<int>) {}\nEnumParam(e: E) {}\nUnionParam(u: U) {}\n\
+     InterfaceParam(i: I) {}\nAnyParam(i: any I) {}\nWeakParam(w: weak C) {}\n\
+     GenericLocal() {\n    G<T>(x: T): T => x;\n}\n\
+     UnusedGenericLocal() {\n    G<T>() {}\n    G<int>();\n}\n\
+     NestedGenericLocal() {\n    G() {\n        H<T>() {}\n    }\n}\n\
+     AsyncLocal() {\n    async G() {}\n}\n\
+     ClassLocal() {\n    G(c: C) {}\n}\n\
+     One(): int => 1;\n";
+
+#[test]
+fn mir_dump_writes_a_line_for_each_signature_lowered_later() {
+    let lowered = lowered(LATER_SIGNATURES);
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    let one = lowered.dump("One");
+    assert_eq!(
+        dump,
+        format!(
+            "// UsersApi.U.X: not lowered until M3.1\n\n\
+             // UsersApi.U.Get: not lowered until M3.1\n\n\
+             // UsersApi.I.X: not lowered until M3.10\n\n\
+             // UsersApi.I.Get: not lowered until M3.10\n\n\
+             // UsersApi.S.X: not lowered until M2.1\n\n\
+             // UsersApi.ClassParam: not lowered until M2.1\n\n\
+             // UsersApi.ClassReturn: not lowered until M2.1\n\n\
+             // UsersApi.ArrayParam: not lowered until M1.11\n\n\
+             // UsersApi.TupleParam: not lowered until M1.11\n\n\
+             // UsersApi.OptionParam: not lowered until M3.5\n\n\
+             // UsersApi.FuncParam: not lowered until M2.11\n\n\
+             // UsersApi.GenericParam: not lowered until M3.9\n\n\
+             // UsersApi.EnumParam: not lowered until M3.2\n\n\
+             // UsersApi.UnionParam: not lowered until M3.1\n\n\
+             // UsersApi.InterfaceParam: not lowered until M3.10\n\n\
+             // UsersApi.AnyParam: not lowered until M3.11\n\n\
+             // UsersApi.WeakParam: not lowered until M2.10\n\n\
+             // UsersApi.GenericLocal: not lowered until M3.9\n\n\
+             // UsersApi.UnusedGenericLocal: not lowered until M3.9\n\n\
+             // UsersApi.NestedGenericLocal: not lowered until M3.9\n\n\
+             // UsersApi.AsyncLocal: not lowered until M6.2\n\n\
+             // UsersApi.ClassLocal: not lowered until M2.1\n\n\
+             {one}"
+        )
+    );
+}
+
 /// The internal error that lowering the owner `owner` picks in the file
 /// `text` panics with.
 fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String {
@@ -2871,7 +2924,7 @@ type LaterCase = (&'static str, fn(&Lowered) -> BodyOwner, &'static str);
 
 #[test]
 fn every_owner_lowered_later_names_its_milestone() {
-    let cases: [LaterCase; 21] = [
+    let cases: [LaterCase; 47] = [
         (
             LOWERED_LATER,
             |l| l.initializer("P", "Get"),
@@ -2951,7 +3004,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "Id<T>(move x: T): T => x;\n",
             |l| l.owner("Id"),
-            "UsersApi.Id: a generic function is not lowered until M3.8",
+            "UsersApi.Id: a generic function is not lowered until M3.9",
         ),
         (
             "async Wait() {}\n",
@@ -2971,12 +3024,142 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "struct B<T> {\n    M() {}\n}\n",
             |l| l.owner("M"),
-            "UsersApi.B.M: a method of a generic struct is not lowered until M3.8",
+            "UsersApi.B.M: a method of a generic struct is not lowered until M3.9",
         ),
         (
             "enum Level { Low = 1, High = 2 }\n",
             |l| l.initializer("Level", "Low"),
             "UsersApi.Level.Low: the value of an enum member is not lowered until M3.2",
+        ),
+        (
+            "union U { A, B;\n    X: int = 1;\n}\n",
+            |l| l.initializer("U", "X"),
+            "UsersApi.U.X: the initializer of a field of a union is not lowered until M3.1",
+        ),
+        (
+            "interface I {\n    X: int = 1;\n}\n",
+            |l| l.initializer("I", "X"),
+            "UsersApi.I.X: the initializer of a field of an interface is not lowered until M3.10",
+        ),
+        (
+            "class C {}\nstruct S {\n    X: C = new C();\n}\n",
+            |l| l.initializer("S", "X"),
+            "UsersApi.S.X: the initializer of a field with a class type is not lowered until M2.1",
+        ),
+        (
+            "union U { A, B;\n    Get: int => 1;\n}\n",
+            |l| l.initializer("U", "Get"),
+            "UsersApi.U.Get: a getter of a union is not lowered until M3.1",
+        ),
+        (
+            "interface I {\n    Get: int => 1;\n}\n",
+            |l| l.initializer("I", "Get"),
+            "UsersApi.I.Get: a getter of an interface is not lowered until M3.10",
+        ),
+        (
+            "class C {\n    Get: int => 1;\n}\n",
+            |l| l.initializer("C", "Get"),
+            "UsersApi.C.Get: a getter is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nF(c: C) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nF(): C => new C();\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+        ),
+        (
+            "F(a: int[]) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+        ),
+        (
+            "F(t: (int, int[])) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+        ),
+        (
+            "F(a: int?) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an option type is not lowered until M3.5",
+        ),
+        (
+            "F(f: (int) => int) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a function type is not lowered until M2.11",
+        ),
+        (
+            "struct B<T> {}\nF(b: B<int>) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a generic type is not lowered until M3.9",
+        ),
+        (
+            "enum E { A, B }\nF(e: E) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an enum type is not lowered until M3.2",
+        ),
+        (
+            "union U { A, B }\nF(u: U) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a union type is not lowered until M3.1",
+        ),
+        (
+            "interface I {}\nF(i: I) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an interface type is not lowered until M3.10",
+        ),
+        (
+            "interface I {}\nF(i: any I) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an interface value type is not lowered until M3.11",
+        ),
+        (
+            "class C {}\nF(w: weak C) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a weak reference type is not lowered until M2.10",
+        ),
+        (
+            "F(l: List<int>) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with a type of the standard library is not lowered until M1.15",
+        ),
+        (
+            "struct P {\n    public X: int;\n    M(c: (int) => int) {}\n}\n",
+            |l| l.owner("M"),
+            "UsersApi.P.M: a signature with a function type is not lowered until M2.11",
+        ),
+        (
+            "F() {\n    G<T>(x: T): T => x;\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the generic local function `G` is not lowered until M3.9",
+        ),
+        (
+            "F() {\n    G<T>() {}\n    G<int>();\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the generic local function `G` is not lowered until M3.9",
+        ),
+        (
+            "F() {\n    G() {\n        H<T>() {}\n    }\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the generic local function `H` is not lowered until M3.9",
+        ),
+        (
+            "F() {\n    async G() {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the async local function `G` is not lowered until M6.2",
+        ),
+        (
+            "class C {}\nF() {\n    G(c: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with a class type in its signature is not lowered until M2.1",
+        ),
+        (
+            "F() {\n    G(): int? => 1;\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with an option type in its signature is not lowered until M3.5",
         ),
     ];
     for (text, owner, message) in cases {

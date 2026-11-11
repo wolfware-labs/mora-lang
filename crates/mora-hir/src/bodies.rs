@@ -610,6 +610,9 @@ pub struct LocalFunction {
     pub ret: Option<TypeId>,
     /// Whether it is `async`.
     pub is_async: bool,
+    /// Whether type parameters are in scope in it: it declares its own, or
+    /// a local function or declaration around it does.
+    pub is_generic: bool,
     /// The block or the expression of `=> e`.
     pub body: Option<ExprId>,
 }
@@ -848,6 +851,41 @@ mod tests {
             unreachable!()
         };
         assert_eq!(function.params.len(), function.modes.len());
+    }
+
+    #[test]
+    fn a_local_function_is_generic_where_type_parameters_are_in_scope() {
+        let db = TestDb::new();
+        let text = "F() {\n    A() {}\n    B<T>() {}\n    C() {\n        D() {}\n    }\n    \
+                    E<T>() {\n        G() {}\n    }\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let body = body(&db, file, BodyOwner::Item(f));
+        let mut generic: Vec<(String, bool)> = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Function(function) => Some((
+                    body.locals[function.local].name.clone(),
+                    function.is_generic,
+                )),
+                _ => None,
+            })
+            .collect();
+        generic.sort();
+        assert_eq!(
+            generic,
+            [
+                ("A".to_owned(), false),
+                ("B".to_owned(), true),
+                ("C".to_owned(), false),
+                ("D".to_owned(), false),
+                ("E".to_owned(), true),
+                ("G".to_owned(), true),
+            ]
+        );
     }
 
     /// The HIR of `src/Program.mr` alone in an app.

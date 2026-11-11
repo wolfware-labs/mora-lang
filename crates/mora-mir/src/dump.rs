@@ -70,8 +70,8 @@
 //!
 //! A file's dump ([`mir_dump`](crate::mir_dump)) is the bodies of its
 //! owners in order, one blank line between them. An owner whose body a
-//! later milestone of the roadmap lowers, such as a getter, is one line in
-//! place of its bodies:
+//! later milestone of the roadmap lowers, such as a getter or a function
+//! with a class type in its signature, is one line in place of its bodies:
 //!
 //! ```text
 //! // UsersApi.Point.Length: not lowered until M2.1

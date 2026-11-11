@@ -4,8 +4,8 @@
 //! the parameters (§7, §10.3).
 
 use mora_hir::{
-    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, LocalKind, ParamMode, Resolved,
-    Signature, Target, Ty, body, calls_diverging, infer, signature,
+    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Resolved, Signature,
+    Target, Ty, body, calls_diverging, infer, signature,
 };
 use mora_span::Span;
 
@@ -34,16 +34,6 @@ impl Lowerer<'_> {
                 {
                     self.operand(*receiver)?;
                     self.ice(expr, "a value of the never type was made");
-                }
-                // Calls of generic and async local functions are not checked
-                // yet, so they have no callee.
-                if let Expr::Local(local) = &self.owner.hir.exprs[callee]
-                    && self.owner.hir.locals[*local].kind == LocalKind::Function
-                {
-                    self.ice(
-                        expr,
-                        "a call of a generic or async local function is not lowered",
-                    );
                 }
                 let Some(path) = self.external_path(callee) else {
                     self.ice(expr, "the call has no callee")

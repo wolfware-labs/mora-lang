@@ -62,8 +62,9 @@ const STATEMENT_NOT_LOWERED: &str = "the statement is not lowered";
 ///
 /// When the body holds what lowering cannot handle: what the front end
 /// should have reported, or what lowering does not handle yet. A body that
-/// a later milestone lowers, such as a getter, panics with a message that
-/// names the milestone.
+/// a later milestone lowers, such as a getter, a function with a class type
+/// in its signature or one with a generic local function, panics with a
+/// message that names the milestone.
 #[salsa::tracked(returns(ref))]
 pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Mir {
     if let Some(later) = later::lowered_later(db, project, file, owner) {

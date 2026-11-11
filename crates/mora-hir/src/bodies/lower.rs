@@ -448,6 +448,7 @@ impl Lower {
             })
         });
         let is_async = Written::of(function.modifiers()).is_async;
+        let is_generic = !self.type_params.is_empty();
         self.scoped(|this| {
             let params: Vec<_> = function
                 .param_list()
@@ -472,6 +473,7 @@ impl Lower {
                 defaults,
                 ret,
                 is_async,
+                is_generic,
                 body,
             }
         })

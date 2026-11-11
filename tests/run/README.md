@@ -13,7 +13,7 @@ In the HIR, a local is `name#n`, and a name that is not a local is followed by w
 
 The MIR is one function per body (`fn name(params) -> type { ... }`), each a list of typed locals and numbered basic blocks, `bb0`, `bb1` and so on, without gaps. A block is a list of statements ending in one terminator: `goto bbN;`, `switch`, `return;`, a call, or `unreachable;` where control never gets. Every statement ends in `// line:col`, the place in the source it comes from. A local keeps its HIR number (`x#0`), `this` is the receiver and an unnamed temporary is `_n`, where `_0` is the return value. A real constant always has a decimal point (`5.0`), so it reads differently from an integer.
 
-A body that a later milestone of the roadmap lowers, such as a getter or a constructor, is one line in place of its function: `// App.Point.Length: not lowered until M2.1`, the owner's name and the milestone.
+A body that a later milestone of the roadmap lowers, such as a getter, a constructor or a function with a class type in its signature, is one line in place of its function: `// App.Point.Length: not lowered until M2.1`, the owner's name and the milestone.
 
 - `copy x` reads a place and leaves it usable. `move x` hands it over.
 - `&in x` and `&ref x` borrow a place, to read it or to change it. `(*x)` is the place a borrow `x` points to, so a parameter `n: int` is read as `copy (*n#0)`.

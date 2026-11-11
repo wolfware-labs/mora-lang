@@ -70,9 +70,6 @@ impl<'a> Owner<'a> {
         let Some(root) = def.body else {
             self.ice_at(&function.name, at, "a local function without a body");
         };
-        if def.is_async {
-            self.ice_at(&function.name, at, "an async local function is not lowered");
-        }
         let mut this = None;
         let mut captures = Vec::new();
         for &(captured, mode) in function.captures {
