@@ -117,9 +117,7 @@ impl Check<'_> {
     /// The instance field or getter the path `path` names, if it does, with
     /// the type that declares it.
     fn instance_value(&self, path: ExprId) -> Option<(ItemId, InstanceUse)> {
-        let Target::Value(value) = self.resolution.paths.get(&path)?.target else {
-            return None;
-        };
+        let value = self.resolution.value_ref(path)?;
         let member = value.member(self.db)?;
         if member.is_static {
             return None;

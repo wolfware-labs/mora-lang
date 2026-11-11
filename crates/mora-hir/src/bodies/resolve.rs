@@ -77,13 +77,25 @@ impl BodyResolution {
     pub fn value_member<'db>(&self, db: &'db dyn Db, path: ExprId) -> Option<&'db ValueMember> {
         self.paths.get(&path)?.member(db)
     }
+
+    /// The value member the path `path` names, with the type that declares
+    /// it, when it names one.
+    pub(crate) fn value_ref(&self, path: ExprId) -> Option<ValueRef> {
+        self.paths.get(&path)?.value_ref()
+    }
 }
 
 impl PathResolution {
     /// The value member the path names, when it names one.
     pub fn member<'db>(&self, db: &'db dyn Db) -> Option<&'db ValueMember> {
+        self.value_ref()?.member(db)
+    }
+
+    /// The value member the path names, with the type that declares it,
+    /// when it names one.
+    pub(crate) fn value_ref(&self) -> Option<ValueRef> {
         match self.target {
-            Target::Value(value) => value.member(db),
+            Target::Value(value) => Some(value),
             Target::Item(_) | Target::Error => None,
         }
     }
