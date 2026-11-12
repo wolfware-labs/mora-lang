@@ -298,7 +298,7 @@ pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget)
         )
         .with_note("write the type, as in `new T { ... }`, so that it chooses the overload"),
         NewTarget::Written(ty) => {
-            let what = expected(source, ty);
+            let what = uncreatable(source, ty);
             Diagnostic::error(
                 codes::MR0154,
                 format!("`new` cannot create a value of {what}"),
@@ -313,7 +313,7 @@ pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget)
                 span,
                 format!(
                     "{} is expected here, which is not a struct or a class",
-                    expected(source, ty)
+                    uncreatable(source, ty)
                 ),
             ),
         )
@@ -324,32 +324,22 @@ pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget)
 }
 
 /// How a message names the type `ty` that a `new` cannot create: by its
-/// name where the front end knows it, or by its kind.
-fn expected(source: &Source<'_>, ty: &Ty) -> String {
+/// name where the front end knows it, by the declaration it names, or by
+/// its kind.
+fn uncreatable(source: &Source<'_>, ty: &Ty) -> String {
     let Ty::Unsupported(ty) = ty else {
         return format!("`{}`", source.name(ty));
     };
-    let declared = |item: Option<ItemId>| {
-        item.map(|item| {
-            let data = item_data(source.db, item);
-            let resolved = Resolved::Item(item);
-            format!("{} `{}`", kind_name(source.db, &resolved), data.name)
-        })
-    };
-    let kind = match ty.construct {
-        Construct::Union | Construct::Enum | Construct::Interface | Construct::Generic => {
-            return declared(ty.item).unwrap_or_else(|| "a generic type".to_owned());
+    match (ty.construct, ty.item) {
+        (
+            Construct::Union | Construct::Enum | Construct::Interface | Construct::Generic,
+            Some(item),
+        ) => {
+            let kind = kind_name(source.db, &Resolved::Item(item));
+            format!("{kind} `{}`", item_data(source.db, item).name)
         }
-        Construct::TypeParam => "a type parameter",
-        Construct::Array => "an array type",
-        Construct::Optional => "an option type",
-        Construct::Function => "a function type",
-        Construct::Weak => "a weak reference type",
-        Construct::Any => "an interface value type",
-        // `new` creates these; nothing names them here.
-        Construct::Class | Construct::External | Construct::Splice => "a type",
-    };
-    kind.to_owned()
+        (construct, _) => construct.description().to_owned(),
+    }
 }
 
 /// Where the name assigned `value` is written, or the value itself when

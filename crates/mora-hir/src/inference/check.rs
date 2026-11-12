@@ -1344,36 +1344,30 @@ impl Check<'_> {
             self.args(args);
         }
         let written = match (ty, expect) {
-            (Some(ty), _) => {
-                let written = self.resolution.written(ty);
-                if !self.creatable(&written) {
-                    self.errors.push(TypeError::NewTarget {
-                        expr,
-                        problem: NewTarget::Written(written.clone()),
-                    });
-                }
-                Some(written)
-            }
-            (None, Expect::Target(target)) => {
-                if !self.creatable(target) {
-                    self.errors.push(TypeError::NewTarget {
-                        expr,
-                        problem: NewTarget::NotCreatable(target.clone()),
-                    });
-                }
-                Some(target.clone())
-            }
+            (Some(ty), _) => Some(self.resolution.written(ty)),
+            (None, Expect::Target(target)) => Some(target.clone()),
             (None, Expect::Hint(_) | Expect::None) => None,
         };
-        // A struct type names a struct that is not generic.
+        // What `new` cannot create has no type.
+        let written = written.and_then(|written| {
+            if self.creatable(&written) {
+                return Some(written);
+            }
+            let problem = match ty {
+                Some(_) => NewTarget::Written(written),
+                None => NewTarget::NotCreatable(written),
+            };
+            self.errors.push(TypeError::NewTarget { expr, problem });
+            None
+        });
+        // A struct type names a struct that is not generic. A class and a
+        // generic struct have their type, and a later milestone checks
+        // their creation.
         let Some(written @ Ty::Struct(item)) = written else {
             for &(_, init) in inits.into_iter().flatten() {
                 self.infer(init);
             }
-            // A class and a generic struct have their type, and a later
-            // milestone checks their creation; what `new` cannot create
-            // has none.
-            return written.filter(|written| self.creatable(written));
+            return written;
         };
         let inits = inits.unwrap_or_default();
         let creation = creation(self.db, item, args);
@@ -1420,7 +1414,15 @@ impl Check<'_> {
                         ItemKind::Struct | ItemKind::Class
                     )
                 }),
-                _ => false,
+                Construct::TypeParam
+                | Construct::Union
+                | Construct::Enum
+                | Construct::Interface
+                | Construct::Array
+                | Construct::Optional
+                | Construct::Function
+                | Construct::Weak
+                | Construct::Any => false,
             },
             Ty::Primitive(_) | Ty::String | Ty::Tuple(_) | Ty::Never => false,
         }

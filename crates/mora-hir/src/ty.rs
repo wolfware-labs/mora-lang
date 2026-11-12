@@ -158,6 +158,27 @@ pub enum Construct {
     External,
 }
 
+impl Construct {
+    /// How a message names a type made with it, as `a class type`.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::TypeParam => "a type parameter",
+            Self::Generic => "a generic type",
+            Self::Class => "a class type",
+            Self::Union => "a union type",
+            Self::Enum => "an enum type",
+            Self::Interface => "an interface type",
+            Self::Array => "an array type",
+            Self::Optional => "an option type",
+            Self::Function => "a function type",
+            Self::Weak => "a weak reference type",
+            Self::Any => "an interface value type",
+            Self::Splice => "a spliced type",
+            Self::External => "a type of the standard library",
+        }
+    }
+}
+
 /// What an item declares about its types (§14.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Signature {

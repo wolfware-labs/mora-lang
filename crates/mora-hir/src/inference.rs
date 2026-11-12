@@ -595,14 +595,12 @@ mod tests {
 
     use salsa::Setter;
 
-    use crate::test_db::{TestDb, app, codes, file_named, messages};
+    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
     use crate::*;
 
     /// The codes `src/Program.mr` alone in an app reports.
     fn reported(text: &str) -> Vec<String> {
-        let db = TestDb::new();
-        let project = app(&db, &[("src/Program.mr", text)]);
-        codes(diagnostics(&db, project))
+        codes(&diagnostics_of(text))
     }
 
     /// The type of each local of the top-level statements of `text`, `?`
@@ -1217,13 +1215,6 @@ mod tests {
             .filter(|key| key.starts_with("body_diagnostics("))
             .count();
         assert_eq!(rebuilt, 1);
-    }
-
-    /// What `src/Program.mr` alone in an app reports.
-    fn diagnostics_of(text: &str) -> Vec<mora_diag::Diagnostic> {
-        let db = TestDb::new();
-        let project = app(&db, &[("src/Program.mr", text)]);
-        diagnostics(&db, project).clone()
     }
 
     /// The one diagnostic `text` reports.

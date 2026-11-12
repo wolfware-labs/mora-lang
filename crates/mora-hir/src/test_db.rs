@@ -5,6 +5,13 @@ use mora_span::Project;
 pub(crate) use crate::test_support::{TestDb, app, codes, file_named, item_named, messages};
 use crate::*;
 
+/// What `src/Program.mr` alone in an app reports.
+pub(crate) fn diagnostics_of(text: &str) -> Vec<mora_diag::Diagnostic> {
+    let db = TestDb::new();
+    let project = app(&db, &[("src/Program.mr", text)]);
+    diagnostics(&db, project).clone()
+}
+
 pub(crate) fn path(text: &str) -> Vec<String> {
     text.split('.').map(str::to_owned).collect()
 }

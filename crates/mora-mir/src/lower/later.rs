@@ -577,20 +577,22 @@ impl<'a> TypeWalk<'a> {
 
 /// The milestone that lowers a type made with `construct`.
 fn construct_later(construct: Construct) -> Kind {
-    let (what, milestone) = match construct {
-        Construct::Array => ("an array type", CONSTANT_EVALUATION),
-        Construct::External => ("a type of the standard library", STD_BOOTSTRAP),
-        Construct::Class => ("a class type", CLASSES),
-        Construct::Weak => ("a weak reference type", WEAK_REFERENCES),
-        Construct::Function => ("a function type", CLOSURES),
-        Construct::Union => ("a union type", UNIONS),
-        Construct::Enum => ("an enum type", ENUMS),
-        Construct::Optional => ("an option type", OPTIONS),
-        Construct::TypeParam => ("a type parameter", MONOMORPHIZATION),
-        Construct::Generic => ("a generic type", MONOMORPHIZATION),
-        Construct::Interface => ("an interface type", INTERFACES),
-        Construct::Any => ("an interface value type", DYNAMIC_INTERFACES),
-        Construct::Splice => ("a spliced type", EXPANSION),
+    let milestone = match construct {
+        Construct::Array => CONSTANT_EVALUATION,
+        Construct::External => STD_BOOTSTRAP,
+        Construct::Class => CLASSES,
+        Construct::Weak => WEAK_REFERENCES,
+        Construct::Function => CLOSURES,
+        Construct::Union => UNIONS,
+        Construct::Enum => ENUMS,
+        Construct::Optional => OPTIONS,
+        Construct::TypeParam | Construct::Generic => MONOMORPHIZATION,
+        Construct::Interface => INTERFACES,
+        Construct::Any => DYNAMIC_INTERFACES,
+        Construct::Splice => EXPANSION,
     };
-    Kind { what, milestone }
+    Kind {
+        what: construct.description(),
+        milestone,
+    }
 }

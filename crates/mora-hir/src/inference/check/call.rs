@@ -185,15 +185,7 @@ impl<'a> Check<'a> {
                 .iter()
                 .map(|candidate| {
                     let params = bind(candidate, args).ok()?;
-                    args.iter()
-                        .zip(&typed)
-                        .zip(&params)
-                        .all(|((arg, argument), &param)| {
-                            let parameter = &candidate.params[param];
-                            argument.as_ref().is_none_or(|argument| {
-                                mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
-                            })
-                        })
+                    takes_arguments(candidate, args, typed.iter().map(Option::as_ref), &params)
                         .then_some(params)
                 })
                 .collect()
@@ -202,8 +194,8 @@ impl<'a> Check<'a> {
         };
         // Each `new` without a type that the overloads give no target.
         let mut untargeted = Vec::new();
-        for (position, arg) in args.iter().enumerate() {
-            if typed[position].is_some() {
+        for (position, (arg, argument)) in args.iter().zip(&mut typed).enumerate() {
+            if argument.is_some() {
                 continue;
             }
             let target = match arg_target(&candidates, &bindings, arg, position) {
@@ -214,7 +206,7 @@ impl<'a> Check<'a> {
                 }
                 ArgTarget::None => None,
             };
-            typed[position] = Some(Argument::Typed(match target {
+            *argument = Some(Argument::Typed(match target {
                 Some(ty) => self.expr(arg.expr, Expect::Target(ty)),
                 None => self.infer(arg.expr),
             }));
@@ -545,13 +537,7 @@ impl<'a> Check<'a> {
             .enumerate()
             .filter_map(|(index, (candidate, binding))| {
                 let params = binding.as_ref().ok()?;
-                args.iter()
-                    .zip(arguments)
-                    .zip(params)
-                    .all(|((arg, argument), &param)| {
-                        let parameter = &candidate.params[param];
-                        mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
-                    })
+                takes_arguments(candidate, args, arguments.iter().map(Some), params)
                     .then_some((index, params.as_slice()))
             })
             .collect();
@@ -793,6 +779,27 @@ fn arg_target<'a>(
         Some(_) => ArgTarget::Differs,
         None => ArgTarget::None,
     }
+}
+
+/// Whether `candidate` can take the arguments `args`, which `params` binds
+/// to its parameters: each one whose type is known (`Some` in `arguments`)
+/// fits its parameter's mode and type. An argument that takes its type
+/// from its parameter, not typed yet, fits any.
+fn takes_arguments<'b>(
+    candidate: &Candidate<'_>,
+    args: &[Arg],
+    arguments: impl IntoIterator<Item = Option<&'b Argument>>,
+    params: &[usize],
+) -> bool {
+    args.iter()
+        .zip(arguments)
+        .zip(params)
+        .all(|((arg, argument), &param)| {
+            let parameter = &candidate.params[param];
+            argument.is_none_or(|argument| {
+                mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
+            })
+        })
 }
 
 /// Whether an argument written with `given` before it suits a parameter of

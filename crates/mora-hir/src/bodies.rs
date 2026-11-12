@@ -782,7 +782,7 @@ pub fn body_owners(db: &dyn Db, file: SourceFile) -> Vec<BodyOwner> {
 mod tests {
     use salsa::Setter;
 
-    use crate::test_db::{TestDb, app, codes, file_named, messages};
+    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
     use crate::*;
 
     #[test]
@@ -909,9 +909,7 @@ mod tests {
 
     /// The codes `src/Program.mr` alone in an app reports.
     fn reported(text: &str) -> Vec<String> {
-        let db = TestDb::new();
-        let project = app(&db, &[("src/Program.mr", text)]);
-        codes(diagnostics(&db, project))
+        codes(&diagnostics_of(text))
     }
 
     #[test]

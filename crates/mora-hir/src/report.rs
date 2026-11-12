@@ -1,5 +1,7 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size};
+use mora_span::{
+    Db, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size,
+};
 use mora_syntax::SyntaxKind;
 use mora_syntax::ast::{self, AstNode};
 
@@ -160,15 +162,7 @@ fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagn
 fn ref_default(db: &dyn Db, file: SourceFile, name: &str, written: RefDefaultRanges) -> Diagnostic {
     let id = file.id(db);
     // The `ref` goes with the space after it, so the name stays.
-    let text = file.text(db);
-    let after = usize::from(written.keyword.end());
-    let space = text
-        .get(after..)
-        .map_or(0, |rest| rest.len() - rest.trim_start().len());
-    let keyword = TextRange::new(
-        written.keyword.start(),
-        written.keyword.end() + to_text_size(space),
-    );
+    let keyword = with_space_after(file.text(db), written.keyword);
     Diagnostic::error(
         codes::MR0209,
         format!(
@@ -333,14 +327,6 @@ enum Lookup {
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
     let text = file.text(db);
-    let span = |range| Span::new(id, range);
-    // A modifier goes with the space after it.
-    let removal = |range: TextRange| {
-        let space = text
-            .get(usize::from(range.end())..)
-            .map_or(0, |rest| rest.len() - rest.trim_start().len());
-        TextRange::new(range.start(), range.end() + to_text_size(space))
-    };
     let mut out = Vec::new();
     for node in parse(db, file).syntax().descendants() {
         let written: Vec<(SyntaxKind, TextRange)> = node
@@ -361,54 +347,96 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             let earlier = &written[..index];
             let name = keyword.text().unwrap_or_default();
             if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
-                let spelled =
-                    |range: TextRange| -> String { text[range].split_whitespace().collect() };
-                let diagnostic = Diagnostic::error(
-                    codes::MR0111,
-                    format!("`{name}` is written twice"),
-                    Label::new(span(range), "written again here"),
-                )
-                .with_secondary(Label::new(span(first), "first written here"));
-                out.push(if spelled(range) == spelled(first) {
-                    diagnostic
-                        .with_note("a modifier says the same thing however often it is written")
-                        .with_fix(Fix::new(
-                            format!("remove the repeated `{name}`"),
-                            vec![TextEdit::replace(span(removal(range)), "")],
-                        ))
-                } else {
-                    diagnostic.with_note(
-                        "the two give different write scopes; keep the one that is meant",
-                    )
-                });
+                out.push(repeated_modifier(id, text, name, range, first));
                 continue;
             }
             let Some(exclusive) = exclusive(node.kind(), keyword) else {
                 continue;
             };
-            let Some(&(other, first)) = earlier
+            if let Some(&(other, first)) = earlier
                 .iter()
                 .find(|(kind, _)| exclusive.keywords.contains(kind))
-            else {
-                continue;
-            };
-            let other = other.text().unwrap_or_default();
-            out.push(
-                Diagnostic::error(
-                    codes::MR0112,
-                    format!("`{name}` conflicts with `{other}`: {}", exclusive.rule),
-                    Label::new(span(range), format!("`{other}` is written already")),
-                )
-                .with_secondary(Label::new(span(first), "written first here"))
-                .with_note("keep the one that is meant; the fix keeps the first")
-                .with_fix(Fix::new(
-                    format!("remove `{name}`"),
-                    vec![TextEdit::replace(span(removal(range)), "")],
-                )),
-            );
+            {
+                let other = other.text().unwrap_or_default();
+                out.push(conflicting_modifier(
+                    id, text, name, range, other, first, exclusive,
+                ));
+            }
         }
     }
     out
+}
+
+/// `MR0111`: the modifier `name` at `range` repeats the one at `first`.
+/// The fix removes it only when both are spelled the same.
+fn repeated_modifier(
+    file: FileId,
+    text: &str,
+    name: &str,
+    range: TextRange,
+    first: TextRange,
+) -> Diagnostic {
+    let spelled = |range: TextRange| -> String { text[range].split_whitespace().collect() };
+    let diagnostic = Diagnostic::error(
+        codes::MR0111,
+        format!("`{name}` is written twice"),
+        Label::new(Span::new(file, range), "written again here"),
+    )
+    .with_secondary(Label::new(Span::new(file, first), "first written here"));
+    if spelled(range) != spelled(first) {
+        return diagnostic
+            .with_note("the two give different write scopes; keep the one that is meant");
+    }
+    diagnostic
+        .with_note("a modifier says the same thing however often it is written")
+        .with_fix(Fix::new(
+            format!("remove the repeated `{name}`"),
+            vec![TextEdit::replace(
+                Span::new(file, with_space_after(text, range)),
+                "",
+            )],
+        ))
+}
+
+/// `MR0112`: the modifier `name` at `range` conflicts with the earlier
+/// `other` at `first` under the rule of `exclusive`. The fix removes the
+/// later one.
+fn conflicting_modifier(
+    file: FileId,
+    text: &str,
+    name: &str,
+    range: TextRange,
+    other: &str,
+    first: TextRange,
+    exclusive: &Exclusive,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0112,
+        format!("`{name}` conflicts with `{other}`: {}", exclusive.rule),
+        Label::new(
+            Span::new(file, range),
+            format!("`{other}` is written already"),
+        ),
+    )
+    .with_secondary(Label::new(Span::new(file, first), "written first here"))
+    .with_note("keep the one that is meant; the fix keeps the first")
+    .with_fix(Fix::new(
+        format!("remove `{name}`"),
+        vec![TextEdit::replace(
+            Span::new(file, with_space_after(text, range)),
+            "",
+        )],
+    ))
+}
+
+/// `range` with the white space after it in `text`: what a fix removes so
+/// that a keyword goes without leaving its space behind. A comment after
+/// it stays.
+pub(crate) fn with_space_after(text: &str, range: TextRange) -> TextRange {
+    let space = text
+        .get(usize::from(range.end())..)
+        .map_or(0, |rest| rest.len() - rest.trim_start().len());
+    TextRange::new(range.start(), range.end() + to_text_size(space))
 }
 
 /// Modifiers of which a declaration, parameter or lambda takes one at
@@ -882,7 +910,9 @@ mod tests {
     use mora_diag::Diagnostic;
     use mora_span::{Dependency, Project, ProjectKind};
 
-    use crate::test_db::{TestDb, app, codes, function, messages, resolve, signature_of};
+    use crate::test_db::{
+        TestDb, app, codes, diagnostics_of, function, messages, resolve, signature_of,
+    };
     use crate::*;
 
     /// The text a diagnostic's primary span covers.
@@ -1442,11 +1472,6 @@ mod tests {
 
     #[test]
     fn a_modifier_written_twice_is_mr0111_with_a_fix_that_removes_it() {
-        let diagnostics_of = |text: &str| {
-            let db = TestDb::new();
-            let project = app(&db, &[("src/Program.mr", text)]);
-            diagnostics(&db, project).clone()
-        };
         let text = "struct Q {\n    public mut mut N: int;\n    public public X: int;\n    \
                     static static F(): int => 1;\n    public M(ref ref n: int) {}\n}\n\
                     G(): int {\n    static static L(): int => 1;\n    return L();\n}\n";
@@ -1482,11 +1507,6 @@ mod tests {
 
     #[test]
     fn modifiers_that_conflict_are_mr0112_with_a_fix_that_removes_the_later() {
-        let diagnostics_of = |text: &str| {
-            let db = TestDb::new();
-            let project = app(&db, &[("src/Program.mr", text)]);
-            diagnostics(&db, project).clone()
-        };
         let text = "struct Q {\n    public private N: int;\n    internal file X: int;\n    \
                     public M(ref move n: int, in ref m: int) {}\n    public mut move K() {}\n}\n\
                     G(): int {\n    let f = (ref in x: int) => 1;\n    return 1;\n}\n";
