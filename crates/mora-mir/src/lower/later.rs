@@ -9,7 +9,8 @@
 //! it, or of a struct whose fields come later; or for a local function in
 //! it that comes later, since a local function is lowered with the body it
 //! is declared in; or for a struct it creates with a constructor, declared
-//! or the one of a positional struct. A struct type comes as late as the
+//! or the one of a positional struct; or for an operator it applies to a
+//! struct, which may declare it. A struct type comes as late as the
 //! types of its instance fields, which its layout holds, and a struct
 //! nested in a generic type comes with generic code. When several
 //! milestones apply, the latest of them lowers the body.
@@ -21,9 +22,9 @@ use std::collections::HashSet;
 use std::fmt;
 
 use mora_hir::{
-    BodyKind, BodyOwner, Construct, Creation, Expr, FnSignature, ItemId, ItemKind, Signature, Stmt,
-    Ty, ValueKind, body, body_resolution, creation, enclosing_types, infer, instance_fields,
-    is_generic_type, item_tree, local_functions, signature, struct_field,
+    BinaryOp, BodyKind, BodyOwner, Construct, Creation, Expr, FnSignature, ItemId, ItemKind,
+    Signature, Stmt, Ty, UnaryOp, ValueKind, body, body_resolution, creation, enclosing_types,
+    infer, instance_fields, is_generic_type, item_tree, local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -173,7 +174,55 @@ pub(crate) fn lowered_later(
         this_later(db, project, file, owner),
         body_types_later(db, project, file, owner),
         creations_later(db, project, file, owner),
+        operators_later(db, project, file, owner),
     ])
+}
+
+/// The milestone that lowers the body of `owner` for an operator it
+/// applies to a struct, which a struct may declare (§6.9) and which
+/// operators and conversions look up: arithmetic, bitwise and shift
+/// operators, compound assignments, `!`, unary `+`, `-` and `~`, and `++`
+/// and `--`. Comparisons, `&&`, `||` and `??` are not counted. `None` when
+/// it applies none.
+fn operators_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    let on_struct = |expr| matches!(inference.expr(expr), Some(Ty::Struct(_)));
+    hir.exprs
+        .iter()
+        .any(|(_, expr)| match expr {
+            Expr::Binary { op, lhs, rhs }
+            | Expr::Assign {
+                op: Some(op),
+                lhs,
+                rhs,
+            } => declarable(*op) && (on_struct(*lhs) || on_struct(*rhs)),
+            Expr::Unary { op, expr } => *op != UnaryOp::FromEnd && on_struct(*expr),
+            Expr::Postfix { expr, .. } => on_struct(*expr),
+            _ => false,
+        })
+        .then(|| Later::new("an operator on a struct", OPERATORS))
+}
+
+/// Whether a struct may declare the binary operator `op` (§6.9).
+fn declarable(op: BinaryOp) -> bool {
+    !matches!(
+        op,
+        BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::Le
+            | BinaryOp::Ge
+            | BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::And
+            | BinaryOp::Or
+            | BinaryOp::Coalesce
+    )
 }
 
 /// The milestone that lowers the body of `owner` for the structs it

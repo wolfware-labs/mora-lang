@@ -2404,6 +2404,27 @@ fn new_with_empty_parentheses_calls_a_declared_constructor() {
 }
 
 #[test]
+fn an_operator_on_a_struct_comes_with_operators() {
+    // A struct may declare its operators, which are not looked up yet.
+    let text = "struct P {\n    public X: int;\n}\n\
+                A(p: P) {\n    var a = 1;\n    a += p;\n}\n\
+                B(p: P) {\n    let b = 1 + p;\n}\n\
+                C(p: P) {\n    let c = -p;\n}\n\
+                D(p: P) {\n    var d = p;\n    d++;\n}\n\
+                E(p: P, q: P): bool => p == q;\n";
+    for name in ["A", "B", "C", "D"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: an operator on a struct is not lowered until M3.6"
+            )
+        );
+    }
+    let lowered = lowered(text);
+    assert!(!lowered.code("E").is_empty(), "{}", lowered.dump("E"));
+}
+
+#[test]
 fn target_typed_new_of_a_struct_lowers_like_new_with_the_type() {
     // Memberwise creation lowers, and a constructor call comes later.
     let lowered = lowered(
