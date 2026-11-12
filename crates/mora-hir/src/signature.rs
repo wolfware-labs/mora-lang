@@ -70,9 +70,9 @@ pub enum Creation {
     /// A call, with parentheses, of the constructor of the positional
     /// struct `T`.
     Positional,
-    /// Memberwise creation, without parentheses, of a type that declares a
-    /// constructor or is positional, which has none (`MR0153`).
-    NotMemberwise,
+    /// Braces without parentheses on a type that declares a constructor or
+    /// is positional, which turns memberwise creation off (`MR0153`).
+    MemberwiseOff,
     /// Arguments in the parentheses of a type that has no constructor to
     /// take them (`MR0205`).
     NoConstructor,
@@ -83,7 +83,7 @@ pub enum Creation {
 pub fn creation(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> Creation {
     let data = item_data(db, item);
     match args {
-        None if data.has_constructor || data.is_positional => Creation::NotMemberwise,
+        None if data.has_constructor || data.is_positional => Creation::MemberwiseOff,
         Some(_) if data.is_positional => Creation::Positional,
         Some(_) if data.has_constructor => Creation::Constructor,
         Some(args) if !args.is_empty() => Creation::NoConstructor,

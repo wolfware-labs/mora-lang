@@ -18,8 +18,8 @@ use super::{
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
-    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_owners,
-    body_resolution, body_scope,
+    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
+    body_scope,
 };
 use crate::defs::ItemId;
 use crate::items::{ValueKind, item_tree};
@@ -1343,22 +1343,20 @@ impl Check<'_> {
             return None;
         };
         let inits = inits.unwrap_or_default();
-        match creation(self.db, item, args) {
+        let creation = creation(self.db, item, args);
+        match creation {
             Creation::Memberwise => self.memberwise(expr, item, &written, inits),
-            Creation::NotMemberwise => {
-                self.errors.push(TypeError::NotMemberwise {
+            Creation::MemberwiseOff => {
+                self.errors.push(TypeError::MemberwiseOff {
                     expr,
-                    ty: written.clone(),
+                    item,
                     written: ty,
-                    positional: item_data(self.db, item).is_positional,
-                    parameterless: self.has_parameterless_constructor(item),
                 });
                 self.assigned_values(item, inits);
             }
-            Creation::Constructor => self.after_constructor(item, &written, inits, true),
-            // The positional fields are not instance fields until M2.2, so
-            // a name that is no instance field may still be one of them.
-            Creation::Positional => self.after_constructor(item, &written, inits, false),
+            Creation::Constructor | Creation::Positional => {
+                self.after_constructor(creation, item, &written, inits);
+            }
             Creation::NoConstructor => {
                 self.errors.push(TypeError::NoConstructor {
                     expr,
@@ -1370,22 +1368,22 @@ impl Check<'_> {
         Some(written)
     }
 
-    /// The assignments `inits` after a call of a constructor of the struct
-    /// `item`, of type `ty`, which are plain assignments (§6.9): each value
-    /// is checked against the type of the field it names, a hidden field
-    /// is `MR0129`, and, when `names` is set, a name that is not an
-    /// instance field is `MR0147`. A field may be assigned twice.
+    /// The assignments `inits` after `creation`, a call of a constructor of
+    /// the struct `item` of type `ty`, which are plain assignments (§6.9):
+    /// each value is checked against the type of the field it names, a
+    /// hidden field is `MR0129`, and, after a declared constructor, a name
+    /// that is not an instance field is `MR0147`. A field may be assigned
+    /// twice.
     fn after_constructor(
         &mut self,
+        creation: Creation,
         item: ItemId,
         ty: &Ty,
         inits: &[(String, ExprId)],
-        names: bool,
     ) {
         for (position, (name, init)) in inits.iter().enumerate() {
-            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
-                Some((index, field)) => {
-                    self.check(*init, &field.ty);
+            match self.assigned_field(item, name, *init) {
+                Some(index) => {
                     if !self.field_visible(item, index) {
                         self.errors.push(TypeError::HiddenField {
                             value: *init,
@@ -1396,10 +1394,12 @@ impl Check<'_> {
                         });
                     }
                 }
+                // The positional fields are not instance fields until M2.2,
+                // so a name that is no instance field may still be one of
+                // them.
+                None if creation == Creation::Positional => {}
                 None => {
-                    self.infer(*init);
-                    if names && let Some(error) = self.not_a_field(item, ty, inits, position, false)
-                    {
+                    if let Some(error) = self.not_a_field(item, ty, inits, position, false) {
                         self.errors.push(error);
                     }
                 }
@@ -1412,25 +1412,25 @@ impl Check<'_> {
     /// looking at the names.
     fn assigned_values(&mut self, item: ItemId, inits: &[(String, ExprId)]) {
         for (name, init) in inits {
-            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
-                Some((_, field)) => self.check(*init, &field.ty),
-                None => {
-                    self.infer(*init);
-                }
-            }
+            self.assigned_field(item, name, *init);
         }
     }
 
-    /// Whether the struct `item` declares a constructor that takes no
-    /// parameters.
-    fn has_parameterless_constructor(&self, item: ItemId) -> bool {
-        body_owners(self.db, item.file).into_iter().any(|owner| {
-            let BodyOwner::Member(ty, _) = owner else {
-                return false;
-            };
-            let hir = body(self.db, item.file, owner);
-            ty == item.item && hir.kind == BodyKind::Constructor && hir.params.is_empty()
-        })
+    /// Checks `value`, assigned to `name` in the creation of the struct
+    /// `item`, against the type of the instance field `name`, and gives the
+    /// field's index among the value members; infers `value` and gives
+    /// `None` when `name` is no instance field.
+    fn assigned_field(&mut self, item: ItemId, name: &str, value: ExprId) -> Option<u32> {
+        match instance_fields(self.db, item).find(|(_, field)| field.name == name) {
+            Some((index, field)) => {
+                self.check(value, &field.ty);
+                Some(index)
+            }
+            None => {
+                self.infer(value);
+                None
+            }
+        }
     }
 
     /// The memberwise creation `expr` of the struct `item`, of type `ty`,
@@ -1442,27 +1442,20 @@ impl Check<'_> {
         let hidden = instance_fields(self.db, item)
             .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
         for (position, (name, init)) in inits.iter().enumerate() {
-            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
-                Some((index, field)) => {
-                    self.check(*init, &field.ty);
-                    // A repeated field is reported as repeated (`MR0148`)
-                    // alone: its first assignment reports it hidden.
-                    if hidden.is_none()
-                        && assigned_before(inits, position).is_none()
-                        && !self.field_visible(item, index)
-                    {
-                        self.errors.push(TypeError::HiddenField {
-                            value: *init,
-                            item,
-                            index,
-                            name: name.clone(),
-                            from: self.scope,
-                        });
-                    }
-                }
-                None => {
-                    self.infer(*init);
-                }
+            // A repeated field is reported as repeated (`MR0148`) alone: its
+            // first assignment reports it hidden.
+            if let Some(index) = self.assigned_field(item, name, *init)
+                && hidden.is_none()
+                && assigned_before(inits, position).is_none()
+                && !self.field_visible(item, index)
+            {
+                self.errors.push(TypeError::HiddenField {
+                    value: *init,
+                    item,
+                    index,
+                    name: name.clone(),
+                    from: self.scope,
+                });
             }
             if let Some(error) = self.init_name(item, ty, inits, position) {
                 self.errors.push(error);
@@ -1508,10 +1501,6 @@ impl Check<'_> {
         position: usize,
     ) -> Option<TypeError> {
         let (name, value) = &inits[position];
-        // An initializer without a name is a syntax error.
-        if name.is_empty() {
-            return None;
-        }
         if instance_fields(self.db, item).any(|(_, field)| field.name == *name) {
             return Some(TypeError::RepeatedField {
                 value: *value,
@@ -1528,8 +1517,8 @@ impl Check<'_> {
     /// of the struct `item` of type `ty`, whose name is not an instance
     /// field; `memberwise` when the creation is memberwise rather than a
     /// constructor call. A name that is no member gets the closest visible
-    /// field not assigned as a suggestion. `None` for a name that is empty,
-    /// which is a syntax error.
+    /// field not assigned as a suggestion. `None` for an initializer without
+    /// a name, which is a syntax error.
     fn not_a_field(
         &self,
         item: ItemId,

@@ -344,16 +344,13 @@ pub(crate) enum TypeError {
         field: String,
         visibility: Visibility,
     },
-    /// `expr` creates the struct `ty`, written `written`, memberwise,
-    /// without parentheses, while it is `positional` or declares a
-    /// constructor, `parameterless` when one takes no parameters
-    /// (`MR0153`).
-    NotMemberwise {
+    /// `expr` creates the struct `item`, written `written`, with braces
+    /// alone, while it is positional or declares a constructor, which turns
+    /// memberwise creation off (`MR0153`).
+    MemberwiseOff {
         expr: ExprId,
-        ty: Ty,
+        item: ItemId,
         written: TypeId,
-        positional: bool,
-        parameterless: bool,
     },
     /// The memberwise creation of the struct `item` assigns `value` to its
     /// field `name`, the value member at `index`, which is not visible from
@@ -2831,10 +2828,12 @@ mod tests {
         assert!(fixed.text.contains("new S() { N = 2 }"), "{}", fixed.text);
         // No field is reported missing, and the values are still checked.
         let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+                    struct T {\n    public N: int;\n    public T() { N = 1; }\n}\n\
                     let s = new S { };\nlet t = new S { N = \"a\", M = 1 };\n";
         let found = diagnostics_of(text);
         assert_eq!(codes(&found), ["MR0153", "MR0153", "MR0203"]);
-        // Without a constructor that takes no parameters there is no fix.
+        // Without a constructor that takes no parameters there is no fix,
+        // whatever the constructors of other types take.
         assert!(found[0].fixes.is_empty(), "{found:#?}");
     }
 

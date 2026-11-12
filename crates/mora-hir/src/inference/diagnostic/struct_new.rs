@@ -6,11 +6,12 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Span, TextRange};
 
 use super::Source;
-use crate::bodies::{ExprId, TypeId};
+use crate::bodies::{BodyKind, BodyOwner, ExprId, TypeId, body, body_owners};
+use crate::defs::ItemId;
 use crate::inference::NotAField;
 use crate::items::Visibility;
 use crate::report::{Declared, not_visible};
-use crate::resolve::Scope;
+use crate::resolve::{Scope, item_data};
 use crate::ty::Ty;
 use crate::type_ref::TypeRef;
 
@@ -52,19 +53,18 @@ pub(super) fn no_memberwise(
     ))
 }
 
-/// `MR0153`: `new T { ... }`, with `T` written `written`, creates `T`
-/// memberwise while it is `positional` or declares a constructor, which
-/// turns memberwise creation off. When one of its constructors takes no
-/// parameters, `parameterless`, the fix calls it.
-pub(super) fn not_memberwise(
+/// `MR0153`: `new T { ... }`, with the struct `item` written `written`,
+/// creates `T` memberwise while it is positional or declares a
+/// constructor, which turns memberwise creation off. When one of its
+/// constructors takes no parameters, the fix calls it.
+pub(super) fn memberwise_off(
     source: &Source<'_>,
     expr: ExprId,
-    ty: &Ty,
+    item: ItemId,
     written: TypeId,
-    positional: bool,
-    parameterless: bool,
 ) -> Diagnostic {
-    let t = source.name(ty);
+    let t = source.name(&Ty::Struct(item));
+    let positional = item_data(source.db, item).is_positional;
     let (message, note) = if positional {
         (
             format!("`{t}` is a positional struct, so it is not created memberwise"),
@@ -94,12 +94,28 @@ pub(super) fn not_memberwise(
         _ => None,
     };
     match end {
-        Some(end) if parameterless && !positional => diagnostic.with_fix(Fix::new(
-            "call the constructor that takes no parameters",
-            vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
-        )),
+        Some(end) if !positional && has_parameterless_constructor(source, item) => diagnostic
+            .with_fix(Fix::new(
+                "call the constructor that takes no parameters",
+                vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
+            )),
         _ => diagnostic,
     }
+}
+
+/// Whether the struct `item` declares a constructor that takes no
+/// parameters.
+fn has_parameterless_constructor(source: &Source<'_>, item: ItemId) -> bool {
+    body_owners(source.db, item.file).into_iter().any(|owner| {
+        let BodyOwner::Member(ty, _) = owner else {
+            return false;
+        };
+        if ty != item.item {
+            return false;
+        }
+        let hir = body(source.db, item.file, owner);
+        hir.kind == BodyKind::Constructor && hir.params.is_empty()
+    })
 }
 
 /// `MR0129`: memberwise creation, in `from`, assigns `value` to the field
@@ -177,9 +193,9 @@ pub(super) fn not_a_field(
     }
 }
 
-/// `MR0148`: memberwise creation of `T` assigns the field `name` again. The values
-/// are those of its first assignment, of the initializer written just
-/// before the repeated one, and of the repeated one.
+/// `MR0148`: memberwise creation of `T` assigns the field `name` again.
+/// The values are those of its first assignment, of the initializer
+/// written just before the repeated one, and of the repeated one.
 pub(super) fn repeated_field(
     source: &Source<'_>,
     [first, previous, value]: [ExprId; 3],

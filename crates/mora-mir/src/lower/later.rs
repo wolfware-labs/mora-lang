@@ -9,10 +9,10 @@
 //! it, or of a struct whose fields come later; or for a local function in
 //! it that comes later, since a local function is lowered with the body it
 //! is declared in; or for a struct it creates with a constructor, declared
-//! or the one of a positional struct. A struct type comes as late as the types of its instance
-//! fields, which its layout holds, and a struct nested in a generic type
-//! comes with generic code. When several milestones apply, the latest of
-//! them lowers the body.
+//! or the one of a positional struct. A struct type comes as late as the
+//! types of its instance fields, which its layout holds, and a struct
+//! nested in a generic type comes with generic code. When several
+//! milestones apply, the latest of them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
@@ -201,7 +201,7 @@ fn creations_later(
             Creation::Positional => {
                 later("the creation of a positional struct", POSITIONAL_STRUCTS)
             }
-            Creation::Memberwise | Creation::NotMemberwise | Creation::NoConstructor => None,
+            Creation::Memberwise | Creation::MemberwiseOff | Creation::NoConstructor => None,
         }
     }))
 }
