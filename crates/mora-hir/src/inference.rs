@@ -344,15 +344,16 @@ pub(crate) enum TypeError {
         field: String,
         visibility: Visibility,
     },
-    /// `expr` creates the struct `item`, written `written`, with braces
-    /// alone, while it is positional or declares a constructor, which turns
+    /// `expr` creates the struct `item`, written `written` or, when `None`,
+    /// the target type, with braces alone, while it is positional or
+    /// declares a constructor, which turns
     /// memberwise creation off (`MR0153`), in `from`. `writable` is set when
     /// every name in the braces is a field that the body may write after a
     /// constructor, so calling one keeps them valid.
     MemberwiseOff {
         expr: ExprId,
         item: ItemId,
-        written: TypeId,
+        written: Option<TypeId>,
         from: Scope,
         writable: bool,
     },
@@ -3230,6 +3231,39 @@ mod tests {
         let text = "struct Box<T> {\n    public V: T;\n}\nlet b = new Box<int> { V = 1 };\n";
         assert_eq!(local_types(text), ["b: ?"]);
         assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn target_typed_new_of_a_struct_follows_the_same_rules() {
+        // `new() { .. }` does what `new T() { .. }` does where the target
+        // type is known (§6.9).
+        let s = "struct S {\n    public mut N: int;\n    public S() { N = 1; }\n}\n";
+        let p = "struct P {\n    public X: int;\n}\n";
+        let text = format!("{s}let s: S = new {{ N = 2 }};\n");
+        let found = diagnostics_of(&text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        assert_eq!(&text[found[0].primary.span.range], "new { N = 2 }");
+        assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
+        let fixed = apply_fixes(&text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert!(
+            fixed.text.contains("let s: S = new() { N = 2 };"),
+            "{}",
+            fixed.text
+        );
+        let text = "struct U(Id: int);\nlet u: U = new { };\n";
+        assert_eq!(reported(text), ["MR0153"]);
+        let text = format!("{s}let s: S = new() {{ N = 1, M = 2 }};\n");
+        assert_eq!(reported(&text), ["MR0147"]);
+        let text = format!("{p}let p: P = new {{ }};\nlet q: P = new() {{ X = 1, X = 2 }};\n");
+        assert_eq!(reported(&text), ["MR0143", "MR0148"]);
+        let text = format!("{p}let p: P = new(1) {{ X = 1 }};\n");
+        assert_eq!(reported(&text), ["MR0205"]);
+        let text =
+            format!("{p}let p: P = new {{ X = 1 }};\nTake(p: P) {{}}\nTake(new {{ X = 2 }});\n");
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let types = expr_types(&format!("{p}let p: P = new {{ X = 1 }};\n"));
+        assert!(types.iter().any(|ty| ty == "new { X = 1 }: P"), "{types:?}");
     }
 
     #[test]

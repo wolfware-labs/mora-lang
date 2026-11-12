@@ -748,7 +748,7 @@ impl Check<'_> {
                 None
             }
             Expr::New { ty, args, inits } => {
-                self.new_expr(expr, *ty, args.as_deref(), inits.as_deref())
+                self.new_expr(expr, *ty, args.as_deref(), inits.as_deref(), expect)
             }
             Expr::NewArray { size, .. } => {
                 self.infer(*size);
@@ -1323,20 +1323,26 @@ impl Check<'_> {
     /// are memberwise creation, and braces alone on a struct with one, or
     /// on a positional struct, are an error. A call of a constructor
     /// assigns the fields itself, and the names after it are plain
-    /// assignments. Other targets have no type yet.
+    /// assignments. `new() { .. }` without a type does the same where
+    /// `expect` gives the target type. Other targets have no type yet.
     fn new_expr(
         &mut self,
         expr: ExprId,
         ty: Option<TypeId>,
         args: Option<&[Arg]>,
         inits: Option<&[(String, ExprId)]>,
+        expect: Expect<'_>,
     ) -> Option<Ty> {
         if let Some(args) = args {
             self.args(args);
         }
-        let written = ty.map(|ty| self.resolution.written(ty));
+        let written = match (ty, expect) {
+            (Some(ty), _) => Some(self.resolution.written(ty)),
+            (None, Expect::Target(target)) => Some(target.clone()),
+            (None, Expect::Hint(_) | Expect::None) => None,
+        };
         // A struct type names a struct that is not generic.
-        let (Some(written @ Ty::Struct(item)), Some(ty)) = (written, ty) else {
+        let Some(written @ Ty::Struct(item)) = written else {
             for &(_, init) in inits.into_iter().flatten() {
                 self.infer(init);
             }

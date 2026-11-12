@@ -2387,7 +2387,7 @@ fn new_with_empty_parentheses_on_a_struct_without_a_constructor_is_memberwise() 
 
 #[test]
 fn new_with_empty_parentheses_calls_a_declared_constructor() {
-    let text = "struct P {\n    public X: int;\n    public P() { X = 1; }\n}\n\
+    let text = "struct P {\n    public mut X: int;\n    public P() { X = 1; }\n}\n\
                 F(): P => new P();\nG(): P => new P() { X = 3 };\n";
     assert_eq!(
         later_error(text, |l| l.owner("F")),
@@ -2401,6 +2401,32 @@ fn new_with_empty_parentheses_calls_a_declared_constructor() {
         ),
         "{dump}"
     );
+}
+
+#[test]
+fn target_typed_new_of_a_struct_lowers_as_its_written_type() {
+    // Memberwise creation lowers, and a constructor call comes later.
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public Y: int = 2;\n}\n\
+         F(): P => new { X = 1 };\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1);",
+        ],
+    );
+    let text = "struct P {\n    public mut X: int;\n    public P() { X = 1; }\n}\n\
+                F(): P => new() { X = 3 };\nG(): P {\n    let p: P = new();\n    return p;\n}\n";
+    for name in ["F", "G"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: a constructor call is not lowered until M2.1"
+            )
+        );
+    }
 }
 
 #[test]

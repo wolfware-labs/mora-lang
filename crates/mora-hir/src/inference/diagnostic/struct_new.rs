@@ -3,7 +3,7 @@
 //! for arguments to a type without a constructor.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Span, TextRange};
+use mora_span::{Span, TextRange, TextSize};
 
 use super::Source;
 use crate::bodies::{BodyKind, BodyOwner, ExprId, TypeId, body, body_owners};
@@ -54,7 +54,8 @@ pub(super) fn no_memberwise(
 }
 
 /// `MR0153`: `new T { ... }`, with the struct `item` written `written`,
-/// creates `T` memberwise, in `from`, while it is positional or declares a
+/// or `new { ... }` with `item` the target type, creates `T` memberwise,
+/// in `from`, while it is positional or declares a
 /// constructor, which turns memberwise creation off. When `from` sees a
 /// constructor that takes no arguments and every name in the braces is
 /// `writable` after it, the fix calls it; otherwise only the author knows
@@ -63,7 +64,7 @@ pub(super) fn memberwise_off(
     source: &Source<'_>,
     expr: ExprId,
     item: ItemId,
-    written: TypeId,
+    written: Option<TypeId>,
     from: Scope,
     writable: bool,
 ) -> Diagnostic {
@@ -88,25 +89,38 @@ pub(super) fn memberwise_off(
         Label::new(source.span(expr), format!("memberwise creation of `{t}`")),
     )
     .with_note(note);
-    // The parentheses go right after the type.
-    let end = match &source.body.types[written] {
-        TypeRef::Path(path) => source
-            .map
-            .type_paths
-            .get(path.index)
-            .and_then(|segments| segments.last()),
-        _ => None,
-    };
-    match end {
-        Some(end)
+    match parentheses_at(source, expr, written) {
+        Some(at)
             if !positional && writable && has_parameterless_constructor(source, item, from) =>
         {
             diagnostic.with_fix(Fix::new(
                 "call the constructor that takes no arguments",
-                vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
+                vec![TextEdit::insert(source.file.id(source.db), at, "()")],
             ))
         }
         _ => diagnostic,
+    }
+}
+
+/// Where the parentheses of a constructor call go in the creation `expr`
+/// written without them: right after its type `written`, or right after
+/// `new` when the type is the target type.
+fn parentheses_at(source: &Source<'_>, expr: ExprId, written: Option<TypeId>) -> Option<TextSize> {
+    let Some(written) = written else {
+        const NEW: &str = "new";
+        return source
+            .text(expr)
+            .starts_with(NEW)
+            .then(|| source.map.expr(expr).start() + TextSize::of(NEW));
+    };
+    match &source.body.types[written] {
+        TypeRef::Path(path) => source
+            .map
+            .type_paths
+            .get(path.index)
+            .and_then(|segments| segments.last())
+            .map(|end| end.end()),
+        _ => None,
     }
 }
 
