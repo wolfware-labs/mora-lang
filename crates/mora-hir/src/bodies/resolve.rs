@@ -73,6 +73,14 @@ impl BodyResolution {
         ret.map_or(Ty::UNIT, |ty| self.written(ty))
     }
 
+    /// Whether the path `path` names something of the standard library
+    /// while the library is not loaded ([`Resolved::External`]).
+    pub fn is_external(&self, path: ExprId) -> bool {
+        self.paths
+            .get(&path)
+            .is_some_and(|resolution| matches!(resolution.target, Target::Item(Resolved::External)))
+    }
+
     /// The value member the path `path` names, when it names one.
     pub fn value_member<'db>(&self, db: &'db dyn Db, path: ExprId) -> Option<&'db ValueMember> {
         self.paths.get(&path)?.member(db)

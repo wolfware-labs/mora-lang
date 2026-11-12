@@ -14,9 +14,9 @@ use crate::inference::constant::{self, Value};
 use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::{ItemKind, ValueKind, item_tree};
+use crate::items::ValueKind;
 use crate::resolve::{Resolved, is_visible, item_data};
-use crate::signature::signature;
+use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
 
 /// A function a call may call, borrowed from its signature.
@@ -206,7 +206,7 @@ impl<'a> Check<'a> {
                     .flatten()
                     .any(|&param| !is_known(&candidate.params[param].ty))
             });
-        // Each `new` without a type that the overloads give no target.
+        // Each `new` without a type that the overloads give no target type.
         let mut untargeted = Vec::new();
         for (position, (arg, argument)) in args.iter().zip(&mut typed).enumerate() {
             if argument.is_some() {
@@ -216,13 +216,13 @@ impl<'a> Check<'a> {
                 ArgTarget::Type(ty) => Expect::Target(ty),
                 // A lambda is checked without a target type, and a `new`
                 // is reported once the overloads are compared.
-                ArgTarget::Differs if !unresolved => {
-                    untargeted.push(arg.expr);
-                    match self.body.exprs[arg.expr] {
-                        Expr::Lambda(_) => Expect::None,
-                        _ => Expect::Later,
+                ArgTarget::Differs if !unresolved => match self.body.exprs[arg.expr] {
+                    Expr::Lambda(_) => Expect::None,
+                    _ => {
+                        untargeted.push(arg.expr);
+                        Expect::Later
                     }
-                }
+                },
                 // A call left unresolved, or one that is an error because
                 // the argument has no parameter, which says so itself.
                 ArgTarget::Differs | ArgTarget::None => Expect::Later,
@@ -245,13 +245,13 @@ impl<'a> Check<'a> {
             )
         });
         if !call_error {
-            for arg in untargeted {
-                self.untargeted_new(
-                    arg,
-                    NewTarget::Overloads {
+            for expr in untargeted {
+                self.errors.push(TypeError::NewTarget {
+                    expr,
+                    problem: NewTarget::Overloads {
                         name: candidates[0].name.to_owned(),
                     },
-                );
+                });
             }
         }
         ty
@@ -279,13 +279,7 @@ impl<'a> Check<'a> {
     /// path such as `Console.WriteLine`.
     fn is_external(&self, callee: ExprId) -> bool {
         match &self.body.exprs[callee] {
-            Expr::Path(_) => self
-                .resolution
-                .paths
-                .get(&callee)
-                .is_some_and(|resolution| {
-                    matches!(resolution.target, Target::Item(Resolved::External))
-                }),
+            Expr::Path(_) => self.resolution.is_external(callee),
             Expr::Member { receiver, .. } => self.is_external(*receiver),
             _ => false,
         }
@@ -404,20 +398,7 @@ impl<'a> Check<'a> {
         let Some(Ty::Struct(ty)) = receiver else {
             return Callees::Unknown;
         };
-        let tree = item_tree(self.db, ty.file);
-        let named: Vec<_> = item_data(self.db, *ty)
-            .members
-            .iter()
-            .filter(|&&member| {
-                let data = tree.item(member);
-                data.kind == ItemKind::Function && data.name == name && !data.is_static
-            })
-            .map(|&member| ItemId {
-                project: ty.project,
-                file: ty.file,
-                item: member,
-            })
-            .collect();
+        let named: Vec<_> = instance_methods(self.db, *ty, name).collect();
         let Some(&first) = named.first() else {
             let field = self.field(receiver, name);
             return self.not_callable(field);

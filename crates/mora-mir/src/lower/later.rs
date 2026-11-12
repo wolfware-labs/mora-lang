@@ -11,11 +11,11 @@
 //! is declared in; or for a struct it creates with a constructor, declared
 //! or the one of a positional struct; or for an operator it applies to a
 //! struct, which may declare it; or for a lambda in it, or a call that
-//! inference leaves unresolved because a generic, `async` or `params`
-//! function could take it. A struct type comes as late as the
-//! types of its instance fields, which its layout holds, and a struct
-//! nested in a generic type comes with generic code. When several
-//! milestones apply, the latest of them lowers the body.
+//! inference leaves unresolved because a generic or `async` function could
+//! take it. A struct type comes as late as the types of its instance
+//! fields, which its layout holds, and a struct nested in a generic type
+//! comes with generic code. When several milestones apply, the latest of
+//! them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
@@ -26,8 +26,8 @@ use std::fmt;
 use mora_hir::{
     BinaryOp, Body, BodyKind, BodyOwner, Construct, Creation, Expr, ExprId, FnSignature, Inference,
     ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, body,
-    body_resolution, creation, enclosing_types, infer, instance_fields, is_generic_type, item_tree,
-    local_functions, signature, struct_field,
+    body_resolution, creation, enclosing_types, infer, instance_fields, instance_methods,
+    is_generic_type, item_tree, local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -88,10 +88,6 @@ pub(super) const STATICS: Milestone = milestone(3, 13);
 const EXPANSION: Milestone = milestone(4, 4);
 /// M6.2, async lowering.
 const ASYNC: Milestone = milestone(6, 2);
-/// The milestone that expands `params` arguments. The roadmap has none
-/// yet, so a call that only a `params` overload leaves unresolved stays an
-/// internal error of lowering.
-const PARAMS: Option<Milestone> = None;
 
 /// A body that is not lowered yet: what it is and the milestone of the
 /// roadmap that lowers it.
@@ -199,11 +195,12 @@ fn lambdas_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Late
 
 /// The milestone that lowers the body of `owner` for the calls inference
 /// leaves without a callee because an overload of the called name is
-/// generic, `async` or takes `params` (D-137): the latest of those that
-/// apply to each call, the first call on a tie. A call of a local function
-/// comes as late as the local function, which [`local_functions_later`]
-/// counts, and a call with none of these overloads is an internal error
-/// of lowering. `None` when every call has its callee.
+/// generic or `async` (D-137): the latest of those that apply to each
+/// call, the first call on a tie. A call of a local function comes as late
+/// as the local function, which [`local_functions_later`] counts. A call
+/// that only an overload with a `params` parameter leaves unresolved stays
+/// an internal error of lowering: no milestone of the roadmap expands
+/// `params` arguments yet. `None` when every call has its callee.
 fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
@@ -215,73 +212,57 @@ fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
         if inference.callee(id).is_some() {
             return None;
         }
-        let functions = match resolution.paths.get(callee).map(|path| &path.target) {
-            Some(Target::Item(Resolved::Functions(items))) => items.clone(),
-            _ => methods(db, hir, inference, *callee),
-        };
-        latest(functions.iter().map(|&item| {
-            let Signature::Function(function) = signature(db, item) else {
-                return None;
-            };
-            unchecked_call(function)
-        }))
+        match resolution.paths.get(callee).map(|path| &path.target) {
+            Some(Target::Item(Resolved::Functions(items))) => call_later(db, items.iter().copied()),
+            _ => call_later(db, methods(db, hir, inference, *callee)),
+        }
     }))
 }
 
-/// The non-static methods that a call through a value of a struct type
-/// calls by the name of `callee`, a member; empty for any other callee.
-fn methods(db: &dyn Db, hir: &Body, inference: &Inference, callee: ExprId) -> Vec<ItemId> {
-    let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
-        return Vec::new();
+/// The methods that a call through a value of a struct type calls by the
+/// name of `callee`, a member; none for any other callee.
+fn methods<'a>(
+    db: &'a dyn Db,
+    hir: &'a Body,
+    inference: &Inference,
+    callee: ExprId,
+) -> impl Iterator<Item = ItemId> + 'a {
+    let method = match &hir.exprs[callee] {
+        Expr::Member { receiver, name, .. } => match inference.expr(*receiver) {
+            Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
+            _ => None,
+        },
+        _ => None,
     };
-    let Some(Ty::Struct(ty)) = inference.expr(*receiver) else {
-        return Vec::new();
-    };
-    let tree = item_tree(db, ty.file);
-    tree.item(ty.item)
-        .members
-        .iter()
-        .filter(|&&member| {
-            let data = tree.item(member);
-            data.kind == ItemKind::Function && data.name == *name && !data.is_static
-        })
-        .map(|&member| ItemId {
-            item: member,
-            ..*ty
-        })
-        .collect()
+    method
+        .into_iter()
+        .flat_map(move |(ty, name)| instance_methods(db, ty, name))
 }
 
-/// The milestone that checks and lowers a call that the function with the
-/// signature `function` could take, `None` when that function leaves a
-/// call unresolved for none of these reasons: a generic one comes with
-/// generic code, an `async` one with async lowering, and one with a
-/// `params` parameter with [`PARAMS`].
-fn unchecked_call(function: &FnSignature) -> Option<Later> {
-    let params = function
-        .params
-        .iter()
-        .any(|param| param.is_params)
-        .then_some(PARAMS)
-        .flatten()
-        .map(|milestone| Later::new("a call of a function with `params`", milestone));
-    latest([
-        function
-            .is_generic
-            .then(|| Later::new("a call of a generic function", MONOMORPHIZATION)),
-        function
-            .is_async
-            .then(|| Later::new("a call of an async function", ASYNC)),
-        params,
-    ])
+/// The milestone that checks and lowers a call that one of `functions`
+/// could take, as late as [`function_later`] lowers that function: a
+/// generic one comes with generic code and an `async` one with async
+/// lowering. The first of them names it on a tie; `None` when none of
+/// them comes later.
+fn call_later(db: &dyn Db, functions: impl IntoIterator<Item = ItemId>) -> Option<Later> {
+    latest(functions.into_iter().map(|item| {
+        let Signature::Function(function) = signature(db, item) else {
+            return None;
+        };
+        let later = function_later(function)?;
+        Some(Later::new(
+            format!("a call of {}", later.what),
+            later.milestone,
+        ))
+    }))
 }
 
 /// The milestone that lowers the body of `owner` for an operator it
 /// applies to a struct, which a struct may declare (§6.9) and which
 /// operators and conversions look up: arithmetic, bitwise and shift
 /// operators, compound assignments, `!`, unary `+`, `-` and `~`, `++`
-/// and `--`, and an indexer. Comparisons, `&&`, `||` and `??` are not counted. `None` when
-/// it applies none.
+/// and `--`, and an indexer. Comparisons, `&&`, `||` and `??` are not
+/// counted. `None` when it applies none.
 fn operators_later(
     db: &dyn Db,
     project: Project,
@@ -310,18 +291,7 @@ fn operators_later(
 
 /// Whether a struct may declare the binary operator `op` (§6.9).
 fn declarable(op: BinaryOp) -> bool {
-    !matches!(
-        op,
-        BinaryOp::Lt
-            | BinaryOp::Gt
-            | BinaryOp::Le
-            | BinaryOp::Ge
-            | BinaryOp::Eq
-            | BinaryOp::Ne
-            | BinaryOp::And
-            | BinaryOp::Or
-            | BinaryOp::Coalesce
-    )
+    !op.is_comparison() && !matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Coalesce)
 }
 
 /// The milestone that lowers the body of `owner` for the structs it

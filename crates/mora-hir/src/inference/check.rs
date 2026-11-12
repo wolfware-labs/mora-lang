@@ -81,8 +81,9 @@ enum Expect<'t> {
     Target(&'t Ty),
     /// A target type that a later milestone gives: the parameter of an
     /// argument of a call that is not checked or not resolved yet (D-137),
-    /// or of one that is an error already. As `None`, except that a `new` without a type
-    /// is not reported.
+    /// or of one that is an error already, and the result type of a lambda
+    /// passed there. As `None`, except that a `new` without a type is not
+    /// reported.
     Later,
 }
 
@@ -769,7 +770,7 @@ impl Check<'_> {
                 };
                 // The target type of a lambda that a later milestone checks
                 // gives its result type then.
-                let later = matches!(expect, Expect::Later) && ret.is_none();
+                let later = matches!(expect, Expect::Later);
                 let outer = std::mem::replace(&mut self.ret_later, later);
                 self.function_body(lambda.body, ret, false);
                 self.ret_later = outer;
@@ -1167,10 +1168,7 @@ impl Check<'_> {
             }
             _ => {}
         }
-        let comparison = matches!(
-            op,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
-        );
+        let comparison = op.is_comparison();
         // An operand of unknown type leaves the result unknown, a comparison's
         // too, so that nothing is reported because of it.
         let (Some(l), Some(r)) = self.operands(lhs, rhs) else {
@@ -1456,14 +1454,6 @@ impl Check<'_> {
                 | Construct::Any => false,
             },
             Ty::Primitive(_) | Ty::String | Ty::Tuple(_) | Ty::Never => false,
-        }
-    }
-
-    /// Reports `expr` when it is a `new` without a type in a place that
-    /// gives it no target type (`MR0154`).
-    fn untargeted_new(&mut self, expr: ExprId, problem: NewTarget) {
-        if matches!(self.body.exprs[expr], Expr::New { ty: None, .. }) {
-            self.errors.push(TypeError::NewTarget { expr, problem });
         }
     }
 

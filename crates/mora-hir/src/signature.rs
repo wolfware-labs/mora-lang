@@ -58,6 +58,27 @@ pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, 
         .map(|((_, index), field)| (index, field))
 }
 
+/// The methods named `name` that a value of the struct `item` calls: its
+/// member functions of that name that are not `static`, visible or not.
+pub fn instance_methods<'a>(
+    db: &'a dyn Db,
+    item: ItemId,
+    name: &'a str,
+) -> impl Iterator<Item = ItemId> + 'a {
+    let tree = item_tree(db, item.file);
+    tree.item(item.item)
+        .members
+        .iter()
+        .filter(move |&&member| {
+            let data = tree.item(member);
+            data.kind == ItemKind::Function && data.name == name && !data.is_static
+        })
+        .map(move |&member| ItemId {
+            item: member,
+            ..item
+        })
+}
+
 /// What `new T(args) { ... }` of a struct does (§6.5, §6.9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Creation {

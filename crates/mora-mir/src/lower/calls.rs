@@ -6,8 +6,8 @@
 //! change it; a `move` receiver is a value taken before them (D-146).
 
 use mora_hir::{
-    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Resolved, Signature,
-    Target, Ty, body, calls_diverging, infer, signature,
+    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Signature, Ty, body,
+    calls_diverging, infer, signature,
 };
 use mora_span::Span;
 
@@ -72,16 +72,7 @@ impl Lowerer<'_> {
     /// library while the library is not loaded, as written.
     fn external_path(&self, callee: ExprId) -> Option<Vec<String>> {
         match &self.owner.hir.exprs[callee] {
-            Expr::Path(path)
-                if self
-                    .owner
-                    .resolution
-                    .paths
-                    .get(&callee)
-                    .is_some_and(|resolution| {
-                        matches!(resolution.target, Target::Item(Resolved::External))
-                    }) =>
-            {
+            Expr::Path(path) if self.owner.resolution.is_external(callee) => {
                 Some(path.segments.clone())
             }
             Expr::Member { receiver, name, .. } => {

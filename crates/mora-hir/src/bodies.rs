@@ -535,6 +535,15 @@ impl BinaryOp {
             B::Coalesce => "??",
         }
     }
+
+    /// Whether it compares its operands for a `bool`: `==`, `!=`, `<`,
+    /// `>`, `<=` or `>=`.
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            Self::Eq | Self::Ne | Self::Lt | Self::Gt | Self::Le | Self::Ge
+        )
+    }
 }
 
 /// A statement of a body (§7.10).

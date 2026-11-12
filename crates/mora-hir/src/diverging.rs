@@ -1,7 +1,7 @@
 //! The functions of the standard library that never return, and the loops
 //! that never end by their condition (D-138).
 
-use crate::{Body, BodyResolution, Expr, ExprId, Literal, Resolved, STD, Target};
+use crate::{Body, BodyResolution, Expr, ExprId, Literal, STD};
 
 /// The names of the standard library's functions of the never type (§11.4),
 /// which a path ends at. Until the standard library is loaded they are
@@ -26,11 +26,7 @@ pub fn calls_diverging(body: &Body, resolution: &BodyResolution, callee: ExprId)
         },
         _ => return false,
     };
-    DIVERGING.contains(&name.as_str())
-        && resolution
-            .paths
-            .get(&path)
-            .is_some_and(|resolution| matches!(resolution.target, Target::Item(Resolved::External)))
+    DIVERGING.contains(&name.as_str()) && resolution.is_external(path)
 }
 
 /// Whether `expr` is the literal `value`: a loop whose condition is `true`
