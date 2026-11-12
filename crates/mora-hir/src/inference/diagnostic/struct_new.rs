@@ -1,6 +1,7 @@
 //! The diagnostics of memberwise creation: `MR0129` for a field it cannot
-//! see, `MR0143`, `MR0144`, `MR0147`, `MR0148` and `MR0153`, and `MR0205`
-//! for arguments to a type without a constructor.
+//! see, `MR0143`, `MR0144`, `MR0147`, `MR0148` and `MR0153`, `MR0205`
+//! for arguments to a type without a constructor, and `MR0154` for a
+//! `new` without a type that has nothing to create.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Span, TextRange, TextSize};
@@ -8,11 +9,11 @@ use mora_span::{Span, TextRange, TextSize};
 use super::Source;
 use crate::bodies::{BodyKind, BodyOwner, ExprId, TypeId, body, body_owners};
 use crate::defs::ItemId;
-use crate::inference::NotAField;
+use crate::inference::{NewTarget, NotAField};
 use crate::items::Visibility;
-use crate::report::{Declared, not_visible};
-use crate::resolve::{Scope, item_data, member_visible};
-use crate::ty::Ty;
+use crate::report::{Declared, kind_name, not_visible};
+use crate::resolve::{Resolved, Scope, item_data, member_visible};
+use crate::ty::{Construct, Ty};
 use crate::type_ref::TypeRef;
 
 /// `MR0143`: the memberwise creation of `T`, `new T { ... }` or `new T()`,
@@ -272,6 +273,63 @@ pub(super) fn no_constructor(source: &Source<'_>, expr: ExprId, ty: &Ty) -> Diag
     .with_note(format!(
         "a type without a constructor is created memberwise: `new {t} {{ ... }}` names its fields"
     ))
+}
+
+/// `MR0154`: `expr`, a `new` without a type, has nothing to create: its
+/// place gives it no target type, or one that is no struct and no class.
+pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget) -> Diagnostic {
+    let span = source.span(expr);
+    match problem {
+        NewTarget::Missing => Diagnostic::error(
+            codes::MR0154,
+            "`new` without a type needs a target type to create",
+            Label::new(span, "nothing here gives this `new` a type"),
+        )
+        .with_note("write the type, as in `new T { ... }`, or give the place a type"),
+        NewTarget::NotCreatable(ty) => Diagnostic::error(
+            codes::MR0154,
+            "`new` cannot create the type expected here",
+            Label::new(
+                span,
+                format!(
+                    "{} is expected here, which is not a struct or a class",
+                    expected(source, ty)
+                ),
+            ),
+        )
+        .with_note(
+            "`new` creates a struct or a class; write a value of the expected type another way",
+        ),
+    }
+}
+
+/// How a message names the type `ty` that a `new` cannot create: by its
+/// name where the front end knows it, or by its kind.
+fn expected(source: &Source<'_>, ty: &Ty) -> String {
+    let Ty::Unsupported(ty) = ty else {
+        return format!("`{}`", source.name(ty));
+    };
+    let declared = |item: Option<ItemId>| {
+        item.map(|item| {
+            let data = item_data(source.db, item);
+            let resolved = Resolved::Item(item);
+            format!("{} `{}`", kind_name(source.db, &resolved), data.name)
+        })
+    };
+    let kind = match ty.construct {
+        Construct::Union | Construct::Enum | Construct::Interface | Construct::Generic => {
+            return declared(ty.item).unwrap_or_else(|| "a generic type".to_owned());
+        }
+        Construct::TypeParam => "a type parameter",
+        Construct::Array => "an array type",
+        Construct::Optional => "an option type",
+        Construct::Function => "a function type",
+        Construct::Weak => "a weak reference type",
+        Construct::Any => "an interface value type",
+        // `new` creates these; nothing names them here.
+        Construct::Class | Construct::External | Construct::Splice => "a type",
+    };
+    kind.to_owned()
 }
 
 /// Where the name assigned `value` is written, or the value itself when

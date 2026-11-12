@@ -242,6 +242,15 @@ impl InstanceMember {
     }
 }
 
+/// Why a `new` without a type has nothing to create (`MR0154`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum NewTarget {
+    /// Its place gives it no target type.
+    Missing,
+    /// Its target type is this one, which is no struct and no class.
+    NotCreatable(Ty),
+}
+
 /// A type error in a body, by the expression it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TypeError {
@@ -386,6 +395,9 @@ pub(crate) enum TypeError {
     /// `expr` passes arguments to a constructor of the struct `ty`, which
     /// declares none and is not positional (`MR0205`).
     NoConstructor { expr: ExprId, ty: Ty },
+    /// `expr`, a `new` without a type, has no target type that `new` can
+    /// create (`MR0154`).
+    NewTarget { expr: ExprId, problem: NewTarget },
     /// The memberwise creation of the struct `ty` assigns `value` to the
     /// field `name` again: `first` is the value of its first assignment,
     /// and `previous` the value written just before `value` (`MR0148`).
@@ -3288,13 +3300,6 @@ mod tests {
     }
 
     #[test]
-    fn a_generic_struct_has_no_type_yet() {
-        let text = "struct Box<T> {\n    public V: T;\n}\nlet b = new Box<int> { V = 1 };\n";
-        assert_eq!(local_types(text), ["b: ?"]);
-        assert_eq!(reported(text), Vec::<String>::new());
-    }
-
-    #[test]
     fn target_typed_new_of_a_struct_follows_the_same_rules() {
         // `new() { .. }` does what `new T() { .. }` does where the target
         // type is known (§6.9).
@@ -3333,9 +3338,66 @@ mod tests {
     }
 
     #[test]
-    fn new_of_other_targets_has_no_type() {
-        let text = "class C {\n    public N: int;\n}\nlet c = new C { N = 1 };\nlet d = new();\n";
-        assert_eq!(local_types(text), ["c: ?", "d: ?"]);
+    fn new_of_a_class_or_a_generic_struct_has_its_type() {
+        // Classes and generic code come later, so nothing more is checked.
+        let text = "class C {\n    public N: int;\n}\nstruct B<T> {\n    public V: T;\n}\n\
+                    let c = new C { N = 1 };\nlet d = new C();\nlet e: C = new();\n\
+                    let f: C = new { N = 2 };\nlet g = new B<int> { V = 1 };\n\
+                    let h: B<int> = new { V = 1 };\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        assert_eq!(
+            local_types(text),
+            ["c: _", "d: _", "e: _", "f: _", "g: _", "h: _"]
+        );
+    }
+
+    #[test]
+    fn target_typed_new_needs_a_type_it_can_create() {
+        let text = "F(): int => new { X = 1 };\nlet a: int = new();\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0154", "MR0154"]);
+        assert_eq!(&text[found[0].primary.span.range], "new { X = 1 }");
+        assert_eq!(
+            found[0].message,
+            "`new` cannot create the type expected here"
+        );
+        assert_eq!(&text[found[1].primary.span.range], "new()");
+        // Each target that is no struct and no class.
+        let types = "union U {\n    A,\n    B;\n}\nenum E { X }\ninterface I {}\n";
+        for target in [
+            "string",
+            "(int, int)",
+            "int?",
+            "int[]",
+            "U",
+            "E",
+            "I",
+            "() => int",
+        ] {
+            let text = format!("{types}let x: {target} = new();\n");
+            assert_eq!(reported(&text), ["MR0154"], "{target}");
+        }
+        let text = "Id<T>(x: T): T {\n    let t: T = new();\n    return x;\n}\n";
+        assert_eq!(reported(text), ["MR0154"]);
+        // The values inside are still checked.
+        let text = "let a: bool = new { X = Missing };\n";
+        assert_eq!(reported(text), ["MR0154", "MR0127"]);
+        // A target that is an error was reported already.
+        let text = "let a: Missing = new();\n";
+        assert_eq!(reported(text), ["MR0127"]);
+    }
+
+    #[test]
+    fn new_without_a_type_or_a_target_is_mr0154() {
+        let text = "var x = new { X = 1 };\nlet y = new();\nnew();\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0154", "MR0154", "MR0154"]);
+        assert_eq!(&text[found[0].primary.span.range], "new { X = 1 }");
+        assert_eq!(
+            found[0].message,
+            "`new` without a type needs a target type to create"
+        );
+        assert_eq!(local_types(text), ["x: ?", "y: ?"]);
     }
 
     #[test]

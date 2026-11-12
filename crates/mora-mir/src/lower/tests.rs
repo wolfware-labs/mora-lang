@@ -2446,6 +2446,41 @@ fn target_typed_new_as_an_argument_takes_the_parameter_type() {
 }
 
 #[test]
+fn creating_a_class_or_a_generic_struct_comes_later() {
+    // Each form of `new`, with the type written or taken from the target,
+    // even where nothing else in the body has the type.
+    let text = "class C {\n    public N: int;\n}\nstruct B<T> {\n    public V: T;\n}\n\
+                Take(c: C) {}\n\
+                F(): int {\n    new C();\n    return 1;\n}\n\
+                G(): int {\n    let c = new C { N = 1 };\n    return 1;\n}\n\
+                H(): int {\n    Take(new());\n    return 1;\n}\n\
+                I(): int {\n    let c: C = new() { N = 1 };\n    return 1;\n}\n\
+                J(): int {\n    new B<int> { V = 1 };\n    return 1;\n}\n\
+                K(): int {\n    let b: B<int> = new { V = 1 };\n    return 1;\n}\n";
+    let lowered = lowered(text);
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    for (name, milestone) in [
+        ("F", "M2.1"),
+        ("G", "M2.1"),
+        ("H", "M2.1"),
+        ("I", "M2.1"),
+        ("J", "M3.9"),
+        ("K", "M3.9"),
+    ] {
+        let line = format!("// UsersApi.{name}: not lowered until {milestone}\n");
+        assert!(dump.contains(&line), "{line}{dump}");
+    }
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: an expression with a class type is not lowered until M2.1"
+    );
+    assert_eq!(
+        later_error(text, |l| l.owner("J")),
+        "internal error lowering UsersApi.J: an expression with a generic type is not lowered until M3.9"
+    );
+}
+
+#[test]
 fn creating_a_positional_struct_comes_with_positional_structs() {
     // The later milestone wins over a constructor call in the same body,
     // and a local function is lowered with the body it is in.

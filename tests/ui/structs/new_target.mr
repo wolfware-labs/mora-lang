@@ -1,0 +1,21 @@
+// A `new` without a type creates its target type, a struct or a class.
+public struct Point {
+    public X: int;
+    public Y: int;
+}
+
+public class Store {
+}
+
+public enum Color { Red }
+
+let p: Point = new { X = 1, Y = 2 };
+let s: Store = new();
+
+var a = new { X = 1, Y = 2 }; //~ ERROR MR0154
+new(); //~ ERROR MR0154
+let n: int = new(); //~ ERROR MR0154
+let o: Point? = new { X = 1, Y = 2 }; //~ ERROR MR0154
+let c: Color = new(); //~ ERROR MR0154
+
+Origin(): string => new(); //~ ERROR MR0154

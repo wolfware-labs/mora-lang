@@ -235,6 +235,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             *memberwise,
         ),
         TypeError::NoConstructor { expr, ty } => struct_new::no_constructor(source, *expr, ty),
+        TypeError::NewTarget { expr, problem } => struct_new::new_target(source, *expr, problem),
         TypeError::RepeatedField {
             value,
             first,

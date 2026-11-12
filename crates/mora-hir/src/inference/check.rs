@@ -12,8 +12,8 @@ use mora_syntax::lexer::number::{
 
 use super::constant::Value;
 use super::{
-    Callee, Constant, Context, Conversion, ConversionKind, Inference, NotAField, TypeError,
-    constant, converts, is_known, numeric, same,
+    Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
+    TypeError, constant, converts, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -22,7 +22,7 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
-use crate::items::{ValueKind, item_tree};
+use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::resolve::{Resolved, Scope, item_data, value_visible};
 use crate::signature::{Creation, creation, instance_fields, signature, struct_field, this_type};
 use crate::suggest::closest;
@@ -390,6 +390,7 @@ impl Check<'_> {
             }
             _ => {
                 self.infer(expr);
+                self.untargeted_new(expr, NewTarget::Missing);
             }
         }
     }
@@ -404,7 +405,10 @@ impl Check<'_> {
                 let slot = arena_index(*local);
                 match self.locals[slot].clone() {
                     Some(declared) => self.check(init, &declared),
-                    None => self.locals[slot] = self.infer(init),
+                    None => {
+                        self.locals[slot] = self.infer(init);
+                        self.untargeted_new(init, NewTarget::Missing);
+                    }
                 }
             }
             Stmt::Deconstruct { pat, init } => {
@@ -1324,7 +1328,9 @@ impl Check<'_> {
     /// on a positional struct, are an error. A call of a constructor
     /// assigns the fields itself, and the names after it are plain
     /// assignments. `new() { .. }` without a type does the same where
-    /// `expect` gives the target type. Other targets have no type yet.
+    /// `expect` gives the target type, which must be one `new` creates
+    /// (`MR0154`). A class or a generic struct has its type, and nothing
+    /// more is checked until classes and generic code.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1338,7 +1344,15 @@ impl Check<'_> {
         }
         let written = match (ty, expect) {
             (Some(ty), _) => Some(self.resolution.written(ty)),
-            (None, Expect::Target(target)) => Some(target.clone()),
+            (None, Expect::Target(target)) => {
+                if !self.creatable(target) {
+                    self.errors.push(TypeError::NewTarget {
+                        expr,
+                        problem: NewTarget::NotCreatable(target.clone()),
+                    });
+                }
+                Some(target.clone())
+            }
             (None, Expect::Hint(_) | Expect::None) => None,
         };
         // A struct type names a struct that is not generic.
@@ -1346,7 +1360,10 @@ impl Check<'_> {
             for &(_, init) in inits.into_iter().flatten() {
                 self.infer(init);
             }
-            return None;
+            // A class and a generic struct have their type, and a later
+            // milestone checks their creation; what `new` cannot create
+            // has none.
+            return written.filter(|written| self.creatable(written));
         };
         let inits = inits.unwrap_or_default();
         let creation = creation(self.db, item, args);
@@ -1377,6 +1394,34 @@ impl Check<'_> {
             }
         }
         Some(written)
+    }
+
+    /// Whether `new` creates a value of `ty`: a struct or a class, generic
+    /// or not (§7.3). A type this milestone knows nothing of, and one that
+    /// is an error already, count as such, so nothing more is reported.
+    fn creatable(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Struct(_) | Ty::Error => true,
+            Ty::Unsupported(ty) => match ty.construct {
+                Construct::Class | Construct::External | Construct::Splice => true,
+                Construct::Generic => ty.item.is_some_and(|item| {
+                    matches!(
+                        item_data(self.db, item).kind,
+                        ItemKind::Struct | ItemKind::Class
+                    )
+                }),
+                _ => false,
+            },
+            Ty::Primitive(_) | Ty::String | Ty::Tuple(_) | Ty::Never => false,
+        }
+    }
+
+    /// Reports `expr` when it is a `new` without a type in a place that
+    /// gives it no target type (`MR0154`).
+    fn untargeted_new(&mut self, expr: ExprId, problem: NewTarget) {
+        if matches!(self.body.exprs[expr], Expr::New { ty: None, .. }) {
+            self.errors.push(TypeError::NewTarget { expr, problem });
+        }
     }
 
     /// The assignments `inits` after a call of a constructor of the struct
