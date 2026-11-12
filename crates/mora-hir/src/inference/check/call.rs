@@ -163,48 +163,63 @@ impl<'a> Check<'a> {
             self.args(args);
             return common_return(candidates.iter());
         }
-        // How each overload takes the arguments, for the target types of
-        // lambdas and of `new` without a type among them.
-        let targeted = args
+        // The arguments that take no type from their parameter come first,
+        // so that the overloads they cannot go to are ruled out before a
+        // lambda or a `new` without a type takes its target type.
+        let mut typed: Vec<Option<Argument>> = args
             .iter()
-            .any(|arg| takes_target(&self.body.exprs[arg.expr]));
-        let bindings: Vec<_> = if candidates.len() > 1 && targeted {
+            .map(|arg| {
+                if takes_target(&self.body.exprs[arg.expr]) {
+                    return None;
+                }
+                Some(match constant::value(&self.body.exprs, arg.expr) {
+                    Some(value) => Argument::Literal(value),
+                    None => Argument::Typed(self.infer(arg.expr)),
+                })
+            })
+            .collect();
+        // The parameter of each argument in each overload those arguments
+        // can go to, by count, by name, by mode and by type.
+        let bindings: Vec<_> = if candidates.len() > 1 && typed.iter().any(Option::is_none) {
             candidates
                 .iter()
-                .map(|candidate| bind(candidate, args).ok())
+                .map(|candidate| {
+                    let params = bind(candidate, args).ok()?;
+                    args.iter()
+                        .zip(&typed)
+                        .zip(&params)
+                        .all(|((arg, argument), &param)| {
+                            let parameter = &candidate.params[param];
+                            argument.as_ref().is_none_or(|argument| {
+                                mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
+                            })
+                        })
+                        .then_some(params)
+                })
                 .collect()
         } else {
             Vec::new()
         };
         // Each `new` without a type that the overloads give no target.
         let mut untargeted = Vec::new();
-        let arguments: Vec<Argument> = args
-            .iter()
-            .enumerate()
-            .map(
-                |(position, arg)| match constant::value(&self.body.exprs, arg.expr) {
-                    Some(value) => Argument::Literal(value),
-                    None => {
-                        let target = if takes_target(&self.body.exprs[arg.expr]) {
-                            match arg_target(&candidates, &bindings, arg, position) {
-                                ArgTarget::Type(ty) => Some(ty),
-                                ArgTarget::Differs => {
-                                    untargeted.push(arg.expr);
-                                    None
-                                }
-                                ArgTarget::None => None,
-                            }
-                        } else {
-                            None
-                        };
-                        Argument::Typed(match target {
-                            Some(ty) => self.expr(arg.expr, Expect::Target(ty)),
-                            None => self.infer(arg.expr),
-                        })
-                    }
-                },
-            )
-            .collect();
+        for (position, arg) in args.iter().enumerate() {
+            if typed[position].is_some() {
+                continue;
+            }
+            let target = match arg_target(&candidates, &bindings, arg, position) {
+                ArgTarget::Type(ty) => Some(ty),
+                ArgTarget::Differs => {
+                    untargeted.push(arg.expr);
+                    None
+                }
+                ArgTarget::None => None,
+            };
+            typed[position] = Some(Argument::Typed(match target {
+                Some(ty) => self.expr(arg.expr, Expect::Target(ty)),
+                None => self.infer(arg.expr),
+            }));
+        }
+        let arguments: Vec<Argument> = typed.into_iter().flatten().collect();
         if let [candidate] = candidates.as_slice() {
             return self.call_one(expr, candidate, args, &arguments);
         }
@@ -752,8 +767,8 @@ enum ArgTarget<'a> {
 /// The target type of the argument `arg` at `position`: with one function
 /// to call, the type of its parameter of that name or at that position;
 /// with overloads, the type that every one of them that can take the
-/// arguments has there, by count and by name, as `bindings` give them,
-/// `None` for one that cannot (§6.9).
+/// arguments has there, as `bindings` give them, `None` for one that
+/// cannot (§6.9).
 fn arg_target<'a>(
     candidates: &'a [Candidate<'_>],
     bindings: &[Option<Vec<usize>>],

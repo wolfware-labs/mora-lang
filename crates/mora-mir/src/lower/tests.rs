@@ -2462,6 +2462,22 @@ fn target_typed_new_takes_the_parameter_type_that_the_overloads_share() {
 }
 
 #[test]
+fn target_typed_new_takes_the_type_of_the_overload_the_other_arguments_allow() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n}\nstruct Q {\n    public Y: int;\n}\n\
+         Take(p: P, n: int): int => p.X + n;\nTake(q: Q, s: string): int => q.Y;\n\
+         F(): int => Take(new { X = 2 }, 1);\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = UsersApi.P{struct UsersApi.P}(2);",
+            "_0 = call UsersApi.Take{fn UsersApi.Take}(copy _2, copy _4) -> bb1;",
+        ],
+    );
+}
+
+#[test]
 fn creating_a_class_or_a_generic_struct_comes_later() {
     // Each form of `new`, with the type written or taken from the target,
     // even where nothing else in the body has the type.

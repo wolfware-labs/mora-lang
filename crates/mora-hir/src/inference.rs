@@ -3376,6 +3376,16 @@ mod tests {
             found[0].primary.message.as_deref(),
             Some("the overloads of `Take` take different types here")
         );
+        // The other arguments, typed without a target, rule out the
+        // overloads they cannot go to first.
+        let pick = format!("{p}Pick(p: P, n: int) {{}}\nPick(q: Q, s: string) {{}}\n");
+        let text = format!("{pick}Pick(new {{ X = 1 }}, 1);\nPick(new {{ Y = 2 }}, \"a\");\n");
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let types = expr_types(&text);
+        assert!(types.iter().any(|ty| ty == "new { X = 1 }: P"), "{types:?}");
+        assert!(types.iter().any(|ty| ty == "new { Y = 2 }: Q"), "{types:?}");
+        let text = format!("{pick}Pick(new {{ X = 1 }}, true);\n");
+        assert_eq!(reported(&text), ["MR0205"]);
         // A call that is an error already says so alone.
         let text = format!("{p}Take(p: P) {{}}\nTake(q: Q) {{}}\nTake(new {{ X = 1 }}, 2);\n");
         assert_eq!(reported(&text), ["MR0205"]);
