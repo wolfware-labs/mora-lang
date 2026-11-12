@@ -479,6 +479,7 @@ Done when:
 - UI tests for `MR0140`, `MR0143`, `MR0144` and assigning a read-only field.
 - UI tests for writes outside a field's write scope, `redundant-mut-scope` and `MR0252`.
 - Run tests showing that a `stored` getter reads the value recalculated by the last write to each input.
+- UI tests for reading a field the use cannot see (`MR0129`, §4.5), from another type, file, folder and project.
 
 ### M2.2 Positional structs
 
