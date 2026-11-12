@@ -2863,15 +2863,32 @@ mod tests {
         let fixed = apply_fixes(text);
         assert_eq!(fixed.remaining, Vec::<String>::new());
         assert!(fixed.text.contains("new S() { N = 2 }"), "{}", fixed.text);
-        // No field is reported missing, and the values are still checked.
+        // No field is reported missing, and the values and names are still
+        // checked.
         let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
                     struct T {\n    public N: int;\n    public T() { N = 1; }\n}\n\
                     let s = new S { };\nlet t = new S { N = \"a\", M = 1 };\n";
         let found = diagnostics_of(text);
-        assert_eq!(codes(&found), ["MR0153", "MR0153", "MR0203"]);
+        assert_eq!(codes(&found), ["MR0153", "MR0153", "MR0203", "MR0147"]);
         // Without a constructor that takes no arguments there is no fix,
         // whatever the constructors of other types take.
         assert!(found[0].fixes.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn braces_alone_on_a_struct_with_a_constructor_still_check_the_names() {
+        // The names are checked as after the constructor that the fix
+        // calls, and a name that is no field leaves no fix to offer.
+        let text = "struct S {\n    public mut N: int;\n    private mut H: int;\n    \
+                    public S() { N = 1; H = 1; }\n}\n\
+                    let s = new S { M = 1 };\nlet t = new S { N = 1, H = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153", "MR0147", "MR0153", "MR0129"]);
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+        assert!(found[2].fixes.is_empty(), "{found:#?}");
+        // A positional struct's names are not checked until M2.2.
+        let text = "struct U(Id: int);\nlet u = new U { Id = 2 };\n";
+        assert_eq!(reported(text), ["MR0153"]);
     }
 
     #[test]

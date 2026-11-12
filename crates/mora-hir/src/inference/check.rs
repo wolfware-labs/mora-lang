@@ -1355,11 +1355,13 @@ impl Check<'_> {
                     from: self.scope,
                     writable,
                 });
-                self.assigned_values(item, inits);
+                // The names are checked as after the constructor call that
+                // the fix writes.
+                let positional = item_data(self.db, item).is_positional;
+                self.after_constructor(positional, item, &written, inits);
             }
-            Creation::Constructor | Creation::Positional => {
-                self.after_constructor(creation, item, &written, inits);
-            }
+            Creation::Constructor => self.after_constructor(false, item, &written, inits),
+            Creation::Positional => self.after_constructor(true, item, &written, inits),
             Creation::NoConstructor => {
                 self.errors.push(TypeError::NoConstructor {
                     expr,
@@ -1371,15 +1373,15 @@ impl Check<'_> {
         Some(written)
     }
 
-    /// The assignments `inits` after `creation`, a call of a constructor of
-    /// the struct `item` of type `ty`, which are plain assignments (§6.9):
-    /// each value is checked against the type of the field it names, a
-    /// hidden field is `MR0129`, and, after a declared constructor, a name
-    /// that is not an instance field is `MR0147`. A field may be assigned
-    /// twice.
+    /// The assignments `inits` after a call of a constructor of the struct
+    /// `item` of type `ty`, `positional` when it is the one of a positional
+    /// struct, which are plain assignments (§6.9): each value is checked
+    /// against the type of the field it names, a hidden field is `MR0129`,
+    /// and, after a declared constructor, a name that is not an instance
+    /// field is `MR0147`. A field may be assigned twice.
     fn after_constructor(
         &mut self,
-        creation: Creation,
+        positional: bool,
         item: ItemId,
         ty: &Ty,
         inits: &[(String, ExprId)],
@@ -1401,7 +1403,7 @@ impl Check<'_> {
                 // The positional fields are not instance fields until M2.2,
                 // so a name that is no instance field may still be one of
                 // them.
-                None if creation == Creation::Positional => {}
+                None if positional => {}
                 None => {
                     if let Some(error) = self.not_a_field(item, ty, inits, position, false) {
                         self.errors.push(error);
