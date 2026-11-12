@@ -1328,9 +1328,10 @@ impl Check<'_> {
     /// on a positional struct, are an error. A call of a constructor
     /// assigns the fields itself, and the names after it are plain
     /// assignments. `new() { .. }` without a type does the same where
-    /// `expect` gives the target type, which must be one `new` creates
-    /// (`MR0154`). A class or a generic struct has its type, and nothing
-    /// more is checked until classes and generic code.
+    /// `expect` gives the target type. The type written or taken from the
+    /// target must be one `new` creates (`MR0154`). A class or a generic
+    /// struct has its type, and nothing more is checked until classes and
+    /// generic code.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1343,7 +1344,16 @@ impl Check<'_> {
             self.args(args);
         }
         let written = match (ty, expect) {
-            (Some(ty), _) => Some(self.resolution.written(ty)),
+            (Some(ty), _) => {
+                let written = self.resolution.written(ty);
+                if !self.creatable(&written) {
+                    self.errors.push(TypeError::NewTarget {
+                        expr,
+                        problem: NewTarget::Written(written.clone()),
+                    });
+                }
+                Some(written)
+            }
             (None, Expect::Target(target)) => {
                 if !self.creatable(target) {
                     self.errors.push(TypeError::NewTarget {

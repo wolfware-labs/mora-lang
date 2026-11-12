@@ -33,3 +33,7 @@ Fill(p: Point, s: string) {}
 
 Draw(new { W = 1 }); //~ ERROR MR0154
 Fill(new { X = 1, Y = 2 }, 3);
+
+// A written type must be a struct or a class too.
+let i = new int(); //~ ERROR MR0154
+let k = new Color { }; //~ ERROR MR0154

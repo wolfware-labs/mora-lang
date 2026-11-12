@@ -242,7 +242,7 @@ impl InstanceMember {
     }
 }
 
-/// Why a `new` without a type has nothing to create (`MR0154`).
+/// Why a `new` has nothing to create (`MR0154`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NewTarget {
     /// Its place gives it no target type.
@@ -252,6 +252,9 @@ pub(crate) enum NewTarget {
     Overloads { name: String },
     /// Its target type is this one, which is no struct and no class.
     NotCreatable(Ty),
+    /// It is not without a type after all: the type written is this one,
+    /// which is no struct and no class.
+    Written(Ty),
 }
 
 /// A type error in a body, by the expression it is about.
@@ -398,8 +401,7 @@ pub(crate) enum TypeError {
     /// `expr` passes arguments to a constructor of the struct `ty`, which
     /// declares none and is not positional (`MR0205`).
     NoConstructor { expr: ExprId, ty: Ty },
-    /// `expr`, a `new` without a type, has no target type that `new` can
-    /// create (`MR0154`).
+    /// `expr`, a `new`, has no type that `new` can create (`MR0154`).
     NewTarget { expr: ExprId, problem: NewTarget },
     /// The memberwise creation of the struct `ty` assigns `value` to the
     /// field `name` again: `first` is the value of its first assignment,
@@ -3451,6 +3453,27 @@ mod tests {
             "`new` without a type needs a target type to create"
         );
         assert_eq!(local_types(text), ["x: ?", "y: ?"]);
+    }
+
+    #[test]
+    fn new_of_a_written_type_it_cannot_create_is_mr0154() {
+        let text = "let a = new int();\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0154"]);
+        assert_eq!(&text[found[0].primary.span.range], "new int()");
+        assert_eq!(found[0].message, "`new` cannot create a value of `int`");
+        assert_eq!(local_types(text), ["a: ?"]);
+        let types = "union U {\n    A,\n    B;\n}\nenum E { X }\ninterface I {}\n";
+        for ty in ["string", "int?", "U", "E", "I"] {
+            let text = format!("{types}let x = new {ty}();\nlet y = new {ty} {{ }};\n");
+            assert_eq!(reported(&text), ["MR0154", "MR0154"], "{ty}");
+        }
+        let text = "Id<T>(x: T): T {\n    let t = new T();\n    return x;\n}\n";
+        assert_eq!(reported(text), ["MR0154"]);
+        // The arguments and values inside are still checked, and a type
+        // that is an error was reported already.
+        let text = "let a = new int(Missing) { X = Other };\nlet b = new Missing();\n";
+        assert_eq!(reported(text), ["MR0154", "MR0127", "MR0127", "MR0127"]);
     }
 
     #[test]

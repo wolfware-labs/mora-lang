@@ -53,3 +53,19 @@ error[MR0154]: `new` without a type needs a target type to create
    |      ^^^^^^^^^^^^^ the overloads of `Draw` take different types here
    |
    = note: write the type, as in `new T { ... }`, so that it chooses the overload
+
+error[MR0154]: `new` cannot create a value of `int`
+  --> tests/ui/structs/new_target.mr:38:9
+   |
+38 | let i = new int(); //~ ERROR MR0154
+   |         ^^^^^^^^^ `int` is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of this type another way
+
+error[MR0154]: `new` cannot create a value of the enum `Color`
+  --> tests/ui/structs/new_target.mr:39:9
+   |
+39 | let k = new Color { }; //~ ERROR MR0154
+   |         ^^^^^^^^^^^^^ the enum `Color` is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of this type another way
