@@ -3464,6 +3464,12 @@ mod tests {
         assert_eq!(&text[found[0].primary.span.range], "new int()");
         assert_eq!(found[0].message, "`new` cannot create a value of `int`");
         assert_eq!(local_types(text), ["a: ?"]);
+        // A type with no item of its own is named by its kind.
+        let found = diagnostics_of("let a = new int?();\n");
+        assert_eq!(
+            found[0].message,
+            "`new` cannot create a value of an option type"
+        );
         let types = "union U {\n    A,\n    B;\n}\nenum E { X }\ninterface I {}\n";
         for ty in ["string", "int?", "U", "E", "I"] {
             let text = format!("{types}let x = new {ty}();\nlet y = new {ty} {{ }};\n");

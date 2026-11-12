@@ -33,6 +33,11 @@ exclude_re = [
     # Any hash finds equal tokens; only the speed of the table depends on it.
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 0$',
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 1$',
+    # Binding every argument when a call has one candidate, or no
+    # argument waiting for a target, finds the same parameters the
+    # single-candidate path uses; the guard only skips that work.
+    '^crates/mora-hir/src/inference/check/call\.rs:183:56: replace && with \|\| in Check<.a>::call$',
+    '^crates/mora-hir/src/inference/check/call\.rs:183:52: replace > with >= in Check<.a>::call$',
     # The placeholder compiler has no backends either way.
     '^crates/mora-testkit/src/compiler\.rs:52:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     '^crates/mora-testkit/src/compiler\.rs:144:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
