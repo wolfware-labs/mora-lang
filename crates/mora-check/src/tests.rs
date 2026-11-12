@@ -653,7 +653,7 @@ fn async_bodies_wait_for_their_return_types() {
     let found = [
         "async F(): int {\n}\nasync G(): int {\n    return;\n}\n",
         "H() {\n    async L(): int {\n    }\n    async M(): int {\n        return;\n    }\n}\n",
-        "interface I {\n    M(): int;\n}\nclass C : I {\n    async I.M(): int {\n        return;\n    }\n}\n",
+        "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    async I.M(): int {\n        return;\n    }\n    async I.N(): int {\n    }\n}\n",
         "struct S {\n    X: int;\n}\nextension (s: S) {\n    async F(): int {\n    }\n}\n",
     ]
     .map(messages);

@@ -1780,6 +1780,37 @@ get extension#0.Empty(items#0) => items#0[0];
     }
 
     #[test]
+    fn a_member_body_says_whether_it_is_async() {
+        // The item tree holds neither an interface implementation nor an
+        // extension function, so their bodies say it.
+        let db = TestDb::new();
+        let text = "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    \
+                    async I.M(): int => 1;\n    I.N(): int => 1;\n}\n\
+                    struct S {\n    X: int;\n}\nextension (s: S) {\n    \
+                    async F(): int => 1;\n    G(): int => 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let found: Vec<_> = body_owners(&db, file)
+            .into_iter()
+            .filter(|owner| matches!(owner, BodyOwner::Member(..) | BodyOwner::Extension(..)))
+            .map(|owner| {
+                let body = body(&db, file, owner);
+                (body.name.clone(), body.is_async)
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("I.M".to_owned(), true),
+                ("I.N".to_owned(), false),
+                ("extension".to_owned(), false),
+                ("F".to_owned(), true),
+                ("G".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
     fn a_recovered_return_has_a_missing_value() {
         assert_eq!(
             dump("F(): int {\n    return\n}\nG() {\n    return;\n}\n"),

@@ -3462,6 +3462,74 @@ mod tests {
     }
 
     #[test]
+    fn new_without_a_target_is_mr0154_wherever_it_is() {
+        let p = "struct P {\n    public X: int;\n}\n";
+        // A receiver, and an argument of a function of the standard
+        // library, written as a path or through a member of one.
+        for text in [
+            "let a = new { X = 1 }.X;\n",
+            "Console.WriteLine(new { X = 1 });\n",
+            "Console.Out.WriteLine(new { X = 1 });\n",
+        ] {
+            let text = format!("{p}{text}");
+            let found = diagnostics_of(&text);
+            assert_eq!(codes(&found), ["MR0154"], "{text}");
+            assert_eq!(&text[found[0].primary.span.range], "new { X = 1 }");
+        }
+        // An argument of a call checked later is checked with that call,
+        // and what is inside it now.
+        let later = "class C {\n    public Take(p: P) {}\n}\nMake<T>(p: P, t: T) {}\n";
+        for (text, expected) in [
+            ("F(c: C) {\n    c.Take(new { X = 1 });\n}\n", vec![]),
+            ("F() {\n    Make(new { X = 1 }, 1);\n}\n", vec![]),
+            ("F() {\n    Make(new { X = 1 }.X, 1);\n}\n", vec!["MR0154"]),
+            // The name that is not found is the one mistake.
+            ("F() {\n    Missing(new { X = 1 });\n}\n", vec!["MR0127"]),
+        ] {
+            assert_eq!(reported(&format!("{p}{later}{text}")), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn overloads_leave_a_new_to_an_unresolved_or_wrong_call() {
+        let head = "struct P {\n    public X: int;\n}\nstruct Q {\n    public Y: int;\n}\n\
+                    class Box {}\n";
+        for (decls, call, expected) in [
+            // A parameter of a type not known yet: the call is not
+            // resolved (D-137).
+            (
+                "Put(p: P, b: Box) {}\nPut(q: Q, s: string) {}\n",
+                "F(b: Box) {\n    Put(new { X = 1 }, b);\n}\n",
+                vec![],
+            ),
+            // An argument that is an error already.
+            (
+                "Put(p: P, n: int) {}\nPut(q: Q, s: string) {}\n",
+                "Put(new { X = 1 }, Missing);\n",
+                vec!["MR0127"],
+            ),
+            // Every type known and different: the `new` is the mistake.
+            (
+                "Put(p: P, n: int) {}\nPut(q: Q, n: int) {}\n",
+                "Put(new { X = 1 }, 1);\n",
+                vec!["MR0154"],
+            ),
+        ] {
+            assert_eq!(
+                reported(&format!("{head}{decls}{call}")),
+                expected,
+                "{call}"
+            );
+        }
+        // A lambda the overloads give different types is checked without
+        // a target type: the `new` it returns is the error, not the lambda.
+        let text = format!("{head}Run(p: P) {{}}\nRun(q: Q) {{}}\nRun(() => new {{ X = 1 }});\n");
+        let found = diagnostics_of(&text);
+        assert_eq!(codes(&found), ["MR0154"]);
+        assert_eq!(&text[found[0].primary.span.range], "new { X = 1 }");
+    }
+
+    #[test]
     fn new_of_a_written_type_it_cannot_create_is_mr0154() {
         let text = "let a = new int();\n";
         let found = diagnostics_of(text);
