@@ -276,7 +276,8 @@ pub(super) fn no_constructor(source: &Source<'_>, expr: ExprId, ty: &Ty) -> Diag
 }
 
 /// `MR0154`: `expr`, a `new` without a type, has nothing to create: its
-/// place gives it no target type, or one that is no struct and no class.
+/// place gives it no target type, the overloads it is an argument of
+/// disagree on one, or it is no struct and no class.
 pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget) -> Diagnostic {
     let span = source.span(expr);
     match problem {
@@ -286,6 +287,15 @@ pub(super) fn new_target(source: &Source<'_>, expr: ExprId, problem: &NewTarget)
             Label::new(span, "nothing here gives this `new` a type"),
         )
         .with_note("write the type, as in `new T { ... }`, or give the place a type"),
+        NewTarget::Overloads { name } => Diagnostic::error(
+            codes::MR0154,
+            "`new` without a type needs a target type to create",
+            Label::new(
+                span,
+                format!("the overloads of `{name}` take different types here"),
+            ),
+        )
+        .with_note("write the type, as in `new T { ... }`, so that it chooses the overload"),
         NewTarget::NotCreatable(ty) => Diagnostic::error(
             codes::MR0154,
             "`new` cannot create the type expected here",

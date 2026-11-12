@@ -19,3 +19,17 @@ let o: Point? = new { X = 1, Y = 2 }; //~ ERROR MR0154
 let c: Color = new(); //~ ERROR MR0154
 
 Origin(): string => new(); //~ ERROR MR0154
+
+// An argument takes the type that every overload the call can bind has
+// at its position.
+public struct Size {
+    public W: int;
+}
+
+Draw(p: Point) {}
+Draw(s: Size) {}
+Fill(p: Point, n: int) {}
+Fill(p: Point, s: string) {}
+
+Draw(new { W = 1 }); //~ ERROR MR0154
+Fill(new { X = 1, Y = 2 }, 3);

@@ -45,3 +45,11 @@ error[MR0154]: `new` cannot create the type expected here
    |                     ^^^^^ `string` is expected here, which is not a struct or a class
    |
    = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_target.mr:34:6
+   |
+34 | Draw(new { W = 1 }); //~ ERROR MR0154
+   |      ^^^^^^^^^^^^^ the overloads of `Draw` take different types here
+   |
+   = note: write the type, as in `new T { ... }`, so that it chooses the overload

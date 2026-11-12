@@ -12,7 +12,7 @@ use crate::defs::ItemId;
 use crate::diverging::calls_diverging;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
+    Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
 use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::resolve::{Resolved, is_visible, item_data};
@@ -163,6 +163,21 @@ impl<'a> Check<'a> {
             self.args(args);
             return common_return(candidates.iter());
         }
+        // How each overload takes the arguments, for the target types of
+        // lambdas and of `new` without a type among them.
+        let targeted = args
+            .iter()
+            .any(|arg| takes_target(&self.body.exprs[arg.expr]));
+        let bindings: Vec<_> = if candidates.len() > 1 && targeted {
+            candidates
+                .iter()
+                .map(|candidate| bind(candidate, args).ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Each `new` without a type that the overloads give no target.
+        let mut untargeted = Vec::new();
         let arguments: Vec<Argument> = args
             .iter()
             .enumerate()
@@ -170,25 +185,20 @@ impl<'a> Check<'a> {
                 |(position, arg)| match constant::value(&self.body.exprs, arg.expr) {
                     Some(value) => Argument::Literal(value),
                     None => {
-                        // A lambda takes the function type of the parameter it
-                        // is for, and a `new` without a type the parameter's
-                        // type, when there is only one function to call.
-                        let target = match candidates.as_slice() {
-                            [only]
-                                if matches!(
-                                    self.body.exprs[arg.expr],
-                                    Expr::Lambda(_) | Expr::New { ty: None, .. }
-                                ) =>
-                            {
-                                match &arg.name {
-                                    Some(name) => only.params.iter().find(|p| p.name == name),
-                                    None => only.params.get(position),
+                        let target = if takes_target(&self.body.exprs[arg.expr]) {
+                            match arg_target(&candidates, &bindings, arg, position) {
+                                ArgTarget::Type(ty) => Some(ty),
+                                ArgTarget::Differs => {
+                                    untargeted.push(arg.expr);
+                                    None
                                 }
+                                ArgTarget::None => None,
                             }
-                            _ => None,
+                        } else {
+                            None
                         };
                         Argument::Typed(match target {
-                            Some(param) => self.expr(arg.expr, Expect::Target(&param.ty)),
+                            Some(ty) => self.expr(arg.expr, Expect::Target(ty)),
                             None => self.infer(arg.expr),
                         })
                     }
@@ -198,7 +208,28 @@ impl<'a> Check<'a> {
         if let [candidate] = candidates.as_slice() {
             return self.call_one(expr, candidate, args, &arguments);
         }
-        self.call_overloads(expr, &candidates, args, &arguments)
+        let reported = self.errors.len();
+        let ty = self.call_overloads(expr, &candidates, args, &arguments);
+        // A call that is an error already says what is wrong with it.
+        let call_error = self.errors[reported..].iter().any(|error| {
+            matches!(
+                error,
+                TypeError::NoOverload { .. }
+                    | TypeError::Ambiguous { .. }
+                    | TypeError::NamedArgument { .. }
+            )
+        });
+        if !call_error {
+            for arg in untargeted {
+                self.untargeted_new(
+                    arg,
+                    NewTarget::Overloads {
+                        name: candidates[0].name.to_owned(),
+                    },
+                );
+            }
+        }
+        ty
     }
 
     /// The arguments of a call this milestone does not check, inferred so
@@ -697,6 +728,55 @@ fn bind(candidate: &Candidate<'_>, args: &[Arg]) -> Result<Vec<usize>, Unbound> 
     {
         Some(missing) => Err(Unbound::Missing(missing)),
         None => Ok(params),
+    }
+}
+
+/// Whether an argument takes its type from its parameter: a lambda, or a
+/// `new` without a type.
+fn takes_target(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lambda(_) | Expr::New { ty: None, .. })
+}
+
+/// What the candidates of a call give an argument that takes its type
+/// from its parameter.
+enum ArgTarget<'a> {
+    /// The type of the parameter it goes to.
+    Type(&'a Ty),
+    /// Overloads that can take the arguments have parameters of different
+    /// types there.
+    Differs,
+    /// No parameter takes it.
+    None,
+}
+
+/// The target type of the argument `arg` at `position`: with one function
+/// to call, the type of its parameter of that name or at that position;
+/// with overloads, the type that every one of them that can take the
+/// arguments has there, by count and by name, as `bindings` give them,
+/// `None` for one that cannot (§6.9).
+fn arg_target<'a>(
+    candidates: &'a [Candidate<'_>],
+    bindings: &[Option<Vec<usize>>],
+    arg: &Arg,
+    position: usize,
+) -> ArgTarget<'a> {
+    if let [only] = candidates {
+        let param = match &arg.name {
+            Some(name) => only.params.iter().find(|p| p.name == name),
+            None => only.params.get(position),
+        };
+        return param.map_or(ArgTarget::None, |param| ArgTarget::Type(&param.ty));
+    }
+    let mut types = candidates
+        .iter()
+        .zip(bindings)
+        .filter_map(|(candidate, params)| {
+            Some(&*candidate.params[*params.as_ref()?.get(position)?].ty)
+        });
+    match types.next() {
+        Some(first) if types.all(|ty| same(ty, first)) => ArgTarget::Type(first),
+        Some(_) => ArgTarget::Differs,
+        None => ArgTarget::None,
     }
 }
 

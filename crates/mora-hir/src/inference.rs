@@ -247,6 +247,9 @@ impl InstanceMember {
 pub(crate) enum NewTarget {
     /// Its place gives it no target type.
     Missing,
+    /// It is an argument of a call of `name`, whose overloads that can
+    /// take the arguments have parameters of different types there.
+    Overloads { name: String },
     /// Its target type is this one, which is no struct and no class.
     NotCreatable(Ty),
 }
@@ -3341,6 +3344,50 @@ mod tests {
         assert!(types.iter().any(|ty| ty == "new { X = 2 }: P"), "{types:?}");
         let text = format!("{p}Take(p: P) {{}}\nTake(new {{ X = \"a\" }});\nTake(new {{ }});\n");
         assert_eq!(reported(&text), ["MR0203", "MR0143"]);
+    }
+
+    #[test]
+    fn target_typed_new_takes_the_type_that_every_overload_agrees_on() {
+        let p = "struct P {\n    public X: int;\n}\nstruct Q {\n    public Y: int;\n}\n";
+        // Each overload the argument count allows has `P` there; the one
+        // with three parameters does not count.
+        let text = format!(
+            "{p}Take(p: P, n: int) {{}}\nTake(p: P, s: string) {{}}\n\
+             Take(q: Q, n: int, m: int) {{}}\nTake(new {{ X = 1 }}, 2);\n\
+             Take(s: \"a\", p: new {{ X = 3 }});\n"
+        );
+        assert_eq!(reported(&text), Vec::<String>::new());
+        let types = expr_types(&text);
+        assert!(types.iter().any(|ty| ty == "new { X = 1 }: P"), "{types:?}");
+        assert!(types.iter().any(|ty| ty == "new { X = 3 }: P"), "{types:?}");
+        // The fields are checked against the type.
+        let text = format!(
+            "{p}Take(p: P, n: int) {{}}\nTake(p: P, s: string) {{}}\nTake(new {{ Y = 1 }}, 2);\n"
+        );
+        assert_eq!(reported(&text), ["MR0143", "MR0147"]);
+        // Overloads that differ there give no target type.
+        let text = format!("{p}Take(p: P) {{}}\nTake(q: Q) {{}}\nTake(new {{ X = 1 }});\n");
+        let found = diagnostics_of(&text);
+        assert_eq!(codes(&found), ["MR0154"]);
+        assert_eq!(&text[found[0].primary.span.range], "new { X = 1 }");
+        assert_eq!(
+            found[0].primary.message.as_deref(),
+            Some("the overloads of `Take` take different types here")
+        );
+        // A call that is an error already says so alone.
+        let text = format!("{p}Take(p: P) {{}}\nTake(q: Q) {{}}\nTake(new {{ X = 1 }}, 2);\n");
+        assert_eq!(reported(&text), ["MR0205"]);
+        // A lambda takes the function type they agree on, too, so its
+        // body is checked against the result type.
+        let run = "Run(f: () => int, n: int): int => 1;\nRun(f: () => int, s: string): int => 2;\n";
+        assert_eq!(
+            reported(&format!("{run}let r = Run(() => 3, 2);\n")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            reported(&format!("{run}let r = Run(() => \"a\", 2);\n")),
+            ["MR0203"]
+        );
     }
 
     #[test]
