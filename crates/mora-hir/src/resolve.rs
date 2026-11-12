@@ -231,8 +231,13 @@ pub(crate) fn resolve_static_member(
 
 /// Whether code in `from` can see the value member `value` of `ty`.
 pub(crate) fn value_visible(db: &dyn Db, ty: ItemId, value: &ValueMember, from: Scope) -> bool {
-    // A `private` value member is visible inside its type.
-    is_visible(db, ty, from) && reaches(db, value.visibility, ty, from, || Some(ty.item))
+    member_visible(db, ty, value.visibility, from)
+}
+
+/// Whether code in `from` can see a member of `ty` written with
+/// `visibility`; a `private` member is visible inside its type.
+pub(crate) fn member_visible(db: &dyn Db, ty: ItemId, visibility: Visibility, from: Scope) -> bool {
+    is_visible(db, ty, from) && reaches(db, visibility, ty, from, || Some(ty.item))
 }
 
 /// The first segment, through the levels of the lookup in order.

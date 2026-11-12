@@ -200,8 +200,9 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             expr,
             item,
             written,
+            from,
             writable,
-        } => struct_new::memberwise_off(source, *expr, *item, *written, *writable),
+        } => struct_new::memberwise_off(source, *expr, *item, *written, *from, *writable),
         TypeError::HiddenField {
             value,
             item,

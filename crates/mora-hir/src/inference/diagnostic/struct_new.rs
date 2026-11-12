@@ -11,7 +11,7 @@ use crate::defs::ItemId;
 use crate::inference::NotAField;
 use crate::items::Visibility;
 use crate::report::{Declared, not_visible};
-use crate::resolve::{Scope, item_data};
+use crate::resolve::{Scope, item_data, member_visible};
 use crate::ty::Ty;
 use crate::type_ref::TypeRef;
 
@@ -54,9 +54,9 @@ pub(super) fn no_memberwise(
 }
 
 /// `MR0153`: `new T { ... }`, with the struct `item` written `written`,
-/// creates `T` memberwise while it is positional or declares a
-/// constructor, which turns memberwise creation off. When one of its
-/// constructors takes no parameters and every name in the braces is
+/// creates `T` memberwise, in `from`, while it is positional or declares a
+/// constructor, which turns memberwise creation off. When `from` sees a
+/// constructor that takes no arguments and every name in the braces is
 /// `writable` after it, the fix calls it; otherwise only the author knows
 /// what to write (D-147).
 pub(super) fn memberwise_off(
@@ -64,6 +64,7 @@ pub(super) fn memberwise_off(
     expr: ExprId,
     item: ItemId,
     written: TypeId,
+    from: Scope,
     writable: bool,
 ) -> Diagnostic {
     let t = source.name(&Ty::Struct(item));
@@ -97,9 +98,11 @@ pub(super) fn memberwise_off(
         _ => None,
     };
     match end {
-        Some(end) if !positional && writable && has_parameterless_constructor(source, item) => {
+        Some(end)
+            if !positional && writable && has_parameterless_constructor(source, item, from) =>
+        {
             diagnostic.with_fix(Fix::new(
-                "call the constructor that takes no parameters",
+                "call the constructor that takes no arguments",
                 vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
             ))
         }
@@ -107,9 +110,9 @@ pub(super) fn memberwise_off(
     }
 }
 
-/// Whether the struct `item` declares a constructor that takes no
-/// parameters.
-fn has_parameterless_constructor(source: &Source<'_>, item: ItemId) -> bool {
+/// Whether the struct `item` declares a constructor that `from` sees and
+/// that takes no arguments: each of its parameters, if any, has a default.
+fn has_parameterless_constructor(source: &Source<'_>, item: ItemId, from: Scope) -> bool {
     body_owners(source.db, item.file).into_iter().any(|owner| {
         let BodyOwner::Member(ty, _) = owner else {
             return false;
@@ -118,7 +121,9 @@ fn has_parameterless_constructor(source: &Source<'_>, item: ItemId) -> bool {
             return false;
         }
         let hir = body(source.db, item.file, owner);
-        hir.kind == BodyKind::Constructor && hir.params.is_empty()
+        hir.kind == BodyKind::Constructor
+            && hir.defaults.len() == hir.params.len()
+            && member_visible(source.db, item, hir.visibility, from)
     })
 }
 

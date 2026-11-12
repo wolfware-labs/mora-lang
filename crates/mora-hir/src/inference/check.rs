@@ -1352,6 +1352,7 @@ impl Check<'_> {
                     expr,
                     item,
                     written: ty,
+                    from: self.scope,
                     writable,
                 });
                 self.assigned_values(item, inits);

@@ -346,13 +346,14 @@ pub(crate) enum TypeError {
     },
     /// `expr` creates the struct `item`, written `written`, with braces
     /// alone, while it is positional or declares a constructor, which turns
-    /// memberwise creation off (`MR0153`). `writable` is set when every name
-    /// in the braces is a field that the body may write after a
+    /// memberwise creation off (`MR0153`), in `from`. `writable` is set when
+    /// every name in the braces is a field that the body may write after a
     /// constructor, so calling one keeps them valid.
     MemberwiseOff {
         expr: ExprId,
         item: ItemId,
         written: TypeId,
+        from: Scope,
         writable: bool,
     },
     /// The memberwise creation of the struct `item` assigns `value` to its
@@ -2836,7 +2837,7 @@ mod tests {
         assert_eq!(d.fixes.len(), 1);
         assert_eq!(
             d.fixes[0].message,
-            "call the constructor that takes no parameters"
+            "call the constructor that takes no arguments"
         );
         let fixed = apply_fixes(text);
         assert_eq!(fixed.remaining, Vec::<String>::new());
@@ -2847,9 +2848,36 @@ mod tests {
                     let s = new S { };\nlet t = new S { N = \"a\", M = 1 };\n";
         let found = diagnostics_of(text);
         assert_eq!(codes(&found), ["MR0153", "MR0153", "MR0203"]);
-        // Without a constructor that takes no parameters there is no fix,
+        // Without a constructor that takes no arguments there is no fix,
         // whatever the constructors of other types take.
         assert!(found[0].fixes.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn the_mr0153_fix_calls_a_visible_constructor_callable_without_arguments() {
+        // Parameters that all have defaults take no arguments.
+        let text = "struct S {\n    public mut N: int;\n    public S(n: int = 1, m: int = 2) { N = n + m; }\n}\n\
+                    let s = new S { N = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
+        let fixed = apply_fixes(text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert!(fixed.text.contains("new S() { N = 2 }"), "{}", fixed.text);
+        // One parameter without a default needs an argument.
+        let text = "struct S {\n    public mut N: int;\n    public S(n: int, m: int = 2) { N = n + m; }\n}\n\
+                    let s = new S { N = 2 };\n";
+        assert!(diagnostics_of(text)[0].fixes.is_empty());
+        // A private constructor is called only inside its type.
+        let head = "struct S {\n    public mut N: int;\n    private S() { N = 1; }\n";
+        let text = format!("{head}}}\nlet s = new S {{ N = 2 }};\n");
+        let found = diagnostics_of(&text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+        let text = format!("{head}    static Make(): S => new S {{ N = 2 }};\n}}\n");
+        let found = diagnostics_of(&text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
     }
 
     #[test]

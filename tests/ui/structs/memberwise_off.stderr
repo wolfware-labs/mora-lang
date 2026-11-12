@@ -5,7 +5,7 @@ error[MR0153]: `Counter` declares a constructor, so it is not created memberwise
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^ memberwise creation of `Counter`
    |
    = note: declaring a constructor turns memberwise creation off; call one with `new Counter(...)`
-help: call the constructor that takes no parameters
+help: call the constructor that takes no arguments
    |
 14 | let a = new Counter() { Count = 2 }; //~ ERROR MR0153
    |                    ++
@@ -17,7 +17,7 @@ error[MR0153]: `Counter` declares a constructor, so it is not created memberwise
    |         ^^^^^^^^^^^^^^^ memberwise creation of `Counter`
    |
    = note: declaring a constructor turns memberwise creation off; call one with `new Counter(...)`
-help: call the constructor that takes no parameters
+help: call the constructor that takes no arguments
    |
 15 | let b = new Counter() { }; //~ ERROR MR0153
    |                    ++
