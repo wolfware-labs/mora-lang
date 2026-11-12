@@ -541,20 +541,25 @@ pub(crate) struct Written<'a> {
     pub(crate) is_const: bool,
     /// Whether `async` is among them.
     pub(crate) is_async: bool,
-    /// Whether `mut` is among them without a write scope, so any code
-    /// that sees the declaration may write it (§6.9).
+    /// Whether `mut` is among them and none of them has a write scope, so
+    /// any code that sees the declaration may write it (§6.9). A write
+    /// scope on any of them narrows the writes, whatever their order.
     pub(crate) is_mut_anywhere: bool,
 }
 
 impl<'a> Written<'a> {
     pub(crate) fn of(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> Self {
         let mut written = Self::default();
+        let mut scoped = false;
         for modifier in modifiers {
             let Some(token) = modifier.kind() else {
                 continue;
             };
             match token.kind() {
-                SyntaxKind::MutKw => written.is_mut_anywhere = modifier.write_scope().is_none(),
+                SyntaxKind::MutKw => {
+                    scoped |= modifier.write_scope().is_some();
+                    written.is_mut_anywhere = !scoped;
+                }
                 SyntaxKind::StaticKw => written.is_static = true,
                 SyntaxKind::ConstKw => written.is_const = true,
                 SyntaxKind::AsyncKw => written.is_async = true,

@@ -2923,7 +2923,12 @@ mod tests {
     fn braces_alone_naming_a_field_not_writable_after_a_constructor_have_no_fix() {
         // A read-only field, or one whose write scope may not allow the
         // write, cannot be assigned after the constructor that `()` calls.
-        for field in ["public N: int;", "public mut(private) N: int;"] {
+        for field in [
+            "public N: int;",
+            "public mut(private) N: int;",
+            "public mut(private) mut N: int;",
+            "public mut mut(private) N: int;",
+        ] {
             let text = format!(
                 "struct S {{\n    {field}\n    public S() {{ N = 1; }}\n}}\n\
                  let s = new S {{ N = 2 }};\n"
