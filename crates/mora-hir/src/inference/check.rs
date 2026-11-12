@@ -1347,10 +1347,12 @@ impl Check<'_> {
         match creation {
             Creation::Memberwise => self.memberwise(expr, item, &written, inits),
             Creation::MemberwiseOff => {
+                let writable = self.writable_after_constructor(item, inits);
                 self.errors.push(TypeError::MemberwiseOff {
                     expr,
                     item,
                     written: ty,
+                    writable,
                 });
                 self.assigned_values(item, inits);
             }
@@ -1405,6 +1407,18 @@ impl Check<'_> {
                 }
             }
         }
+    }
+
+    /// Whether every name of `inits`, assigned in the creation of the struct
+    /// `item`, is an instance field that the body sees and may write once
+    /// the value exists, as the assignments after a constructor call need
+    /// (§6.9).
+    fn writable_after_constructor(&self, item: ItemId, inits: &[(String, ExprId)]) -> bool {
+        inits.iter().all(|(name, _)| {
+            instance_fields(self.db, item).any(|(index, field)| {
+                field.name == *name && field.writable && self.field_visible(item, index)
+            })
+        })
     }
 
     /// Checks each value of `inits` against the type of the instance field

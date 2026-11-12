@@ -1,6 +1,6 @@
 // Declaring a constructor, or being positional, turns memberwise creation off.
 public struct Counter {
-    public Count: int;
+    public mut Count: int;
     public Counter() { Count = 0; }
 }
 

@@ -56,12 +56,15 @@ pub(super) fn no_memberwise(
 /// `MR0153`: `new T { ... }`, with the struct `item` written `written`,
 /// creates `T` memberwise while it is positional or declares a
 /// constructor, which turns memberwise creation off. When one of its
-/// constructors takes no parameters, the fix calls it.
+/// constructors takes no parameters and every name in the braces is
+/// `writable` after it, the fix calls it; otherwise only the author knows
+/// what to write (D-147).
 pub(super) fn memberwise_off(
     source: &Source<'_>,
     expr: ExprId,
     item: ItemId,
     written: TypeId,
+    writable: bool,
 ) -> Diagnostic {
     let t = source.name(&Ty::Struct(item));
     let positional = item_data(source.db, item).is_positional;
@@ -94,11 +97,12 @@ pub(super) fn memberwise_off(
         _ => None,
     };
     match end {
-        Some(end) if !positional && has_parameterless_constructor(source, item) => diagnostic
-            .with_fix(Fix::new(
+        Some(end) if !positional && writable && has_parameterless_constructor(source, item) => {
+            diagnostic.with_fix(Fix::new(
                 "call the constructor that takes no parameters",
                 vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
-            )),
+            ))
+        }
         _ => diagnostic,
     }
 }

@@ -14,8 +14,8 @@ help: did you mean `Size`?
 error[MR0129]: `Hidden` is private to the type that declares it
   --> tests/ui/structs/after_constructor.mr:20:24
    |
- 6 |     private Hidden: int;
-   |             ------ declared here
+ 6 |     private mut Hidden: int;
+   |                 ------ declared here
 ...
 20 | let c = new Sized(1) { Hidden = 2 }; //~ ERROR MR0129
    |                        ^^^^^^ not visible here
@@ -23,8 +23,8 @@ error[MR0129]: `Hidden` is private to the type that declares it
    = note: a `private` member is visible only inside its type
 help: mark `Hidden` `internal`
    |
- 6 -     private Hidden: int;
- 6 +     internal Hidden: int;
+ 6 -     private mut Hidden: int;
+ 6 +     internal mut Hidden: int;
    |
 
 error[MR0205]: `Plain` declares no constructor, so `new Plain(...)` takes no arguments

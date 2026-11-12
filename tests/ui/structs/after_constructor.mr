@@ -2,8 +2,8 @@
 // plain assignments of fields visible here, and a type without a
 // constructor takes no arguments.
 public struct Sized {
-    public Size: int;
-    private Hidden: int;
+    public mut Size: int;
+    private mut Hidden: int;
 
     public Sized(size: int) {
         Size = size;

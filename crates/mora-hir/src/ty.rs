@@ -228,4 +228,8 @@ pub struct Field {
     /// Whether memberwise creation must assign it: it has no initializer
     /// and is not `static`.
     pub needs_init: bool,
+    /// Whether it is declared `mut` without a write scope, so any code
+    /// that sees it may write it once the value exists (§6.9). Write
+    /// scopes are checked with M2.1.
+    pub writable: bool,
 }

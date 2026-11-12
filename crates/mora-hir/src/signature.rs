@@ -226,6 +226,7 @@ fn item_signature(
                         visibility: field.visibility,
                         ty: lower.ty(&field.ty),
                         needs_init: field.needs_init,
+                        writable: field.writable,
                     }
                 })
                 .collect();

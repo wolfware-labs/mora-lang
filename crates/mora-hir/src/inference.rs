@@ -346,11 +346,14 @@ pub(crate) enum TypeError {
     },
     /// `expr` creates the struct `item`, written `written`, with braces
     /// alone, while it is positional or declares a constructor, which turns
-    /// memberwise creation off (`MR0153`).
+    /// memberwise creation off (`MR0153`). `writable` is set when every name
+    /// in the braces is a field that the body may write after a
+    /// constructor, so calling one keeps them valid.
     MemberwiseOff {
         expr: ExprId,
         item: ItemId,
         written: TypeId,
+        writable: bool,
     },
     /// The memberwise creation of the struct `item` assigns `value` to its
     /// field `name`, the value member at `index`, which is not visible from
@@ -2699,7 +2702,7 @@ mod tests {
     fn names_after_a_constructor_call_are_visible_instance_fields() {
         // The assignments are plain ones: a field may be assigned twice,
         // but a name must be an instance field the body sees.
-        let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+        let text = "struct S {\n    public mut N: int;\n    public S(n: int) { N = n; }\n}\n\
                     let s = new S(1) { N = 1, N = 2, M = 3 };\nlet t = new S(1) { Nn = 3 };\n";
         let found = diagnostics_of(text);
         assert_eq!(codes(&found), ["MR0147", "MR0147"]);
@@ -2713,7 +2716,7 @@ mod tests {
         );
         assert_eq!(found[1].fixes.len(), 1);
         assert_eq!(found[1].fixes[0].message, "did you mean `N`?");
-        let text = "struct S {\n    public N: int;\n    private H: int;\n    \
+        let text = "struct S {\n    public mut N: int;\n    private mut H: int;\n    \
                     public S(n: int) { N = n; H = n; }\n}\n\
                     let s = new S(1) { H = 2, N = \"a\" };\n";
         assert_eq!(reported(text), ["MR0129", "MR0203"]);
@@ -2761,7 +2764,7 @@ mod tests {
 
     #[test]
     fn a_constructor_call_assigns_the_fields_itself() {
-        let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+        let text = "struct S {\n    public mut N: int;\n    public S(n: int) { N = n; }\n}\n\
                     let s = new S(1);\n";
         assert_eq!(local_types(text), ["s: S"]);
         assert_eq!(reported(text), Vec::<String>::new());
@@ -2795,7 +2798,7 @@ mod tests {
 
     #[test]
     fn new_with_empty_parentheses_calls_a_declared_constructor() {
-        let text = "struct S {\n    public N: int;\n    public S() { N = 1; }\n}\n\
+        let text = "struct S {\n    public mut N: int;\n    public S() { N = 1; }\n}\n\
                     let s = new S() { N = 1, N = 2, M = 3 };\nlet t = new S();\n";
         assert_eq!(local_types(text), ["s: S", "t: S"]);
         // No field is missing, and `N` may be assigned again; `M` is no field.
@@ -2804,7 +2807,7 @@ mod tests {
 
     #[test]
     fn braces_alone_on_a_struct_with_a_constructor_are_mr0153() {
-        let text = "struct S {\n    public N: int;\n    public S() { N = 1; }\n}\n\
+        let text = "struct S {\n    public mut N: int;\n    public S() { N = 1; }\n}\n\
                     let s = new S { N = 2 };\n";
         let found = diagnostics_of(text);
         assert_eq!(codes(&found), ["MR0153"]);
@@ -2835,6 +2838,21 @@ mod tests {
         // Without a constructor that takes no parameters there is no fix,
         // whatever the constructors of other types take.
         assert!(found[0].fixes.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn braces_alone_naming_a_field_not_writable_after_a_constructor_have_no_fix() {
+        // A read-only field, or one whose write scope may not allow the
+        // write, cannot be assigned after the constructor that `()` calls.
+        for field in ["public N: int;", "public mut(private) N: int;"] {
+            let text = format!(
+                "struct S {{\n    {field}\n    public S() {{ N = 1; }}\n}}\n\
+                 let s = new S {{ N = 2 }};\n"
+            );
+            let found = diagnostics_of(&text);
+            assert_eq!(codes(&found), ["MR0153"], "{text}");
+            assert!(found[0].fixes.is_empty(), "{found:#?}");
+        }
     }
 
     #[test]

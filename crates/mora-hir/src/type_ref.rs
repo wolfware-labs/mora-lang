@@ -78,6 +78,7 @@ pub(crate) struct FieldRef {
     pub(crate) visibility: Visibility,
     pub(crate) ty: TypeRef,
     pub(crate) needs_init: bool,
+    pub(crate) writable: bool,
 }
 
 /// Where the paths of one item's signature are.
@@ -207,6 +208,7 @@ impl LowerTypes {
             visibility: written.visibility_or_folder(),
             ty: self.optional(declarator.ty().as_ref()),
             needs_init: declarator.eq_token().is_none() && !written.is_static,
+            writable: written.is_mut_anywhere,
         })
     }
 
