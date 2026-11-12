@@ -11,11 +11,11 @@
 //! is declared in; or for a struct it creates with a constructor, declared
 //! or the one of a positional struct; or for an operator it applies to a
 //! struct, which may declare it; or for a lambda in it, or a call that
-//! inference leaves unresolved because a generic or `async` function could
-//! take it. A struct type comes as late as the types of its instance
-//! fields, which its layout holds, and a struct nested in a generic type
-//! comes with generic code. When several milestones apply, the latest of
-//! them lowers the body.
+//! inference leaves unresolved because a generic or `async` function, or
+//! one with a `params` parameter, could take it. A struct type comes as
+//! late as the types of its instance fields, which its layout holds, and a
+//! struct nested in a generic type comes with generic code. When several
+//! milestones apply, the latest of them lowers the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
@@ -62,6 +62,9 @@ const CLASSES: Milestone = milestone(2, 1);
 const POSITIONAL_STRUCTS: Milestone = milestone(2, 2);
 /// M2.6, destructors and drop order.
 const DESTRUCTORS: Milestone = milestone(2, 6);
+/// M2.9, spans, views and memory slices, which collect the arguments of
+/// a `params` parameter into a span.
+const SPANS: Milestone = milestone(2, 9);
 /// M2.10, weak references.
 const WEAK_REFERENCES: Milestone = milestone(2, 10);
 /// M2.11, closures and function types.
@@ -195,12 +198,11 @@ fn lambdas_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Late
 
 /// The milestone that lowers the body of `owner` for the calls inference
 /// leaves without a callee because an overload of the called name is
-/// generic or `async` (D-137): the latest of those that apply to each
-/// call, the first call on a tie. A call of a local function comes as late
-/// as the local function, which [`local_functions_later`] counts. A call
-/// that only an overload with a `params` parameter leaves unresolved stays
-/// an internal error of lowering: no milestone of the roadmap expands
-/// `params` arguments yet. `None` when every call has its callee.
+/// generic, `async` or has a `params` parameter (D-137): the latest of
+/// those that apply to each call, the first call on a tie. A call of a
+/// local function comes as late as the local function, which
+/// [`local_functions_later`] counts. `None` when every call has its
+/// callee.
 fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
@@ -241,9 +243,9 @@ fn methods<'a>(
 
 /// The milestone that checks and lowers a call that one of `functions`
 /// could take, as late as [`function_later`] lowers that function: a
-/// generic one comes with generic code and an `async` one with async
-/// lowering. The first of them names it on a tie; `None` when none of
-/// them comes later.
+/// generic one comes with generic code, an `async` one with async
+/// lowering and one with a `params` parameter with spans. The first of
+/// them names it on a tie; `None` when none of them comes later.
 fn call_later(db: &dyn Db, functions: impl IntoIterator<Item = ItemId>) -> Option<Later> {
     latest(functions.into_iter().map(|item| {
         let Signature::Function(function) = signature(db, item) else {
@@ -526,9 +528,15 @@ fn declared_types(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOw
 }
 
 /// The milestone that lowers a function with the signature `function`,
-/// `None` when this one does: generic and async functions come later.
+/// `None` when this one does: generic and async functions come later, and
+/// so does one with a `params` parameter, whose arguments a span holds.
 fn function_later(function: &FnSignature) -> Option<Later> {
     latest([
+        function
+            .params
+            .iter()
+            .any(|param| param.is_params)
+            .then(|| Later::new("a function with `params`", SPANS)),
         function
             .is_generic
             .then(|| Later::new("a generic function", MONOMORPHIZATION)),

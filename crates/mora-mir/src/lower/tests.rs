@@ -558,11 +558,22 @@ fn a_call_inference_does_not_check_comes_with_its_callee() {
 }
 
 #[test]
-#[should_panic(expected = "the call has no callee")]
-fn a_call_of_a_params_function_is_an_internal_error() {
-    // No milestone of the roadmap expands `params` arguments yet.
-    let lowered = lowered("Sum(params xs: int[]) {}\nF() {\n    Sum(1, 2);\n}\n");
-    lowered.mir("F");
+fn a_params_call_comes_with_spans() {
+    // A span holds the arguments of a `params` parameter, and so the
+    // function's own body comes with spans too.
+    let text = "Sum(params xs: int[]) {}\nF() {\n    Sum(1, 2);\n}\n\
+                struct P {\n    public X: int;\n    public Add(params xs: int[]) {}\n}\n\
+                G(p: P) {\n    p.Add(1);\n}\n";
+    for (name, what) in [
+        ("F", "a call of a function with `params`"),
+        ("G", "a call of a function with `params`"),
+        ("Sum", "a function with `params`"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what} is not lowered until M2.9")
+        );
+    }
 }
 
 #[test]
