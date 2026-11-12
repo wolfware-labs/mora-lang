@@ -2430,6 +2430,22 @@ fn target_typed_new_of_a_struct_lowers_like_new_with_the_type() {
 }
 
 #[test]
+fn target_typed_new_as_an_argument_takes_the_parameter_type() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n}\nTake(p: P): int => p.X;\n\
+         F(): int => Take(new { X = 2 });\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = UsersApi.P{struct UsersApi.P}(2);",
+            "_2 = &in _1;",
+            "_0 = call UsersApi.Take{fn UsersApi.Take}(copy _2) -> bb1;",
+        ],
+    );
+}
+
+#[test]
 fn creating_a_positional_struct_comes_with_positional_structs() {
     // The later milestone wins over a constructor call in the same body,
     // and a local function is lowered with the body it is in.

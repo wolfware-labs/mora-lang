@@ -171,9 +171,15 @@ impl<'a> Check<'a> {
                     Some(value) => Argument::Literal(value),
                     None => {
                         // A lambda takes the function type of the parameter it
-                        // is for, when there is only one function to call.
+                        // is for, and a `new` without a type the parameter's
+                        // type, when there is only one function to call.
                         let target = match candidates.as_slice() {
-                            [only] if matches!(self.body.exprs[arg.expr], Expr::Lambda(_)) => {
+                            [only]
+                                if matches!(
+                                    self.body.exprs[arg.expr],
+                                    Expr::Lambda(_) | Expr::New { ty: None, .. }
+                                ) =>
+                            {
                                 match &arg.name {
                                     Some(name) => only.params.iter().find(|p| p.name == name),
                                     None => only.params.get(position),

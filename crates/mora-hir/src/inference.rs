@@ -3320,11 +3320,16 @@ mod tests {
         assert_eq!(reported(&text), ["MR0143", "MR0148"]);
         let text = format!("{p}let p: P = new(1) {{ X = 1 }};\n");
         assert_eq!(reported(&text), ["MR0205"]);
+        // An argument takes the type of its parameter when there is one
+        // function to call.
         let text =
             format!("{p}let p: P = new {{ X = 1 }};\nTake(p: P) {{}}\nTake(new {{ X = 2 }});\n");
         assert_eq!(reported(&text), Vec::<String>::new());
-        let types = expr_types(&format!("{p}let p: P = new {{ X = 1 }};\n"));
+        let types = expr_types(&text);
         assert!(types.iter().any(|ty| ty == "new { X = 1 }: P"), "{types:?}");
+        assert!(types.iter().any(|ty| ty == "new { X = 2 }: P"), "{types:?}");
+        let text = format!("{p}Take(p: P) {{}}\nTake(new {{ X = \"a\" }});\nTake(new {{ }});\n");
+        assert_eq!(reported(&text), ["MR0203", "MR0143"]);
     }
 
     #[test]
