@@ -1,13 +1,16 @@
 // A constructor call assigns the fields itself; the names after it are
 // plain assignments of fields visible here, and a type without a
-// constructor takes no arguments.
+// constructor takes no arguments. Widening a read-only field is no fix,
+// since the assignment still may not write it.
 public struct Sized {
     public mut Size: int;
     private mut Hidden: int;
+    private Sealed: int;
 
     public Sized(size: int) {
         Size = size;
         Hidden = 0;
+        Sealed = 0;
     }
 }
 
@@ -18,4 +21,5 @@ public struct Plain {
 let a = new Sized(1) { Size = 2, Size = 3 };
 let b = new Sized(1) { Szie = 2 }; //~ ERROR MR0147
 let c = new Sized(1) { Hidden = 2 }; //~ ERROR MR0129
-let d = new Plain(1); //~ ERROR MR0205
+let d = new Sized(1) { Sealed = 2 }; //~ ERROR MR0129
+let e = new Plain(1); //~ ERROR MR0205

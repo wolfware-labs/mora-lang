@@ -359,15 +359,16 @@ pub(crate) enum TypeError {
     },
     /// The creation of the struct `item` assigns `value` to its field
     /// `name`, the value member at `index`, which is not visible from
-    /// `from` (`MR0129`). `repeated` is set when an earlier assignment of
-    /// the creation names the field too, which carries the fix.
+    /// `from` (`MR0129`). `fixable` is set when widening the field makes
+    /// the assignment valid and no earlier assignment of the creation names
+    /// the field, which would carry the fix.
     HiddenField {
         value: ExprId,
         item: ItemId,
         index: u32,
         name: String,
         from: Scope,
-        repeated: bool,
+        fixable: bool,
     },
     /// The creation of the struct `ty`, memberwise or, when `memberwise`
     /// is not set, after a constructor call, assigns `value` to `name`,
@@ -2755,6 +2756,61 @@ mod tests {
         assert_eq!(codes(&found), ["MR0147"]);
         assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
         assert_eq!(found[0].fixes[0].message, "did you mean `X`?");
+    }
+
+    #[test]
+    fn after_a_constructor_only_a_writable_field_is_suggested() {
+        // The assignments after a constructor call may write only a field
+        // declared `mut` without a write scope, so a read-only field, or one
+        // with a write scope, is no fix for a misspelled name.
+        for (field, suggested) in [
+            ("public N: int;", false),
+            ("public mut(private) N: int;", false),
+            ("public mut N: int;", true),
+        ] {
+            let head = format!("struct S {{\n    {field}\n    public S() {{ N = 1; }}\n}}\n");
+            let text = format!("{head}let s = new S() {{ Nn = 2 }};\n");
+            let found = diagnostics_of(&text);
+            assert_eq!(codes(&found), ["MR0147"], "{text}");
+            if suggested {
+                assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
+                assert_eq!(found[0].fixes[0].message, "did you mean `N`?");
+            } else {
+                assert!(found[0].fixes.is_empty(), "{found:#?}");
+            }
+            // The names in braces alone are checked as after the call.
+            let text = format!("{head}let s = new S {{ Nn = 2 }};\n");
+            let found = diagnostics_of(&text);
+            assert_eq!(codes(&found), ["MR0153", "MR0147"], "{text}");
+            assert_eq!(found[1].fixes.len(), usize::from(suggested), "{found:#?}");
+        }
+        // Memberwise creation sets a read-only field, so it suggests one.
+        let text = "struct P {\n    public N: int;\n}\nlet p = new P { Nn = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0143", "MR0147"]);
+        assert_eq!(found[1].fixes.len(), 1, "{found:#?}");
+    }
+
+    #[test]
+    fn a_hidden_field_not_writable_after_a_constructor_has_no_fix() {
+        // Widening a field the assignment may not write still leaves an
+        // invalid program, so there is no fix.
+        for field in ["private H: int;", "private mut(private) H: int;"] {
+            let text = format!(
+                "struct S {{\n    {field}\n    public S(h: int) {{ H = h; }}\n}}\n\
+                 let s = new S(1) {{ H = 2 }};\n"
+            );
+            let found = diagnostics_of(&text);
+            assert_eq!(codes(&found), ["MR0129"], "{text}");
+            assert!(found[0].fixes.is_empty(), "{found:#?}");
+        }
+        // Under `MR0153` the braces stay an error whatever the field's
+        // visibility, so widening it is no fix either.
+        let text = "struct S {\n    private mut H: int;\n    public S() { H = 1; }\n}\n\
+                    let s = new S { H = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153", "MR0129"]);
+        assert!(found.iter().all(|d| d.fixes.is_empty()), "{found:#?}");
     }
 
     #[test]

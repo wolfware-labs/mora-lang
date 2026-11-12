@@ -1363,10 +1363,10 @@ impl Check<'_> {
                 });
                 // The names are checked as after the constructor call that
                 // the fix writes.
-                self.after_constructor(item, &written, inits);
+                self.after_constructor(item, &written, inits, true);
             }
             Creation::Constructor | Creation::Positional => {
-                self.after_constructor(item, &written, inits);
+                self.after_constructor(item, &written, inits, false);
             }
             Creation::NoConstructor => {
                 self.errors.push(TypeError::NoConstructor {
@@ -1384,7 +1384,15 @@ impl Check<'_> {
     /// is checked against the type of the field it names, a hidden field is
     /// `MR0129`, and, after a declared constructor, a name that is not an
     /// instance field is `MR0147`. A field may be assigned twice.
-    fn after_constructor(&mut self, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
+    /// `memberwise_off` is set for the braces alone that `MR0153` reports,
+    /// which stay an error whatever the fields' visibility.
+    fn after_constructor(
+        &mut self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        memberwise_off: bool,
+    ) {
         // A positional struct's constructor is the one its parameters
         // declare (§6.5).
         let positional = item_data(self.db, item).is_positional;
@@ -1392,13 +1400,19 @@ impl Check<'_> {
             match self.assigned_field(item, name, *init) {
                 Some(index) => {
                     if !self.field_visible(item, index) {
+                        // Widening the field fixes the assignment only where
+                        // the assignment may write it, and once: the first
+                        // assignment carries the fix.
+                        let fixable = !memberwise_off
+                            && self.field_writable(item, index)
+                            && assigned_before(inits, position).is_none();
                         self.errors.push(TypeError::HiddenField {
                             value: *init,
                             item,
                             index,
                             name: name.clone(),
                             from: self.scope,
-                            repeated: assigned_before(inits, position).is_some(),
+                            fixable,
                         });
                     }
                 }
@@ -1475,7 +1489,7 @@ impl Check<'_> {
                     index,
                     name: name.clone(),
                     from: self.scope,
-                    repeated: false,
+                    fixable: true,
                 });
             }
             if let Some(error) = self.init_name(item, ty, inits, position) {
@@ -1501,6 +1515,13 @@ impl Check<'_> {
                 field: missing.name.clone(),
             });
         }
+    }
+
+    /// Whether the instance field at `index` of the struct `item` is
+    /// declared `mut` without a write scope, so an assignment after a
+    /// constructor may write it (§6.9).
+    fn field_writable(&self, item: ItemId, index: u32) -> bool {
+        instance_fields(self.db, item).any(|(at, field)| at == index && field.writable)
     }
 
     /// Whether the body sees the value member at `index` of the struct
@@ -1538,8 +1559,9 @@ impl Check<'_> {
     /// of the struct `item` of type `ty`, whose name is not an instance
     /// field; `memberwise` when the creation is memberwise rather than a
     /// constructor call. A name that is no member gets the closest visible
-    /// field as a suggestion, one not assigned yet in memberwise creation,
-    /// which assigns each field once. `None` for an initializer without a
+    /// field as a suggestion: one not assigned yet in memberwise creation,
+    /// which assigns each field once, and after a constructor one the
+    /// assignment may write. `None` for an initializer without a
     /// name, which is a syntax error.
     fn not_a_field(
         &self,
@@ -1566,9 +1588,12 @@ impl Check<'_> {
                 ValueKind::EnumMember | ValueKind::UnionCase => NotAField::Unknown,
             });
         let suggestion = if member == NotAField::Unknown {
-            // Only a field the use can see is worth suggesting.
+            // Only a field the use can see is worth suggesting, and after a
+            // constructor only one the assignment may write.
             let candidates: Vec<String> = instance_fields(self.db, item)
-                .filter(|&(index, _)| self.field_visible(item, index))
+                .filter(|&(index, field)| {
+                    self.field_visible(item, index) && (memberwise || field.writable)
+                })
                 .map(|(_, field)| field.name.clone())
                 .filter(|field| !memberwise || !inits.iter().any(|(name, _)| name == field))
                 .collect();

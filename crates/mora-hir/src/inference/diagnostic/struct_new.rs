@@ -145,18 +145,20 @@ fn sees_constructor_without_arguments(source: &Source<'_>, item: ItemId, from: S
 
 /// `MR0129`: the creation of a struct, in `from`, assigns `value` to the
 /// field `name`, `field`, which the expression cannot see. It reads as any
-/// declaration the use cannot see (§4.5). A `repeated` assignment leaves
-/// the fix to the first one, so applying every fix widens the field once.
+/// declaration the use cannot see (§4.5), with its fix to widen the field
+/// only when `fixable`: not for a repeated assignment, which leaves the fix
+/// to the first one so applying every fix widens the field once, and not
+/// where widening leaves the program invalid (D-147).
 pub(super) fn hidden_field(
     source: &Source<'_>,
     value: ExprId,
     field: Declared,
     name: &str,
     from: Scope,
-    repeated: bool,
+    fixable: bool,
 ) -> Diagnostic {
     let mut diagnostic = not_visible(source.db, from, name, name_span(source, value), field);
-    if repeated {
+    if !fixable {
         diagnostic.fixes.clear();
     }
     diagnostic

@@ -209,14 +209,14 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             index,
             name,
             from,
-            repeated,
+            fixable,
         } => struct_new::hidden_field(
             source,
             *value,
             Declared::Value(*item, *index),
             name,
             *from,
-            *repeated,
+            *fixable,
         ),
         TypeError::NotAField {
             value,
