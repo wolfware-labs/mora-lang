@@ -1,0 +1,36 @@
+error[MR0147]: `Sized` has no field named `Szie`
+  --> tests/ui/structs/after_constructor.mr:19:24
+   |
+19 | let b = new Sized(1) { Szie = 2 }; //~ ERROR MR0147
+   |                        ^^^^ not a field of `Sized`
+   |
+   = note: the assignments after a constructor call name the fields that each value of `Sized` holds
+help: did you mean `Size`?
+   |
+19 - let b = new Sized(1) { Szie = 2 }; //~ ERROR MR0147
+19 + let b = new Sized(1) { Size = 2 }; //~ ERROR MR0147
+   |
+
+error[MR0129]: `Hidden` is private to the type that declares it
+  --> tests/ui/structs/after_constructor.mr:20:24
+   |
+ 6 |     private Hidden: int;
+   |             ------ declared here
+...
+20 | let c = new Sized(1) { Hidden = 2 }; //~ ERROR MR0129
+   |                        ^^^^^^ not visible here
+   |
+   = note: a `private` member is visible only inside its type
+help: mark `Hidden` `internal`
+   |
+ 6 -     private Hidden: int;
+ 6 +     internal Hidden: int;
+   |
+
+error[MR0205]: `Plain` declares no constructor, so `new Plain(...)` takes no arguments
+  --> tests/ui/structs/after_constructor.mr:21:9
+   |
+21 | let d = new Plain(1); //~ ERROR MR0205
+   |         ^^^^^^^^^^^^ no constructor takes these arguments
+   |
+   = note: a type without a constructor is created memberwise: `new Plain { ... }` names its fields

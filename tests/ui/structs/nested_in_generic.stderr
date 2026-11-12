@@ -30,7 +30,7 @@ error[MR0147]: `In` has no field named `Q`
 8 |         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
   |                                      ^ not a field of `In`
   |
-  = note: `new In { ... }` assigns the fields that each value holds
+  = note: memberwise creation of `In` assigns the fields that each value holds
 help: did you mean `N`?
   |
 8 -         public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147

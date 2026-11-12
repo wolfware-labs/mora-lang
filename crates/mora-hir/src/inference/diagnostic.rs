@@ -216,7 +216,17 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             name,
             member,
             suggestion,
-        } => struct_new::not_a_field(source, *value, ty, name, *member, suggestion.as_deref()),
+            memberwise,
+        } => struct_new::not_a_field(
+            source,
+            *value,
+            ty,
+            name,
+            *member,
+            suggestion.as_deref(),
+            *memberwise,
+        ),
+        TypeError::NoConstructor { expr, ty } => struct_new::no_constructor(source, *expr, ty),
         TypeError::RepeatedField {
             value,
             first,

@@ -40,7 +40,7 @@ error[MR0147]: `Account` has no field named `Nte`
 6 | let c = new Account { Owner = "ana", Nte = "x" }; //~ ERROR MR0147
   |                                      ^^^ not a field of `Account`
   |
-  = note: `new Account { ... }` assigns the fields that each value holds
+  = note: memberwise creation of `Account` assigns the fields that each value holds
 
 error[MR0129]: `Code` is visible only in `src/Store/Account.mr`
  --> src/Store/Reader.mr:1:61

@@ -195,7 +195,7 @@ impl Inference {
     }
 }
 
-/// What a name that memberwise creation assigns names instead of an
+/// What a name that the creation of a struct assigns names instead of an
 /// instance field (`MR0147`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NotAField {
@@ -365,17 +365,22 @@ pub(crate) enum TypeError {
         name: String,
         from: Scope,
     },
-    /// The memberwise creation of the struct `ty` assigns `value` to
-    /// `name`, which is not an instance field of it but `member`; for a
-    /// name that is no member, `suggestion` is the closest field not
-    /// assigned (`MR0147`).
+    /// The creation of the struct `ty`, memberwise or, when `memberwise`
+    /// is not set, after a constructor call, assigns `value` to `name`,
+    /// which is not an instance field of it but `member`; for a name that
+    /// is no member, `suggestion` is the closest field not assigned
+    /// (`MR0147`).
     NotAField {
         value: ExprId,
         ty: Ty,
         name: String,
         member: NotAField,
         suggestion: Option<String>,
+        memberwise: bool,
     },
+    /// `expr` passes arguments to a constructor of the struct `ty`, which
+    /// declares none and is not positional (`MR0205`).
+    NoConstructor { expr: ExprId, ty: Ty },
     /// The memberwise creation of the struct `ty` assigns `value` to the
     /// field `name` again: `first` is the value of its first assignment,
     /// and `previous` the value written just before `value` (`MR0148`).
@@ -2640,7 +2645,7 @@ mod tests {
             assert_eq!(&text[d.primary.span.range], name);
             assert_eq!(
                 d.note.as_deref(),
-                Some("`new Shape { ... }` assigns the fields that each value holds")
+                Some("memberwise creation of `Shape` assigns the fields that each value holds")
             );
             assert!(d.fixes.is_empty(), "{inits}: {d:#?}");
         }
@@ -2669,7 +2674,10 @@ mod tests {
         let (text, found) = shape_new("Height = 1, Width = 2, Height = 3");
         assert_eq!(codes(&found), ["MR0148"]);
         let d = &found[0];
-        assert_eq!(d.message, "`new Shape { ... }` assigns `Height` twice");
+        assert_eq!(
+            d.message,
+            "memberwise creation of `Shape` assigns `Height` twice"
+        );
         assert_eq!(d.primary.message.as_deref(), Some("assigned again here"));
         let at = text.rfind("Height").expect("the second name");
         assert_eq!(usize::from(d.primary.span.range.start()), at);
@@ -2691,8 +2699,33 @@ mod tests {
     }
 
     #[test]
-    fn a_constructor_call_does_not_check_the_names_it_assigns() {
-        let text = "struct S {\n    public N: int;\n}\nlet s = new S(1) { N = 1, N = 2, M = 3 };\n";
+    fn names_after_a_constructor_call_are_visible_instance_fields() {
+        // The assignments are plain ones: a field may be assigned twice,
+        // but a name must be an instance field the body sees.
+        let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+                    let s = new S(1) { N = 1, N = 2, M = 3 };\nlet t = new S(1) { Nn = 3 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0147", "MR0147"]);
+        let d = &found[0];
+        assert_eq!(d.message, "`S` has no field named `M`");
+        assert_eq!(
+            d.note.as_deref(),
+            Some(
+                "the assignments after a constructor call name the fields that each value of `S` holds"
+            )
+        );
+        assert_eq!(found[1].fixes.len(), 1);
+        assert_eq!(found[1].fixes[0].message, "did you mean `N`?");
+        let text = "struct S {\n    public N: int;\n    private H: int;\n    \
+                    public S(n: int) { N = n; H = n; }\n}\n\
+                    let s = new S(1) { H = 2, N = \"a\" };\n";
+        assert_eq!(reported(text), ["MR0129", "MR0203"]);
+    }
+
+    #[test]
+    fn names_after_a_positional_constructor_are_not_checked_yet() {
+        // Its positional fields are not instance fields until M2.2.
+        let text = "struct U(Id: int);\nlet u = new U(1) { Id = 2 };\n";
         assert_eq!(reported(text), Vec::<String>::new());
     }
 
@@ -2731,9 +2764,24 @@ mod tests {
 
     #[test]
     fn a_constructor_call_assigns_the_fields_itself() {
-        let text = "struct S {\n    public N: int;\n}\nlet s = new S(1);\n";
+        let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+                    let s = new S(1);\n";
         assert_eq!(local_types(text), ["s: S"]);
         assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn arguments_to_a_struct_without_a_constructor_are_mr0205() {
+        let text = "struct S {\n    public N: int;\n}\nlet s = new S(1) { N = \"a\" };\n";
+        assert_eq!(local_types(text), ["s: S"]);
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0205", "MR0203"]);
+        let d = &found[0];
+        assert_eq!(
+            d.message,
+            "`S` declares no constructor, so `new S(...)` takes no arguments"
+        );
+        assert_eq!(&text[d.primary.span.range], "new S(1) { N = \"a\" }");
     }
 
     #[test]
@@ -2753,7 +2801,8 @@ mod tests {
         let text = "struct S {\n    public N: int;\n    public S() { N = 1; }\n}\n\
                     let s = new S() { N = 1, N = 2, M = 3 };\nlet t = new S();\n";
         assert_eq!(local_types(text), ["s: S", "t: S"]);
-        assert_eq!(reported(text), Vec::<String>::new());
+        // No field is missing, and `N` may be assigned again; `M` is no field.
+        assert_eq!(reported(text), ["MR0147"]);
     }
 
     #[test]

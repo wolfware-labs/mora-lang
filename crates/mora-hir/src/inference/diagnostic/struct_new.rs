@@ -1,5 +1,6 @@
 //! The diagnostics of memberwise creation: `MR0129` for a field it cannot
-//! see, `MR0143`, `MR0144`, `MR0147`, `MR0148` and `MR0153`.
+//! see, `MR0143`, `MR0144`, `MR0147`, `MR0148` and `MR0153`, and `MR0205`
+//! for arguments to a type without a constructor.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Span, TextRange};
@@ -126,8 +127,9 @@ fn hidden(t: &str, visibility: Visibility) -> String {
     }
 }
 
-/// `MR0147`: `new T { ... }` assigns `value` to `name`, which is `member`
-/// rather than an instance field of `T`.
+/// `MR0147`: the creation of `T`, memberwise when `memberwise` is set and
+/// otherwise after a constructor call, assigns `value` to `name`, which is
+/// `member` rather than an instance field of `T`.
 pub(super) fn not_a_field(
     source: &Source<'_>,
     value: ExprId,
@@ -135,6 +137,7 @@ pub(super) fn not_a_field(
     name: &str,
     member: NotAField,
     suggestion: Option<&str>,
+    memberwise: bool,
 ) -> Diagnostic {
     let t = source.name(ty);
     let (message, label) = match member {
@@ -156,9 +159,15 @@ pub(super) fn not_a_field(
         ),
     };
     let span = name_span(source, value);
-    let diagnostic = Diagnostic::error(codes::MR0147, message, Label::new(span, label)).with_note(
-        format!("`new {t} {{ ... }}` assigns the fields that each value holds"),
-    );
+    let note = if memberwise {
+        format!("memberwise creation of `{t}` assigns the fields that each value holds")
+    } else {
+        format!(
+            "the assignments after a constructor call name the fields that each value of `{t}` holds"
+        )
+    };
+    let diagnostic =
+        Diagnostic::error(codes::MR0147, message, Label::new(span, label)).with_note(note);
     match suggestion {
         Some(suggestion) => diagnostic.with_fix(Fix::new(
             format!("did you mean `{suggestion}`?"),
@@ -168,7 +177,7 @@ pub(super) fn not_a_field(
     }
 }
 
-/// `MR0148`: `new T { ... }` assigns the field `name` again. The values
+/// `MR0148`: memberwise creation of `T` assigns the field `name` again. The values
 /// are those of its first assignment, of the initializer written just
 /// before the repeated one, and of the repeated one.
 pub(super) fn repeated_field(
@@ -180,7 +189,7 @@ pub(super) fn repeated_field(
     let t = source.name(ty);
     let diagnostic = Diagnostic::error(
         codes::MR0148,
-        format!("`new {t} {{ ... }}` assigns `{name}` twice"),
+        format!("memberwise creation of `{t}` assigns `{name}` twice"),
         Label::new(name_span(source, value), "assigned again here"),
     )
     .with_secondary(Label::new(name_span(source, first), "first assigned here"));
@@ -199,6 +208,20 @@ pub(super) fn repeated_field(
             Span::new(source.file.id(source.db), removed),
             "",
         )],
+    ))
+}
+
+/// `MR0205`: `expr` passes arguments to a constructor of `T`, which
+/// declares none and is not positional.
+pub(super) fn no_constructor(source: &Source<'_>, expr: ExprId, ty: &Ty) -> Diagnostic {
+    let t = source.name(ty);
+    Diagnostic::error(
+        codes::MR0205,
+        format!("`{t}` declares no constructor, so `new {t}(...)` takes no arguments"),
+        Label::new(source.span(expr), "no constructor takes these arguments"),
+    )
+    .with_note(format!(
+        "a type without a constructor is created memberwise: `new {t} {{ ... }}` names its fields"
     ))
 }
 

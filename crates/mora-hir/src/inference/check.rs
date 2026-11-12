@@ -1355,11 +1355,56 @@ impl Check<'_> {
                 });
                 self.assigned_values(item, inits);
             }
-            Creation::Constructor | Creation::Positional | Creation::NoConstructor => {
+            Creation::Constructor => self.after_constructor(item, &written, inits, true),
+            // The positional fields are not instance fields until M2.2, so
+            // a name that is no instance field may still be one of them.
+            Creation::Positional => self.after_constructor(item, &written, inits, false),
+            Creation::NoConstructor => {
+                self.errors.push(TypeError::NoConstructor {
+                    expr,
+                    ty: written.clone(),
+                });
                 self.assigned_values(item, inits);
             }
         }
         Some(written)
+    }
+
+    /// The assignments `inits` after a call of a constructor of the struct
+    /// `item`, of type `ty`, which are plain assignments (§6.9): each value
+    /// is checked against the type of the field it names, a hidden field
+    /// is `MR0129`, and, when `names` is set, a name that is not an
+    /// instance field is `MR0147`. A field may be assigned twice.
+    fn after_constructor(
+        &mut self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        names: bool,
+    ) {
+        for (position, (name, init)) in inits.iter().enumerate() {
+            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
+                Some((index, field)) => {
+                    self.check(*init, &field.ty);
+                    if !self.field_visible(item, index) {
+                        self.errors.push(TypeError::HiddenField {
+                            value: *init,
+                            item,
+                            index,
+                            name: name.clone(),
+                            from: self.scope,
+                        });
+                    }
+                }
+                None => {
+                    self.infer(*init);
+                    if names && let Some(error) = self.not_a_field(item, ty, inits, position, false)
+                    {
+                        self.errors.push(error);
+                    }
+                }
+            }
+        }
     }
 
     /// Checks each value of `inits` against the type of the instance field
@@ -1453,9 +1498,8 @@ impl Check<'_> {
 
     /// What is wrong with the name of the initializer at `position` of
     /// `inits`, the memberwise creation of the struct `item` of type `ty`:
-    /// a name that is not an instance field, or one assigned before. A
-    /// name that is no member gets the closest visible field not assigned
-    /// as a suggestion.
+    /// one assigned before, or a name that is not an instance field
+    /// ([`Self::not_a_field`]).
     fn init_name(
         &self,
         item: ItemId,
@@ -1476,6 +1520,27 @@ impl Check<'_> {
                 ty: ty.clone(),
                 name: name.clone(),
             });
+        }
+        self.not_a_field(item, ty, inits, position, true)
+    }
+
+    /// `MR0147` for the initializer at `position` of `inits`, the creation
+    /// of the struct `item` of type `ty`, whose name is not an instance
+    /// field; `memberwise` when the creation is memberwise rather than a
+    /// constructor call. A name that is no member gets the closest visible
+    /// field not assigned as a suggestion. `None` for a name that is empty,
+    /// which is a syntax error.
+    fn not_a_field(
+        &self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        position: usize,
+        memberwise: bool,
+    ) -> Option<TypeError> {
+        let (name, value) = &inits[position];
+        if name.is_empty() {
+            return None;
         }
         let member = item_tree(self.db, item.file)
             .item(item.item)
@@ -1506,6 +1571,7 @@ impl Check<'_> {
             name: name.clone(),
             member,
             suggestion,
+            memberwise,
         })
     }
 

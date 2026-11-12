@@ -2386,12 +2386,39 @@ fn new_with_empty_parentheses_on_a_struct_without_a_constructor_is_memberwise() 
 }
 
 #[test]
-#[should_panic(expected = "a constructor call is not lowered")]
 fn new_with_empty_parentheses_calls_a_declared_constructor() {
-    let lowered = lowered(
-        "struct P {\n    public X: int;\n    public P() { X = 1; }\n}\nF(): P => new P();\n",
+    let text = "struct P {\n    public X: int;\n    public P() { X = 1; }\n}\n\
+                F(): P => new P();\nG(): P => new P() { X = 3 };\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a constructor call is not lowered until M2.1"
     );
-    lowered.mir("F");
+    let lowered = lowered(text);
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    assert!(
+        dump.contains(
+            "// UsersApi.F: not lowered until M2.1\n\n// UsersApi.G: not lowered until M2.1\n"
+        ),
+        "{dump}"
+    );
+}
+
+#[test]
+fn creating_a_positional_struct_comes_with_positional_structs() {
+    // The later milestone wins over a constructor call in the same body,
+    // and a local function is lowered with the body it is in.
+    let text = "struct U(Id: int);\nstruct P {\n    public X: int;\n    public P(x: int) { X = x; }\n}\n\
+                F(): U => new U(1);\nG(): int {\n    let p = new P(1);\n    let u = new U(2);\n    \
+                return p.X;\n}\nH(): int {\n    L(): U => new U(3);\n    return 1;\n}\n";
+    for name in ["F", "G", "H"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: the creation of a positional struct \
+                 is not lowered until M2.2"
+            )
+        );
+    }
 }
 
 #[test]

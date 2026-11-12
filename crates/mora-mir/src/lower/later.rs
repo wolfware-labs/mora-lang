@@ -8,7 +8,8 @@
 //! generic type, as in a method of `struct B<T>` or of a struct nested in
 //! it, or of a struct whose fields come later; or for a local function in
 //! it that comes later, since a local function is lowered with the body it
-//! is declared in. A struct type comes as late as the types of its instance
+//! is declared in; or for a struct it creates with a constructor, declared
+//! or the one of a positional struct. A struct type comes as late as the types of its instance
 //! fields, which its layout holds, and a struct nested in a generic type
 //! comes with generic code. When several milestones apply, the latest of
 //! them lowers the body.
@@ -20,9 +21,9 @@ use std::collections::HashSet;
 use std::fmt;
 
 use mora_hir::{
-    BodyKind, BodyOwner, Construct, FnSignature, ItemId, ItemKind, Signature, Stmt, Ty, ValueKind,
-    body, body_resolution, enclosing_types, infer, instance_fields, is_generic_type, item_tree,
-    local_functions, signature, struct_field,
+    BodyKind, BodyOwner, Construct, Creation, Expr, FnSignature, ItemId, ItemKind, Signature, Stmt,
+    Ty, ValueKind, body, body_resolution, creation, enclosing_types, infer, instance_fields,
+    is_generic_type, item_tree, local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -53,6 +54,8 @@ pub(super) const CONSTANT_EVALUATION: Milestone = milestone(1, 11);
 const STD_BOOTSTRAP: Milestone = milestone(1, 15);
 /// M2.1, classes, fields, getters and constructors.
 const CLASSES: Milestone = milestone(2, 1);
+/// M2.2, positional structs.
+const POSITIONAL_STRUCTS: Milestone = milestone(2, 2);
 /// M2.6, destructors and drop order.
 const DESTRUCTORS: Milestone = milestone(2, 6);
 /// M2.10, weak references.
@@ -169,7 +172,38 @@ pub(crate) fn lowered_later(
         local_functions_later(db, project, file, owner),
         this_later(db, project, file, owner),
         body_types_later(db, project, file, owner),
+        creations_later(db, project, file, owner),
     ])
+}
+
+/// The milestone that lowers the body of `owner` for the structs it
+/// creates with a constructor: a call of a declared constructor comes with
+/// constructors, and the creation of a positional struct with positional
+/// structs. `None` when it creates every struct memberwise. The first in
+/// the order of the body names it on a tie.
+fn creations_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    latest(hir.exprs.iter().map(|(id, expr)| {
+        let Expr::New { args, .. } = expr else {
+            return None;
+        };
+        let Some(Ty::Struct(item)) = inference.expr(id) else {
+            return None;
+        };
+        match creation(db, *item, args.as_deref()) {
+            Creation::Constructor => later("a constructor call", CLASSES),
+            Creation::Positional => {
+                later("the creation of a positional struct", POSITIONAL_STRUCTS)
+            }
+            Creation::Memberwise | Creation::NotMemberwise | Creation::NoConstructor => None,
+        }
+    }))
 }
 
 /// The milestone that lowers the body of `owner` for its `this`: a method,

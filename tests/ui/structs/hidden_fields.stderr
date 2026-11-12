@@ -70,7 +70,7 @@ help: mark `Retries` `internal`
 10 +     internal Retries: int = 3;
    |
 
-error[MR0148]: `new Settings { ... }` assigns `Retries` twice
+error[MR0148]: memberwise creation of `Settings` assigns `Retries` twice
   --> tests/ui/structs/hidden_fields.mr:23:49
    |
 23 | let e = new Settings { Name = "x", Retries = 5, Retries = 6 }; //~ ERROR MR0129 //~ ERROR MR0148
