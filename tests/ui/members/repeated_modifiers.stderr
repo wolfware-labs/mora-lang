@@ -1,0 +1,84 @@
+error[MR0111]: `mut` is written twice
+ --> tests/ui/members/repeated_modifiers.mr:4:16
+  |
+4 |     public mut mut Count: int; //~ ERROR MR0111
+  |            --- ^^^ written again here
+  |            |
+  |            first written here
+  |
+  = note: a modifier says the same thing however often it is written
+help: remove the repeated `mut`
+  |
+4 -     public mut mut Count: int; //~ ERROR MR0111
+4 +     public mut Count: int; //~ ERROR MR0111
+  |
+
+error[MR0111]: `public` is written twice
+ --> tests/ui/members/repeated_modifiers.mr:5:12
+  |
+5 |     public public Limit: int; //~ ERROR MR0111
+  |     ------ ^^^^^^ written again here
+  |     |
+  |     first written here
+  |
+  = note: a modifier says the same thing however often it is written
+help: remove the repeated `public`
+  |
+5 -     public public Limit: int; //~ ERROR MR0111
+5 +     public Limit: int; //~ ERROR MR0111
+  |
+
+error[MR0111]: `mut` is written twice
+ --> tests/ui/members/repeated_modifiers.mr:6:16
+  |
+6 |     public mut mut(private) Steps: int; //~ ERROR MR0111
+  |            --- ^^^^^^^^^^^^ written again here
+  |            |
+  |            first written here
+  |
+  = note: the two give different write scopes; keep the one that is meant
+
+error[MR0111]: `static` is written twice
+ --> tests/ui/members/repeated_modifiers.mr:8:19
+  |
+8 |     public static static Zero(): int => 0; //~ ERROR MR0111
+  |            ------ ^^^^^^ written again here
+  |            |
+  |            first written here
+  |
+  = note: a modifier says the same thing however often it is written
+help: remove the repeated `static`
+  |
+8 -     public static static Zero(): int => 0; //~ ERROR MR0111
+8 +     public static Zero(): int => 0; //~ ERROR MR0111
+  |
+
+error[MR0111]: `in` is written twice
+  --> tests/ui/members/repeated_modifiers.mr:10:19
+   |
+10 |     public Add(in in n: int): int => Limit + n; //~ ERROR MR0111
+   |                -- ^^ written again here
+   |                |
+   |                first written here
+   |
+   = note: a modifier says the same thing however often it is written
+help: remove the repeated `in`
+   |
+10 -     public Add(in in n: int): int => Limit + n; //~ ERROR MR0111
+10 +     public Add(in n: int): int => Limit + n; //~ ERROR MR0111
+   |
+
+error[MR0111]: `static` is written twice
+  --> tests/ui/members/repeated_modifiers.mr:14:12
+   |
+14 |     static static Twice(n: int): int => n * 2; //~ ERROR MR0111
+   |     ------ ^^^^^^ written again here
+   |     |
+   |     first written here
+   |
+   = note: a modifier says the same thing however often it is written
+help: remove the repeated `static`
+   |
+14 -     static static Twice(n: int): int => n * 2; //~ ERROR MR0111
+14 +     static Twice(n: int): int => n * 2; //~ ERROR MR0111
+   |

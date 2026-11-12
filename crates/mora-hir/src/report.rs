@@ -1,5 +1,7 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size};
+use mora_syntax::SyntaxKind;
+use mora_syntax::ast::{self, AstNode};
 
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -8,7 +10,7 @@ use crate::bodies::{
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
 use crate::inference::{Source, type_error, type_errors};
-use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
+use crate::items::{ItemKind, Visibility, item_source_map, item_tree, parse, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
     resolve_using, value_visible, visible_names,
@@ -20,7 +22,8 @@ use crate::type_ref::type_keywords;
 
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
-/// `MR0123`), the member names of its types (`MR0146`), the locals of its
+/// `MR0123`), the member names of its types (`MR0146`), the modifiers
+/// written twice (`MR0111`), the locals of its
 /// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
 /// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and
 /// syntax errors come from [`crate::parse`].
@@ -35,6 +38,7 @@ pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
         usings(db, project, file, &mut out);
         signatures(db, project, file, &mut out);
         member_names(db, file, &mut out);
+        out.extend(repeated_modifiers(db, file).iter().cloned());
         out.extend(body_diagnostics(db, project, file).iter().cloned());
     }
     entry_point(db, project, map, &mut out);
@@ -315,6 +319,68 @@ enum Lookup {
     /// An expression, which also suggests these names: the locals in scope
     /// and the value members of the enclosing types.
     Expr(Vec<String>),
+}
+
+/// `MR0111`: a modifier written again in the modifiers of one
+/// declaration, parameter or lambda (§6.1). The grammar takes any number
+/// of them, so the parser lets the repetition through. The fix removes
+/// the repetition when it is written as the first one; a `mut` whose
+/// write scope differs from the first one's leaves the choice to the
+/// author. A file whose text did not change keeps its result.
+#[salsa::tracked(returns(ref))]
+fn repeated_modifiers(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+    let id = file.id(db);
+    let text = file.text(db);
+    let mut out = Vec::new();
+    for node in parse(db, file).syntax().descendants() {
+        let written: Vec<(SyntaxKind, TextRange)> = node
+            .children()
+            .filter_map(ast::Modifier::cast)
+            .filter_map(|modifier| {
+                let keyword = modifier.kind()?.kind();
+                let mut tokens = modifier
+                    .syntax()
+                    .tokens()
+                    .filter(|token| !token.kind().is_trivia());
+                let start = tokens.next()?.text_range();
+                let end = tokens.last().map_or(start, |token| token.text_range());
+                Some((keyword, start.cover(end)))
+            })
+            .collect();
+        for (index, &(keyword, range)) in written.iter().enumerate() {
+            let Some(&(_, first)) = written[..index].iter().find(|(kind, _)| *kind == keyword)
+            else {
+                continue;
+            };
+            let spelled = |range: TextRange| -> String { text[range].split_whitespace().collect() };
+            let name = keyword.text().unwrap_or_default();
+            let mut diagnostic = Diagnostic::error(
+                codes::MR0111,
+                format!("`{name}` is written twice"),
+                Label::new(Span::new(id, range), "written again here"),
+            )
+            .with_secondary(Label::new(Span::new(id, first), "first written here"));
+            diagnostic = if spelled(range) == spelled(first) {
+                // The repetition goes with the space after it.
+                let after = usize::from(range.end());
+                let space = text
+                    .get(after..)
+                    .map_or(0, |rest| rest.len() - rest.trim_start().len());
+                let removed = TextRange::new(range.start(), range.end() + to_text_size(space));
+                diagnostic
+                    .with_note("a modifier says the same thing however often it is written")
+                    .with_fix(Fix::new(
+                        format!("remove the repeated `{name}`"),
+                        vec![TextEdit::replace(Span::new(id, removed), "")],
+                    ))
+            } else {
+                diagnostic
+                    .with_note("the two give different write scopes; keep the one that is meant")
+            };
+            out.push(diagnostic);
+        }
+    }
+    out
 }
 
 /// `MR0146`: two members of one type with one name, unless both are
@@ -1299,5 +1365,45 @@ mod tests {
             .map(|&(message, primary, first)| (message.to_owned(), primary, first))
             .collect();
         assert_eq!(reported, expected);
+    }
+
+    #[test]
+    fn a_modifier_written_twice_is_mr0111_with_a_fix_that_removes_it() {
+        let diagnostics_of = |text: &str| {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            diagnostics(&db, project).clone()
+        };
+        let text = "struct Q {\n    public mut mut N: int;\n    public public X: int;\n    \
+                    static static F(): int => 1;\n    public M(ref ref n: int) {}\n}\n\
+                    G(): int {\n    static static L(): int => 1;\n    return L();\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0111"; 5]);
+        assert_eq!(found[0].message, "`mut` is written twice");
+        let primary = |d: &Diagnostic| &text[d.primary.span.range];
+        let first = |d: &Diagnostic| &text[d.secondary[0].span.range];
+        assert_eq!((primary(&found[0]), first(&found[0])), ("mut", "mut"));
+        assert!(found[0].primary.span.range.start() > found[0].secondary[0].span.range.start());
+        assert_eq!(primary(&found[3]), "ref");
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert_eq!(
+            fixed.text,
+            "struct Q {\n    public mut N: int;\n    public X: int;\n    \
+             static F(): int => 1;\n    public M(ref n: int) {}\n}\n\
+             G(): int {\n    static L(): int => 1;\n    return L();\n}\n"
+        );
+        // Write scopes that differ leave the choice to the author, and the
+        // same scope written twice is one repetition.
+        let text = "struct S {\n    public mut mut(private) N: int;\n    \
+                    public mut(private) mut(private) M: int;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0111"; 2]);
+        assert_eq!(&text[found[0].primary.span.range], "mut(private)");
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+        assert_eq!(found[1].fixes.len(), 1, "{found:#?}");
+        // Three times is two repetitions of the first.
+        let found = diagnostics_of("struct S {\n    public public public N: int;\n}\n");
+        assert_eq!(codes(&found), ["MR0111"; 2]);
     }
 }

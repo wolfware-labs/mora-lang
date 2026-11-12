@@ -542,8 +542,10 @@ pub(crate) struct Written<'a> {
     /// Whether `async` is among them.
     pub(crate) is_async: bool,
     /// Whether `mut` is among them and none of them has a write scope, so
-    /// any code that sees the declaration may write it (§6.9). A write
-    /// scope on any of them narrows the writes, whatever their order.
+    /// any code that sees the declaration may write it (§6.9). A `mut`
+    /// written twice is `MR0111`; until it is fixed, a write scope on any
+    /// of them narrows the writes, whatever their order, so the error
+    /// opens no more writes than either spelling.
     pub(crate) is_mut_anywhere: bool,
 }
 

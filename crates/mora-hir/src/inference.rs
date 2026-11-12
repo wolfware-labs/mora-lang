@@ -2991,17 +2991,23 @@ mod tests {
     fn braces_alone_naming_a_field_not_writable_after_a_constructor_have_no_fix() {
         // A read-only field, or one whose write scope may not allow the
         // write, cannot be assigned after the constructor that `()` calls.
-        for field in [
-            "public N: int;",
-            "public mut(private) N: int;",
-            "public mut(private) mut N: int;",
-            "public mut mut(private) N: int;",
+        // A `mut` written twice is `MR0111`, and a write scope on either
+        // still keeps the fix away, whatever their order.
+        for (field, repeated) in [
+            ("public N: int;", false),
+            ("public mut(private) N: int;", false),
+            ("public mut(private) mut N: int;", true),
+            ("public mut mut(private) N: int;", true),
         ] {
             let text = format!(
                 "struct S {{\n    {field}\n    public S() {{ N = 1; }}\n}}\n\
                  let s = new S {{ N = 2 }};\n"
             );
-            let found = diagnostics_of(&text);
+            let mut found = diagnostics_of(&text);
+            if repeated {
+                assert_eq!(codes(&found), ["MR0111", "MR0153"], "{text}");
+                found.remove(0);
+            }
             assert_eq!(codes(&found), ["MR0153"], "{text}");
             assert!(found[0].fixes.is_empty(), "{found:#?}");
         }
