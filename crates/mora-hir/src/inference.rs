@@ -1179,12 +1179,12 @@ mod tests {
         let member = "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    \
                       I.M(): int {\n        return \"x\";\n    }\n    \
                       async I.N(): int {\n        return \"x\";\n    }\n}\n";
-        assert_eq!(mismatches(member), 1);
+        assert_eq!(mismatches(member), 2);
         let extension = "struct S {\n    X: int;\n}\nextension (s: S) {\n    \
                          F(): int => \"x\";\n    G() {\n        return 1;\n    }\n    \
                          H(): int {\n        return 1;\n    }\n    \
                          async K(): int {\n        return \"x\";\n    }\n}\n";
-        assert_eq!(mismatches(extension), 2);
+        assert_eq!(mismatches(extension), 3);
     }
 
     #[test]
@@ -1275,11 +1275,16 @@ mod tests {
     }
 
     #[test]
-    fn only_a_synchronous_local_function_checks_what_it_returns() {
+    fn a_local_function_checks_what_it_returns_async_or_not() {
         assert_eq!(reported("F() {\n    G(): int => \"s\";\n}\n"), ["MR0203"]);
+        // `return v` in an `async` function gives its declared type (§12).
         assert_eq!(
             reported("F() {\n    async H(): int => \"s\";\n}\n"),
-            Vec::<String>::new()
+            ["MR0203"]
+        );
+        assert_eq!(
+            reported("async F(): int {\n    return \"s\";\n}\n"),
+            ["MR0203"]
         );
     }
 

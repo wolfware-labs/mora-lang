@@ -148,10 +148,9 @@ pub(super) fn infer_body(
                     check.locals[arena_index(local)].get_or_insert_with(|| param.ty.clone());
                 }
             }
-            // What an `async` function's body returns is for §12 to say.
-            if !function.is_async {
-                expected = Some(function.ret.clone());
-            }
+            // `return v` in an `async` function gives a value of its
+            // declared type too (§12).
+            expected = Some(function.ret.clone());
         }
         Some(Signature::Value(ty)) => expected = Some(ty.clone()),
         // The initializer of a field of a struct, whose type the struct's
@@ -177,7 +176,7 @@ pub(super) fn infer_body(
             }
             // A function that implements an interface member or extends a
             // type holds its own return type, `()` when none is written.
-            BodyKind::Function if !body.is_async => {
+            BodyKind::Function => {
                 expected = Some(check.resolution.return_type(body.ret));
             }
             _ => {}
@@ -433,9 +432,9 @@ impl Check<'_> {
             }
             Stmt::Function(function) => {
                 self.defaults(&function.defaults);
-                let ret = (!function.is_async).then(|| self.resolution.return_type(function.ret));
+                let ret = self.resolution.return_type(function.ret);
                 if let Some(root) = function.body {
-                    self.function_body(root, ret, true);
+                    self.function_body(root, Some(ret), true);
                 }
             }
             Stmt::Block(stmts) => self.block(stmts),

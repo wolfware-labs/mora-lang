@@ -21,6 +21,11 @@ F(b: bool, p: P) {
     n += new(); //~ ERROR MR0154
 }
 
+// The value of `return` in an `async` function takes its declared type.
+async G(): P {
+    return new { X = 1 };
+}
+
 // So does every argument of a call checked later, as a call of a generic
 // function or of a method of a class.
 public class C {
