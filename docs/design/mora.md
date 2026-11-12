@@ -630,6 +630,8 @@ BaseList   = ":" Type ( "," Type )* ;                 (* interfaces only in the 
 
 Each modifier is written at most once in the modifiers of a declaration, a parameter or a lambda. A repeated one, as in `public public X` or `mut mut N`, is error `MR0111`. The fix removes the repetition when it is written as the first one; a `mut` repeated with another write scope, as in `mut mut(private) N`, gets no fix, because only the author knows which scope is meant (D-149).
 
+Some modifiers exclude each other, and at most one of them is written: a declaration has one visibility (`private`, `file`, `internal` or `public`, §4.5), a parameter one mode (`in`, `ref` or `move`, §10.3), and a method takes `this` one way (`mut` by `ref`, `move` by `move`, §10.3). A later one that conflicts with an earlier one, as in `public private X` or `ref move n: int`, is error `MR0112`, with a fix that removes the later one (D-151).
+
 A type may be generic (§8), may list interfaces it implements, and may nest other type declarations. Every type is sealed: there is no class inheritance in the MVP (OQ-4),, and a base list may only name interfaces.
 
 **Struct or class.** The choice between `struct` and `class` is about meaning, never about cost (D-56):
@@ -3419,6 +3421,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-148 | `new` creates a struct or a class: `new T` with a written type of any other kind, such as `int`, an option, an enum, an interface or a type parameter, is `MR0154`; a `new` without a type creates its target type, which must be a struct or a class; with no target type, as for the initializer of a `let` or `var` without a type or for a `new()` statement, or with a target type of any other kind, it is `MR0154`; there is no fix, since only the author knows which type is meant | author | 6.9, 7.3 |
 | D-149 | A modifier written twice in the modifiers of one declaration, parameter or lambda is `MR0111`, with a fix that removes the repetition when both are written the same, and no fix for a `mut` repeated with another write scope, since only the author knows which scope is meant | author | 6.1 |
 | D-150 | A lambda or a `new` without a type passed to a call takes the type of its parameter: with one function, its parameter of that name or at that position; with overloads, the type that every overload able to take the arguments by count and by name has there, when they agree; when they do not, a lambda gets no target type and a `new` without a type is `MR0154`, unless the call is already `MR0205`, `MR0206` or `MR0207` | author | 6.9 |
+| D-151 | Two visibilities on one declaration, two modes on one parameter, and `mut` with `move` on one method are `MR0112`, with a fix that removes the later modifier, since each set says one thing at most; a modifier that repeats an earlier one is `MR0111` alone | author | 6.1, 10.3 |
 
 ## 24. Open questions
 

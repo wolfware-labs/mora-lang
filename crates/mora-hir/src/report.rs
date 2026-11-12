@@ -23,7 +23,7 @@ use crate::type_ref::type_keywords;
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
-/// written twice (`MR0111`), the locals of its
+/// written twice or that conflict (`MR0111`, `MR0112`), the locals of its
 /// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
 /// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and
 /// syntax errors come from [`crate::parse`].
@@ -38,7 +38,7 @@ pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
         usings(db, project, file, &mut out);
         signatures(db, project, file, &mut out);
         member_names(db, file, &mut out);
-        out.extend(repeated_modifiers(db, file).iter().cloned());
+        out.extend(modifier_diagnostics(db, file).iter().cloned());
         out.extend(body_diagnostics(db, project, file).iter().cloned());
     }
     entry_point(db, project, map, &mut out);
@@ -321,16 +321,26 @@ enum Lookup {
     Expr(Vec<String>),
 }
 
-/// `MR0111`: a modifier written again in the modifiers of one
-/// declaration, parameter or lambda (§6.1). The grammar takes any number
-/// of them, so the parser lets the repetition through. The fix removes
-/// the repetition when it is written as the first one; a `mut` whose
-/// write scope differs from the first one's leaves the choice to the
-/// author. A file whose text did not change keeps its result.
+/// `MR0111` and `MR0112`: a modifier written again in the modifiers of
+/// one declaration, parameter or lambda, or one that conflicts with an
+/// earlier one (§6.1). The grammar takes any number of them, so the parser
+/// lets both through. The fix for a repetition removes it when it is
+/// written as the first one; a `mut` whose write scope differs from the
+/// first one's leaves the choice to the author. The fix for a conflict
+/// removes the later modifier. A file whose text did not change keeps its
+/// result.
 #[salsa::tracked(returns(ref))]
-fn repeated_modifiers(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
     let text = file.text(db);
+    let span = |range| Span::new(id, range);
+    // A modifier goes with the space after it.
+    let removal = |range: TextRange| {
+        let space = text
+            .get(usize::from(range.end())..)
+            .map_or(0, |rest| rest.len() - rest.trim_start().len());
+        TextRange::new(range.start(), range.end() + to_text_size(space))
+    };
     let mut out = Vec::new();
     for node in parse(db, file).syntax().descendants() {
         let written: Vec<(SyntaxKind, TextRange)> = node
@@ -348,39 +358,102 @@ fn repeated_modifiers(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             })
             .collect();
         for (index, &(keyword, range)) in written.iter().enumerate() {
-            let Some(&(_, first)) = written[..index].iter().find(|(kind, _)| *kind == keyword)
+            let earlier = &written[..index];
+            let name = keyword.text().unwrap_or_default();
+            if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
+                let spelled =
+                    |range: TextRange| -> String { text[range].split_whitespace().collect() };
+                let diagnostic = Diagnostic::error(
+                    codes::MR0111,
+                    format!("`{name}` is written twice"),
+                    Label::new(span(range), "written again here"),
+                )
+                .with_secondary(Label::new(span(first), "first written here"));
+                out.push(if spelled(range) == spelled(first) {
+                    diagnostic
+                        .with_note("a modifier says the same thing however often it is written")
+                        .with_fix(Fix::new(
+                            format!("remove the repeated `{name}`"),
+                            vec![TextEdit::replace(span(removal(range)), "")],
+                        ))
+                } else {
+                    diagnostic.with_note(
+                        "the two give different write scopes; keep the one that is meant",
+                    )
+                });
+                continue;
+            }
+            let Some(exclusive) = exclusive(node.kind(), keyword) else {
+                continue;
+            };
+            let Some(&(other, first)) = earlier
+                .iter()
+                .find(|(kind, _)| exclusive.keywords.contains(kind))
             else {
                 continue;
             };
-            let spelled = |range: TextRange| -> String { text[range].split_whitespace().collect() };
-            let name = keyword.text().unwrap_or_default();
-            let mut diagnostic = Diagnostic::error(
-                codes::MR0111,
-                format!("`{name}` is written twice"),
-                Label::new(Span::new(id, range), "written again here"),
-            )
-            .with_secondary(Label::new(Span::new(id, first), "first written here"));
-            diagnostic = if spelled(range) == spelled(first) {
-                // The repetition goes with the space after it.
-                let after = usize::from(range.end());
-                let space = text
-                    .get(after..)
-                    .map_or(0, |rest| rest.len() - rest.trim_start().len());
-                let removed = TextRange::new(range.start(), range.end() + to_text_size(space));
-                diagnostic
-                    .with_note("a modifier says the same thing however often it is written")
-                    .with_fix(Fix::new(
-                        format!("remove the repeated `{name}`"),
-                        vec![TextEdit::replace(Span::new(id, removed), "")],
-                    ))
-            } else {
-                diagnostic
-                    .with_note("the two give different write scopes; keep the one that is meant")
-            };
-            out.push(diagnostic);
+            let other = other.text().unwrap_or_default();
+            out.push(
+                Diagnostic::error(
+                    codes::MR0112,
+                    format!("`{name}` conflicts with `{other}`: {}", exclusive.rule),
+                    Label::new(span(range), format!("`{other}` is written already")),
+                )
+                .with_secondary(Label::new(span(first), "written first here"))
+                .with_note("keep the one that is meant; the fix keeps the first")
+                .with_fix(Fix::new(
+                    format!("remove `{name}`"),
+                    vec![TextEdit::replace(span(removal(range)), "")],
+                )),
+            );
         }
     }
     out
+}
+
+/// Modifiers of which a declaration, parameter or lambda takes one at
+/// most, and the rule that says so.
+struct Exclusive {
+    /// The modifiers.
+    keywords: &'static [SyntaxKind],
+    /// Why only one of them fits, for the message.
+    rule: &'static str,
+}
+
+/// The visibilities (§4.5).
+const VISIBILITIES: Exclusive = Exclusive {
+    keywords: &[
+        SyntaxKind::PrivateKw,
+        SyntaxKind::FileKw,
+        SyntaxKind::InternalKw,
+        SyntaxKind::PublicKw,
+    ],
+    rule: "a declaration has one visibility",
+};
+
+/// The modes of a parameter (§10.3).
+const MODES: Exclusive = Exclusive {
+    keywords: &[SyntaxKind::InKw, SyntaxKind::RefKw, SyntaxKind::MoveKw],
+    rule: "a parameter has one mode",
+};
+
+/// How a method takes `this`: `mut` by `ref`, `move` by `move` (§10.3).
+const RECEIVERS: Exclusive = Exclusive {
+    keywords: &[SyntaxKind::MutKw, SyntaxKind::MoveKw],
+    rule: "a method takes `this` one way",
+};
+
+/// The modifiers that exclude `keyword` in the modifiers of a node of the
+/// kind `node`, if any do.
+fn exclusive(node: SyntaxKind, keyword: SyntaxKind) -> Option<&'static Exclusive> {
+    let sets: &[&'static Exclusive] = match node {
+        SyntaxKind::Param | SyntaxKind::LambdaParam => &[&VISIBILITIES, &MODES],
+        SyntaxKind::FunctionDecl => &[&VISIBILITIES, &RECEIVERS],
+        _ => &[&VISIBILITIES],
+    };
+    sets.iter()
+        .copied()
+        .find(|set| set.keywords.contains(&keyword))
 }
 
 /// `MR0146`: two members of one type with one name, unless both are
@@ -1405,5 +1478,53 @@ mod tests {
         // Three times is two repetitions of the first.
         let found = diagnostics_of("struct S {\n    public public public N: int;\n}\n");
         assert_eq!(codes(&found), ["MR0111"; 2]);
+    }
+
+    #[test]
+    fn modifiers_that_conflict_are_mr0112_with_a_fix_that_removes_the_later() {
+        let diagnostics_of = |text: &str| {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            diagnostics(&db, project).clone()
+        };
+        let text = "struct Q {\n    public private N: int;\n    internal file X: int;\n    \
+                    public M(ref move n: int, in ref m: int) {}\n    public mut move K() {}\n}\n\
+                    G(): int {\n    let f = (ref in x: int) => 1;\n    return 1;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0112"; 6]);
+        assert_eq!(
+            found[0].message,
+            "`private` conflicts with `public`: a declaration has one visibility"
+        );
+        assert_eq!(&text[found[0].primary.span.range], "private");
+        assert_eq!(&text[found[0].secondary[0].span.range], "public");
+        assert_eq!(
+            found[2].message,
+            "`move` conflicts with `ref`: a parameter has one mode"
+        );
+        assert_eq!(
+            found[4].message,
+            "`move` conflicts with `mut`: a method takes `this` one way"
+        );
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert_eq!(
+            fixed.text,
+            "struct Q {\n    public N: int;\n    internal X: int;\n    \
+             public M(ref n: int, in m: int) {}\n    public mut K() {}\n}\n\
+             G(): int {\n    let f = (ref x: int) => 1;\n    return 1;\n}\n"
+        );
+        // A repetition of the first is `MR0111` alone, and `mut` with
+        // `move` conflicts only on a method.
+        let text = "struct S {\n    public private public N: int;\n}\n";
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0112", "MR0111"]);
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.text, "struct S {\n    public N: int;\n}\n");
+        assert_eq!(
+            codes(&diagnostics_of(
+                "struct S {\n    public mut N: int;\n    static mut M: int = 1;\n}\n"
+            )),
+            Vec::<String>::new()
+        );
     }
 }
