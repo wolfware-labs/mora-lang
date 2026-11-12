@@ -368,8 +368,8 @@ pub(crate) enum TypeError {
     /// The creation of the struct `ty`, memberwise or, when `memberwise`
     /// is not set, after a constructor call, assigns `value` to `name`,
     /// which is not an instance field of it but `member`; for a name that
-    /// is no member, `suggestion` is the closest field not assigned
-    /// (`MR0147`).
+    /// is no member, `suggestion` is the closest field, one not assigned
+    /// yet in memberwise creation (`MR0147`).
     NotAField {
         value: ExprId,
         ty: Ty,
@@ -2720,6 +2720,18 @@ mod tests {
                     public S(n: int) { N = n; H = n; }\n}\n\
                     let s = new S(1) { H = 2, N = \"a\" };\n";
         assert_eq!(reported(text), ["MR0129", "MR0203"]);
+    }
+
+    #[test]
+    fn after_a_constructor_an_assigned_field_is_still_suggested() {
+        // A field may be assigned again after a constructor, so one already
+        // assigned is still the closest field.
+        let text = "struct P {\n    public mut X: int;\n    public P(x: int) { X = x; }\n}\n\
+                    let p = new P(1) { X = 1, Xx = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0147"]);
+        assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
+        assert_eq!(found[0].fixes[0].message, "did you mean `X`?");
     }
 
     #[test]

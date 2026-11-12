@@ -1531,8 +1531,9 @@ impl Check<'_> {
     /// of the struct `item` of type `ty`, whose name is not an instance
     /// field; `memberwise` when the creation is memberwise rather than a
     /// constructor call. A name that is no member gets the closest visible
-    /// field not assigned as a suggestion. `None` for an initializer without
-    /// a name, which is a syntax error.
+    /// field as a suggestion, one not assigned yet in memberwise creation,
+    /// which assigns each field once. `None` for an initializer without a
+    /// name, which is a syntax error.
     fn not_a_field(
         &self,
         item: ItemId,
@@ -1559,12 +1560,12 @@ impl Check<'_> {
             });
         let suggestion = if member == NotAField::Unknown {
             // Only a field the use can see is worth suggesting.
-            let unassigned: Vec<String> = instance_fields(self.db, item)
+            let candidates: Vec<String> = instance_fields(self.db, item)
                 .filter(|&(index, _)| self.field_visible(item, index))
                 .map(|(_, field)| field.name.clone())
-                .filter(|field| !inits.iter().any(|(name, _)| name == field))
+                .filter(|field| !memberwise || !inits.iter().any(|(name, _)| name == field))
                 .collect();
-            closest(name, &unassigned).map(str::to_owned)
+            closest(name, &candidates).map(str::to_owned)
         } else {
             None
         };
