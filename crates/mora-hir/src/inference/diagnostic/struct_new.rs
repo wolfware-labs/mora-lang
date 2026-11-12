@@ -127,17 +127,23 @@ fn has_parameterless_constructor(source: &Source<'_>, item: ItemId, from: Scope)
     })
 }
 
-/// `MR0129`: memberwise creation, in `from`, assigns `value` to the field
-/// `name`, `field`, which the expression cannot see. It reads as any
-/// declaration the use cannot see (§4.5).
+/// `MR0129`: the creation of a struct, in `from`, assigns `value` to the
+/// field `name`, `field`, which the expression cannot see. It reads as any
+/// declaration the use cannot see (§4.5). A `repeated` assignment leaves
+/// the fix to the first one, so applying every fix widens the field once.
 pub(super) fn hidden_field(
     source: &Source<'_>,
     value: ExprId,
     field: Declared,
     name: &str,
     from: Scope,
+    repeated: bool,
 ) -> Diagnostic {
-    not_visible(source.db, from, name, name_span(source, value), field)
+    let mut diagnostic = not_visible(source.db, from, name, name_span(source, value), field);
+    if repeated {
+        diagnostic.fixes.clear();
+    }
+    diagnostic
 }
 
 /// Why a field of visibility `visibility` of the type named `t` is hidden.

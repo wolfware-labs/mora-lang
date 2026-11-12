@@ -1394,6 +1394,7 @@ impl Check<'_> {
                             index,
                             name: name.clone(),
                             from: self.scope,
+                            repeated: assigned_before(inits, position).is_some(),
                         });
                     }
                 }
@@ -1470,6 +1471,7 @@ impl Check<'_> {
                     index,
                     name: name.clone(),
                     from: self.scope,
+                    repeated: false,
                 });
             }
             if let Some(error) = self.init_name(item, ty, inits, position) {

@@ -356,15 +356,17 @@ pub(crate) enum TypeError {
         from: Scope,
         writable: bool,
     },
-    /// The memberwise creation of the struct `item` assigns `value` to its
-    /// field `name`, the value member at `index`, which is not visible from
-    /// `from` (`MR0129`).
+    /// The creation of the struct `item` assigns `value` to its field
+    /// `name`, the value member at `index`, which is not visible from
+    /// `from` (`MR0129`). `repeated` is set when an earlier assignment of
+    /// the creation names the field too, which carries the fix.
     HiddenField {
         value: ExprId,
         item: ItemId,
         index: u32,
         name: String,
         from: Scope,
+        repeated: bool,
     },
     /// The creation of the struct `ty`, memberwise or, when `memberwise`
     /// is not set, after a constructor call, assigns `value` to `name`,
@@ -2721,6 +2723,25 @@ mod tests {
                     public S(n: int) { N = n; H = n; }\n}\n\
                     let s = new S(1) { H = 2, N = \"a\" };\n";
         assert_eq!(reported(text), ["MR0129", "MR0203"]);
+    }
+
+    #[test]
+    fn a_hidden_field_assigned_twice_after_a_constructor_is_fixed_once() {
+        // Both assignments are reported, and only the first carries the
+        // fix, so applying every fix widens the field once.
+        let text = "struct S {\n    private mut H: int;\n    public S(h: int) { H = h; }\n}\n\
+                    let s = new S(1) { H = 1, H = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0129", "MR0129"]);
+        assert_eq!(found[0].fixes.len(), 1, "{found:#?}");
+        assert!(found[1].fixes.is_empty(), "{found:#?}");
+        let fixed = apply_fixes(text);
+        assert!(
+            fixed.text.contains("    internal mut H: int;\n"),
+            "{}",
+            fixed.text
+        );
+        assert_eq!(reported(&fixed.text), Vec::<String>::new());
     }
 
     #[test]
