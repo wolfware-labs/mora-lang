@@ -53,13 +53,13 @@ pub(super) fn no_memberwise(
     ))
 }
 
-/// `MR0153`: `new T { ... }`, with the struct `item` written `written`,
-/// or `new { ... }` with `item` the target type, creates `T` memberwise,
-/// in `from`, while it is positional or declares a
-/// constructor, which turns memberwise creation off. When `from` sees a
-/// constructor that takes no arguments and every name in the braces is
-/// `writable` after it, the fix calls it; otherwise only the author knows
-/// what to write (D-147).
+/// `MR0153`: `new T { ... }` in `from`, with the struct `item` written
+/// `written`, or `new { ... }` with `item` the target type, creates `T`
+/// memberwise while it is positional or declares a constructor, which
+/// turns memberwise creation off. When `from` sees a constructor that
+/// takes no arguments and every name in the braces is `writable` after
+/// it, the fix calls it; otherwise only the author knows what to write
+/// (D-147).
 pub(super) fn memberwise_off(
     source: &Source<'_>,
     expr: ExprId,
@@ -91,7 +91,9 @@ pub(super) fn memberwise_off(
     .with_note(note);
     match parentheses_at(source, expr, written) {
         Some(at)
-            if !positional && writable && has_parameterless_constructor(source, item, from) =>
+            if !positional
+                && writable
+                && sees_constructor_without_arguments(source, item, from) =>
         {
             diagnostic.with_fix(Fix::new(
                 "call the constructor that takes no arguments",
@@ -126,7 +128,7 @@ fn parentheses_at(source: &Source<'_>, expr: ExprId, written: Option<TypeId>) ->
 
 /// Whether the struct `item` declares a constructor that `from` sees and
 /// that takes no arguments: each of its parameters, if any, has a default.
-fn has_parameterless_constructor(source: &Source<'_>, item: ItemId, from: Scope) -> bool {
+fn sees_constructor_without_arguments(source: &Source<'_>, item: ItemId, from: Scope) -> bool {
     body_owners(source.db, item.file).into_iter().any(|owner| {
         let BodyOwner::Member(ty, _) = owner else {
             return false;

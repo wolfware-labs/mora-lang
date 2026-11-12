@@ -2404,7 +2404,7 @@ fn new_with_empty_parentheses_calls_a_declared_constructor() {
 }
 
 #[test]
-fn target_typed_new_of_a_struct_lowers_as_its_written_type() {
+fn target_typed_new_of_a_struct_lowers_like_new_with_the_type() {
     // Memberwise creation lowers, and a constructor call comes later.
     let lowered = lowered(
         "struct P {\n    public X: int;\n    public Y: int = 2;\n}\n\

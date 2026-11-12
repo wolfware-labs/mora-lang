@@ -344,12 +344,12 @@ pub(crate) enum TypeError {
         field: String,
         visibility: Visibility,
     },
-    /// `expr` creates the struct `item`, written `written` or, when `None`,
-    /// the target type, with braces alone, while it is positional or
-    /// declares a constructor, which turns
-    /// memberwise creation off (`MR0153`), in `from`. `writable` is set when
-    /// every name in the braces is a field that the body may write after a
-    /// constructor, so calling one keeps them valid.
+    /// `expr`, in `from`, creates the struct `item`, written `written` or,
+    /// when `None`, the target type, with braces alone, while it is
+    /// positional or declares a constructor, which turns memberwise creation
+    /// off (`MR0153`). `writable` is set when every name in the braces is a
+    /// field that the body may write after a constructor, so calling one
+    /// keeps them valid.
     MemberwiseOff {
         expr: ExprId,
         item: ItemId,

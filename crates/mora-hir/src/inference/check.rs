@@ -1363,11 +1363,11 @@ impl Check<'_> {
                 });
                 // The names are checked as after the constructor call that
                 // the fix writes.
-                let positional = item_data(self.db, item).is_positional;
-                self.after_constructor(positional, item, &written, inits);
+                self.after_constructor(item, &written, inits);
             }
-            Creation::Constructor => self.after_constructor(false, item, &written, inits),
-            Creation::Positional => self.after_constructor(true, item, &written, inits),
+            Creation::Constructor | Creation::Positional => {
+                self.after_constructor(item, &written, inits);
+            }
             Creation::NoConstructor => {
                 self.errors.push(TypeError::NoConstructor {
                     expr,
@@ -1380,18 +1380,14 @@ impl Check<'_> {
     }
 
     /// The assignments `inits` after a call of a constructor of the struct
-    /// `item` of type `ty`, `positional` when it is the one of a positional
-    /// struct, which are plain assignments (§6.9): each value is checked
-    /// against the type of the field it names, a hidden field is `MR0129`,
-    /// and, after a declared constructor, a name that is not an instance
-    /// field is `MR0147`. A field may be assigned twice.
-    fn after_constructor(
-        &mut self,
-        positional: bool,
-        item: ItemId,
-        ty: &Ty,
-        inits: &[(String, ExprId)],
-    ) {
+    /// `item` of type `ty`, which are plain assignments (§6.9): each value
+    /// is checked against the type of the field it names, a hidden field is
+    /// `MR0129`, and, after a declared constructor, a name that is not an
+    /// instance field is `MR0147`. A field may be assigned twice.
+    fn after_constructor(&mut self, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
+        // A positional struct's constructor is the one its parameters
+        // declare (§6.5).
+        let positional = item_data(self.db, item).is_positional;
         for (position, (name, init)) in inits.iter().enumerate() {
             match self.assigned_field(item, name, *init) {
                 Some(index) => {
