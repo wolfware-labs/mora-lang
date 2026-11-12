@@ -528,10 +528,41 @@ fn a_step_whose_value_is_used_last_is_not_copied() {
 }
 
 #[test]
+fn a_call_inference_does_not_check_comes_with_its_callee() {
+    let text = "Id<T>(move x: T): T => x;\nasync Wait(): int => 1;\n\
+                struct P {\n    public X: int;\n    public Get<T>(move t: T): int => X;\n\
+                \x20   public this[i: int]: int { get => X + i; }\n}\n\
+                Run(f: (int) => int) {}\nRun(f: (string) => int) {}\n\
+                A() {\n    Id(1);\n}\nB() {\n    Wait();\n}\n\
+                C(p: P) {\n    p.Get(1);\n}\nD(p: P): int => p[1];\n\
+                E() {\n    Run(x => 1);\n}\nG() {\n    let f = (x: int) => x;\n}\n";
+    for (name, what) in [
+        (
+            "A",
+            "a call of a generic function is not lowered until M3.9",
+        ),
+        ("B", "a call of an async function is not lowered until M6.2"),
+        (
+            "C",
+            "a call of a generic function is not lowered until M3.9",
+        ),
+        ("D", "an operator on a struct is not lowered until M3.6"),
+        ("E", "a lambda is not lowered until M2.11"),
+        ("G", "a lambda is not lowered until M2.11"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what}")
+        );
+    }
+}
+
+#[test]
 #[should_panic(expected = "the call has no callee")]
-fn a_call_inference_does_not_check_is_an_internal_error() {
-    let lowered = lowered("Id<T>(move x: T): T => x;\nId(1);\n");
-    lowered.mir("top-level");
+fn a_call_of_a_params_function_is_an_internal_error() {
+    // No milestone of the roadmap expands `params` arguments yet.
+    let lowered = lowered("Sum(params xs: int[]) {}\nF() {\n    Sum(1, 2);\n}\n");
+    lowered.mir("F");
 }
 
 #[test]
@@ -673,10 +704,11 @@ fn untyped_value_is_internal_error() {
 }
 
 #[test]
-#[should_panic(expected = "the local `f` has no type")]
-fn untyped_local_is_internal_error() {
-    let lowered = lowered("let f = (x: int) => x;\n");
-    lowered.mir("top-level");
+fn a_lambda_stored_in_a_local_comes_with_closures() {
+    assert_eq!(
+        later_error("let f = (x: int) => x;\n", |l| l.owner("top-level")),
+        "internal error lowering top-level: a lambda is not lowered until M2.11"
+    );
 }
 
 #[test]

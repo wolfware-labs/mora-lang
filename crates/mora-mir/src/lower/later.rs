@@ -10,7 +10,9 @@
 //! it that comes later, since a local function is lowered with the body it
 //! is declared in; or for a struct it creates with a constructor, declared
 //! or the one of a positional struct; or for an operator it applies to a
-//! struct, which may declare it. A struct type comes as late as the
+//! struct, which may declare it; or for a lambda in it, or a call that
+//! inference leaves unresolved because a generic, `async` or `params`
+//! function could take it. A struct type comes as late as the
 //! types of its instance fields, which its layout holds, and a struct
 //! nested in a generic type comes with generic code. When several
 //! milestones apply, the latest of them lowers the body.
@@ -22,9 +24,10 @@ use std::collections::HashSet;
 use std::fmt;
 
 use mora_hir::{
-    BinaryOp, BodyKind, BodyOwner, Construct, Creation, Expr, FnSignature, ItemId, ItemKind,
-    Signature, Stmt, Ty, UnaryOp, ValueKind, body, body_resolution, creation, enclosing_types,
-    infer, instance_fields, is_generic_type, item_tree, local_functions, signature, struct_field,
+    BinaryOp, Body, BodyKind, BodyOwner, Construct, Creation, Expr, ExprId, FnSignature, Inference,
+    ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, body,
+    body_resolution, creation, enclosing_types, infer, instance_fields, is_generic_type, item_tree,
+    local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -85,6 +88,10 @@ pub(super) const STATICS: Milestone = milestone(3, 13);
 const EXPANSION: Milestone = milestone(4, 4);
 /// M6.2, async lowering.
 const ASYNC: Milestone = milestone(6, 2);
+/// The milestone that expands `params` arguments. The roadmap has none
+/// yet, so a call that only a `params` overload leaves unresolved stays an
+/// internal error of lowering.
+const PARAMS: Option<Milestone> = None;
 
 /// A body that is not lowered yet: what it is and the milestone of the
 /// roadmap that lowers it.
@@ -175,14 +182,105 @@ pub(crate) fn lowered_later(
         body_types_later(db, project, file, owner),
         creations_later(db, project, file, owner),
         operators_later(db, project, file, owner),
+        lambdas_later(db, file, owner),
+        calls_later(db, project, file, owner),
+    ])
+}
+
+/// The milestone that lowers the body of `owner` for a lambda in it:
+/// closures and function types. `None` when it has none.
+fn lambdas_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+    let hir = body(db, file, owner);
+    hir.exprs
+        .iter()
+        .any(|(_, expr)| matches!(expr, Expr::Lambda(_)))
+        .then(|| Later::new("a lambda", CLOSURES))
+}
+
+/// The milestone that lowers the body of `owner` for the calls inference
+/// leaves without a callee because an overload of the called name is
+/// generic, `async` or takes `params` (D-137): the latest of those that
+/// apply to each call, the first call on a tie. A call of a local function
+/// comes as late as the local function, which [`local_functions_later`]
+/// counts, and a call with none of these overloads is an internal error
+/// of lowering. `None` when every call has its callee.
+fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    let resolution = body_resolution(db, project, file, owner);
+    latest(hir.exprs.iter().map(|(id, expr)| {
+        let Expr::Call { callee, .. } = expr else {
+            return None;
+        };
+        if inference.callee(id).is_some() {
+            return None;
+        }
+        let functions = match resolution.paths.get(callee).map(|path| &path.target) {
+            Some(Target::Item(Resolved::Functions(items))) => items.clone(),
+            _ => methods(db, hir, inference, *callee),
+        };
+        latest(functions.iter().map(|&item| {
+            let Signature::Function(function) = signature(db, item) else {
+                return None;
+            };
+            unchecked_call(function)
+        }))
+    }))
+}
+
+/// The non-static methods that a call through a value of a struct type
+/// calls by the name of `callee`, a member; empty for any other callee.
+fn methods(db: &dyn Db, hir: &Body, inference: &Inference, callee: ExprId) -> Vec<ItemId> {
+    let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
+        return Vec::new();
+    };
+    let Some(Ty::Struct(ty)) = inference.expr(*receiver) else {
+        return Vec::new();
+    };
+    let tree = item_tree(db, ty.file);
+    tree.item(ty.item)
+        .members
+        .iter()
+        .filter(|&&member| {
+            let data = tree.item(member);
+            data.kind == ItemKind::Function && data.name == *name && !data.is_static
+        })
+        .map(|&member| ItemId {
+            item: member,
+            ..*ty
+        })
+        .collect()
+}
+
+/// The milestone that checks and lowers a call that the function with the
+/// signature `function` could take, `None` when that function leaves a
+/// call unresolved for none of these reasons: a generic one comes with
+/// generic code, an `async` one with async lowering, and one with a
+/// `params` parameter with [`PARAMS`].
+fn unchecked_call(function: &FnSignature) -> Option<Later> {
+    let params = function
+        .params
+        .iter()
+        .any(|param| param.is_params)
+        .then_some(PARAMS)
+        .flatten()
+        .map(|milestone| Later::new("a call of a function with `params`", milestone));
+    latest([
+        function
+            .is_generic
+            .then(|| Later::new("a call of a generic function", MONOMORPHIZATION)),
+        function
+            .is_async
+            .then(|| Later::new("a call of an async function", ASYNC)),
+        params,
     ])
 }
 
 /// The milestone that lowers the body of `owner` for an operator it
 /// applies to a struct, which a struct may declare (§6.9) and which
 /// operators and conversions look up: arithmetic, bitwise and shift
-/// operators, compound assignments, `!`, unary `+`, `-` and `~`, and `++`
-/// and `--`. Comparisons, `&&`, `||` and `??` are not counted. `None` when
+/// operators, compound assignments, `!`, unary `+`, `-` and `~`, `++`
+/// and `--`, and an indexer. Comparisons, `&&`, `||` and `??` are not counted. `None` when
 /// it applies none.
 fn operators_later(
     db: &dyn Db,
@@ -204,6 +302,7 @@ fn operators_later(
             } => declarable(*op) && (on_struct(*lhs) || on_struct(*rhs)),
             Expr::Unary { op, expr } => *op != UnaryOp::FromEnd && on_struct(*expr),
             Expr::Postfix { expr, .. } => on_struct(*expr),
+            Expr::Index { base, .. } => on_struct(*base),
             _ => false,
         })
         .then(|| Later::new("an operator on a struct", OPERATORS))
