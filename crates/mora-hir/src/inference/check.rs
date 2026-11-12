@@ -79,6 +79,11 @@ enum Expect<'t> {
     /// The type the value must convert to: a literal takes it, or does not
     /// fit it (`MR0010`).
     Target(&'t Ty),
+    /// A target type that a later milestone gives: the parameter of an
+    /// argument of a call that is not checked or not resolved yet (D-137),
+    /// or of one that is an error already. As `None`, except that a `new` without a type
+    /// is not reported.
+    Later,
 }
 
 /// An expectation of `ty` as a hint, or none when it is unknown.
@@ -113,6 +118,7 @@ pub(super) fn infer_body(
         splittable: HashMap::new(),
         block_stmt: None,
         ret: None,
+        ret_later: false,
         scope: body_scope(project, file, owner),
         this: None,
     };
@@ -242,6 +248,9 @@ struct Check<'a> {
     block_stmt: Option<StmtId>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
+    /// Whether a later milestone gives the return type when `ret` is
+    /// unknown: in a lambda passed to a call that is not checked yet.
+    ret_later: bool,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
@@ -268,10 +277,21 @@ impl Check<'_> {
             Some(_) => self.statement(root, false),
             None if statement => self.statement(root, false),
             None => {
-                self.infer(root);
+                let expect = self.unknown_ret();
+                self.expr(root, expect);
             }
         }
         self.ret = outer;
+    }
+
+    /// What a returned value of a body whose return type is unknown
+    /// expects.
+    fn unknown_ret(&self) -> Expect<'static> {
+        if self.ret_later {
+            Expect::Later
+        } else {
+            Expect::None
+        }
     }
 
     /// Checks default values against the types of their parameters.
@@ -390,7 +410,6 @@ impl Check<'_> {
             }
             _ => {
                 self.infer(expr);
-                self.untargeted_new(expr, NewTarget::Missing);
             }
         }
     }
@@ -405,10 +424,7 @@ impl Check<'_> {
                 let slot = arena_index(*local);
                 match self.locals[slot].clone() {
                     Some(declared) => self.check(init, &declared),
-                    None => {
-                        self.locals[slot] = self.infer(init);
-                        self.untargeted_new(init, NewTarget::Missing);
-                    }
+                    None => self.locals[slot] = self.infer(init),
                 }
             }
             Stmt::Deconstruct { pat, init } => {
@@ -473,7 +489,8 @@ impl Check<'_> {
                 match &ret {
                     Some(ret) => self.check(*expr, ret),
                     None => {
-                        self.infer(*expr);
+                        let expect = self.unknown_ret();
+                        self.expr(*expr, expect);
                     }
                 }
                 self.ret = ret;
@@ -545,9 +562,12 @@ impl Check<'_> {
         }
     }
 
+    /// The arguments of a call, a creation or an index that this milestone
+    /// does not check. A lambda or a `new` without a type among them takes
+    /// its target type when a later milestone checks them.
     fn args(&mut self, args: &[Arg]) {
         for arg in args {
-            self.infer(arg.expr);
+            self.expr(arg.expr, Expect::Later);
         }
     }
 
@@ -748,7 +768,12 @@ impl Check<'_> {
                     }
                     _ => None,
                 };
+                // The target type of a lambda that a later milestone checks
+                // gives its result type then.
+                let later = matches!(expect, Expect::Later) && ret.is_none();
+                let outer = std::mem::replace(&mut self.ret_later, later);
                 self.function_body(lambda.body, ret, false);
+                self.ret_later = outer;
                 None
             }
             Expr::New { ty, args, inits } => {
@@ -880,7 +905,7 @@ impl Check<'_> {
             IntSuffix::Ul => Primitive::ULong,
             IntSuffix::None => {
                 let (asked, target) = match expect {
-                    Expect::None => (None, false),
+                    Expect::None | Expect::Later => (None, false),
                     Expect::Hint(ty) => (numeric::as_numeric(ty), false),
                     Expect::Target(ty) => (numeric::as_numeric(ty), true),
                 };
@@ -1346,7 +1371,14 @@ impl Check<'_> {
         let written = match (ty, expect) {
             (Some(ty), _) => Some(self.resolution.written(ty)),
             (None, Expect::Target(target)) => Some(target.clone()),
-            (None, Expect::Hint(_) | Expect::None) => None,
+            (None, Expect::Later) => None,
+            (None, Expect::Hint(_) | Expect::None) => {
+                self.errors.push(TypeError::NewTarget {
+                    expr,
+                    problem: NewTarget::Missing,
+                });
+                None
+            }
         };
         // What `new` cannot create has no type.
         let written = written.and_then(|written| {

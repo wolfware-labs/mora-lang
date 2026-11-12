@@ -1,0 +1,37 @@
+// A `new` without a type is an error wherever nothing gives it a target
+// type, not only as a statement or the initializer of a local.
+public struct P {
+    public X: int;
+}
+
+let top = new { X = 1 }.X; //~ ERROR MR0154
+
+F(b: bool, p: P) {
+    let x = new { X = 1 }.X; //~ ERROR MR0154
+    Console.WriteLine(new { X = 1 }); //~ ERROR MR0154
+    let s = $"{new()}"; //~ ERROR MR0154
+    let t = (new { X = 1 }, 2); //~ ERROR MR0154
+    let c = b ? new { X = 1 } : new { X = 2 }; //~ ERROR MR0154 //~ ERROR MR0154
+    b ? new() : new(); //~ ERROR MR0154 //~ ERROR MR0154
+    let i = (int)new(); //~ ERROR MR0154
+    if (p == new { X = 1 }) { //~ ERROR MR0154
+    }
+    new()(); //~ ERROR MR0154
+    var n = 1;
+    n += new(); //~ ERROR MR0154
+}
+
+// So does every argument of a call checked later, as a call of a generic
+// function or of a method of a class.
+public class C {
+    public Run(f: () => P) {}
+    public Take(p: P) {}
+}
+
+Make<T>(p: P, t: T) {}
+
+H(c: C) {
+    c.Run(() => new { X = 1 });
+    c.Take(new { X = 1 });
+    Make(new { X = 1 }, 1);
+}

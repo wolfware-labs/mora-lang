@@ -69,3 +69,9 @@ error[MR0154]: `new` cannot create a value of the enum `Color`
    |         ^^^^^^^^^^^^^ the enum `Color` is not a struct or a class
    |
    = note: `new` creates a struct or a class; write a value of this type another way
+
+error[MR0127]: cannot find `Missing`
+  --> tests/ui/structs/new_target.mr:63:28
+   |
+63 | Mark(new { X = 1, Y = 2 }, Missing); //~ ERROR MR0127
+   |                            ^^^^^^^ not found

@@ -44,3 +44,27 @@ Pick(s: Size, t: string) {}
 
 Pick(new { X = 1, Y = 2 }, 1);
 Pick(new { W = 1 }, "a");
+
+// An argument of a type not known yet, an error included, fits every
+// overload, and so does a parameter of such a type: the call is not
+// resolved (D-137), and the `new` is not reported.
+public class Box {
+}
+
+Put(p: Point, b: Box) {}
+Put(s: Size, t: string) {}
+Mark(p: Point, n: int) {}
+Mark(s: Size, t: string) {}
+
+Wrap(b: Box): int {
+    Put(new { X = 1, Y = 2 }, b);
+    return 1;
+}
+Mark(new { X = 1, Y = 2 }, Missing); //~ ERROR MR0127
+
+// The mode written before each argument rules out overloads too, the
+// `new`'s own included.
+Swap(ref p: Point, n: int) {}
+Swap(s: Size, n: long) {}
+
+Swap(new { W = 1 }, 1);

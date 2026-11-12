@@ -123,7 +123,7 @@ impl<'a> Check<'a> {
             // A function of the standard library that never returns has the
             // never type (§11.4); nothing else is known of the library.
             Callees::Unknown if calls_diverging(self.body, self.resolution, callee) => {
-                self.unchecked_call(args);
+                self.external_call(args);
                 return Some(Ty::Never);
             }
             // A method of a value that never exists, as `Todo().M()`, is
@@ -132,6 +132,9 @@ impl<'a> Check<'a> {
                 self.unchecked_call(args);
                 return Some(Ty::Never);
             }
+            // Nothing gives an argument of a function of the standard
+            // library a target type while the library is not loaded.
+            Callees::Unknown if self.is_external(callee) => return self.external_call(args),
             Callees::Unknown => return self.unchecked_call(args),
             Callees::NotCallable(ty) => {
                 self.errors
@@ -179,7 +182,8 @@ impl<'a> Check<'a> {
             })
             .collect();
         // The parameter of each argument in each overload those arguments
-        // can go to, by count, by name, by mode and by type.
+        // can go to, by count, by name, by mode and, for those typed
+        // already, by type.
         let bindings: Vec<_> = if candidates.len() > 1 && typed.iter().any(Option::is_none) {
             candidates
                 .iter()
@@ -192,24 +196,38 @@ impl<'a> Check<'a> {
         } else {
             Vec::new()
         };
+        // An argument or a parameter of a type not known yet leaves a call
+        // that the overloads do not agree on unresolved (D-137): a `new`
+        // without a type there is not reported.
+        let unresolved = typed.iter().flatten().any(Argument::is_unknown)
+            || candidates.iter().zip(&bindings).any(|(candidate, params)| {
+                params
+                    .iter()
+                    .flatten()
+                    .any(|&param| !is_known(&candidate.params[param].ty))
+            });
         // Each `new` without a type that the overloads give no target.
         let mut untargeted = Vec::new();
         for (position, (arg, argument)) in args.iter().zip(&mut typed).enumerate() {
             if argument.is_some() {
                 continue;
             }
-            let target = match arg_target(&candidates, &bindings, arg, position) {
-                ArgTarget::Type(ty) => Some(ty),
-                ArgTarget::Differs => {
+            let expect = match arg_target(&candidates, &bindings, arg, position) {
+                ArgTarget::Type(ty) => Expect::Target(ty),
+                // A lambda is checked without a target type, and a `new`
+                // is reported once the overloads are compared.
+                ArgTarget::Differs if !unresolved => {
                     untargeted.push(arg.expr);
-                    None
+                    match self.body.exprs[arg.expr] {
+                        Expr::Lambda(_) => Expect::None,
+                        _ => Expect::Later,
+                    }
                 }
-                ArgTarget::None => None,
+                // A call left unresolved, or one that is an error because
+                // the argument has no parameter, which says so itself.
+                ArgTarget::Differs | ArgTarget::None => Expect::Later,
             };
-            *argument = Some(Argument::Typed(match target {
-                Some(ty) => self.expr(arg.expr, Expect::Target(ty)),
-                None => self.infer(arg.expr),
-            }));
+            *argument = Some(Argument::Typed(self.expr(arg.expr, expect)));
         }
         let arguments: Vec<Argument> = typed.into_iter().flatten().collect();
         if let [candidate] = candidates.as_slice() {
@@ -244,6 +262,33 @@ impl<'a> Check<'a> {
     fn unchecked_call(&mut self, args: &[Arg]) -> Option<Ty> {
         self.args(args);
         None
+    }
+
+    /// The arguments of a call of a function of the standard library,
+    /// which has no parameter types while the library is not loaded: each
+    /// one is inferred without a target, so a `new` without a type among
+    /// them is `MR0154`.
+    fn external_call(&mut self, args: &[Arg]) -> Option<Ty> {
+        for arg in args {
+            self.infer(arg.expr);
+        }
+        None
+    }
+
+    /// Whether `callee` names a function of the standard library, by a
+    /// path such as `Console.WriteLine`.
+    fn is_external(&self, callee: ExprId) -> bool {
+        match &self.body.exprs[callee] {
+            Expr::Path(_) => self
+                .resolution
+                .paths
+                .get(&callee)
+                .is_some_and(|resolution| {
+                    matches!(resolution.target, Target::Item(Resolved::External))
+                }),
+            Expr::Member { receiver, .. } => self.is_external(*receiver),
+            _ => false,
+        }
     }
 
     /// The literal arguments, which [`Check::call`] leaves to be checked
@@ -782,9 +827,9 @@ fn arg_target<'a>(
 }
 
 /// Whether `candidate` can take the arguments `args`, which `params` binds
-/// to its parameters: each one whose type is known (`Some` in `arguments`)
-/// fits its parameter's mode and type. An argument that takes its type
-/// from its parameter, not typed yet, fits any.
+/// to its parameters: each one fits its parameter's mode, and each one
+/// whose type is known (`Some` in `arguments`) its type too. An argument
+/// that takes its type from its parameter, not typed yet, fits any type.
 fn takes_arguments<'b>(
     candidate: &Candidate<'_>,
     args: &[Arg],
@@ -796,9 +841,8 @@ fn takes_arguments<'b>(
         .zip(params)
         .all(|((arg, argument), &param)| {
             let parameter = &candidate.params[param];
-            argument.is_none_or(|argument| {
-                mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
-            })
+            mode_fits(parameter.mode, arg.mode)
+                && argument.is_none_or(|argument| fits(argument, parameter))
         })
 }
 
