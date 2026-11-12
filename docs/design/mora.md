@@ -1083,7 +1083,7 @@ From highest to lowest:
 
 ### 7.3 Object creation
 
-`new T(args)`, `new T(args) { F = v }`, target-typed `new()` and `new(args)`, which create their target type and need one that is a struct or a class (`MR0154`, §6.9), and `new T[n]` for an array of `n` default values. Arrays with given elements come from collection expressions (§7.9). `new` on a struct or union creates a value; on a class, a heap object with a strong count of one; on a unique class, a heap object owned by the receiving place.
+`new T(args)`, `new T(args) { F = v }`, target-typed `new()` and `new(args)`, which create their target type and need one that is a struct or a class (`MR0154`, §6.9), and `new T[n]` for an array of `n` default values. Arrays with given elements come from collection expressions (§7.9). `new` on a struct creates a value; on a class, a heap object with a strong count of one; on a unique class, a heap object owned by the receiving place. Besides arrays, `new` creates nothing else (`MR0154`): a union value comes from one of its cases, as in `Json.Bool(true)` (§6.6).
 
 ### 7.4 Propagation: `?`
 
