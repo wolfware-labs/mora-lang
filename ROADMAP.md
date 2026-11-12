@@ -560,14 +560,15 @@ Done when:
 
 ### M2.9 Spans, views and memory slices
 
-Spec: [§5.9](docs/design/mora.md#59-views), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
+Spec: [§5.9](docs/design/mora.md#59-views), [§6.9](docs/design/mora.md#69-members), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
 
-`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, and the `where T : ref struct` constraint.
+`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : ref struct` constraint, and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9).
 
 Done when:
 
 - UI tests for each view error, with the wording of §10.6.
 - `let s = box.Data.AsSpan();` compiles and the snapshot lives until `s`'s last use.
+- Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 
 ### M2.10 Weak references and the cycle lint
 
