@@ -1363,10 +1363,10 @@ impl Check<'_> {
                 });
                 // The names are checked as after the constructor call that
                 // the fix writes.
-                self.after_constructor(item, &written, inits, true);
+                self.after_constructor(item, &written, inits, creation);
             }
             Creation::Constructor | Creation::Positional => {
-                self.after_constructor(item, &written, inits, false);
+                self.after_constructor(item, &written, inits, creation);
             }
             Creation::NoConstructor => {
                 self.errors.push(TypeError::NoConstructor {
@@ -1384,14 +1384,15 @@ impl Check<'_> {
     /// is checked against the type of the field it names, a hidden field is
     /// `MR0129`, and, after a declared constructor, a name that is not an
     /// instance field is `MR0147`. A field may be assigned twice.
-    /// `memberwise_off` is set for the braces alone that `MR0153` reports,
-    /// which stay an error whatever the fields' visibility.
+    /// `creation` is how the expression creates the value: the braces
+    /// alone that `MR0153` reports, [`Creation::MemberwiseOff`], stay an
+    /// error whatever the fields' visibility.
     fn after_constructor(
         &mut self,
         item: ItemId,
         ty: &Ty,
         inits: &[(String, ExprId)],
-        memberwise_off: bool,
+        creation: Creation,
     ) {
         // A positional struct's constructor is the one its parameters
         // declare (§6.5).
@@ -1403,7 +1404,7 @@ impl Check<'_> {
                         // Widening the field fixes the assignment only where
                         // the assignment may write it, and once: the first
                         // assignment carries the fix.
-                        let fixable = !memberwise_off
+                        let fixable = creation != Creation::MemberwiseOff
                             && self.field_writable(item, index)
                             && assigned_before(inits, position).is_none();
                         self.errors.push(TypeError::HiddenField {
@@ -1521,7 +1522,7 @@ impl Check<'_> {
     /// declared `mut` without a write scope, so an assignment after a
     /// constructor may write it (§6.9).
     fn field_writable(&self, item: ItemId, index: u32) -> bool {
-        instance_fields(self.db, item).any(|(at, field)| at == index && field.writable)
+        struct_field(self.db, item, index).is_some_and(|(_, field)| field.writable)
     }
 
     /// Whether the body sees the value member at `index` of the struct
