@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
-use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, UnaryOp};
+use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, TypeId, UnaryOp};
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Scope, item_data};
@@ -343,6 +343,17 @@ pub(crate) enum TypeError {
         ty: Ty,
         field: String,
         visibility: Visibility,
+    },
+    /// `expr` creates the struct `ty`, written `written`, memberwise,
+    /// without parentheses, while it is `positional` or declares a
+    /// constructor, `parameterless` when one takes no parameters
+    /// (`MR0153`).
+    NotMemberwise {
+        expr: ExprId,
+        ty: Ty,
+        written: TypeId,
+        positional: bool,
+        parameterless: bool,
     },
     /// The memberwise creation of the struct `item` assigns `value` to its
     /// field `name`, the value member at `index`, which is not visible from
@@ -2743,6 +2754,56 @@ mod tests {
                     let s = new S() { N = 1, N = 2, M = 3 };\nlet t = new S();\n";
         assert_eq!(local_types(text), ["s: S", "t: S"]);
         assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn braces_alone_on_a_struct_with_a_constructor_are_mr0153() {
+        let text = "struct S {\n    public N: int;\n    public S() { N = 1; }\n}\n\
+                    let s = new S { N = 2 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        let d = &found[0];
+        assert_eq!(
+            d.message,
+            "`S` declares a constructor, so it is not created memberwise"
+        );
+        assert_eq!(&text[d.primary.span.range], "new S { N = 2 }");
+        assert_eq!(
+            d.primary.message.as_deref(),
+            Some("memberwise creation of `S`")
+        );
+        assert_eq!(d.fixes.len(), 1);
+        assert_eq!(
+            d.fixes[0].message,
+            "call the constructor that takes no parameters"
+        );
+        let fixed = apply_fixes(text);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert!(fixed.text.contains("new S() { N = 2 }"), "{}", fixed.text);
+        // No field is reported missing, and the values are still checked.
+        let text = "struct S {\n    public N: int;\n    public S(n: int) { N = n; }\n}\n\
+                    let s = new S { };\nlet t = new S { N = \"a\", M = 1 };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153", "MR0153", "MR0203"]);
+        // Without a constructor that takes no parameters there is no fix.
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+    }
+
+    #[test]
+    fn braces_alone_on_a_positional_struct_are_mr0153() {
+        let text = "struct U(Id: int);\nlet u = new U { };\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0153"]);
+        let d = &found[0];
+        assert_eq!(
+            d.message,
+            "`U` is a positional struct, so it is not created memberwise"
+        );
+        assert_eq!(
+            d.note.as_deref(),
+            Some("create it from its positional parameters: `new U(...)`")
+        );
+        assert!(d.fixes.is_empty(), "{d:#?}");
     }
 
     #[test]

@@ -58,13 +58,37 @@ pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, 
         .map(|((_, index), field)| (index, field))
 }
 
-/// Whether `new T(args) { ... }` of the struct `item`, with `args` when
-/// it has parentheses, is memberwise creation: without parentheses, or
-/// with empty ones when `T` has no constructor, declared or the one of a
-/// positional struct (§6.9). Otherwise it calls a constructor.
-pub fn is_memberwise(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> bool {
+/// What `new T(args) { ... }` of a struct does (§6.5, §6.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Creation {
+    /// Memberwise creation: `T` has no constructor, declared or the one of
+    /// a positional struct, and the expression has no parentheses or empty
+    /// ones.
+    Memberwise,
+    /// A call, with parentheses, of a constructor that `T` declares.
+    Constructor,
+    /// A call, with parentheses, of the constructor of the positional
+    /// struct `T`.
+    Positional,
+    /// Memberwise creation, without parentheses, of a type that declares a
+    /// constructor or is positional, which has none (`MR0153`).
+    NotMemberwise,
+    /// Arguments in the parentheses of a type that has no constructor to
+    /// take them (`MR0205`).
+    NoConstructor,
+}
+
+/// What `new T(args) { ... }` of the struct `item` does, with `args` when
+/// it has parentheses (§6.5, §6.9).
+pub fn creation(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> Creation {
     let data = item_data(db, item);
-    args.is_none_or(|args| args.is_empty() && !data.has_constructor && !data.is_positional)
+    match args {
+        None if data.has_constructor || data.is_positional => Creation::NotMemberwise,
+        Some(_) if data.is_positional => Creation::Positional,
+        Some(_) if data.has_constructor => Creation::Constructor,
+        Some(args) if !args.is_empty() => Creation::NoConstructor,
+        None | Some(_) => Creation::Memberwise,
+    }
 }
 
 /// Whether `member` declares a field of [`Signature::Struct`]: a field or a

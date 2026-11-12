@@ -2,8 +2,8 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, ExprId, Field, ItemId, Path, Signature, Ty, body, instance_fields,
-    is_memberwise, signature,
+    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, Signature, Ty, body, creation,
+    instance_fields, signature,
 };
 use mora_span::Db;
 
@@ -38,7 +38,7 @@ impl Lowerer<'_> {
                 "the creation of a value that is not a struct is not lowered",
             )
         };
-        if !is_memberwise(self.owner.db, item, args) {
+        if creation(self.owner.db, item, args) != Creation::Memberwise {
             self.ice(expr, "a constructor call is not lowered");
         }
         let inits = inits.unwrap_or_default();

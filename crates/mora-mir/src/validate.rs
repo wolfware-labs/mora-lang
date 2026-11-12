@@ -7,7 +7,8 @@
 use std::rc::Rc;
 
 use mora_hir::{
-    Primitive, Signature, Ty, converts_implicitly, instance_fields, is_known, signature, this_type,
+    Primitive, Signature, Ty, converts_implicitly, instance_fields, is_known, item_tree, signature,
+    this_type,
 };
 use mora_span::Db;
 
@@ -452,6 +453,12 @@ impl Checker<'_> {
                     self.error(at, "aggregate of an item that is not a struct");
                     return None;
                 };
+                // Its positional parameters are fields of its layout that
+                // `instance_fields` does not list until M2.2.
+                if item_tree(self.db, item.file).item(item.item).is_positional {
+                    self.error(at, "aggregate of a positional struct");
+                    return None;
+                }
                 let fields: Vec<&mora_hir::Field> = instance_fields(self.db, *item)
                     .map(|(_, field)| field)
                     .collect();
@@ -863,7 +870,8 @@ mod tests {
         Mix(in a: int, ref b: int, move c: int): int { return c; }\n\
         struct Q {\n    public V: int;\n    Get(): int { return V; }\n    mut Set(v: int) {}\n    \
         move Take(): int { return V; }\n}\n\
-        struct R {\n    public V: int;\n    public static S: int = 1;\n    public const K: int = 2;\n}\n";
+        struct R {\n    public V: int;\n    public static S: int = 1;\n    public const K: int = 2;\n}\n\
+        struct U(Id: int);\n";
 
     /// The items of [`SOURCE`].
     struct Fx {
@@ -879,6 +887,7 @@ mod tests {
         take: ItemId,
         q: ItemId,
         r: ItemId,
+        u: ItemId,
     }
 
     fn fx() -> Fx {
@@ -889,7 +898,7 @@ mod tests {
         let (p, add, nop, method, static_method) =
             (find("P"), find("Add"), find("Nop"), find("M"), find("S"));
         let (mix, get, set) = (find("Mix"), find("Get"), find("Set"));
-        let (take, q, r) = (find("Take"), find("Q"), find("R"));
+        let (take, q, r, u) = (find("Take"), find("Q"), find("R"), find("U"));
         Fx {
             db,
             p,
@@ -903,6 +912,7 @@ mod tests {
             take,
             q,
             r,
+            u,
         }
     }
 
@@ -2106,6 +2116,21 @@ mod tests {
         );
         assert!(validate(&fx.db, &make(int(), vec![copy(1), copy(3)], fx.p), true).is_err());
         rejects(&fx, &make(p, vec![], fx.nop), true, "is not a struct");
+        // The layout of a positional struct holds its positional fields,
+        // which the instance fields do not list, so no count of operands
+        // matches it yet.
+        rejects(
+            &fx,
+            &make(Ty::Struct(fx.u), vec![], fx.u),
+            true,
+            "aggregate of a positional struct",
+        );
+        rejects(
+            &fx,
+            &make(Ty::Struct(fx.u), vec![copy(1)], fx.u),
+            true,
+            "aggregate of a positional struct",
+        );
     }
 
     #[test]

@@ -121,6 +121,7 @@ registry! {
     MR0150 = 150: "a union contains itself without `indirect`",
     MR0151 = 151: "`@From` on a field of an `indirect` case or of a case of an `indirect union`",
     MR0152 = 152: "the initializer of an instance field uses `this` or an instance member of its type",
+    MR0153 = 153: "memberwise creation of a type that declares a constructor or is positional",
     MR0161 = 161: "`r?.Name` on a `Result`: member access after propagation needs parentheses",
     MR0162 = 162: "member access on an optional value",
     MR0170 = 170: "a match that is not exhaustive",

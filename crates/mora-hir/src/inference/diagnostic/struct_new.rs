@@ -1,16 +1,17 @@
 //! The diagnostics of memberwise creation: `MR0129` for a field it cannot
-//! see, `MR0143`, `MR0144`, `MR0147` and `MR0148`.
+//! see, `MR0143`, `MR0144`, `MR0147`, `MR0148` and `MR0153`.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Span, TextRange};
 
 use super::Source;
-use crate::bodies::ExprId;
+use crate::bodies::{ExprId, TypeId};
 use crate::inference::NotAField;
 use crate::items::Visibility;
 use crate::report::{Declared, not_visible};
 use crate::resolve::Scope;
 use crate::ty::Ty;
+use crate::type_ref::TypeRef;
 
 /// `MR0143`: the memberwise creation of `T`, `new T { ... }` or `new T()`,
 /// leaves a field without an initializer unassigned.
@@ -48,6 +49,56 @@ pub(super) fn no_memberwise(
     .with_note(format!(
         "memberwise creation needs every field without an initializer visible; create `{t}` through what its type provides"
     ))
+}
+
+/// `MR0153`: `new T { ... }`, with `T` written `written`, creates `T`
+/// memberwise while it is `positional` or declares a constructor, which
+/// turns memberwise creation off. When one of its constructors takes no
+/// parameters, `parameterless`, the fix calls it.
+pub(super) fn not_memberwise(
+    source: &Source<'_>,
+    expr: ExprId,
+    ty: &Ty,
+    written: TypeId,
+    positional: bool,
+    parameterless: bool,
+) -> Diagnostic {
+    let t = source.name(ty);
+    let (message, note) = if positional {
+        (
+            format!("`{t}` is a positional struct, so it is not created memberwise"),
+            format!("create it from its positional parameters: `new {t}(...)`"),
+        )
+    } else {
+        (
+            format!("`{t}` declares a constructor, so it is not created memberwise"),
+            format!(
+                "declaring a constructor turns memberwise creation off; call one with `new {t}(...)`"
+            ),
+        )
+    };
+    let diagnostic = Diagnostic::error(
+        codes::MR0153,
+        message,
+        Label::new(source.span(expr), format!("memberwise creation of `{t}`")),
+    )
+    .with_note(note);
+    // The parentheses go right after the type.
+    let end = match &source.body.types[written] {
+        TypeRef::Path(path) => source
+            .map
+            .type_paths
+            .get(path.index)
+            .and_then(|segments| segments.last()),
+        _ => None,
+    };
+    match end {
+        Some(end) if parameterless && !positional => diagnostic.with_fix(Fix::new(
+            "call the constructor that takes no parameters",
+            vec![TextEdit::insert(source.file.id(source.db), end.end(), "()")],
+        )),
+        _ => diagnostic,
+    }
 }
 
 /// `MR0129`: memberwise creation, in `from`, assigns `value` to the field

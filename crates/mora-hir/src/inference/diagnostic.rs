@@ -196,6 +196,13 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             field,
             visibility,
         } => struct_new::no_memberwise(source, *expr, ty, field, *visibility),
+        TypeError::NotMemberwise {
+            expr,
+            ty,
+            written,
+            positional,
+            parameterless,
+        } => struct_new::not_memberwise(source, *expr, ty, *written, *positional, *parameterless),
         TypeError::HiddenField {
             value,
             item,

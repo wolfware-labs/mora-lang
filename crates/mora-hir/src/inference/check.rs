@@ -18,13 +18,13 @@ use super::{
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
-    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
-    body_scope,
+    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_owners,
+    body_resolution, body_scope,
 };
 use crate::defs::ItemId;
 use crate::items::{ValueKind, item_tree};
 use crate::resolve::{Resolved, Scope, item_data, value_visible};
-use crate::signature::{instance_fields, is_memberwise, signature, struct_field, this_type};
+use crate::signature::{Creation, creation, instance_fields, signature, struct_field, this_type};
 use crate::suggest::closest;
 use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
@@ -1319,9 +1319,11 @@ impl Check<'_> {
     /// is an instance field visible from the body, assigned once, whose
     /// value is checked against its type, and every field without an
     /// initializer of its own must be visible and assigned (§6.9); its type
-    /// is the struct. A call of a constructor assigns the fields itself;
-    /// empty parentheses on a struct without one are memberwise creation.
-    /// Other targets have no type yet.
+    /// is the struct. Empty parentheses on a struct without a constructor
+    /// are memberwise creation, and braces alone on a struct with one, or
+    /// on a positional struct, are an error. A call of a constructor
+    /// assigns the fields itself, and the names after it are plain
+    /// assignments. Other targets have no type yet.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1334,23 +1336,65 @@ impl Check<'_> {
         }
         let written = ty.map(|ty| self.resolution.written(ty));
         // A struct type names a struct that is not generic.
-        let item = match &written {
-            Some(Ty::Struct(item)) => Some(*item),
-            _ => None,
-        };
-        let (Some(written), Some(item)) = (written, item) else {
+        let (Some(written @ Ty::Struct(item)), Some(ty)) = (written, ty) else {
             for &(_, init) in inits.into_iter().flatten() {
                 self.infer(init);
             }
             return None;
         };
         let inits = inits.unwrap_or_default();
-        let memberwise = is_memberwise(self.db, item, args);
+        match creation(self.db, item, args) {
+            Creation::Memberwise => self.memberwise(expr, item, &written, inits),
+            Creation::NotMemberwise => {
+                self.errors.push(TypeError::NotMemberwise {
+                    expr,
+                    ty: written.clone(),
+                    written: ty,
+                    positional: item_data(self.db, item).is_positional,
+                    parameterless: self.has_parameterless_constructor(item),
+                });
+                self.assigned_values(item, inits);
+            }
+            Creation::Constructor | Creation::Positional | Creation::NoConstructor => {
+                self.assigned_values(item, inits);
+            }
+        }
+        Some(written)
+    }
+
+    /// Checks each value of `inits` against the type of the instance field
+    /// of the struct `item` it names, and infers the others, without
+    /// looking at the names.
+    fn assigned_values(&mut self, item: ItemId, inits: &[(String, ExprId)]) {
+        for (name, init) in inits {
+            match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
+                Some((_, field)) => self.check(*init, &field.ty),
+                None => {
+                    self.infer(*init);
+                }
+            }
+        }
+    }
+
+    /// Whether the struct `item` declares a constructor that takes no
+    /// parameters.
+    fn has_parameterless_constructor(&self, item: ItemId) -> bool {
+        body_owners(self.db, item.file).into_iter().any(|owner| {
+            let BodyOwner::Member(ty, _) = owner else {
+                return false;
+            };
+            let hir = body(self.db, item.file, owner);
+            ty == item.item && hir.kind == BodyKind::Constructor && hir.params.is_empty()
+        })
+    }
+
+    /// The memberwise creation `expr` of the struct `item`, of type `ty`,
+    /// with `inits` (§6.9).
+    fn memberwise(&mut self, expr: ExprId, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
         // Memberwise creation needs every required field visible (`MR0144`);
         // where one is hidden, that error replaces `MR0129` for the hidden
         // fields assigned and `MR0143` for those left out.
         let hidden = instance_fields(self.db, item)
-            .filter(|_| memberwise)
             .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
         for (position, (name, init)) in inits.iter().enumerate() {
             match instance_fields(self.db, item).find(|(_, field)| field.name == *name) {
@@ -1358,8 +1402,7 @@ impl Check<'_> {
                     self.check(*init, &field.ty);
                     // A repeated field is reported as repeated (`MR0148`)
                     // alone: its first assignment reports it hidden.
-                    if memberwise
-                        && hidden.is_none()
+                    if hidden.is_none()
                         && assigned_before(inits, position).is_none()
                         && !self.field_visible(item, index)
                     {
@@ -1376,33 +1419,29 @@ impl Check<'_> {
                     self.infer(*init);
                 }
             }
-            // A constructor call assigns the members as plain assignments.
-            if memberwise && let Some(error) = self.init_name(item, &written, inits, position) {
+            if let Some(error) = self.init_name(item, ty, inits, position) {
                 self.errors.push(error);
             }
         }
         if let Some((_, hidden)) = hidden {
             self.errors.push(TypeError::NoMemberwise {
                 expr,
-                ty: written.clone(),
+                ty: ty.clone(),
                 field: hidden.name.clone(),
                 visibility: hidden.visibility,
             });
-            return Some(written);
+            return;
         }
-        let missing = instance_fields(self.db, item)
-            .filter(|_| memberwise)
-            .find(|(_, field)| {
-                field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
-            });
+        let missing = instance_fields(self.db, item).find(|(_, field)| {
+            field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
+        });
         if let Some((_, missing)) = missing {
             self.errors.push(TypeError::MissingField {
                 expr,
-                ty: written.clone(),
+                ty: ty.clone(),
                 field: missing.name.clone(),
             });
         }
-        Some(written)
     }
 
     /// Whether the body sees the value member at `index` of the struct

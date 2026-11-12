@@ -711,7 +711,7 @@ In the standard library, `Future<T>` (the boxed future, §12.2), `TaskHandle<T>`
 - a constructor from its positional parameters: `new User(1, "Ada", none)`;
 - deconstruction: `let (id, name, email) = user;`, and into places that exist, `(id, name, email) = user;` (§5.5), which positional patterns also use (§7.8).
 
-`user with { Name = "Grace" }` and printing as `User { Id = 1, Name = Ada, Email = none }` come from §6.2, as for every struct. A positional struct may declare more members in a body, `struct Point(X: int, Y: int) { public Sum: int => X + Y; }`. Its positional parameters declare its constructor, so it is not created memberwise (§6.9).
+`user with { Name = "Grace" }` and printing as `User { Id = 1, Name = Ada, Email = none }` come from §6.2, as for every struct. A positional struct may declare more members in a body, `struct Point(X: int, Y: int) { public Sum: int => X + Y; }`. Its positional parameters declare its constructor, so it is not created memberwise: `new User { ... }` is error `MR0153` (§6.9).
 
 Data without identity is a positional struct (D-56).
 
@@ -850,7 +850,7 @@ let options = new Options { Port = 8080, Retries = 5 };
 - Read-only fields may be assigned, because creating a value is not mutating it.
 - `new() { F = v, ... }` does the same where the target type is known. On such a type, `new T()` and `new()` name no fields.
 - Memberwise creation is available only where every field without an initializer is visible. Where one is not, `new T { ... }` is error `MR0144`. A library type that keeps such a field private is created only through what the library provides.
-- Declaring any constructor turns memberwise creation off. A type enforces its invariants with a constructor, or with a static factory that returns `Result<T, E>`. On such a type, `new T(args) { M = v }` runs the constructor and then assigns the listed members as ordinary assignments, so it may name only fields writable at that point.
+- Declaring any constructor turns memberwise creation off. A type enforces its invariants with a constructor, or with a static factory that returns `Result<T, E>`. On such a type, and on a positional struct (§6.5), `new T { ... }` without parentheses is error `MR0153`, with a fix that adds `()` when the type declares a constructor that takes no parameters (D-147). On such a type, `new T(args) { M = v }` runs the constructor and then assigns the listed members as ordinary assignments, so it may name only fields writable at that point.
 
 A field without an initializer is required: every way of creating the value sets it. A read-only field can be set only when the value is created.
 
@@ -3411,6 +3411,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-144 | A static member has no `this`: its body, and a local function or lambda inside it, that writes `this` or names an instance field, getter or method of the type is `MR0149`, with no fix, because passing the value as a parameter and dropping `static` both keep the program meaningful; a member of a nested type, `static` or not, has no value of the types around it, so naming one of their instance members is `MR0149` too | author | 6.10 |
 | D-145 | The initializer of an instance field has no `this`: it, and a lambda or local function inside it, that writes `this` or names an instance field, getter or method of the type is `MR0152`, with no fix; `static` members and constants stay allowed, because they need no value of the type | user | 6.9 |
 | D-146 | A method call evaluates its receiver expression before its arguments; a receiver taken by `in` or `ref` (a `mut` method) is borrowed after the arguments and default values, so the method sees what they did to it, while a `move` receiver, like every argument, is a value taken in order; this matches how a local function borrows a captured `this` after its arguments, and the borrow is what the callee reads, while a moved value is the callee's own copy from that point | author | 7, 14.7 |
+| D-147 | `new T { ... }` without parentheses on a type that declares a constructor, or on a positional struct, is `MR0153`, because memberwise creation would skip the constructor; the fix adds `()` when the type declares a constructor that takes no parameters, and offers nothing otherwise, since only the author knows which arguments to pass | author | 6.5, 6.9 |
 
 ## 24. Open questions
 

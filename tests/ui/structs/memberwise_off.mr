@@ -1,0 +1,17 @@
+// Declaring a constructor, or being positional, turns memberwise creation off.
+public struct Counter {
+    public Count: int;
+    public Counter() { Count = 0; }
+}
+
+public struct Sized {
+    public Size: int;
+    public Sized(size: int) { Size = size; }
+}
+
+public struct User(Id: int, Name: string);
+
+let a = new Counter { Count = 2 }; //~ ERROR MR0153
+let b = new Counter { }; //~ ERROR MR0153
+let c = new Sized { Size = 3 }; //~ ERROR MR0153
+let d = new User { }; //~ ERROR MR0153
