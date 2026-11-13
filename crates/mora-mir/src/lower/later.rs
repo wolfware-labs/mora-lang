@@ -198,7 +198,8 @@ pub(crate) fn lowered_later(
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
-/// statement that a later milestone brings: an array creation comes with
+/// statement that a later milestone brings: a member of a type keyword, as
+/// `int.MaxValue`, comes with the standard library, an array creation with
 /// arrays, `with` with positional structs, a `match` and an `is` test
 /// with patterns, `?` with results, a collection expression, a range, an
 /// index from the end, `nameof`, `sizeof`, `default`, a deconstruction and
@@ -216,6 +217,8 @@ fn expressions_later(
     let inference = infer(db, project, file, owner);
     let exprs = hir.exprs.iter().map(|(_, expr)| {
         let (what, milestone) = match expr {
+            // The members of a built-in type are declared in the library.
+            Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
             Expr::NewArray { .. } => ("an array creation", CONSTANT_EVALUATION),
             Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
             // Inference types no member of a tuple yet.

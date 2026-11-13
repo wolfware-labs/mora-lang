@@ -3073,12 +3073,17 @@ fn an_as_expression_is_an_internal_error() {
 }
 
 #[test]
-#[should_panic(expected = "the value has no type: `int`")]
-fn a_member_of_a_type_keyword_is_an_internal_error() {
-    // Which milestone brings a member of a primitive type depends on the
-    // member: `int.Parse` comes with number parsing, `MaxValue` with the
-    // built-in interfaces.
-    lowered("F(): int => int.MaxValue;\n").mir("F");
+fn a_member_of_a_type_keyword_comes_with_the_library() {
+    // The library declares the members of the built-in types.
+    let text = "F(): int => int.MaxValue;\nG() {\n    let n = int.Parse(\"1\");\n}\n";
+    for name in ["F", "G"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: a member of a built-in type is not lowered until M1.15"
+            )
+        );
+    }
 }
 
 #[test]
