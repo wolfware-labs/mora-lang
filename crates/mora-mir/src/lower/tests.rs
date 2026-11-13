@@ -3034,6 +3034,54 @@ fn a_match_comes_with_patterns() {
 }
 
 #[test]
+fn later_expressions_and_statements_come_with_their_milestone() {
+    let text = "struct P {\n    public X: int;\n}\n\
+                A() {\n    let a = new int[3];\n}\n\
+                B(p: P): P => p with { X = 2 };\n\
+                C() {\n    let t = (1, 2);\n    let a = t.Item1;\n}\n\
+                D(s: string): char => s[0];\n\
+                E() {\n    foreach (let c in \"ab\") {\n    }\n}\n\
+                G(n: int) {\n    #Assert(n > 0);\n}\n";
+    for (name, what, milestone) in [
+        ("A", "an array creation", "M1.11"),
+        ("B", "`with`", "M2.2"),
+        ("C", "an element of a tuple", "M3.12"),
+        ("D", "an index of a string", "M5.2"),
+        ("E", "`foreach`", "M5.6"),
+        ("G", "a quote, a splice or a macro call", "M4.4"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: {what} is not lowered until {milestone}"
+            )
+        );
+    }
+    assert_eq!(
+        later_error("let x = await Console.ReadLine();\n", |l| l
+            .owner("top-level")),
+        "internal error lowering top-level: `await` is not lowered until M6.2"
+    );
+}
+
+#[test]
+#[should_panic(expected = "the local `s` has no type")]
+fn an_as_expression_is_an_internal_error() {
+    // The spec gives `as` a precedence but no meaning, and no milestone
+    // of the roadmap brings it.
+    lowered("F() {\n    let s = 1 as long;\n}\n").mir("F");
+}
+
+#[test]
+#[should_panic(expected = "the value has no type: `int`")]
+fn a_member_of_a_type_keyword_is_an_internal_error() {
+    // Which milestone brings a member of a primitive type depends on the
+    // member: `int.Parse` comes with number parsing, `MaxValue` with the
+    // built-in interfaces.
+    lowered("F(): int => int.MaxValue;\n").mir("F");
+}
+
+#[test]
 fn propagation_comes_with_results() {
     let text = "G(): int? => 1;\nF(): int? {\n    let a = G()?;\n    return a;\n}\n";
     assert_eq!(

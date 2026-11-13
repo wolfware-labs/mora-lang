@@ -95,6 +95,10 @@ const SMALLER_EXPRESSIONS: Milestone = milestone(3, 12);
 pub(super) const STATICS: Milestone = milestone(3, 13);
 /// M4.4, macro expansion, ordering and hygiene.
 const EXPANSION: Milestone = milestone(4, 4);
+/// M5.2, strings, text and formatting.
+const STRINGS: Milestone = milestone(5, 2);
+/// M5.6, the enumeration protocol and `foreach`.
+const ENUMERATION: Milestone = milestone(5, 6);
 /// M6.2, async lowering.
 const ASYNC: Milestone = milestone(6, 2);
 
@@ -189,20 +193,42 @@ pub(crate) fn lowered_later(
         operators_later(db, project, file, owner),
         lambdas_later(db, file, owner),
         calls_later(db, project, file, owner),
-        expressions_later(db, file, owner),
+        expressions_later(db, project, file, owner),
     ])
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
-/// statement that a later milestone brings: a `match` and an `is` test
-/// come with patterns, `?` with results, and a collection expression, a
-/// range, an index from the end, `nameof`, `sizeof`, `default` and a
-/// deconstruction with the smaller expressions. The first in the order of
-/// the body names it on a tie; `None` when it has none.
-fn expressions_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+/// statement that a later milestone brings: an array creation comes with
+/// arrays, `with` with positional structs, a `match` and an `is` test
+/// with patterns, `?` with results, a collection expression, a range, an
+/// index from the end, `nameof`, `sizeof`, `default`, a deconstruction and
+/// an element of a tuple read by name with the smaller expressions, an index of a string, which is `MR0130`, with strings,
+/// `foreach` with enumeration, a quote, a splice or a macro call with
+/// expansion, and `await` with async lowering. The first
+/// in the order of the body names it on a tie; `None` when it has none.
+fn expressions_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
     let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
     let exprs = hir.exprs.iter().map(|(_, expr)| {
         let (what, milestone) = match expr {
+            Expr::NewArray { .. } => ("an array creation", CONSTANT_EVALUATION),
+            Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
+            // Inference types no member of a tuple yet.
+            Expr::Member { receiver, .. }
+                if matches!(inference.expr(*receiver), Some(Ty::Tuple(_))) =>
+            {
+                ("an element of a tuple", SMALLER_EXPRESSIONS)
+            }
+            Expr::Index { base, .. } if inference.expr(*base) == Some(&Ty::String) => {
+                ("an index of a string", STRINGS)
+            }
+            Expr::Await(_) => ("`await`", ASYNC),
+            Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
             Expr::Match { .. } => ("a `match`", PATTERNS),
             Expr::Is { .. } => ("an `is` test", PATTERNS),
             Expr::Propagate(_) => ("`?`", RESULTS),
@@ -222,6 +248,7 @@ fn expressions_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<
     let stmts = hir.stmts.iter().map(|(_, stmt)| match stmt {
         Stmt::Match { .. } => later("a `match`", PATTERNS),
         Stmt::Deconstruct { .. } => later("a deconstruction", SMALLER_EXPRESSIONS),
+        Stmt::Foreach { .. } => later("`foreach`", ENUMERATION),
         _ => None,
     });
     latest(exprs.chain(stmts))
