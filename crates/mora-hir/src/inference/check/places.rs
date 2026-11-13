@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use super::Check;
-use crate::bodies::{Expr, ExprId, Pat, PathResolution, Target};
+use crate::bodies::{Expr, ExprId, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
 use crate::items::ValueKind;
 use crate::resolve::{Resolved, item_data, members_named};
@@ -55,10 +55,9 @@ impl Check<'_> {
         if !matches!(self.body.exprs[expr], Expr::Path(_) | Expr::Member { .. }) {
             return None;
         }
+        // A path in an expression is one segment, the parser making later
+        // dots member accesses, so a resolution names the whole of `expr`.
         if let Some(resolution) = self.resolution.paths.get(&expr) {
-            if !self.names_whole(expr, resolution) {
-                return None;
-            }
             return match &resolution.target {
                 Target::Item(named @ Resolved::Namespace(_)) => Some(named.clone()),
                 Target::Item(Resolved::Item(item)) if item_data(self.db, *item).kind.is_type() => {
@@ -71,16 +70,6 @@ impl Check<'_> {
         members_named(self.db, ty, name)
             .find(|(_, data)| data.kind.is_type())
             .map(|(member, _)| Resolved::Item(member))
-    }
-
-    /// Whether `resolution`, that of `expr`, names its target with the
-    /// whole of `expr`: the segments of a path after those that name the
-    /// target are members of it, and a member counts as one segment.
-    fn names_whole(&self, expr: ExprId, resolution: &PathResolution) -> bool {
-        match &self.body.exprs[expr] {
-            Expr::Path(path) => resolution.segments.max(1) >= path.segments.len(),
-            _ => true,
-        }
     }
 
     /// Reports `place`, the left side of an assignment or the operand of a
@@ -120,11 +109,7 @@ impl Check<'_> {
         if let Some(resolution) = self.resolution.paths.get(&expr) {
             return match &resolution.target {
                 Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Method),
-                // Only the whole path names the member, so a field of it is
-                // a place.
-                Target::Value(value) if self.names_whole(expr, resolution) => {
-                    value_problem(value.member(self.db)?.kind)
-                }
+                Target::Value(value) => value_problem(value.member(self.db)?.kind),
                 _ => None,
             };
         }

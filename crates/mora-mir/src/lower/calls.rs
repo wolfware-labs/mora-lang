@@ -51,19 +51,6 @@ impl Lowerer<'_> {
         }
     }
 
-    /// Panics when `expr` is a call of a function of the standard library
-    /// that returns while the library is not loaded: such a call has no
-    /// result.
-    pub(super) fn reject_external_value(&self, expr: ExprId) {
-        if let Expr::Call { callee, .. } = &self.owner.hir.exprs[expr]
-            && self.owner.inference.callee(expr).is_none()
-            && self.external_path(*callee).is_some()
-            && !calls_diverging(self.owner.hir, self.owner.resolution, *callee)
-        {
-            self.reject_external(expr);
-        }
-    }
-
     fn reject_external(&self, expr: ExprId) -> ! {
         self.ice(expr, "the value of an external call is used")
     }

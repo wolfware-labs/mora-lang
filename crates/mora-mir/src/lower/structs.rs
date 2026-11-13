@@ -2,23 +2,13 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, Signature, Ty, body, creation,
-    instance_fields, signature,
+    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, Ty, body, creation, instance_fields,
 };
 use mora_span::Db;
 
 use super::expr::Dest;
-use super::later::{CONSTANT_EVALUATION, STATICS};
 use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
-
-/// The internal error for a static or constant member: statics come with
-/// [`STATICS`], and constants with [`CONSTANT_EVALUATION`].
-fn static_member() -> String {
-    format!(
-        "a static member is not lowered until {STATICS}, nor a constant until {CONSTANT_EVALUATION}"
-    )
-}
 
 impl Lowerer<'_> {
     /// `new T { F = v, ... }` for the struct `T`, or `new T() { ... }`
@@ -86,8 +76,8 @@ impl Lowerer<'_> {
     }
 
     /// The place of the field `name` of the struct at `base`, which `expr`
-    /// names. Static and constant members are not stored in a value, and
-    /// lowering them is for M3.13 (statics) and M1.11 (constants).
+    /// names. A body that names a static or constant member, which no value
+    /// stores, comes with statics ([`super::later`]), so it never gets here.
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
         let db = self.owner.db;
         let Ty::Struct(item) = self.builder.body().place_ty(&base, db) else {
@@ -100,13 +90,6 @@ impl Lowerer<'_> {
             .zip(instance_fields(db, item))
             .find(|(_, (_, field))| field.name == name);
         let Some((n, _)) = field else {
-            let declared = match signature(db, item) {
-                Signature::Struct(fields) => fields.iter().any(|field| field.name == name),
-                _ => false,
-            };
-            if declared {
-                self.ice(expr, &static_member());
-            }
             self.ice(
                 expr,
                 "a member that is not a field of a struct is not lowered",
@@ -129,9 +112,6 @@ impl Lowerer<'_> {
         let Some((member, named)) = field else {
             self.ice(expr, "a name that is not a field of `this` is not lowered")
         };
-        if member.is_static {
-            self.ice(expr, &static_member());
-        }
         let mut place = self.field_place(expr, self.this_place(expr), &member.name);
         for segment in path.segments.iter().skip(named) {
             place = self.field_place(expr, place, segment);

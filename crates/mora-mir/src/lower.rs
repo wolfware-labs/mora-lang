@@ -731,13 +731,10 @@ impl<'a> Lowerer<'a> {
         if let mora_hir::Expr::Block(stmts) = &self.owner.hir.exprs[root] {
             self.collect_locals(stmts, &mut found);
         }
-        found.retain(|(local, _)| only.is_none_or(|only| only.contains(local)));
+        found.retain(|local| only.is_none_or(|only| only.contains(local)));
         let declared = found.len();
-        for (local, init) in found {
+        for local in found {
             let Some(ty) = self.owner.inference.local(local) else {
-                if let Some(init) = init {
-                    self.reject_external_value(init);
-                }
                 self.ice_at(
                     self.owner.map.local(local),
                     &format!(
@@ -757,17 +754,12 @@ impl<'a> Lowerer<'a> {
         declared
     }
 
-    /// The locals `stmts` and the statements inside them declare, each with
-    /// its initializer, in the order of the text. A local function's locals
-    /// are its own.
-    fn collect_locals(
-        &self,
-        stmts: &[StmtId],
-        found: &mut Vec<(mora_hir::LocalId, Option<ExprId>)>,
-    ) {
+    /// The locals `stmts` and the statements inside them declare, in the
+    /// order of the text. A local function's locals are its own.
+    fn collect_locals(&self, stmts: &[StmtId], found: &mut Vec<mora_hir::LocalId>) {
         for &stmt in stmts {
             match &self.owner.hir.stmts[stmt] {
-                Stmt::Local { local, init } => found.push((*local, *init)),
+                Stmt::Local { local, .. } => found.push(*local),
                 Stmt::Block(inner) => self.collect_locals(inner, found),
                 Stmt::If { then, r#else, .. } => {
                     self.collect_locals(&[*then], found);

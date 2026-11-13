@@ -3661,6 +3661,9 @@ mod tests {
             ("", "let a = new P.N { Y = 1 };", vec![]),
             ("", "let a = Color.Red;", vec![]),
             ("", "let a = p.X;", vec![]),
+            // A path that names a type and then something the type does
+            // not have is one error, that name not being found.
+            ("", "let a = P.X;", vec!["MR0127"]),
         ] {
             let text = format!("{}F(p: P) {{\n    {line}\n}}\n", head.replace("BARE", bare));
             assert_eq!(reported(&text), expected, "{bare}{line}");
@@ -3684,7 +3687,10 @@ mod tests {
                     public G: int => X;\n    public Inst(): int => X;\n    \
                     public static S(): int => 1;\n    public static mut SF: int = 1;\n    \
                     public static SG: int => 1;\n    public const K: int = 2;\n    \
+                    public static SQ: Q => new Q { Y = 1 };\n    \
+                    public GQ: Q => new Q { Y = 1 };\n    \
                     Probe() {\n        BARE\n    }\n}\n\
+                    public struct Q {\n    public mut Y: int;\n}\n\
                     public enum Color { Red }\nOne(): int => 1;\n";
         for (bare, line, expected) in [
             ("Inst = 1;", "", vec!["MR0186"]),
@@ -3692,6 +3698,8 @@ mod tests {
             ("K = 1;", "", vec!["MR0186"]),
             ("SF = 1;", "", vec![]),
             ("M = 1;", "", vec![]),
+            // The path names the getter and then a field of what it gives.
+            ("GQ.Y = 1;", "", vec![]),
             ("", "q.Inst = 1;", vec!["MR0186"]),
             ("", "q.Inst += 1;", vec!["MR0186"]),
             ("", "q.Inst++;", vec!["MR0186"]),
@@ -3719,6 +3727,8 @@ mod tests {
             ("", "q.SF = 1;", vec![]),
             ("", "q.K = 1;", vec![]),
             ("", "q.Nope = 1;", vec![]),
+            // A field of what a static getter gives is a field.
+            ("", "P.SQ.Y = 1;", vec![]),
         ] {
             let text = format!(
                 "{}F(p: P, xs: int[]) {{\n    var q = p;\n    {line}\n}}\n",
@@ -3732,6 +3742,11 @@ mod tests {
         ));
         assert_eq!(found.message, "cannot assign to `q.G`");
         assert!(format!("{found:?}").contains("a getter, which has no setter"));
+        let found = only_diagnostic(&format!(
+            "{}F() {{\n    One() = 1;\n}}\n",
+            head.replace("BARE", "")
+        ));
+        assert!(format!("{found:?}").contains("the result of a call"));
     }
 
     #[test]
