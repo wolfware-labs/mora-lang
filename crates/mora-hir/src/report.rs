@@ -701,7 +701,7 @@ impl Declared {
     fn visibility(self, db: &dyn Db) -> Visibility {
         match self {
             Self::Item(item) => effective_visibility(db, item),
-            Self::Value(ty, index) => item_tree(db, ty.file).item(ty.item).values[index as usize]
+            Self::Value(ty, index) => item_data(db, ty).values[index as usize]
                 .visibility
                 .min(effective_visibility(db, ty)),
         }

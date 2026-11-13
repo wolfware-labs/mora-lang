@@ -2,6 +2,7 @@
 
 use mora_span::Project;
 
+use crate::resolve::item_data;
 pub(crate) use crate::test_support::{TestDb, app, codes, file_named, item_named, messages};
 use crate::*;
 
@@ -45,7 +46,7 @@ pub(crate) fn item_name(db: &TestDb, item: ItemId) -> String {
     format!(
         "{}.{}",
         map.namespace_path(namespace),
-        item_tree(db, item.file).item(item.item).name
+        item_data(db, item).name
     )
 }
 

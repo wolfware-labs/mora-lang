@@ -18,7 +18,7 @@ use crate::inference::constant::{self, Value};
 use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::{ValueKind, item_tree};
+use crate::items::ValueKind;
 use crate::resolve::{Resolved, is_visible, item_data};
 use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
@@ -432,8 +432,7 @@ impl<'a> Check<'a> {
     /// Whether the struct `item` declares a static field, a static getter
     /// or a constant named `name`.
     fn is_static_value(&self, item: ItemId, name: &str) -> bool {
-        let tree = item_tree(self.db, item.file);
-        tree.item(item.item)
+        item_data(self.db, item)
             .values
             .iter()
             .any(|value| value.name == name && value.is_static)
@@ -443,9 +442,7 @@ impl<'a> Check<'a> {
     /// declares. A static one is never asked for: [`Check::methods`] leaves
     /// a static member called through a value to statics.
     fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
-        let tree = item_tree(self.db, item.file);
-        let (_, index) = tree
-            .item(item.item)
+        let (_, index) = item_data(self.db, item)
             .values
             .iter()
             .zip(0u32..)

@@ -27,7 +27,7 @@ pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Fi
     let Signature::Struct(fields) = signature(db, item) else {
         return None;
     };
-    let values = &item_tree(db, item.file).item(item.item).values;
+    let values = &item_data(db, item).values;
     if !declares_field(values.get(index as usize)?) {
         return None;
     }
@@ -47,8 +47,7 @@ pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, 
         Signature::Struct(fields) => fields.as_slice(),
         _ => &[],
     };
-    item_tree(db, item.file)
-        .item(item.item)
+    item_data(db, item)
         .values
         .iter()
         .zip(0u32..)

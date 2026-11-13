@@ -22,7 +22,7 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
-use crate::items::{ItemKind, ValueKind, item_tree};
+use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, Scope, item_data, value_visible};
 use crate::signature::{Creation, creation, instance_fields, signature, struct_field, this_type};
 use crate::suggest::closest;
@@ -1626,7 +1626,7 @@ impl Check<'_> {
     /// Whether the body sees the value member at `index` of the struct
     /// `item`, one of its instance fields (§4.5).
     fn field_visible(&self, item: ItemId, index: u32) -> bool {
-        let member = &item_tree(self.db, item.file).item(item.item).values[index as usize];
+        let member = &item_data(self.db, item).values[index as usize];
         value_visible(self.db, item, member, self.scope)
     }
 
@@ -1674,8 +1674,7 @@ impl Check<'_> {
         if name.is_empty() {
             return None;
         }
-        let member = item_tree(self.db, item.file)
-            .item(item.item)
+        let member = item_data(self.db, item)
             .values
             .iter()
             .find(|member| member.name == *name)

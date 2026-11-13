@@ -755,8 +755,8 @@ fn a_static_member_named_through_a_value_comes_with_statics() {
                 public static G: int => 2;\n    public const N: int = 3;\n    \
                 public static mut F: int = 4;\n}\n\
                 A(s: S): int => s.K();\nB(s: S): int => s.G;\nC(s: S): int => s.G();\n\
-                D(s: S): int => s.N;\nE(s: S): int => s.N();\nG(s: S): int => s.F();\n";
-    for name in ["A", "B", "C", "D", "E", "G"] {
+                D(s: S): int => s.N;\nE(s: S): int => s.N();\nH(s: S): int => s.F();\n";
+    for name in ["A", "B", "C", "D", "E", "H"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!(
