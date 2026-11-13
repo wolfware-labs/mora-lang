@@ -800,14 +800,15 @@ Done when:
 
 ### M3.13 Statics
 
-Spec: [§4.7](docs/design/mora.md#47-static-state). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
+Spec: [§4.7](docs/design/mora.md#47-static-state), [§6.10](docs/design/mora.md#610-constants-and-statics). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
 
-`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, and `static mut`.
+`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut`, and `MR0155` for a static member named through a value (§6.10).
 
 Done when:
 
 - A lazy cycle panics with the message of §4.7.
 - A `const` string longer than 15 bytes is an immortal object in read-only data, and reading it never writes its count.
+- A UI test reports `MR0155` for a static method and a static getter named through a value, and its fix writes the type's name in place of the value.
 
 ### M3.14 Local path dependencies and library projects
 

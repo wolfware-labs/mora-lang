@@ -199,8 +199,9 @@ pub(crate) fn lowered_later(
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
-/// statement that a later milestone brings: a getter read or called comes
-/// with classes, which bring getters, a member of a type keyword, as
+/// statement that a later milestone brings: a static member named through
+/// a value, error `MR0155` then, comes with statics, a getter read or
+/// called with classes, which bring getters, a member of a type keyword, as
 /// `int.MaxValue`, with the standard library, an array creation with
 /// constant evaluation, which brings arrays, `with` with positional
 /// structs, a `match` and an `is` test with patterns, `?` with results, a
@@ -221,6 +222,10 @@ fn expressions_later(
     let resolution = body_resolution(db, project, file, owner);
     let exprs = hir.exprs.iter().map(|(id, expr)| {
         let (what, milestone) = match expr {
+            // Error `MR0155` from statics on.
+            _ if static_through_value(db, hir, inference, id) => {
+                ("a static member named through a value", STATICS)
+            }
             _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
             // The members of a built-in type are declared in the library.
             Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
@@ -260,6 +265,24 @@ fn expressions_later(
         _ => None,
     });
     latest(exprs.chain(stmts))
+}
+
+/// Whether `expr` is a member of a struct value whose name is a static
+/// member of the struct, a method, a field or a getter, which is named
+/// through the type (`MR0155`, D-152). A constant is not one: it comes
+/// with constant evaluation.
+fn static_through_value(db: &dyn Db, hir: &Body, inference: &Inference, expr: ExprId) -> bool {
+    struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
+        let tree = item_tree(db, ty.file);
+        let data = tree.item(ty.item);
+        data.members.iter().any(|&member| {
+            let member = tree.item(member);
+            member.kind == ItemKind::Function && member.name == name && member.is_static
+        }) || data
+            .values
+            .iter()
+            .any(|value| value.name == name && value.is_static && value.kind != ValueKind::Const)
+    })
 }
 
 /// Whether `expr` reads or calls a getter of a struct: a name or a path
@@ -302,8 +325,8 @@ fn lambdas_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Late
 /// extension member: the latest of those that apply to each call, the
 /// first call on a tie. A call of a local function comes as late as the
 /// local function, which [`local_functions_later`] counts. `None` when
-/// every call has its callee, or when no milestone checks it yet, as for a
-/// static method called through a value.
+/// every call has its callee; a static method called through a value
+/// comes with statics through its callee ([`expressions_later`]).
 fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
@@ -375,8 +398,8 @@ pub(super) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId
 /// The milestone that lowers a call through a value of a struct type of a
 /// name that the struct does not declare: an extension member, which comes
 /// with extension blocks. A static method of the struct called through a
-/// value (D-137) has no milestone that checks it yet, so it is `None`, as
-/// is a call of a field or a getter, whose type puts the body where it
+/// value is `None`, as [`expressions_later`] defers it with statics, and
+/// so is a call of a field or a getter, whose type puts the body where it
 /// belongs ([`body_types_later`]), and any other callee.
 fn extension_call_later(
     db: &dyn Db,

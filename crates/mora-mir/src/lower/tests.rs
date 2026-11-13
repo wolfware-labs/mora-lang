@@ -730,16 +730,37 @@ fn a_lambda_stored_in_a_local_comes_with_closures() {
 
 #[test]
 fn the_message_names_the_body_and_the_expression() {
-    // A static method called through a value has no milestone that checks
-    // it yet (D-137), so its call stays an internal error.
-    let lowered = lowered(
-        "struct S {\n    public X: int;\n    public static K(): int => 1;\n}\n\
-         F(s: S): int {\n    return s.K();\n}\n",
+    // The driver never lowers a body after an error; this one calls a name
+    // that is not found (MR0127), so its call has no callee.
+    let db = TestDb::new();
+    let project = app(
+        &db,
+        &[("src/Program.mr", "F(): int {\n    return Missing();\n}\n")],
     );
+    let file = file_named(&db, project, "src/Program.mr");
+    assert_eq!(codes(diagnostics(&db, project)), ["MR0127"]);
+    let lowered = Lowered { db, project, file };
     assert_eq!(
         lowered.internal_error("F"),
-        "internal error lowering UsersApi.F: the call has no callee: `s.K()` at 6:12"
+        "internal error lowering UsersApi.F: the call has no callee: `Missing()` at 2:12"
     );
+}
+
+#[test]
+fn a_static_member_named_through_a_value_comes_with_statics() {
+    // MR0155 from M3.13 on (D-152): a static method, a static getter and a
+    // static field, each through a value.
+    let text = "struct S {\n    public X: int;\n    public static K(): int => 1;\n    \
+                public static G: int => 2;\n}\n\
+                A(s: S): int => s.K();\nB(s: S): int => s.G;\nC(s: S): int => s.G();\n";
+    for name in ["A", "B", "C"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: a static member named through a value is not lowered until M3.13"
+            )
+        );
+    }
 }
 
 #[test]
@@ -2750,13 +2771,14 @@ fn a_constant_read_through_a_value_is_not_lowered() {
 }
 
 #[test]
-#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
-fn a_static_read_through_this_is_not_lowered() {
-    let lowered = lowered(
-        "struct P {\n    public X: int;\n    public static mut N: int = 2;\n    \
-         Get(): int => this.N;\n}\n",
+fn a_static_read_through_this_comes_with_statics() {
+    // `this` is a value, so this is `MR0155` from M3.13 on (D-152).
+    let text = "struct P {\n    public X: int;\n    public static mut N: int = 2;\n    \
+                Get(): int => this.N;\n}\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("Get")),
+        "internal error lowering UsersApi.P.Get: a static member named through a value is not lowered until M3.13"
     );
-    lowered.mir("Get");
 }
 
 #[test]
