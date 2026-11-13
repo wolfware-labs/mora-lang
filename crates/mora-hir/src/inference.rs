@@ -3530,17 +3530,16 @@ mod tests {
             assert_eq!(reported(&text), Vec::<String>::new(), "{line}");
         }
         // Without a target, one missing type is one error.
-        for line in [
-            "let a = new { Q = new { Y = 1 } };",
-            "let ys = [new { X = 1 }];",
-            "let f = () => {\n    return new { X = 1 };\n};",
-            "panic(new { X = 1 });",
-            "Todo(new());",
-            "let t = b ? (new { X = 1 }, 1) : (new { X = 2 }, 2);",
+        for (line, errors) in [
+            ("let a = new { Q = new { Y = 1 } };", 1),
+            ("let ys = [new { X = 1 }];", 1),
+            ("let f = () => {\n    return new { X = 1 };\n};", 1),
+            ("panic(new { X = 1 });", 1),
+            ("Todo(new());", 1),
+            ("let t = b ? (new { X = 1 }, 1) : (new { X = 2 }, 2);", 2),
         ] {
             let text = format!("{head}let b = true;\n{line}\n");
-            let expected = if line.starts_with("let t") { 2 } else { 1 };
-            assert_eq!(reported(&text), vec!["MR0154"; expected], "{line}");
+            assert_eq!(reported(&text), vec!["MR0154"; errors], "{line}");
         }
     }
 

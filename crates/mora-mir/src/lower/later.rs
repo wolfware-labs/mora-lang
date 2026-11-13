@@ -14,10 +14,11 @@
 //! inference leaves unresolved because a generic or `async` function, or
 //! one with a `params` parameter, could take it, because a type is not
 //! known yet, or because it calls an extension member; or for an
-//! expression or a statement that a later milestone brings, as a `match`. A struct type comes as
-//! late as the types of its instance fields, which its layout holds, and a
-//! struct nested in a generic type comes with generic code. When several
-//! milestones apply, the latest of them lowers the body.
+//! expression or a statement that a later milestone brings, as a `match`.
+//! A struct type comes as late as the types of its instance fields, which
+//! its layout holds, and a struct nested in a generic type comes with
+//! generic code. When several milestones apply, the latest of them lowers
+//! the body.
 //!
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
@@ -200,12 +201,13 @@ pub(crate) fn lowered_later(
 /// The milestone that lowers the body of `owner` for an expression or a
 /// statement that a later milestone brings: a member of a type keyword, as
 /// `int.MaxValue`, comes with the standard library, an array creation with
-/// arrays, `with` with positional structs, a `match` and an `is` test
-/// with patterns, `?` with results, a collection expression, a range, an
-/// index from the end, `nameof`, `sizeof`, `default`, a deconstruction and
-/// an element of a tuple read by name with the smaller expressions, an index of a string, which is `MR0130`, with strings,
-/// `foreach` with enumeration, a quote, a splice or a macro call with
-/// expansion, and `await` with async lowering. The first
+/// constant evaluation, which brings arrays, `with` with positional
+/// structs, a `match` and an `is` test with patterns, `?` with results, a
+/// collection expression, a range, an index from the end, `nameof`,
+/// `sizeof`, `default`, a deconstruction and an element of a tuple read by
+/// name with the smaller expressions, an index of a string, which is
+/// `MR0130`, with strings, `foreach` with enumeration, a quote, a splice or
+/// a macro call with expansion, and `await` with async lowering. The first
 /// in the order of the body names it on a tie; `None` when it has none.
 fn expressions_later(
     db: &dyn Db,
@@ -294,18 +296,20 @@ fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
         if functions.is_empty() {
             return extension_call_later(db, hir, inference, *callee);
         }
-        call_later(db, functions.iter().copied())
-            .or_else(|| unresolved_later(db, hir, resolution, args, &functions))
+        latest([
+            call_later(db, functions.iter().copied()),
+            unresolved_later(db, hir, resolution, args, &functions),
+        ])
     }))
 }
 
 /// The milestone that lowers a call of overloads that a type not known
 /// yet leaves unresolved (D-137): that of a parameter type of one of
 /// `functions`, and the standard library for an argument that is a value
-/// of the library, which has no type until the library is loaded. An argument of a type that
-/// comes later already puts the body there, as every expression's type
-/// does ([`body_types_later`]). The first of them names it on a tie;
-/// `None` when every type is known.
+/// of the library, which has no type until the library is loaded. An
+/// argument of a type that comes later already puts the body there, as
+/// every expression's type does ([`body_types_later`]). The first of them
+/// names it on a tie; `None` when every type is known.
 fn unresolved_later(
     db: &dyn Db,
     hir: &Body,
@@ -343,29 +347,26 @@ pub(super) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId
 }
 
 /// The milestone that lowers a call through a value of a struct type of a
-/// name that is no method of the struct: an extension member, which comes
+/// name that the struct does not declare: an extension member, which comes
 /// with extension blocks. A static method of the struct called through a
 /// value (D-137) has no milestone that checks it yet, so it is `None`, as
-/// is any other callee.
+/// is a call of a field or a getter, whose type puts the body where it
+/// belongs ([`body_types_later`]), and any other callee.
 fn extension_call_later(
     db: &dyn Db,
     hir: &Body,
     inference: &Inference,
     callee: ExprId,
 ) -> Option<Later> {
-    let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
-        return None;
-    };
-    let Some(Ty::Struct(ty)) = inference.expr(*receiver) else {
-        return None;
-    };
+    let (ty, name) = struct_member(hir, inference, callee)?;
     let tree = item_tree(db, ty.file);
-    let member = tree
-        .item(ty.item)
+    let data = tree.item(ty.item);
+    let declared = data
         .members
         .iter()
-        .any(|&member| tree.item(member).name == *name);
-    (!member).then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
+        .any(|&member| tree.item(member).name == name)
+        || data.values.iter().any(|value| value.name == name);
+    (!declared).then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
 }
 
 /// The methods that a call through a value of a struct type calls by the
@@ -376,16 +377,25 @@ fn methods<'a>(
     inference: &Inference,
     callee: ExprId,
 ) -> impl Iterator<Item = ItemId> + 'a {
-    let method = match &hir.exprs[callee] {
-        Expr::Member { receiver, name, .. } => match inference.expr(*receiver) {
-            Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
-            _ => None,
-        },
-        _ => None,
-    };
-    method
+    struct_member(hir, inference, callee)
         .into_iter()
         .flat_map(move |(ty, name)| instance_methods(db, ty, name))
+}
+
+/// The struct and the name of `callee` when it is a member of a value of
+/// a struct type, as `p.Scale`; `None` for any other callee.
+fn struct_member<'a>(
+    hir: &'a Body,
+    inference: &Inference,
+    callee: ExprId,
+) -> Option<(ItemId, &'a str)> {
+    let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
+        return None;
+    };
+    match inference.expr(*receiver) {
+        Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
+        _ => None,
+    }
 }
 
 /// The milestone that checks and lowers a call that one of `functions`

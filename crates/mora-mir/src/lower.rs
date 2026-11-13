@@ -50,9 +50,10 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// The internal error for a statement that is not lowered yet, such as a
-/// `match` statement, whether it stands alone or is a branch of a
-/// statement conditional.
+/// The internal error for a statement that lowering does not handle: one
+/// the front end reports, or a `match`, a deconstruction or a `foreach`,
+/// whose body [`later::lowered_later`] leaves to a later milestone, alone
+/// or as a branch of a statement conditional.
 const STATEMENT_NOT_LOWERED: &str = "the statement is not lowered";
 
 /// The MIR of the body of `owner` in `file`. It is checked by

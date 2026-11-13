@@ -516,10 +516,9 @@ impl Check<'_> {
         }
     }
 
-    /// A `match`; `statement` when its arms are statements, whose values
-    /// nothing uses.
-    /// A `match`: in statement position its arms are statements, and as a
-    /// value each arm takes the target type `expect` gives it.
+    /// A `match`: without `expect`, in statement position, its arms are
+    /// statements, whose values nothing uses; as a value, each arm expects
+    /// what [`Expect::within`] gives of `expect`.
     fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], expect: Option<Expect<'_>>) {
         self.infer(scrutinee);
         for arm in arms {

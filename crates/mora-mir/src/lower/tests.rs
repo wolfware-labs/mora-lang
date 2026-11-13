@@ -730,6 +730,8 @@ fn a_lambda_stored_in_a_local_comes_with_closures() {
 
 #[test]
 fn the_message_names_the_body_and_the_expression() {
+    // A static method called through a value has no milestone that checks
+    // it yet (D-137), so its call stays an internal error.
     let lowered = lowered(
         "struct S {\n    public X: int;\n    public static K(): int => 1;\n}\n\
          F(s: S): int {\n    return s.K();\n}\n",
@@ -3128,7 +3130,11 @@ fn calls_left_unresolved_come_with_what_resolves_them() {
                 Put(x: int) {}\nPut(x: string) {}\nOpt(x: int?) {}\nOpt(x: string) {}\n\
                 A() {\n    Put(Console.ReadLine());\n}\n\
                 B() {\n    Opt(Console.ReadLine());\n}\n\
-                C(p: P): int => p.E();\n";
+                C(p: P): int => p.E();\n\
+                struct Q {\n    public F: (() => int);\n}\n\
+                D(q: Q): int => q.F();\n\
+                Many(params xs: int[]) {}\nMany(x: int?) {}\n\
+                E() {\n    Many(1);\n}\n";
     for (name, what) in [
         (
             "A",
@@ -3141,6 +3147,16 @@ fn calls_left_unresolved_come_with_what_resolves_them() {
         (
             "C",
             "a call of an extension member is not lowered until M3.12",
+        ),
+        // A field is no extension member: its type decides.
+        (
+            "D",
+            "a signature with a function type is not lowered until M2.11",
+        ),
+        // The option type comes after the spans of the `params` overload.
+        (
+            "E",
+            "a call of an overload with an option type is not lowered until M3.5",
         ),
     ] {
         assert_eq!(
@@ -3176,17 +3192,6 @@ fn a_value_of_the_library_is_a_path_into_it_a_member_or_a_call() {
     for (local, from) in found {
         assert_eq!(from, !local);
     }
-}
-
-#[test]
-#[should_panic(expected = "the call has no callee: `s.K()`")]
-fn a_static_method_through_a_value_is_an_internal_error() {
-    // No milestone of the roadmap checks it yet (D-137).
-    let lowered = lowered(
-        "struct S {\n    public X: int;\n    public static K(): int => 1;\n}\n\
-         F(s: S): int => s.K();\n",
-    );
-    lowered.mir("F");
 }
 
 #[test]
