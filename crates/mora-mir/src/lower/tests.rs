@@ -558,6 +558,17 @@ fn a_call_inference_does_not_check_comes_with_its_callee() {
 }
 
 #[test]
+fn a_local_function_with_params_comes_with_spans() {
+    // Spans come after arrays, so the `params` parameter names the
+    // milestone, not its array type.
+    let text = "F() {\n    Sum(params xs: int[]) {}\n    Sum(1, 2);\n}\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: the local function `Sum` with `params` is not lowered until M2.9"
+    );
+}
+
+#[test]
 fn a_params_call_comes_with_spans() {
     // A span holds the arguments of a `params` parameter, and so the
     // function's own body comes with spans too.

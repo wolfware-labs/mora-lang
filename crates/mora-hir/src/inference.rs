@@ -1275,6 +1275,17 @@ mod tests {
     }
 
     #[test]
+    fn a_call_of_a_local_function_with_params_is_not_checked() {
+        // Its arguments are collected into a span later (D-137), so any
+        // count of them is left to that check.
+        let text = "F() {\n    Sum(params xs: int[]) {}\n    Sum(1, 2);\n    Sum();\n}\n";
+        assert_eq!(reported(text), Vec::<String>::new());
+        // Without `params`, the count is checked.
+        let text = "F() {\n    Sum(xs: int[]) {}\n    Sum(1, 2);\n}\n";
+        assert_eq!(reported(text), ["MR0205"]);
+    }
+
+    #[test]
     fn a_local_function_checks_what_it_returns_async_or_not() {
         assert_eq!(reported("F() {\n    G(): int => \"s\";\n}\n"), ["MR0203"]);
         // `return v` in an `async` function gives its declared type (§12).

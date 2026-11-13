@@ -1,0 +1,12 @@
+// A call that a function with a `params` parameter could take is not
+// checked until its arguments are collected into a span (D-137), so no
+// count of arguments is an error yet, for a local function too.
+Total(params xs: int[]) {}
+
+F() {
+    Sum(params xs: int[]) {}
+    Sum(1, 2);
+    Sum();
+    Total(1, 2);
+    Total();
+}

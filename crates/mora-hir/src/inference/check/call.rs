@@ -481,7 +481,7 @@ impl<'a> Check<'a> {
                 })
                 .collect(),
             ret: Cow::Owned(ret),
-            unchecked: generic || function.is_async,
+            unchecked: generic || function.is_async || function.has_params,
         })
     }
 

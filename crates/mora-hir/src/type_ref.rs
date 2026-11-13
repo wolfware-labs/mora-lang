@@ -148,6 +148,14 @@ pub(crate) fn param_mode(param: &ast::Param) -> ParamMode {
     mode
 }
 
+/// Whether `param` is written `params`, taking the rest of the arguments.
+pub(crate) fn is_params(param: &ast::Param) -> bool {
+    param
+        .modifiers()
+        .filter_map(|modifier| modifier.kind())
+        .any(|token| token.kind() == SyntaxKind::ParamsKw)
+}
+
 /// How a method with the modifiers `modifiers` takes `this` (§10.3):
 /// `ref` when it is `mut`, `move` when it is `move`, `in` otherwise.
 fn receiver_mode<'a>(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> ParamMode {
@@ -185,14 +193,10 @@ impl LowerTypes {
     }
 
     fn param(&mut self, param: &ast::Param) -> ParamRef {
-        let is_params = param
-            .modifiers()
-            .filter_map(|modifier| modifier.kind())
-            .any(|token| token.kind() == SyntaxKind::ParamsKw);
         ParamRef {
             name: name_of(param.name()).unwrap_or_default(),
             mode: param_mode(param),
-            is_params,
+            is_params: is_params(param),
             has_default: param.default().is_some(),
             ty: self.optional(param.ty().as_ref()),
         }

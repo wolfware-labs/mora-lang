@@ -619,6 +619,9 @@ pub struct LocalFunction {
     pub ret: Option<TypeId>,
     /// Whether it is `async`.
     pub is_async: bool,
+    /// Whether one of its parameters is `params`, which takes the rest of
+    /// the arguments.
+    pub has_params: bool,
     /// Whether it declares type parameters, or a local function around it
     /// does, or the member whose body holds it does when that body
     /// declares its own signature: an explicit interface implementation or

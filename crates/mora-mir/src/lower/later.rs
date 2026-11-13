@@ -569,8 +569,8 @@ fn signature_later(db: &dyn Db, function: &FnSignature) -> Option<Later> {
 }
 
 /// The milestone that lowers the local functions of the body of `owner`,
-/// generic and async ones and those with a type in their signature that
-/// comes later; the first in the order of the text names it on a tie.
+/// generic and async ones, those with a `params` parameter and those with
+/// a type in their signature that comes later; the first in the order of the text names it on a tie.
 /// `None` when this one lowers them all.
 fn local_functions_later(
     db: &dyn Db,
@@ -604,6 +604,8 @@ fn local_functions_later(
             }),
             def.is_async
                 .then(|| Later::new(format!("the async local function `{name}`"), ASYNC)),
+            def.has_params
+                .then(|| Later::new(format!("the local function `{name}` with `params`"), SPANS)),
             signature,
         ])
     }))
