@@ -1,0 +1,31 @@
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:50:9
+   |
+50 | let a = new { Q = new { Y = 1 } }; //~ ERROR MR0154
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:51:11
+   |
+51 | let ys = [new { X = 1 }]; //~ ERROR MR0154
+   |           ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:53:12
+   |
+53 |     return new { X = 1 }; //~ ERROR MR0154
+   |            ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:55:7
+   |
+55 | panic(new { X = 1 }); //~ ERROR MR0154
+   |       ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type

@@ -3502,6 +3502,48 @@ mod tests {
     }
 
     #[test]
+    fn a_new_inside_a_value_with_a_target_has_one() {
+        let head = "public struct Q {\n    public Y: int;\n}\npublic struct P {\n    public X: int;\n}\n\
+                    public struct R {\n    public Q: Q;\n}\n\
+                    public class C {\n    public Take(p: P) {}\n    public TakeT(t: (P, int)) {}\n    \
+                    public Run(f: () => P) {}\n    public TakeR(r: R) {}\n}\n\
+                    Make<T>(t: T, p: P) {}\nG(p: P) {}\nF(xs: P[]) {}\n";
+        let quiet = [
+            "let q: P = match (x) { _ => new { X = 1 } };",
+            "let xs: P[] = [new { X = 1 }];",
+            "F([new { X = 1 }]);",
+            "G(match (x) { _ => new { X = 1 } });",
+            "G(b ? new { X = 1 } : p);",
+            "c.Take(b ? new { X = 1 } : p);",
+            "c.TakeT((new { X = 1 }, 1));",
+            "Make(1, b ? new { X = 1 } : p);",
+            "c.Run(() => b ? new { X = 1 } : p);",
+            "c.Run(() => {\n        return b ? new { X = 1 } : p;\n    });",
+            "c.Run(() => {\n        return new { X = 1 };\n    });",
+            "c.Take(match (x) { _ => new { X = 1 } });",
+            "c.TakeR(new { Q = new { Y = 1 } });",
+            "Make(new { Q = new { Y = 1 } }, p);",
+        ];
+        for line in quiet {
+            let text = format!("{head}H(x: int, b: bool, p: P, c: C) {{\n    {line}\n}}\n");
+            assert_eq!(reported(&text), Vec::<String>::new(), "{line}");
+        }
+        // Without a target, one missing type is one error.
+        for line in [
+            "let a = new { Q = new { Y = 1 } };",
+            "let ys = [new { X = 1 }];",
+            "let f = () => {\n    return new { X = 1 };\n};",
+            "panic(new { X = 1 });",
+            "Todo(new());",
+            "let t = b ? (new { X = 1 }, 1) : (new { X = 2 }, 2);",
+        ] {
+            let text = format!("{head}let b = true;\n{line}\n");
+            let expected = if line.starts_with("let t") { 2 } else { 1 };
+            assert_eq!(reported(&text), vec!["MR0154"; expected], "{line}");
+        }
+    }
+
+    #[test]
     fn overloads_leave_a_new_to_an_unresolved_or_wrong_call() {
         let head = "struct P {\n    public X: int;\n}\nstruct Q {\n    public Y: int;\n}\n\
                     class Box {}\n";

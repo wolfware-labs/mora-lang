@@ -5,6 +5,8 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use la_arena::Arena;
+
 use super::{Check, Expect};
 use crate::arena::arena_index;
 use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
@@ -172,7 +174,7 @@ impl<'a> Check<'a> {
         let mut typed: Vec<Option<Argument>> = args
             .iter()
             .map(|arg| {
-                if takes_target(&self.body.exprs[arg.expr]) {
+                if takes_target(&self.body.exprs, arg.expr) {
                     return None;
                 }
                 Some(match constant::value(&self.body.exprs, arg.expr) {
@@ -214,14 +216,14 @@ impl<'a> Check<'a> {
             }
             let expect = match arg_target(&candidates, &bindings, arg, position) {
                 ArgTarget::Type(ty) => Expect::Target(ty),
-                // A lambda is checked without a target type, and a `new`
-                // is reported once the overloads are compared.
+                // A `new` is reported once the overloads are compared, and
+                // any other argument is checked without a target type.
                 ArgTarget::Differs if !unresolved => match self.body.exprs[arg.expr] {
-                    Expr::Lambda(_) => Expect::None,
-                    _ => {
+                    Expr::New { .. } => {
                         untargeted.push(arg.expr);
                         Expect::Later
                     }
+                    _ => Expect::None,
                 },
                 // A call left unresolved, or one that is an error because
                 // the argument has no parameter, which says so itself.
@@ -756,10 +758,21 @@ fn bind(candidate: &Candidate<'_>, args: &[Arg]) -> Result<Vec<usize>, Unbound> 
     }
 }
 
-/// Whether an argument takes its type from its parameter: a lambda, or a
-/// `new` without a type.
-fn takes_target(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lambda(_) | Expr::New { ty: None, .. })
+/// Whether an argument takes its type from its parameter: a lambda, a
+/// `new` without a type, or a value with one of those where its own target
+/// type goes, a branch of a conditional, an arm of a `match` or an element
+/// of a tuple or a collection.
+fn takes_target(exprs: &Arena<Expr>, expr: ExprId) -> bool {
+    match &exprs[expr] {
+        Expr::Lambda(_) | Expr::New { ty: None, .. } => true,
+        Expr::Conditional { then, r#else, .. } => {
+            takes_target(exprs, *then) || takes_target(exprs, *r#else)
+        }
+        Expr::Match { arms, .. } => arms.iter().any(|arm| takes_target(exprs, arm.body)),
+        Expr::Tuple(elems) => elems.iter().any(|&(_, elem)| takes_target(exprs, elem)),
+        Expr::Collection(elems) => elems.iter().any(|&(_, elem)| takes_target(exprs, elem)),
+        _ => false,
+    }
 }
 
 /// What the candidates of a call give an argument that takes its type

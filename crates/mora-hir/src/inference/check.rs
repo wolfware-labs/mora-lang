@@ -79,12 +79,27 @@ enum Expect<'t> {
     /// The type the value must convert to: a literal takes it, or does not
     /// fit it (`MR0010`).
     Target(&'t Ty),
-    /// A target type that a later milestone gives: the parameter of an
-    /// argument of a call that is not checked or not resolved yet (D-137),
-    /// or of one that is an error already, and the result type of a lambda
-    /// passed there. As `None`, except that a `new` without a type is not
-    /// reported.
+    /// A target type that is there but that this milestone does not pass
+    /// down: the parameter of an argument of a call that is not checked or
+    /// not resolved yet (D-137), or of one that is an error already, and
+    /// what [`Expect::within`] gives a part of a value that has a target.
+    /// As `None`, except that a `new` without a type is not reported.
     Later,
+}
+
+impl Expect<'_> {
+    /// What a part of the value expects whose target type is the value's
+    /// own or comes from it, where the checker does not pass that type
+    /// down yet: an arm of a `match`, an element of a collection, of a
+    /// tuple or of a conditional, a value assigned to a field of a type
+    /// not known yet, or the result of a lambda. The part has a target
+    /// exactly when the value has one.
+    fn within(self) -> Expect<'static> {
+        match self {
+            Expect::Target(_) | Expect::Later => Expect::Later,
+            Expect::None | Expect::Hint(_) => Expect::None,
+        }
+    }
 }
 
 /// An expectation of `ty` as a hint, or none when it is unknown.
@@ -248,8 +263,9 @@ struct Check<'a> {
     block_stmt: Option<StmtId>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
-    /// Whether a later milestone gives the return type when `ret` is
-    /// unknown: in a lambda passed to a call that is not checked yet.
+    /// Whether the return type is there when `ret` is unknown: in a lambda
+    /// whose target type gives no result type here, as one passed to a
+    /// call that is not checked yet.
     ret_later: bool,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
@@ -397,7 +413,7 @@ impl Check<'_> {
         }
         match &body.exprs[expr] {
             // The arms of a `match` in statement position are statements.
-            Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, true),
+            Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
             // So are the branches of a conditional that assigns.
             Expr::Conditional {
                 condition,
@@ -495,24 +511,27 @@ impl Check<'_> {
                 }
                 self.ret = ret;
             }
-            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, true),
+            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
         }
     }
 
     /// A `match`; `statement` when its arms are statements, whose values
     /// nothing uses.
-    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], statement: bool) {
+    /// A `match`: in statement position its arms are statements, and as a
+    /// value each arm takes the target type `expect` gives it.
+    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], expect: Option<Expect<'_>>) {
         self.infer(scrutinee);
         for arm in arms {
             self.pat(arm.pat);
             if let Some(guard) = arm.guard {
                 self.condition(guard);
             }
-            if statement {
-                self.statement(arm.body, false);
-            } else {
-                self.infer(arm.body);
+            match expect {
+                None => self.statement(arm.body, false),
+                Some(expect) => {
+                    self.expr(arm.body, expect.within());
+                }
             }
         }
     }
@@ -668,7 +687,7 @@ impl Check<'_> {
             Expr::Tuple(elems) => self.tuple(elems, expect),
             Expr::Collection(elems) => {
                 for &(_, elem) in elems {
-                    self.infer(elem);
+                    self.expr(elem, expect.within());
                 }
                 None
             }
@@ -731,7 +750,7 @@ impl Check<'_> {
                 None
             }
             Expr::Match { scrutinee, arms } => {
-                self.r#match(*scrutinee, arms, false);
+                self.r#match(*scrutinee, arms, Some(expect));
                 None
             }
             Expr::With { expr: value, inits } => {
@@ -740,7 +759,7 @@ impl Check<'_> {
                     match self.field(ty.as_ref(), name) {
                         Some(field) => self.check(*init, &field),
                         None => {
-                            self.infer(*init);
+                            self.expr(*init, Expect::Later);
                         }
                     }
                 }
@@ -768,9 +787,9 @@ impl Check<'_> {
                     }
                     _ => None,
                 };
-                // The target type of a lambda that a later milestone checks
-                // gives its result type then.
-                let later = matches!(expect, Expect::Later);
+                // A lambda with a target type that gives no result type
+                // here has one when that target is checked.
+                let later = matches!(expect.within(), Expect::Later);
                 let outer = std::mem::replace(&mut self.ret_later, later);
                 self.function_body(lambda.body, ret, false);
                 self.ret_later = outer;
@@ -848,7 +867,7 @@ impl Check<'_> {
         let mut types = Vec::with_capacity(elems.len());
         let mut known = true;
         for (name, elem) in elems {
-            match self.infer(*elem) {
+            match self.expr(*elem, expect.within()) {
                 Some(ty) => types.push(TupleElem {
                     name: name.clone(),
                     ty,
@@ -1392,9 +1411,11 @@ impl Check<'_> {
         // A struct type names a struct that is not generic. A class and a
         // generic struct have their type, and a later milestone checks
         // their creation.
+        // The fields of a type that is an error, or that a later milestone
+        // checks, have their types then.
         let Some(written @ Ty::Struct(item)) = written else {
             for &(_, init) in inits.into_iter().flatten() {
-                self.infer(init);
+                self.expr(init, Expect::Later);
             }
             return written;
         };
@@ -1540,7 +1561,7 @@ impl Check<'_> {
                 Some(index)
             }
             None => {
-                self.infer(value);
+                self.expr(value, Expect::Later);
                 None
             }
         }
@@ -1726,7 +1747,14 @@ impl Check<'_> {
             self.check(r#else, expected);
             return Some(expected.clone());
         }
-        let (Some(a), Some(b)) = self.operands(then, r#else) else {
+        let (a, b) = match expect {
+            Expect::Later => (
+                self.expr(then, Expect::Later),
+                self.expr(r#else, Expect::Later),
+            ),
+            _ => self.operands(then, r#else),
+        };
+        let (Some(a), Some(b)) = (a, b) else {
             return None;
         };
         if !is_known(&a) || !is_known(&b) {
