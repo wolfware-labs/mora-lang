@@ -3096,8 +3096,8 @@ fn a_member_of_a_type_keyword_comes_with_the_library() {
 
 #[test]
 fn a_getter_comes_with_classes() {
-    // Read through a value, called through a value when its type is a
-    // function type, read by name in a method, and a static one.
+    // Read through a value, read by name in a method, and a static one
+    // read through its type.
     let text = "struct S {\n    public X: int;\n    public G: int => X;\n    \
                 public static K: int => 1;\n    Get(): int => G;\n}\n\
                 A(s: S): int => s.G;\nB(): int => S.K;\nC(s: S): int => s.X;\n";

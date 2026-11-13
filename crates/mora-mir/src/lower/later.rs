@@ -28,9 +28,10 @@ use std::fmt;
 
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Construct, Creation, Expr, ExprId,
-    FnSignature, Inference, ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp,
-    ValueKind, body, body_resolution, creation, enclosing_types, infer, instance_fields,
-    instance_methods, is_generic_type, item_tree, local_functions, signature, struct_field,
+    FnSignature, Inference, Item, ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp,
+    ValueKind, ValueMember, body, body_resolution, creation, enclosing_types, infer,
+    instance_fields, instance_methods, is_generic_type, item_tree, local_functions, signature,
+    struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -201,16 +202,17 @@ pub(crate) fn lowered_later(
 /// The milestone that lowers the body of `owner` for an expression or a
 /// statement that a later milestone brings: a static member named through
 /// a value, error `MR0155` then, comes with statics, `as` with options,
-/// which bring `T?`, a getter read or called with classes, which bring getters, a member of a type keyword, as
-/// `int.MaxValue`, with the standard library, an array creation with
-/// constant evaluation, which brings arrays, `with` with positional
-/// structs, a `match` and an `is` test with patterns, `?` with results, a
-/// collection expression, a range, an index from the end, `nameof`,
-/// `sizeof`, `default`, a deconstruction and an element of a tuple read by
-/// name with the smaller expressions, an index of a string, which is
-/// `MR0130`, with strings, `foreach` with enumeration, a quote, a splice or
-/// a macro call with expansion, and `await` with async lowering. The first
-/// in the order of the body names it on a tie; `None` when it has none.
+/// which bring `T?`, a getter read or called with classes, which bring
+/// getters, a member of a type keyword, as `int.MaxValue`, with the
+/// standard library, an array creation with constant evaluation, which
+/// brings arrays, `with` with positional structs, a `match` and an `is`
+/// test with patterns, `?` with results, a collection expression, a
+/// range, an index from the end, `nameof`, `sizeof`, `default`, a
+/// deconstruction and an element of a tuple read by name with the smaller
+/// expressions, an index of a string, which is `MR0130`, with strings,
+/// `foreach` with enumeration, a quote, a splice or a macro call with
+/// expansion, and `await` with async lowering. The first in the order of
+/// the body names it on a tie; `None` when it has none.
 fn expressions_later(
     db: &dyn Db,
     project: Project,
@@ -273,21 +275,16 @@ fn expressions_later(
 /// is named through the type (`MR0155`, D-152).
 fn static_through_value(db: &dyn Db, hir: &Body, inference: &Inference, expr: ExprId) -> bool {
     struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
-        let tree = item_tree(db, ty.file);
-        let data = tree.item(ty.item);
-        data.members.iter().any(|&member| {
-            let member = tree.item(member);
-            member.kind == ItemKind::Function && member.name == name && member.is_static
-        }) || data
-            .values
-            .iter()
-            .any(|value| value.name == name && value.is_static)
+        declarations(db, ty, name).any(|declaration| match declaration {
+            Declaration::Item(item) => item.kind == ItemKind::Function && item.is_static,
+            Declaration::Value(value) => value.is_static,
+        })
     })
 }
 
 /// Whether `expr` reads or calls a getter of a struct: a name or a path
-/// that names one, as `G` in a method or `S.K`, or a member of its name
-/// of a struct value.
+/// that names one, as `G` in a method or `S.K`, or a member of a struct
+/// value that names one, as `s.G`.
 fn names_getter(
     db: &dyn Db,
     hir: &Body,
@@ -295,17 +292,45 @@ fn names_getter(
     resolution: &BodyResolution,
     expr: ExprId,
 ) -> bool {
-    let getter = |kind| kind == ValueKind::Getter;
-    resolution
-        .value_member(db, expr)
-        .is_some_and(|member| getter(member.kind))
+    let getter = |member: &ValueMember| member.kind == ValueKind::Getter;
+    resolution.value_member(db, expr).is_some_and(getter)
         || struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
-            let tree = item_tree(db, ty.file);
-            tree.item(ty.item)
-                .values
-                .iter()
-                .any(|value| value.name == name && getter(value.kind))
+            declarations(db, ty, name).any(
+                |declaration| matches!(declaration, Declaration::Value(value) if getter(value)),
+            )
         })
+}
+
+/// A declaration of a struct, found by its name.
+#[derive(Clone, Copy)]
+enum Declaration<'a> {
+    /// A nested type or a function, among the struct's `members`.
+    Item(&'a Item),
+    /// A field, a getter or a constant, among the struct's `values`.
+    Value(&'a ValueMember),
+}
+
+/// The declarations named `name` of the struct `ty`: its nested types and
+/// functions, then its value members, each in the order of the text.
+fn declarations<'a>(
+    db: &'a dyn Db,
+    ty: ItemId,
+    name: &'a str,
+) -> impl Iterator<Item = Declaration<'a>> + 'a {
+    let tree = item_tree(db, ty.file);
+    let data = tree.item(ty.item);
+    let items = data
+        .members
+        .iter()
+        .map(|&member| tree.item(member))
+        .filter(move |item| item.name == name)
+        .map(Declaration::Item);
+    let values = data
+        .values
+        .iter()
+        .filter(move |value| value.name == name)
+        .map(Declaration::Value);
+    items.chain(values)
 }
 
 /// The milestone that lowers the body of `owner` for a lambda in it:
@@ -397,10 +422,10 @@ pub(super) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId
 
 /// The milestone that lowers a call through a value of a struct type of a
 /// name that the struct does not declare: an extension member, which comes
-/// with extension blocks. A static method of the struct called through a
-/// value is `None`, as [`expressions_later`] defers it with statics, and
-/// so is a call of a field or a getter, whose type puts the body where it
-/// belongs ([`body_types_later`]), and any other callee.
+/// with extension blocks. `None` for a name the struct declares: a static
+/// method called through a value and a getter, which [`expressions_later`]
+/// defers with statics and with classes, and a field, whose type puts the
+/// body where it belongs ([`body_types_later`]); and for any other callee.
 fn extension_call_later(
     db: &dyn Db,
     hir: &Body,
@@ -408,14 +433,10 @@ fn extension_call_later(
     callee: ExprId,
 ) -> Option<Later> {
     let (ty, name) = struct_member(hir, inference, callee)?;
-    let tree = item_tree(db, ty.file);
-    let data = tree.item(ty.item);
-    let declared = data
-        .members
-        .iter()
-        .any(|&member| tree.item(member).name == name)
-        || data.values.iter().any(|value| value.name == name);
-    (!declared).then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
+    declarations(db, ty, name)
+        .next()
+        .is_none()
+        .then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
 }
 
 /// The methods that a call through a value of a struct type calls by the

@@ -428,10 +428,15 @@ impl<'a> Check<'a> {
     /// its body declares.
     fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
         let tree = item_tree(self.db, item.file);
-        let index = tree.item(item.item).values.iter().position(|value| {
-            value.name == name && value.kind == ValueKind::Getter && !value.is_static
-        })?;
-        let owner = BodyOwner::Value(item.item, u32::try_from(index).ok()?);
+        let (_, index) = tree
+            .item(item.item)
+            .values
+            .iter()
+            .zip(0u32..)
+            .find(|(value, _)| {
+                value.name == name && value.kind == ValueKind::Getter && !value.is_static
+            })?;
+        let owner = BodyOwner::Value(item.item, index);
         let getter = body(self.db, item.file, owner);
         Some(body_resolution(self.db, item.project, item.file, owner).return_type(getter.ret))
     }
