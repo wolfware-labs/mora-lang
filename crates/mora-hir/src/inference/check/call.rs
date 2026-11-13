@@ -404,8 +404,13 @@ impl<'a> Check<'a> {
         };
         let named: Vec<_> = instance_methods(self.db, *ty, name).collect();
         // A field or a getter of a type that is not a function type is not
-        // callable (`MR0208`).
+        // callable (`MR0208`). A static field, a static getter or a constant
+        // named through a value is `MR0155`, which statics check (D-152):
+        // nothing is reported before them.
         let Some(&first) = named.first() else {
+            if self.is_static_value(*ty, name) {
+                return Callees::Unknown;
+            }
             let value = self
                 .field(receiver, name)
                 .or_else(|| self.getter_type(*ty, name));
@@ -424,8 +429,19 @@ impl<'a> Check<'a> {
         Callees::Functions(methods)
     }
 
-    /// The type of the instance getter `name` of the struct `item`, which
-    /// its body declares.
+    /// Whether the struct `item` declares a static field, a static getter
+    /// or a constant named `name`.
+    fn is_static_value(&self, item: ItemId, name: &str) -> bool {
+        let tree = item_tree(self.db, item.file);
+        tree.item(item.item)
+            .values
+            .iter()
+            .any(|value| value.name == name && value.is_static)
+    }
+
+    /// The type of the getter `name` of the struct `item`, which its body
+    /// declares. A static one is never asked for: [`Check::methods`] leaves
+    /// a static member called through a value to statics.
     fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
         let tree = item_tree(self.db, item.file);
         let (_, index) = tree
@@ -433,9 +449,7 @@ impl<'a> Check<'a> {
             .values
             .iter()
             .zip(0u32..)
-            .find(|(value, _)| {
-                value.name == name && value.kind == ValueKind::Getter && !value.is_static
-            })?;
+            .find(|(value, _)| value.name == name && value.kind == ValueKind::Getter)?;
         let owner = BodyOwner::Value(item.item, index);
         let getter = body(self.db, item.file, owner);
         Some(body_resolution(self.db, item.project, item.file, owner).return_type(getter.ret))

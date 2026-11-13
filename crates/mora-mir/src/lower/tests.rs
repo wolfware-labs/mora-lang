@@ -748,13 +748,15 @@ fn the_message_names_the_body_and_the_expression() {
 
 #[test]
 fn a_static_member_named_through_a_value_comes_with_statics() {
-    // MR0155 from M3.13 on (D-152): a static method, a static getter and a
-    // constant, each through a value; the constant's own M1.11 is earlier.
+    // MR0155 from M3.13 on (D-152): a static method, a static getter, a
+    // constant and a static field, each read or called through a value;
+    // the constant's own M1.11 is earlier.
     let text = "struct S {\n    public X: int;\n    public static K(): int => 1;\n    \
-                public static G: int => 2;\n    public const N: int = 3;\n}\n\
+                public static G: int => 2;\n    public const N: int = 3;\n    \
+                public static mut F: int = 4;\n}\n\
                 A(s: S): int => s.K();\nB(s: S): int => s.G;\nC(s: S): int => s.G();\n\
-                D(s: S): int => s.N;\n";
-    for name in ["A", "B", "C", "D"] {
+                D(s: S): int => s.N;\nE(s: S): int => s.N();\nG(s: S): int => s.F();\n";
+    for name in ["A", "B", "C", "D", "E", "G"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!(
