@@ -169,6 +169,21 @@ pub enum ItemKind {
     Field,
 }
 
+impl ItemKind {
+    /// Whether an item of this kind is a type: neither a function, a macro
+    /// nor a value.
+    pub(crate) fn is_type(self) -> bool {
+        match self {
+            ItemKind::Struct
+            | ItemKind::Class
+            | ItemKind::Union
+            | ItemKind::Enum
+            | ItemKind::Interface => true,
+            ItemKind::Function | ItemKind::Macro | ItemKind::Field => false,
+        }
+    }
+}
+
 /// Who can see a declaration (§4.5), narrowest first, so the effective
 /// visibility of a nested item is the minimum along its parents.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

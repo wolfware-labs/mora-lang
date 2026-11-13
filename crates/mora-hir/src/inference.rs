@@ -3665,17 +3665,17 @@ mod tests {
             let text = format!("{}F(p: P) {{\n    {line}\n}}\n", head.replace("BARE", bare));
             assert_eq!(reported(&text), expected, "{bare}{line}");
         }
-        let found = diagnostics_of(&format!("{}let a = P;\n", head.replace("BARE", "")));
-        assert_eq!(found[0].message, "`P` is not a value");
-        let notes = format!("{:?}", found[0]);
+        let found = only_diagnostic(&format!("{}let a = P;\n", head.replace("BARE", "")));
+        assert_eq!(found.message, "`P` is not a value");
+        let notes = format!("{found:?}");
         assert!(notes.contains("`new P { ... }` creates one"), "{notes}");
-        let found = diagnostics_of(&format!("{}let a = Color;\n", head.replace("BARE", "")));
-        assert!(format!("{:?}", found[0]).contains("a type or a namespace names no value"));
-        let found = diagnostics_of(&format!(
+        let found = only_diagnostic(&format!("{}let a = Color;\n", head.replace("BARE", "")));
+        assert!(format!("{found:?}").contains("a type or a namespace names no value"));
+        let found = only_diagnostic(&format!(
             "{}F(p: P) {{\n    let a = p.N;\n}}\n",
             head.replace("BARE", "")
         ));
-        assert!(format!("{:?}", found[0]).contains("`new UsersApi.P.N { ... }`"));
+        assert!(format!("{found:?}").contains("`new UsersApi.P.N { ... }`"));
     }
 
     #[test]
@@ -3726,12 +3726,12 @@ mod tests {
             );
             assert_eq!(reported(&text), expected, "{bare}{line}");
         }
-        let found = diagnostics_of(&format!(
+        let found = only_diagnostic(&format!(
             "{}F(p: P) {{\n    var q = p;\n    q.G = 1;\n}}\n",
             head.replace("BARE", "")
         ));
-        assert_eq!(found[0].message, "cannot assign to `q.G`");
-        assert!(format!("{:?}", found[0]).contains("a getter, which has no setter"));
+        assert_eq!(found.message, "cannot assign to `q.G`");
+        assert!(format!("{found:?}").contains("a getter, which has no setter"));
     }
 
     #[test]

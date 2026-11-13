@@ -1,4 +1,5 @@
-//! The diagnostics for type errors: `MR0010`, `MR0185`, `MR0203` and `MR0204`,
+//! The diagnostics for type errors: `MR0010`, `MR0127` for a type or a
+//! namespace used as a value, `MR0185`, `MR0186`, `MR0203` and `MR0204`,
 //! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
 //! creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with `MR0129` for a
 //! field it cannot see, in [`struct_new`]. A static member that uses `this`
@@ -17,8 +18,7 @@ use super::{
 };
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
 use crate::items::ItemKind;
-use crate::report::Declared;
-use crate::report::{full_name, kind_name};
+use crate::report::{Declared, full_name, kind_name};
 use crate::resolve::{Resolved, item_data};
 use crate::ty::{Primitive, Ty};
 
@@ -343,9 +343,6 @@ fn initializer_this(
     )
 }
 
-/// `MR0185`: an assignment whose value is used. When `split` is the
-/// statement of a block that `assignment` is the value of, the fix writes it
-/// as a statement before that one.
 /// `MR0127`: `expr` names `named`, a type or a namespace, where a value is
 /// expected; for a struct the note says how to create one.
 fn type_as_value(source: &Source<'_>, expr: ExprId, named: &Resolved) -> Diagnostic {
@@ -385,6 +382,9 @@ fn not_a_place(source: &Source<'_>, expr: ExprId, problem: NotAPlace) -> Diagnos
     )
 }
 
+/// `MR0185`: an assignment whose value is used. When `split` is the
+/// statement of a block that `assignment` is the value of, the fix writes it
+/// as a statement before that one.
 fn assignment_value(source: &Source<'_>, assignment: ExprId, split: Option<ExprId>) -> Diagnostic {
     let Expr::Assign { lhs, .. } = &source.body.exprs[assignment] else {
         unreachable!("MR0185 is reported on an assignment");

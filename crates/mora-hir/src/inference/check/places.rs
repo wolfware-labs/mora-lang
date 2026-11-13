@@ -5,12 +5,11 @@
 use std::collections::HashSet;
 
 use super::Check;
-use crate::bodies::{Expr, ExprId, Pat, Target};
-use crate::defs::ItemId;
+use crate::bodies::{Expr, ExprId, Pat, PathResolution, Target};
 use crate::inference::{NotAPlace, TypeError};
-use crate::items::{ItemKind, ValueKind};
-use crate::resolve::{Resolved, item_data};
-use crate::ty::Ty;
+use crate::items::ValueKind;
+use crate::resolve::{Resolved, item_data, members_named};
+use crate::signature::instance_methods;
 
 impl Check<'_> {
     /// Reports each expression that names a type or a namespace where a
@@ -53,40 +52,35 @@ impl Check<'_> {
     /// The type or namespace that `expr`, a path or a member, names as a
     /// whole: through a path, or as a nested type of a struct value.
     fn named_type(&self, expr: ExprId) -> Option<Resolved> {
-        let body = self.body;
-        let path_len = match &body.exprs[expr] {
-            Expr::Path(path) => path.segments.len(),
-            Expr::Member { .. } => 1,
-            _ => return None,
-        };
+        if !matches!(self.body.exprs[expr], Expr::Path(_) | Expr::Member { .. }) {
+            return None;
+        }
         if let Some(resolution) = self.resolution.paths.get(&expr) {
-            // Later segments are members of what the first ones name.
-            if resolution.segments.max(1) < path_len {
+            if !self.names_whole(expr, resolution) {
                 return None;
             }
             return match &resolution.target {
                 Target::Item(named @ Resolved::Namespace(_)) => Some(named.clone()),
-                Target::Item(Resolved::Item(item)) if is_type(self.db, *item) => {
+                Target::Item(Resolved::Item(item)) if item_data(self.db, *item).kind.is_type() => {
                     Some(Resolved::Item(*item))
                 }
                 _ => None,
             };
         }
-        let Expr::Member { receiver, name, .. } = &body.exprs[expr] else {
-            return None;
-        };
-        let Some(Ty::Struct(ty)) = &self.exprs[crate::arena::arena_index(*receiver)] else {
-            return None;
-        };
-        item_data(self.db, *ty)
-            .members
-            .iter()
-            .map(|&member| ItemId {
-                item: member,
-                ..*ty
-            })
-            .find(|&member| item_data(self.db, member).name == *name && is_type(self.db, member))
-            .map(Resolved::Item)
+        let (ty, name) = self.struct_member(expr)?;
+        members_named(self.db, ty, name)
+            .find(|(_, data)| data.kind.is_type())
+            .map(|(member, _)| Resolved::Item(member))
+    }
+
+    /// Whether `resolution`, that of `expr`, names its target with the
+    /// whole of `expr`: the segments of a path after those that name the
+    /// target are members of it, and a member counts as one segment.
+    fn names_whole(&self, expr: ExprId, resolution: &PathResolution) -> bool {
+        match &self.body.exprs[expr] {
+            Expr::Path(path) => resolution.segments.max(1) >= path.segments.len(),
+            _ => true,
+        }
     }
 
     /// Reports `place`, the left side of an assignment or the operand of a
@@ -126,35 +120,22 @@ impl Check<'_> {
         if let Some(resolution) = self.resolution.paths.get(&expr) {
             return match &resolution.target {
                 Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Method),
-                Target::Value(value) => {
-                    value_problem(value.member(self.db)?.kind, resolution.segments, expr, self)
+                // Only the whole path names the member, so a field of it is
+                // a place.
+                Target::Value(value) if self.names_whole(expr, resolution) => {
+                    value_problem(value.member(self.db)?.kind)
                 }
                 _ => None,
             };
         }
-        let Expr::Member { receiver, name, .. } = &self.body.exprs[expr] else {
-            return None;
-        };
-        let Some(Ty::Struct(ty)) = &self.exprs[crate::arena::arena_index(*receiver)] else {
-            return None;
-        };
-        let data = item_data(self.db, *ty);
-        let method = data.members.iter().any(|&member| {
-            let member = item_data(
-                self.db,
-                ItemId {
-                    item: member,
-                    ..*ty
-                },
-            );
-            member.kind == ItemKind::Function && member.name == *name && !member.is_static
-        });
-        if method {
+        let (ty, name) = self.struct_member(expr)?;
+        if instance_methods(self.db, ty, name).next().is_some() {
             return Some(NotAPlace::Method);
         }
-        data.values
+        item_data(self.db, ty)
+            .values
             .iter()
-            .find(|value| value.name == *name && !value.is_static)
+            .find(|value| value.name == name && !value.is_static)
             .and_then(|value| match value.kind {
                 ValueKind::Getter => Some(NotAPlace::Getter),
                 _ => None,
@@ -162,32 +143,12 @@ impl Check<'_> {
     }
 }
 
-/// What a value member of the kind `kind` that a path names is, when it is
-/// not a place: only the whole path names the member, so a field of it is
-/// a place.
-fn value_problem(
-    kind: ValueKind,
-    segments: usize,
-    expr: ExprId,
-    check: &Check<'_>,
-) -> Option<NotAPlace> {
-    if let Expr::Path(path) = &check.body.exprs[expr]
-        && segments.max(1) < path.segments.len()
-    {
-        return None;
-    }
+/// What a value member of the kind `kind` is when it is not a place.
+fn value_problem(kind: ValueKind) -> Option<NotAPlace> {
     match kind {
         ValueKind::Field => None,
         ValueKind::Getter => Some(NotAPlace::Getter),
         ValueKind::Const => Some(NotAPlace::Constant),
         ValueKind::EnumMember | ValueKind::UnionCase => Some(NotAPlace::Case),
     }
-}
-
-/// Whether `item` is a type: anything but a function, a macro or a value.
-fn is_type(db: &dyn mora_span::Db, item: ItemId) -> bool {
-    !matches!(
-        item_data(db, item).kind,
-        ItemKind::Function | ItemKind::Macro | ItemKind::Field
-    )
 }

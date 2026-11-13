@@ -456,28 +456,34 @@ fn namespace_members(
 /// The nested types and functions named `name` in a type; none for an
 /// item that is not a type.
 fn type_members(db: &dyn Db, ty: ItemId, name: &str) -> Vec<Resolved> {
-    let tree = item_tree(db, ty.file);
-    tree.item(ty.item)
-        .members
-        .iter()
-        .filter(|&&member| tree.item(member).name == name)
-        .map(|&member| Resolved::Item(ItemId { item: member, ..ty }))
+    members_named(db, ty, name)
+        .map(|(member, _)| Resolved::Item(member))
         .collect()
 }
 
 /// What `using static` opens of a type (§4.3): its nested types and its
 /// `static` functions, never its instance methods.
 fn static_members(db: &dyn Db, ty: ItemId, name: &str) -> Vec<Resolved> {
+    members_named(db, ty, name)
+        .filter(|(_, data)| data.kind != ItemKind::Function || data.is_static)
+        .map(|(member, _)| Resolved::Item(member))
+        .collect()
+}
+
+/// The nested types and functions of the type `ty` named `name`, each
+/// with what the item tree says about it; none for an item that is not a
+/// type.
+pub(crate) fn members_named<'a>(
+    db: &'a dyn Db,
+    ty: ItemId,
+    name: &'a str,
+) -> impl Iterator<Item = (ItemId, &'a Item)> + 'a {
     let tree = item_tree(db, ty.file);
     tree.item(ty.item)
         .members
         .iter()
-        .filter(|&&member| {
-            let data = tree.item(member);
-            data.name == name && (data.kind != ItemKind::Function || data.is_static)
-        })
-        .map(|&member| Resolved::Item(ItemId { item: member, ..ty }))
-        .collect()
+        .map(move |&member| (ItemId { item: member, ..ty }, tree.item(member)))
+        .filter(move |(_, data)| data.name == name)
 }
 
 /// The global names that match: the first segment of the project's root

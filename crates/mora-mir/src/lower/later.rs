@@ -252,10 +252,7 @@ fn expressions_later(
                 ("a value of the standard library", STD_BOOTSTRAP)
             }
             // A member a struct does not declare is an extension member.
-            Expr::Member { .. }
-                if struct_member(hir, inference, id)
-                    .is_some_and(|(ty, name)| declarations(db, ty, name).next().is_none()) =>
-            {
+            Expr::Member { .. } if undeclared_member(db, hir, inference, id) => {
                 ("an extension member", SMALLER_EXPRESSIONS)
             }
             // The members of a built-in type, and of its values, are
@@ -641,11 +638,15 @@ fn extension_call_later(
     inference: &Inference,
     callee: ExprId,
 ) -> Option<Later> {
-    let (ty, name) = struct_member(hir, inference, callee)?;
-    declarations(db, ty, name)
-        .next()
-        .is_none()
+    undeclared_member(db, hir, inference, callee)
         .then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
+}
+
+/// Whether `expr` is a member of a struct value that the struct does not
+/// declare: an extension member.
+fn undeclared_member(db: &dyn Db, hir: &Body, inference: &Inference, expr: ExprId) -> bool {
+    struct_member(hir, inference, expr)
+        .is_some_and(|(ty, name)| declarations(db, ty, name).next().is_none())
 }
 
 /// The methods that a call through a value of a struct type calls by the

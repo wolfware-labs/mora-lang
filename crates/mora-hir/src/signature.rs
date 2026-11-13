@@ -8,7 +8,7 @@ use crate::items::{
 };
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, declaring_type, effective_visibility, enclosing_types,
-    item_data, resolve_path,
+    item_data, members_named, resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
 use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
@@ -64,18 +64,9 @@ pub fn instance_methods<'a>(
     item: ItemId,
     name: &'a str,
 ) -> impl Iterator<Item = ItemId> + 'a {
-    let tree = item_tree(db, item.file);
-    tree.item(item.item)
-        .members
-        .iter()
-        .filter(move |&&member| {
-            let data = tree.item(member);
-            data.kind == ItemKind::Function && data.name == name && !data.is_static
-        })
-        .map(move |&member| ItemId {
-            item: member,
-            ..item
-        })
+    members_named(db, item, name)
+        .filter(|(_, data)| data.kind == ItemKind::Function && !data.is_static)
+        .map(|(member, _)| member)
 }
 
 /// What `new T(args) { ... }` of a struct does (§6.5, §6.9).

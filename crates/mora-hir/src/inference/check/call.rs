@@ -19,7 +19,7 @@ use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
 use crate::items::{ItemKind, ValueKind};
-use crate::resolve::{Resolved, is_visible, item_data};
+use crate::resolve::{Resolved, is_visible, item_data, members_named};
 use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
 
@@ -287,21 +287,9 @@ impl<'a> Check<'a> {
     /// Whether `callee` names a method of a struct value that has a static
     /// overload.
     fn has_static_overload(&self, callee: ExprId) -> bool {
-        let Expr::Member { receiver, name, .. } = &self.body.exprs[callee] else {
-            return false;
-        };
-        let Some(Ty::Struct(ty)) = &self.exprs[arena_index(*receiver)] else {
-            return false;
-        };
-        item_data(self.db, *ty).members.iter().any(|&member| {
-            let data = item_data(
-                self.db,
-                ItemId {
-                    item: member,
-                    ..*ty
-                },
-            );
-            data.kind == ItemKind::Function && data.name == *name && data.is_static
+        self.struct_member(callee).is_some_and(|(ty, name)| {
+            members_named(self.db, ty, name)
+                .any(|(_, data)| data.kind == ItemKind::Function && data.is_static)
         })
     }
 

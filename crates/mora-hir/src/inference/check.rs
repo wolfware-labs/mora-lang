@@ -855,6 +855,18 @@ impl Check<'_> {
         }
     }
 
+    /// The struct and the name of `expr` when it is a member of a value of
+    /// a struct type, as `p.Scale`; `None` for any other expression.
+    pub(super) fn struct_member(&self, expr: ExprId) -> Option<(ItemId, &str)> {
+        let Expr::Member { receiver, name, .. } = &self.body.exprs[expr] else {
+            return None;
+        };
+        match &self.exprs[arena_index(*receiver)] {
+            Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
+            _ => None,
+        }
+    }
+
     /// The type of the field `name` of a value of type `receiver`, when it
     /// is a struct with that field.
     fn field(&self, receiver: Option<&Ty>, name: &str) -> Option<Ty> {

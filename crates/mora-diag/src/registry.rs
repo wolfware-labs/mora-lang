@@ -104,7 +104,7 @@ registry! {
     MR0124 = 124: "both top-level statements and `Main`, or more than one `Main`",
     MR0125 = 125: "top-level statements in a library, or outside an app's entry file",
     MR0126 = 126: "a cycle between `static lazy` initializers",
-    MR0127 = 127: "a name that does not resolve",
+    MR0127 = 127: "a name that does not resolve to a declaration of the right kind",
     MR0128 = 128: "a name that resolves to more than one declaration",
     MR0129 = 129: "a declaration that is not visible from here",
     MR0130 = 130: "a string indexed by `int`",

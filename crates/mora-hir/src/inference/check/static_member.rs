@@ -1,6 +1,7 @@
 //! What a member of a type may use of a value of the type: a static member
-//! and the initializer of an instance field have no `this`, and a member of
-//! a nested type has no value of the types around it (`MR0149`, `MR0152`).
+//! and the initializer of an instance field have no `this`, nor do a
+//! function in a namespace and the top-level statements, and a member of a
+//! nested type has no value of the types around it (`MR0149`, `MR0152`).
 
 use std::collections::HashSet;
 
@@ -28,17 +29,17 @@ struct Member {
 
 impl Check<'_> {
     /// Reports each use of `this`, or of an instance member by its bare
-    /// name, in a body that has no value to use it on: a static member
-    /// (`MR0149`), the initializer of an instance field (`MR0152`), or a
-    /// member of a nested type naming an instance member of a type around
-    /// it (`MR0149`).
+    /// name, in a body that has no value to use it on: a static member, a
+    /// function in a namespace or the top-level statements (`MR0149`), the
+    /// initializer of an instance field (`MR0152`), or a member of a nested
+    /// type naming an instance member of a type around it (`MR0149`).
     pub(super) fn instance_uses(&mut self, owner: BodyOwner) {
         // A function in a namespace behaves as a static method of it, and
         // the top-level statements as the body of one: neither has `this`
         // (§4.2, §6.10).
         if self.outside_types(owner) {
-            let this = self
-                .body
+            let body = self.body;
+            let this = body
                 .exprs
                 .iter()
                 .filter(|(_, node)| matches!(node, Expr::This))
@@ -46,8 +47,7 @@ impl Check<'_> {
                     expr,
                     used: InstanceUse::This,
                 });
-            let errors: Vec<_> = this.collect();
-            self.errors.extend(errors);
+            self.errors.extend(this);
             return;
         }
         let Some(member) = self.member(owner) else {
