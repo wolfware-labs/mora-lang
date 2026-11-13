@@ -12,7 +12,9 @@
 //! or the one of a positional struct; or for an operator it applies to a
 //! struct, which may declare it; or for a lambda in it, or a call that
 //! inference leaves unresolved because a generic or `async` function, or
-//! one with a `params` parameter, could take it. A struct type comes as
+//! one with a `params` parameter, could take it, because a type is not
+//! known yet, or because it calls an extension member; or for an
+//! expression or a statement that a later milestone brings, as a `match`. A struct type comes as
 //! late as the types of its instance fields, which its layout holds, and a
 //! struct nested in a generic type comes with generic code. When several
 //! milestones apply, the latest of them lowers the body.
@@ -24,10 +26,10 @@ use std::collections::HashSet;
 use std::fmt;
 
 use mora_hir::{
-    BinaryOp, Body, BodyKind, BodyOwner, Construct, Creation, Expr, ExprId, FnSignature, Inference,
-    ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, body,
-    body_resolution, creation, enclosing_types, infer, instance_fields, instance_methods,
-    is_generic_type, item_tree, local_functions, signature, struct_field,
+    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Construct, Creation, Expr, ExprId,
+    FnSignature, Inference, ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp,
+    ValueKind, body, body_resolution, creation, enclosing_types, infer, instance_fields,
+    instance_methods, is_generic_type, item_tree, local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -73,10 +75,14 @@ const CLOSURES: Milestone = milestone(2, 11);
 const UNIONS: Milestone = milestone(3, 1);
 /// M3.2, enums.
 const ENUMS: Milestone = milestone(3, 2);
+/// M3.3, patterns and `match`.
+const PATTERNS: Milestone = milestone(3, 3);
 /// M3.5, options.
 const OPTIONS: Milestone = milestone(3, 5);
 /// M3.6, operators, conversions and indexers.
 const OPERATORS: Milestone = milestone(3, 6);
+/// M3.7, results and `?` propagation.
+const RESULTS: Milestone = milestone(3, 7);
 /// M3.9, monomorphization, which lowers generic code.
 const MONOMORPHIZATION: Milestone = milestone(3, 9);
 /// M3.10, interfaces and static dispatch.
@@ -183,7 +189,42 @@ pub(crate) fn lowered_later(
         operators_later(db, project, file, owner),
         lambdas_later(db, file, owner),
         calls_later(db, project, file, owner),
+        expressions_later(db, file, owner),
     ])
+}
+
+/// The milestone that lowers the body of `owner` for an expression or a
+/// statement that a later milestone brings: a `match` and an `is` test
+/// come with patterns, `?` with results, and a collection expression, a
+/// range, an index from the end, `nameof`, `sizeof`, `default` and a
+/// deconstruction with the smaller expressions. The first in the order of
+/// the body names it on a tie; `None` when it has none.
+fn expressions_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let exprs = hir.exprs.iter().map(|(_, expr)| {
+        let (what, milestone) = match expr {
+            Expr::Match { .. } => ("a `match`", PATTERNS),
+            Expr::Is { .. } => ("an `is` test", PATTERNS),
+            Expr::Propagate(_) => ("`?`", RESULTS),
+            Expr::Collection(_) => ("a collection expression", SMALLER_EXPRESSIONS),
+            Expr::Range { .. } => ("a range", SMALLER_EXPRESSIONS),
+            Expr::Unary {
+                op: UnaryOp::FromEnd,
+                ..
+            } => ("an index from the end", SMALLER_EXPRESSIONS),
+            Expr::Nameof(_) => ("`nameof`", SMALLER_EXPRESSIONS),
+            Expr::Sizeof(_) => ("`sizeof`", SMALLER_EXPRESSIONS),
+            Expr::Default(_) => ("`default`", SMALLER_EXPRESSIONS),
+            _ => return None,
+        };
+        later(what, milestone)
+    });
+    let stmts = hir.stmts.iter().map(|(_, stmt)| match stmt {
+        Stmt::Match { .. } => later("a `match`", PATTERNS),
+        Stmt::Deconstruct { .. } => later("a deconstruction", SMALLER_EXPRESSIONS),
+        _ => None,
+    });
+    latest(exprs.chain(stmts))
 }
 
 /// The milestone that lowers the body of `owner` for a lambda in it:
@@ -198,27 +239,103 @@ fn lambdas_later(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> Option<Late
 
 /// The milestone that lowers the body of `owner` for the calls inference
 /// leaves without a callee because an overload of the called name is
-/// generic, `async` or has a `params` parameter (D-137): the latest of
-/// those that apply to each call, the first call on a tie. A call of a
-/// local function comes as late as the local function, which
-/// [`local_functions_later`] counts. `None` when every call has its
-/// callee.
+/// generic, `async` or has a `params` parameter, or because a type not
+/// known yet leaves the overloads unresolved (D-137), or that call an
+/// extension member: the latest of those that apply to each call, the
+/// first call on a tie. A call of a local function comes as late as the
+/// local function, which [`local_functions_later`] counts. `None` when
+/// every call has its callee, or when no milestone checks it yet, as for a
+/// static method called through a value.
 fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
     latest(hir.exprs.iter().map(|(id, expr)| {
-        let Expr::Call { callee, .. } = expr else {
+        let Expr::Call { callee, args } = expr else {
             return None;
         };
         if inference.callee(id).is_some() {
             return None;
         }
-        match resolution.paths.get(callee).map(|path| &path.target) {
-            Some(Target::Item(Resolved::Functions(items))) => call_later(db, items.iter().copied()),
-            _ => call_later(db, methods(db, hir, inference, *callee)),
+        let functions: Vec<ItemId> = match resolution.paths.get(callee).map(|path| &path.target) {
+            Some(Target::Item(Resolved::Functions(items))) => items.clone(),
+            _ => methods(db, hir, inference, *callee).collect(),
+        };
+        if functions.is_empty() {
+            return extension_call_later(db, hir, inference, *callee);
         }
+        call_later(db, functions.iter().copied())
+            .or_else(|| unresolved_later(db, hir, resolution, args, &functions))
     }))
+}
+
+/// The milestone that lowers a call of overloads that a type not known
+/// yet leaves unresolved (D-137): that of a parameter type of one of
+/// `functions`, and the standard library for an argument that is a value
+/// of the library, which has no type until the library is loaded. An argument of a type that
+/// comes later already puts the body there, as every expression's type
+/// does ([`body_types_later`]). The first of them names it on a tie;
+/// `None` when every type is known.
+fn unresolved_later(
+    db: &dyn Db,
+    hir: &Body,
+    resolution: &BodyResolution,
+    args: &[Arg],
+    functions: &[ItemId],
+) -> Option<Later> {
+    let params = functions.iter().map(|&item| {
+        let Signature::Function(function) = signature(db, item) else {
+            return None;
+        };
+        types_later(db, function.params.iter().map(|param| &param.ty))?
+            .later(|what| format!("a call of an overload with {what}"))
+    });
+    let arguments = args.iter().map(|arg| {
+        from_library(hir, resolution, arg.expr).then(|| {
+            Later::new(
+                "a call with an argument from the standard library",
+                STD_BOOTSTRAP,
+            )
+        })
+    });
+    latest(params.chain(arguments))
+}
+
+/// Whether `expr` is a value of the standard library: a path into it, a
+/// member of one, or a call of one of its functions.
+pub(super) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId) -> bool {
+    match &hir.exprs[expr] {
+        Expr::Path(_) => resolution.is_external(expr),
+        Expr::Member { receiver, .. } => from_library(hir, resolution, *receiver),
+        Expr::Call { callee, .. } => from_library(hir, resolution, *callee),
+        _ => false,
+    }
+}
+
+/// The milestone that lowers a call through a value of a struct type of a
+/// name that is no method of the struct: an extension member, which comes
+/// with extension blocks. A static method of the struct called through a
+/// value (D-137) has no milestone that checks it yet, so it is `None`, as
+/// is any other callee.
+fn extension_call_later(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    callee: ExprId,
+) -> Option<Later> {
+    let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
+        return None;
+    };
+    let Some(Ty::Struct(ty)) = inference.expr(*receiver) else {
+        return None;
+    };
+    let tree = item_tree(db, ty.file);
+    let member = tree
+        .item(ty.item)
+        .members
+        .iter()
+        .any(|&member| tree.item(member).name == *name);
+    (!member).then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
 }
 
 /// The methods that a call through a value of a struct type calls by the

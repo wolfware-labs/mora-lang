@@ -1,7 +1,9 @@
 //! Tests of lowering, each from source text through the front end.
 
 use mora_hir::test_support::{TestDb, app, codes, file_named, item_named};
-use mora_hir::{BodyOwner, ItemId, body, body_owners, diagnostics, item_tree, parse};
+use mora_hir::{
+    BodyOwner, Expr, ItemId, body, body_owners, body_resolution, diagnostics, item_tree, parse,
+};
 use mora_span::{Dependency, Project, ProjectKind, SourceFile};
 
 use crate::{
@@ -719,13 +721,6 @@ fn external_call_stored_in_a_typed_local_is_internal_error() {
 }
 
 #[test]
-#[should_panic(expected = "has no type")]
-fn untyped_value_is_internal_error() {
-    let lowered = lowered("Console.WriteLine([1, 2]);\n");
-    lowered.mir("top-level");
-}
-
-#[test]
 fn a_lambda_stored_in_a_local_comes_with_closures() {
     assert_eq!(
         later_error("let f = (x: int) => x;\n", |l| l.owner("top-level")),
@@ -735,10 +730,13 @@ fn a_lambda_stored_in_a_local_comes_with_closures() {
 
 #[test]
 fn the_message_names_the_body_and_the_expression() {
-    let lowered = lowered("F() {\n    Console.WriteLine([1, 2]);\n}\n");
+    let lowered = lowered(
+        "struct S {\n    public X: int;\n    public static K(): int => 1;\n}\n\
+         F(s: S): int {\n    return s.K();\n}\n",
+    );
     assert_eq!(
         lowered.internal_error("F"),
-        "internal error lowering UsersApi.F: the value has no type: `[1, 2]` at 2:23"
+        "internal error lowering UsersApi.F: the call has no callee: `s.K()` at 6:12"
     );
 }
 
@@ -3013,28 +3011,129 @@ fn a_conditional_of_conditionals_of_assignments_is_a_statement() {
 }
 
 #[test]
-fn a_match_statement_is_not_lowered_yet() {
-    // A match statement is not lowered yet, alone or as the branch of a
-    // conditional whose branches are statements because an arm assigns:
-    // both end in the same internal error, not in a value with no type.
-    let statement = lowered(
-        "F(d: bool) {\n    var x = 0;\n    \
-         match (d) { true => x = 1, false => x = 2 }\n}\n",
-    );
+fn a_match_comes_with_patterns() {
+    // A match, alone, as the branch of a conditional whose branches are
+    // statements because an arm assigns, or as a value, and an `is` test.
+    let text = "F(d: bool) {\n    var x = 0;\n    \
+                match (d) { true => x = 1, false => x = 2 }\n}\n\
+                G(c: bool, d: bool) {\n    var x = 0;\n    \
+                c ? (match (d) { true => x = 1, false => x++ }) : x++;\n}\n\
+                H(d: bool): int => match (d) { true => 1, false => 2 };\n\
+                I(d: bool): bool => d is true;\n";
+    for (name, what) in [
+        ("F", "a `match`"),
+        ("G", "a `match`"),
+        ("H", "a `match`"),
+        ("I", "an `is` test"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what} is not lowered until M3.3")
+        );
+    }
+}
+
+#[test]
+fn propagation_comes_with_results() {
+    let text = "G(): int? => 1;\nF(): int? {\n    let a = G()?;\n    return a;\n}\n";
     assert_eq!(
-        statement.internal_error("F"),
-        "internal error lowering UsersApi.F: the statement is not lowered: \
-         `match (d) { true => x = 1, false => x = 2 }` at 3:5"
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: `?` is not lowered until M3.7"
     );
-    let branch = lowered(
-        "F(c: bool, d: bool) {\n    var x = 0;\n    \
-         c ? (match (d) { true => x = 1, false => x++ }) : x++;\n}\n",
+}
+
+#[test]
+fn smaller_expressions_come_with_their_milestone() {
+    let text = "struct P {\n    public X: int;\n}\n\
+                A() {\n    Console.WriteLine([1, 2]);\n}\n\
+                B() {\n    let r = 1..2;\n}\n\
+                C(p: P) {\n    let a = ^p;\n}\n\
+                D(p: P): string => nameof(p);\n\
+                E(): int => sizeof(int);\n\
+                G(): int => default;\n\
+                H() {\n    let (a, b) = (1, 2);\n}\n";
+    for (name, what) in [
+        ("A", "a collection expression"),
+        ("B", "a range"),
+        ("C", "an index from the end"),
+        ("D", "`nameof`"),
+        ("E", "`sizeof`"),
+        ("G", "`default`"),
+        ("H", "a deconstruction"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what} is not lowered until M3.12")
+        );
+    }
+}
+
+#[test]
+fn calls_left_unresolved_come_with_what_resolves_them() {
+    let text = "struct P {\n    public X: int;\n}\n\
+                extension (q: P) {\n    E(): int => 1;\n}\n\
+                Put(x: int) {}\nPut(x: string) {}\nOpt(x: int?) {}\nOpt(x: string) {}\n\
+                A() {\n    Put(Console.ReadLine());\n}\n\
+                B() {\n    Opt(Console.ReadLine());\n}\n\
+                C(p: P): int => p.E();\n";
+    for (name, what) in [
+        (
+            "A",
+            "a call with an argument from the standard library is not lowered until M1.15",
+        ),
+        (
+            "B",
+            "a call of an overload with an option type is not lowered until M3.5",
+        ),
+        (
+            "C",
+            "a call of an extension member is not lowered until M3.12",
+        ),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what}")
+        );
+    }
+}
+
+#[test]
+fn a_value_of_the_library_is_a_path_into_it_a_member_or_a_call() {
+    let lowered = lowered(
+        "F(n: int) {\n    Console.WriteLine(Console.ReadLine());\n    \
+         Console.WriteLine(Console.Out);\n    Console.WriteLine(n);\n}\n",
     );
-    assert_eq!(
-        branch.internal_error("F"),
-        "internal error lowering UsersApi.F: the statement is not lowered: \
-         `match (d) { true => x = 1, false => x++ }` at 3:10"
+    let owner = lowered.owner("F");
+    let hir = body(&lowered.db, lowered.file, owner);
+    let resolution = body_resolution(&lowered.db, lowered.project, lowered.file, owner);
+    // Every path, member and call in the body names the library but the
+    // parameter `n`; the block is no value of it either.
+    let found: Vec<_> = hir
+        .exprs
+        .iter()
+        .filter(|(_, expr)| !matches!(expr, Expr::Block(_)))
+        .map(|(id, expr)| {
+            (
+                matches!(expr, Expr::Local(_)),
+                super::later::from_library(hir, resolution, id),
+            )
+        })
+        .collect();
+    assert_eq!(found.len(), 15, "{found:?}");
+    for (local, from) in found {
+        assert_eq!(from, !local);
+    }
+}
+
+#[test]
+#[should_panic(expected = "the call has no callee: `s.K()`")]
+fn a_static_method_through_a_value_is_an_internal_error() {
+    // No milestone of the roadmap checks it yet (D-137).
+    let lowered = lowered(
+        "struct S {\n    public X: int;\n    public static K(): int => 1;\n}\n\
+         F(s: S): int => s.K();\n",
     );
+    lowered.mir("F");
 }
 
 #[test]

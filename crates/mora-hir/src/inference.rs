@@ -3507,7 +3507,7 @@ mod tests {
                     public struct R {\n    public Q: Q;\n}\n\
                     public class C {\n    public Take(p: P) {}\n    public TakeT(t: (P, int)) {}\n    \
                     public Run(f: () => P) {}\n    public TakeR(r: R) {}\n}\n\
-                    Make<T>(t: T, p: P) {}\nG(p: P) {}\nF(xs: P[]) {}\n";
+                    Make<T>(t: T, p: P) {}\nG(p: P) {}\nF(xs: P[]) {}\nT(t: (P, int)) {}\n";
         let quiet = [
             "let q: P = match (x) { _ => new { X = 1 } };",
             "let xs: P[] = [new { X = 1 }];",
@@ -3516,6 +3516,7 @@ mod tests {
             "G(b ? new { X = 1 } : p);",
             "c.Take(b ? new { X = 1 } : p);",
             "c.TakeT((new { X = 1 }, 1));",
+            "T((new { X = 1 }, 1));",
             "Make(1, b ? new { X = 1 } : p);",
             "c.Run(() => b ? new { X = 1 } : p);",
             "c.Run(() => {\n        return b ? new { X = 1 } : p;\n    });",
