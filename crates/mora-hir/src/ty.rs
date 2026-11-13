@@ -211,6 +211,14 @@ pub struct FnSignature {
     pub receiver: Option<ParamMode>,
 }
 
+impl FnSignature {
+    /// Whether one of its parameters is `params`, which takes the rest of
+    /// the arguments (§6.9).
+    pub fn has_params(&self) -> bool {
+        self.params.iter().any(|param| param.is_params)
+    }
+}
+
 /// A parameter of a function.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Param {

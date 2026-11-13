@@ -436,9 +436,7 @@ impl<'a> Check<'a> {
                 })
                 .collect(),
             ret: Cow::Borrowed(&function.ret),
-            unchecked: function.is_generic
-                || function.is_async
-                || function.params.iter().any(|param| param.is_params),
+            unchecked: function.is_generic || function.is_async || function.has_params(),
         })
     }
 

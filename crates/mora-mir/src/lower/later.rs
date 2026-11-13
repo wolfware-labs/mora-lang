@@ -533,9 +533,7 @@ fn declared_types(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOw
 fn function_later(function: &FnSignature) -> Option<Later> {
     latest([
         function
-            .params
-            .iter()
-            .any(|param| param.is_params)
+            .has_params()
             .then(|| Later::new("a function with `params`", SPANS)),
         function
             .is_generic
@@ -570,8 +568,8 @@ fn signature_later(db: &dyn Db, function: &FnSignature) -> Option<Later> {
 
 /// The milestone that lowers the local functions of the body of `owner`,
 /// generic and async ones, those with a `params` parameter and those with
-/// a type in their signature that comes later; the first in the order of the text names it on a tie.
-/// `None` when this one lowers them all.
+/// a type in their signature that comes later; the first in the order of
+/// the text names it on a tie. `None` when this one lowers them all.
 fn local_functions_later(
     db: &dyn Db,
     project: Project,
