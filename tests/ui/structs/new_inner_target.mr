@@ -53,3 +53,31 @@ let f = () => {
     return new { X = 1 }; //~ ERROR MR0154
 };
 panic(new { X = 1 }); //~ ERROR MR0154
+
+// A target the value does not fit gives its parts none, or one that `new`
+// cannot create.
+public struct T2 {
+    public A: P;
+}
+
+TT(t: (P, int)) {}
+One(p: P) {}
+Back(): int => (new { X = 1 }, 1); //~ ERROR MR0154
+BackP(): P {
+    return (new { X = 1 }, 1); //~ ERROR MR0154
+}
+
+K(x: int) {
+    let t3: (P, int, int) = (new { X = 1 }, 1); //~ ERROR MR0154
+    let ti: int = (new { X = 1 }, 1); //~ ERROR MR0154
+    let tp: P = (new { X = 1 }, 1); //~ ERROR MR0154
+    let tt: (P, int) = ((new { X = 1 }, 1), 1); //~ ERROR MR0154
+    One((new { X = 1 }, 1)); //~ ERROR MR0154
+    TT(((new { X = 1 }, 1), 2)); //~ ERROR MR0154
+    let t2 = new T2 { A = (new { X = 1 }, 1) }; //~ ERROR MR0154
+    var tv = (new P { X = 0 }, 1);
+    tv = (new { X = 1 }, 1, 2); //~ ERROR MR0154
+    let n: int = match (x) { _ => new { X = 1 } }; //~ ERROR MR0154
+    let ns: int[] = [new()]; //~ ERROR MR0154
+    let f: int = () => new { X = 1 }; //~ ERROR MR0154
+}

@@ -2294,6 +2294,26 @@ mod tests {
             let text = format!("{getters}H(s: S) {{\n    {call}\n}}\n");
             assert_eq!(reported(&text), expected, "{call}");
         }
+        // Through the type, or by its bare name, a static member is checked
+        // now: a getter or a constant of type `int` is not callable.
+        // Through a value a static overload is not checked before statics,
+        // and an instance overload is called as any method (D-152).
+        let statics = "struct S {\n    public X: int;\n    public G: int => X;\n    \
+                       public static K: int => 1;\n    public const N: int = 2;\n    \
+                       public static S2(x: int): int => 1;\n    public S2(): int => X;\n}\n";
+        for (call, expected) in [
+            ("S.K();", vec!["MR0208"]),
+            ("S.N();", vec!["MR0208"]),
+            ("s.S2(1);", vec![]),
+            ("s.S2();", vec![]),
+            ("s.S2(1, 2);", vec![]),
+        ] {
+            let text = format!("{statics}H(s: S) {{\n    {call}\n}}\n");
+            assert_eq!(reported(&text), expected, "{call}");
+        }
+        let bare = "struct S {\n    public X: int;\n    public G: int => X;\n    \
+                    F(): int {\n        G();\n        return 1;\n    }\n}\n";
+        assert_eq!(reported(bare), ["MR0208"]);
         // Calls of unknown things, and arguments inside them, still work.
         let unknown = "let f = (x: int) => x;\nf(1);\nlet s: string = Console.ReadLine(!1);\n";
         assert_eq!(reported(unknown), ["MR0204"]);
@@ -3526,10 +3546,12 @@ mod tests {
                     public struct R {\n    public Q: Q;\n}\n\
                     public class C {\n    public Take(p: P) {}\n    public TakeT(t: (P, int)) {}\n    \
                     public Run(f: () => P) {}\n    public TakeR(r: R) {}\n}\n\
-                    Make<T>(t: T, p: P) {}\nG(p: P) {}\nF(xs: P[]) {}\nT(t: (P, int)) {}\n";
+                    Make<T>(t: T, p: P) {}\nG(p: P) {}\nF(xs: P[]) {}\nT(t: (P, int)) {}\n\
+                    public struct T2 {\n    public A: P;\n}\n";
         let quiet = [
             "let q: P = match (x) { _ => new { X = 1 } };",
             "let xs: P[] = [new { X = 1 }];",
+            "let ls: List<P> = [new { X = 1 }];",
             "F([new { X = 1 }]);",
             "G(match (x) { _ => new { X = 1 } });",
             "G(b ? new { X = 1 } : p);",
@@ -3556,9 +3578,37 @@ mod tests {
             ("panic(new { X = 1 });", 1),
             ("Todo(new());", 1),
             ("let t = b ? (new { X = 1 }, 1) : (new { X = 2 }, 2);", 2),
+            // A target the value does not fit gives its parts none, or one
+            // that `new` cannot create.
+            ("let t: (P, int, int) = (new { X = 1 }, 1);", 1),
+            ("let t: int = (new { X = 1 }, 1);", 1),
+            ("let t: P = (new { X = 1 }, 1);", 1),
+            ("let t: (P, int) = ((new { X = 1 }, 1), 1);", 1),
+            ("G((new { X = 1 }, 1));", 1),
+            ("T(((new { X = 1 }, 1), 2));", 1),
+            ("let t2 = new T2 { A = (new { X = 1 }, 1) };", 1),
+            (
+                "var t = (new P { X = 0 }, 1);\nt = (new { X = 1 }, 1, 2);",
+                1,
+            ),
+            ("let n: int = match (1) { _ => new { X = 1 } };", 1),
+            ("let n: int[] = [new()];", 1),
+            ("let f: int = () => new { X = 1 };", 1),
         ] {
             let text = format!("{head}let b = true;\n{line}\n");
             assert_eq!(reported(&text), vec!["MR0154"; errors], "{line}");
+        }
+    }
+
+    #[test]
+    fn a_returned_tuple_that_does_not_fit_reports_its_new() {
+        let p = "struct P {\n    public X: int;\n}\n";
+        for text in [
+            "H(): int => (new { X = 1 }, 1);\n",
+            "H(): int {\n    return (new { X = 1 }, 1);\n}\n",
+            "H(): P {\n    return (new { X = 1 }, 1);\n}\n",
+        ] {
+            assert_eq!(reported(&format!("{p}{text}")), ["MR0154"], "{text}");
         }
     }
 

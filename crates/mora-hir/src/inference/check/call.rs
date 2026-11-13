@@ -18,7 +18,7 @@ use crate::inference::constant::{self, Value};
 use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::ValueKind;
+use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, is_visible, item_data};
 use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
@@ -235,7 +235,9 @@ impl<'a> Check<'a> {
         }
         let arguments: Vec<Argument> = typed.into_iter().flatten().collect();
         if let [candidate] = candidates.as_slice() {
-            return self.call_one(expr, candidate, args, &arguments);
+            let reported = self.errors.len();
+            let ty = self.call_one(expr, candidate, args, &arguments);
+            return self.unless_static_overload(expr, callee, reported, ty);
         }
         let reported = self.errors.len();
         let ty = self.call_overloads(expr, &candidates, args, &arguments);
@@ -258,7 +260,49 @@ impl<'a> Check<'a> {
                 });
             }
         }
-        ty
+        self.unless_static_overload(expr, callee, reported, ty)
+    }
+
+    /// The type `ty` of the call `expr`, unless the instance methods it
+    /// called through a value do not take it and a static method of the
+    /// name may: that is a static member named through a value, which is
+    /// not checked before statics (D-152), so what the call reported since
+    /// `reported` is dropped and the call has no callee.
+    fn unless_static_overload(
+        &mut self,
+        expr: ExprId,
+        callee: ExprId,
+        reported: usize,
+        ty: Option<Ty>,
+    ) -> Option<Ty> {
+        if self.errors.len() == reported || !self.has_static_overload(callee) {
+            return ty;
+        }
+        self.errors.truncate(reported);
+        self.calls.remove(&expr);
+        self.arguments.remove(&expr);
+        None
+    }
+
+    /// Whether `callee` names a method of a struct value that has a static
+    /// overload.
+    fn has_static_overload(&self, callee: ExprId) -> bool {
+        let Expr::Member { receiver, name, .. } = &self.body.exprs[callee] else {
+            return false;
+        };
+        let Some(Ty::Struct(ty)) = &self.exprs[arena_index(*receiver)] else {
+            return false;
+        };
+        item_data(self.db, *ty).members.iter().any(|&member| {
+            let data = item_data(
+                self.db,
+                ItemId {
+                    item: member,
+                    ..*ty
+                },
+            );
+            data.kind == ItemKind::Function && data.name == *name && data.is_static
+        })
     }
 
     /// The arguments of a call this milestone does not check, inferred so
@@ -439,9 +483,8 @@ impl<'a> Check<'a> {
     }
 
     /// The type of the getter `name` of the struct `item`, which its body
-    /// declares. A static one is never asked for: [`Check::methods`] leaves
-    /// a static member called through a value to statics.
-    fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
+    /// declares.
+    pub(super) fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
         let (_, index) = item_data(self.db, item)
             .values
             .iter()

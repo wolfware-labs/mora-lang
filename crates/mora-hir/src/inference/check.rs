@@ -89,16 +89,29 @@ enum Expect<'t> {
 
 impl Expect<'_> {
     /// What a part of the value expects whose target type is the value's
-    /// own or comes from it, where the checker does not pass that type
-    /// down yet: an arm of a `match`, an element of a collection, of a
-    /// tuple or of a conditional, a value assigned to a field of a type
-    /// not known yet, or the result of a lambda. The part has a target
-    /// exactly when the value has one.
+    /// own or comes from it, when the value's target does not give the
+    /// part one: a target that comes later stays one that comes later, and
+    /// a target type, which the part does not fit, or none gives it none.
     fn within(self) -> Expect<'static> {
         match self {
-            Expect::Target(_) | Expect::Later => Expect::Later,
-            Expect::None | Expect::Hint(_) => Expect::None,
+            Expect::Later => Expect::Later,
+            Expect::Target(_) | Expect::None | Expect::Hint(_) => Expect::None,
         }
+    }
+}
+
+/// What an element of a collection expects when the collection expects
+/// `expect`: the element type of an array target, a target that comes
+/// later for a collection type of the library, none for a target that is
+/// no collection (§7.9).
+fn collection_element(expect: Expect<'_>) -> Expect<'_> {
+    match expect {
+        Expect::Target(Ty::Unsupported(ty)) => match (ty.construct, ty.parts.as_slice()) {
+            (Construct::Array, [element]) => Expect::Target(element),
+            (Construct::External | Construct::Generic | Construct::Splice, _) => Expect::Later,
+            _ => Expect::None,
+        },
+        other => other.within(),
     }
 }
 
@@ -517,8 +530,9 @@ impl Check<'_> {
     }
 
     /// A `match`: without `expect`, in statement position, its arms are
-    /// statements, whose values nothing uses; as a value, each arm expects
-    /// what [`Expect::within`] gives of `expect`.
+    /// statements, whose values nothing uses; as a value, each arm checks
+    /// against the target type, or expects what [`Expect::within`] gives of
+    /// `expect`.
     fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], expect: Option<Expect<'_>>) {
         self.infer(scrutinee);
         for arm in arms {
@@ -528,6 +542,7 @@ impl Check<'_> {
             }
             match expect {
                 None => self.statement(arm.body, false),
+                Some(Expect::Target(target)) => self.check(arm.body, target),
                 Some(expect) => {
                     self.expr(arm.body, expect.within());
                 }
@@ -685,8 +700,9 @@ impl Check<'_> {
             }
             Expr::Tuple(elems) => self.tuple(elems, expect),
             Expr::Collection(elems) => {
+                let element = collection_element(expect);
                 for &(_, elem) in elems {
-                    self.expr(elem, expect.within());
+                    self.expr(elem, element);
                 }
                 None
             }
@@ -786,9 +802,9 @@ impl Check<'_> {
                     }
                     _ => None,
                 };
-                // A lambda with a target type that gives no result type
-                // here has one when that target is checked.
-                let later = matches!(expect.within(), Expect::Later);
+                // A lambda whose target a later milestone checks has its
+                // result type then.
+                let later = matches!(expect, Expect::Later);
                 let outer = std::mem::replace(&mut self.ret_later, later);
                 self.function_body(lambda.body, ret, false);
                 self.ret_later = outer;
@@ -825,9 +841,14 @@ impl Check<'_> {
                 _ => None,
             },
             Target::Item(_) => None,
+            // A getter has the type its body declares.
             Target::Value(value) => {
                 let member = value.member(self.db)?;
-                self.struct_field(value.ty, &member.name)
+                self.struct_field(value.ty, &member.name).or_else(|| {
+                    (member.kind == ValueKind::Getter)
+                        .then(|| self.getter_type(value.ty, &member.name))
+                        .flatten()
+                })
             }
         }
     }
