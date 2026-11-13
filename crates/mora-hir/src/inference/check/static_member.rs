@@ -112,9 +112,10 @@ impl Check<'_> {
     fn outside_types(&self, owner: BodyOwner) -> bool {
         match owner {
             BodyOwner::TopLevel => true,
+            // A function, a constant or a static declared in a namespace.
             BodyOwner::Item(item) => {
                 let data = item_tree(self.db, self.scope.file).item(item);
-                data.kind == ItemKind::Function && data.parent.is_none()
+                matches!(data.kind, ItemKind::Function | ItemKind::Field) && data.parent.is_none()
             }
             BodyOwner::Value(..) | BodyOwner::Member(..) | BodyOwner::Extension(..) => false,
         }

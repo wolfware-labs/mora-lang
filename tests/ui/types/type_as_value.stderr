@@ -69,3 +69,19 @@ error[MR0127]: `App` is not a value
    |             ^^^ this is the namespace `App`
    |
    = note: a type or a namespace names no value
+
+error[MR0127]: `s.M` is not a value
+  --> tests/ui/types/type_as_value.mr:43:13
+   |
+43 |     let a = s.M.Make(); //~ ERROR MR0127
+   |             ^^^ this is the struct `App.S.M`
+   |
+   = note: a type names no value; `new App.S.M { ... }` creates one
+
+error[MR0127]: `int` is not a value
+  --> tests/ui/types/type_as_value.mr:45:13
+   |
+45 |     let c = int; //~ ERROR MR0127
+   |             ^^^ this is a built-in type
+   |
+   = note: a type names no value

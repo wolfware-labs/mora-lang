@@ -260,7 +260,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             initializer_this(source, *expr, used, field)
         }
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
-        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named),
+        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named.as_ref()),
         TypeError::NotAPlace { expr, problem } => not_a_place(source, *expr, *problem),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
@@ -343,10 +343,19 @@ fn initializer_this(
     )
 }
 
-/// `MR0127`: `expr` names `named`, a type or a namespace, where a value is
-/// expected; for a struct the note says how to create one.
-fn type_as_value(source: &Source<'_>, expr: ExprId, named: &Resolved) -> Diagnostic {
+/// `MR0127`: `expr` names `named`, a type or a namespace, or a type keyword
+/// when `named` is `None`, where a value is expected; for a struct the note
+/// says how to create one.
+fn type_as_value(source: &Source<'_>, expr: ExprId, named: Option<&Resolved>) -> Diagnostic {
     let text = source.text(expr);
+    let Some(named) = named else {
+        return Diagnostic::error(
+            codes::MR0127,
+            format!("`{text}` is not a value"),
+            Label::new(source.span(expr), "this is a built-in type"),
+        )
+        .with_note("a type names no value");
+    };
     let full = full_name(source.db, named).unwrap_or_default();
     let what = kind_name(source.db, named);
     let diagnostic = Diagnostic::error(
@@ -378,7 +387,7 @@ fn not_a_place(source: &Source<'_>, expr: ExprId, problem: NotAPlace) -> Diagnos
         Label::new(source.span(expr), format!("this is {}", problem.what())),
     )
     .with_note(
-        "an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element",
+        "an assignment, `++` or `--` changes a place: a local, a parameter, a field of a place or an element",
     )
 }
 

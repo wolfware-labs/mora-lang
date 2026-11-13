@@ -5,9 +5,9 @@
 use std::collections::HashSet;
 
 use super::Check;
-use crate::bodies::{Expr, ExprId, Pat, Target};
+use crate::bodies::{Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
-use crate::items::ValueKind;
+use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, item_data, members_named};
 use crate::signature::instance_methods;
 
@@ -15,7 +15,9 @@ impl Check<'_> {
     /// Reports each expression that names a type or a namespace where a
     /// value is expected (`MR0127`, D-154): anywhere but as the receiver of
     /// a member, as `P` in `P.Create()`, the operand of `nameof`, or a
-    /// pattern.
+    /// pattern. A member of a value is no way to write a type, so a nested
+    /// type named through a value is reported wherever it stands, and so is
+    /// a type keyword anywhere but as a receiver, as `int` in `int.Parse`.
     pub(super) fn types_as_values(&mut self) {
         let body = self.body;
         let mut allowed = HashSet::new();
@@ -39,12 +41,23 @@ impl Check<'_> {
                 _ => {}
             }
         }
-        for (expr, _) in body.exprs.iter() {
-            if allowed.contains(&expr) {
+        for (expr, node) in body.exprs.iter() {
+            let through_value = !self.resolution.paths.contains_key(&expr);
+            if let Expr::Type(_) = node {
+                if !allowed.contains(&expr) {
+                    self.errors
+                        .push(TypeError::TypeAsValue { expr, named: None });
+                }
+                continue;
+            }
+            if allowed.contains(&expr) && !(through_value && matches!(node, Expr::Member { .. })) {
                 continue;
             }
             if let Some(named) = self.named_type(expr) {
-                self.errors.push(TypeError::TypeAsValue { expr, named });
+                self.errors.push(TypeError::TypeAsValue {
+                    expr,
+                    named: Some(named),
+                });
             }
         }
     }
@@ -73,34 +86,59 @@ impl Check<'_> {
     }
 
     /// Reports `place`, the left side of an assignment or the operand of a
-    /// step, when it is not a place (`MR0186`, D-155): a place is a local, a
-    /// parameter, `this`, a field, an element, a tuple of places, or `_`.
-    /// A member whose kind is not known yet, and a static member named
-    /// through a value (D-152), is not reported; a type or a namespace is
-    /// `MR0127` already.
-    pub(super) fn require_place(&mut self, place: ExprId) {
-        let body = self.body;
-        let problem = match &body.exprs[place] {
-            Expr::Tuple(elems) => {
-                for &(_, elem) in elems {
-                    self.require_place(elem);
+    /// step, when it is not a place (`MR0186`, D-155). `discard` says that
+    /// `_` may stand there, as on the left of a plain `=`. A tuple of places
+    /// is a place for `=`, each element checked.
+    pub(super) fn require_place(&mut self, place: ExprId, discard: bool) {
+        if let Expr::Tuple(elems) = &self.body.exprs[place] {
+            for &(_, elem) in elems {
+                self.require_place(elem, discard);
+            }
+            return;
+        }
+        if let Some(problem) = self.place_problem(place, discard) {
+            self.errors.push(TypeError::NotAPlace {
+                expr: place,
+                problem,
+            });
+        }
+    }
+
+    /// Why `expr` is not a place, `None` when it is one or is not known
+    /// yet. A place is a local, a parameter, `this`, an element, a field of
+    /// a place, a static field, or `_` where `discard` allows it. A field of
+    /// a struct is part of the value that holds it, so it is a place only
+    /// when that value is one; a member of a value whose type is not known
+    /// yet, as a class's, and a static member named through a value
+    /// (D-152) are not reported. A type or a namespace is `MR0127` already.
+    fn place_problem(&self, expr: ExprId, discard: bool) -> Option<NotAPlace> {
+        match &self.body.exprs[expr] {
+            Expr::Local(local) => {
+                (self.body.locals[*local].kind == LocalKind::Function).then_some(NotAPlace::Method)
+            }
+            Expr::This | Expr::Index { .. } | Expr::Missing => None,
+            Expr::Discard => (!discard).then_some(NotAPlace::Discard),
+            Expr::Path(_) => self.named_member(expr),
+            Expr::Member { receiver, .. } => {
+                if let Some(problem) = self.named_member(expr) {
+                    return Some(problem);
                 }
-                return;
+                // A member of a type, as a static field through it, has no
+                // value around it.
+                if self.resolution.paths.contains_key(&expr) {
+                    return None;
+                }
+                let (ty, name) = self.struct_member(expr)?;
+                let is_static = item_data(self.db, ty)
+                    .values
+                    .iter()
+                    .any(|value| value.name == name && value.is_static);
+                (!is_static && self.place_problem(*receiver, false).is_some())
+                    .then_some(NotAPlace::FieldOfValue)
             }
-            Expr::Local(_) | Expr::This | Expr::Index { .. } | Expr::Discard | Expr::Missing => {
-                return;
-            }
-            Expr::Path(_) | Expr::Member { .. } => match self.named_member(place) {
-                Some(problem) => problem,
-                None => return,
-            },
-            Expr::Call { .. } => NotAPlace::Call,
-            _ => NotAPlace::Value,
-        };
-        self.errors.push(TypeError::NotAPlace {
-            expr: place,
-            problem,
-        });
+            Expr::Call { .. } => Some(NotAPlace::Call),
+            _ => Some(NotAPlace::Value),
+        }
     }
 
     /// What `expr`, a path or a member, names that is not a place, `None`
@@ -109,6 +147,11 @@ impl Check<'_> {
         if let Some(resolution) = self.resolution.paths.get(&expr) {
             return match &resolution.target {
                 Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Method),
+                // A constant at namespace level; a static there is a place.
+                Target::Item(Resolved::Item(item)) => {
+                    let data = item_data(self.db, *item);
+                    (data.kind == ItemKind::Field && !data.is_static).then_some(NotAPlace::Constant)
+                }
                 Target::Value(value) => value_problem(value.member(self.db)?.kind),
                 _ => None,
             };

@@ -706,10 +706,7 @@ impl Lower {
             },
             ast::Expr::AssignExpr(it) => {
                 let op = it.op().and_then(|op| assign_op(op.kind()));
-                let lhs = match op {
-                    None => self.place(it.lhs(), range),
-                    Some(_) => self.expr(it.lhs(), range),
-                };
+                let lhs = self.place(it.lhs(), range);
                 let rhs = self.expr(it.rhs(), range);
                 Expr::Assign { op, lhs, rhs }
             }
@@ -793,24 +790,23 @@ impl Lower {
         self.alloc_expr(lowered, range)
     }
 
-    /// The place `=` assigns: a tuple of places deconstructs the value, and
-    /// `_` among them discards its element (§5.5); parentheses around a
-    /// place only group it.
+    /// The place an assignment assigns: `_` alone discards the value of `=`
+    /// (§5.7), a tuple of places deconstructs it, and `_` among them
+    /// discards its element (§5.5); parentheses around a place only group
+    /// it. Type checking reports `_` on the left of anything but `=`.
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
-        let Some(ast::Expr::TupleExpr(tuple)) = unparen(place) else {
+        let place = unparen(place);
+        if let Some(expr) = &place
+            && is_discard(expr)
+        {
+            return self.alloc_expr(Expr::Discard, expr.syntax().text_range());
+        }
+        let Some(ast::Expr::TupleExpr(tuple)) = place else {
             return self.expr(place, range);
         };
         let elems = tuple
             .tuple_elems()
-            .map(|elem| {
-                let place = match unparen(elem.expr()) {
-                    Some(expr) if is_discard(&expr) => {
-                        self.alloc_expr(Expr::Discard, expr.syntax().text_range())
-                    }
-                    expr => self.place(expr, range),
-                };
-                (name_ref_of(elem.name_ref()), place)
-            })
+            .map(|elem| (name_ref_of(elem.name_ref()), self.place(elem.expr(), range)))
             .collect();
         self.alloc_expr(Expr::Tuple(elems), tuple.syntax().text_range())
     }

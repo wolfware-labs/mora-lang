@@ -29,3 +29,19 @@ F(p: P, x: int) {
     let i = new P.N { Y = 1 };
     let j = Color.Red;
 }
+
+// Through a value a nested type is no receiver either; a type keyword is
+// a type too.
+public struct S {
+    public X: int;
+    public struct M {
+        public static Make(): int => 1;
+    }
+}
+
+G(s: S) {
+    let a = s.M.Make(); //~ ERROR MR0127
+    let b = S.M.Make();
+    let c = int; //~ ERROR MR0127
+    let d = int.Parse("1");
+}

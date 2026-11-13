@@ -381,6 +381,10 @@ impl Lowerer<'_> {
         lhs: ExprId,
         rhs: ExprId,
     ) -> Lowered<()> {
+        // `_ = value` evaluates the value and drops it.
+        if op.is_none() && matches!(self.owner.hir.exprs[lhs], Expr::Discard) {
+            return self.effect(rhs);
+        }
         let place = self.place(lhs)?;
         let Some(op) = op else {
             return self.expr_into(rhs, place);

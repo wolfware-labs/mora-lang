@@ -210,6 +210,9 @@ impl<'a> Check<'a> {
                     .flatten()
                     .any(|&param| !is_known(&candidate.params[param].ty))
             });
+        // A static overload called through a value leaves the call to
+        // statics (D-152), so its target types come then too.
+        let static_overload = self.has_static_overload(callee);
         // Each `new` without a type that the overloads give no target type.
         let mut untargeted = Vec::new();
         for (position, (arg, argument)) in args.iter().zip(&mut typed).enumerate() {
@@ -217,6 +220,7 @@ impl<'a> Check<'a> {
                 continue;
             }
             let expect = match arg_target(&candidates, &bindings, arg, position) {
+                _ if static_overload => Expect::Later,
                 ArgTarget::Type(ty) => Expect::Target(ty),
                 // A `new` is reported once the overloads are compared, and
                 // any other argument is checked without a target type.

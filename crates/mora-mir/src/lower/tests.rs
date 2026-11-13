@@ -3168,6 +3168,53 @@ fn every_member_and_expression_the_front_end_accepts_lowers_or_waits() {
 }
 
 #[test]
+fn values_by_where_they_are_declared_come_with_their_milestone() {
+    let text = "public const C1: int = 1;\npublic static mut G1: int = 1;\n\
+                public enum Color { Red, Green }\n\
+                public union Shape {\n    Circle(r: double),\n    Dot;\n}\n\
+                struct Q {\n    public Y: int;\n}\n\
+                struct P {\n    public X: int;\n    public static S3(q: Q): int => 1;\n    \
+                public S3(x: int): int => X;\n    public static S4(x: int): int => 1;\n    \
+                public S4(s: string): int => X;\n}\n\
+                TakeC(c: Color) {}\n\
+                A(): int => C1;\nB() {\n    G1 = 2;\n    G1++;\n}\nC(): int => G1;\n\
+                D() {\n    let z = Color.Red;\n}\nE() {\n    TakeC(Color.Red);\n}\n\
+                G() {\n    let s = Shape.Circle(1.0);\n}\nH() {\n    let z = Shape.Dot;\n}\n\
+                I(p: P) {\n    p.S3(new { Y = 1 });\n}\n\
+                J(p: P) {\n    p.S4(Console.ReadLine());\n}\n";
+    for (name, what, milestone) in [
+        ("A", "a constant", "M1.11"),
+        ("B", "a static", "M3.13"),
+        ("C", "a static", "M3.13"),
+        ("D", "an enum member", "M3.2"),
+        ("E", "an enum member", "M3.2"),
+        ("G", "a union case", "M3.1"),
+        ("H", "a union case", "M3.1"),
+        ("I", "a static member named through a value", "M3.13"),
+        // The instance overload is called; only the library value waits.
+        ("J", "a value of the standard library", "M1.15"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: {what} is not lowered until {milestone}"
+            )
+        );
+    }
+}
+
+#[test]
+fn a_discarded_value_is_evaluated_and_dropped() {
+    let lowered =
+        lowered("F(a: int) {\n    _ = a + 1;\n}\nG(): int => 1;\nH() {\n    _ = G();\n}\n");
+    assert_in_order(&lowered.code("F"), &["_2 = copy (*a#0) + 1;"]);
+    assert_in_order(
+        &lowered.code("H"),
+        &["call UsersApi.G{fn UsersApi.G}() -> bb1;"],
+    );
+}
+
+#[test]
 fn an_instance_overload_with_a_static_sibling_is_lowered() {
     // The call names what inference resolved it to, whatever overloads
     // share its name; a call it leaves to statics comes with them.

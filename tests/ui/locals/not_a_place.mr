@@ -43,3 +43,29 @@ F(p: P, xs: int[]) {
     (a, b) = (b, a);
     (a, _) = (1, 2);
 }
+
+// A field of a struct is a place only when the value that holds it is one.
+public struct R {
+    public mut Y: int;
+}
+
+public const C1: int = 1;
+public static mut G1: int = 1;
+
+MkR(): R => new R { Y = 1 };
+
+H(b: bool, r: R) {
+    MkR().Y = 1; //~ ERROR MR0186
+    MkR().Y++; //~ ERROR MR0186
+    new R { Y = 1 }.Y++; //~ ERROR MR0186
+    var s = r;
+    (b ? s : s).Y = 1; //~ ERROR MR0186
+    s.Y = 2;
+    C1 = 2; //~ ERROR MR0186
+    C1++; //~ ERROR MR0186
+    G1 = 2;
+    _ = s.Y + 1;
+    _ += 1; //~ ERROR MR0186
+    L() {}
+    L = L; //~ ERROR MR0186
+}

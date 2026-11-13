@@ -244,6 +244,25 @@ fn expressions_later(
             {
                 ("a static member", STATICS)
             }
+            // An enum member and a union case come with their kinds of type.
+            _ if resolution
+                .value_member(db, id)
+                .is_some_and(|member| member.kind == ValueKind::EnumMember) =>
+            {
+                ("an enum member", ENUMS)
+            }
+            _ if resolution
+                .value_member(db, id)
+                .is_some_and(|member| member.kind == ValueKind::UnionCase) =>
+            {
+                ("a union case", UNIONS)
+            }
+            // A static or a constant declared in a namespace: statics, and
+            // constant evaluation.
+            _ if namespace_value(db, resolution, id) == Some(true) => ("a static", STATICS),
+            _ if namespace_value(db, resolution, id) == Some(false) => {
+                ("a constant", CONSTANT_EVALUATION)
+            }
             _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
             _ if uses.function_value(db, hir, inference, resolution, id) => {
                 ("a function used as a value", CLOSURES)
@@ -327,6 +346,16 @@ fn expressions_later(
     latest(exprs.chain(stmts))
 }
 
+/// Whether `expr` names a static (`true`) or a constant (`false`) that a
+/// namespace declares, `None` for anything else.
+fn namespace_value(db: &dyn Db, resolution: &BodyResolution, expr: ExprId) -> Option<bool> {
+    let Target::Item(Resolved::Item(item)) = &resolution.paths.get(&expr)?.target else {
+        return None;
+    };
+    let data = item_tree(db, item.file).item(item.item);
+    (data.kind == ItemKind::Field).then_some(data.is_static)
+}
+
 /// Adds `expr`, an expression in statement position, to `statements`,
 /// and the branches of a conditional there, which are statements too.
 fn statement_branches(hir: &Body, expr: ExprId, statements: &mut HashSet<ExprId>) {
@@ -365,8 +394,16 @@ impl Uses {
         let mut receivers = HashSet::new();
         for (id, expr) in hir.exprs.iter() {
             match expr {
-                Expr::Call { callee, .. } => {
+                Expr::Call { callee, args } => {
+                    // A `new` without a type that has none was left for
+                    // statics, with a static overload of the name (D-152):
+                    // the name decides, as for an unresolved call.
+                    let untyped_new = args.iter().any(|arg| {
+                        matches!(hir.exprs[arg.expr], Expr::New { ty: None, .. })
+                            && inference.expr(arg.expr).is_none()
+                    });
                     let resolved = match inference.callee(id) {
+                        _ if untyped_new => None,
                         Some(Callee::Item(item)) => {
                             Some(item_tree(db, item.file).item(item.item).is_static)
                         }

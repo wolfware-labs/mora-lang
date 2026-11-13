@@ -256,6 +256,10 @@ pub(crate) enum NotAPlace {
     Case,
     /// The result of a call.
     Call,
+    /// A field of a struct value that is not a place itself.
+    FieldOfValue,
+    /// `_`, which only the left side of a plain `=` discards to.
+    Discard,
     /// Any other value, as a literal or an operation.
     Value,
 }
@@ -264,11 +268,13 @@ impl NotAPlace {
     /// What the message calls it.
     pub(crate) fn what(self) -> &'static str {
         match self {
-            NotAPlace::Method => "a method",
+            NotAPlace::Method => "a method or a function",
             NotAPlace::Getter => "a getter, which has no setter",
             NotAPlace::Constant => "a constant",
             NotAPlace::Case => "an enum member or a union case",
             NotAPlace::Call => "the result of a call",
+            NotAPlace::FieldOfValue => "a field of a value that is not a place",
+            NotAPlace::Discard => "`_`, which only `=` assigns to",
             NotAPlace::Value => "a value",
         }
     }
@@ -470,9 +476,12 @@ pub(crate) enum TypeError {
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
     AssignmentValue { expr: ExprId, split: Option<ExprId> },
-    /// `expr` names a type or a namespace, `named`, where a value is
-    /// expected (`MR0127`).
-    TypeAsValue { expr: ExprId, named: Resolved },
+    /// `expr` names a type or a namespace, `named`, or a type keyword when
+    /// `named` is `None`, where a value is expected (`MR0127`).
+    TypeAsValue {
+        expr: ExprId,
+        named: Option<Resolved>,
+    },
     /// `expr`, the left side of an assignment or the operand of a step, is
     /// not a place (`MR0186`).
     NotAPlace { expr: ExprId, problem: NotAPlace },
@@ -1198,8 +1207,22 @@ mod tests {
         // Parentheses around places and discards only group them.
         assert_eq!(body("((a, _)) = (1, 2);"), none());
         assert_eq!(body("(a, (_)) = (1, \"x\");"), none());
-        // `_` is a place only inside a deconstruction.
-        assert_eq!(codes(&diagnostics_of("F() {\n    _ = 1;\n}\n")), ["MR0127"]);
+        // `_` alone on the left of `=` discards the value (§5.7); anywhere
+        // else it is no place, and as a value it names nothing.
+        assert_eq!(body("_ = 1;"), none());
+        assert_eq!(body("_ = (a, 1);"), none());
+        assert_eq!(
+            codes(&diagnostics_of("F() {\n    _ = new { X = 1 };\n}\n")),
+            ["MR0154"]
+        );
+        assert_eq!(
+            codes(&diagnostics_of("F() {\n    _ += 1;\n}\n")),
+            ["MR0186"]
+        );
+        assert_eq!(
+            codes(&diagnostics_of("F() {\n    (_, _) += (1, 2);\n}\n")),
+            ["MR0186", "MR0186"]
+        );
         assert_eq!(
             codes(&diagnostics_of("F(a: int) {\n    a += (_, 1).Item1;\n}\n")),
             ["MR0127"]
@@ -3641,13 +3664,24 @@ mod tests {
     #[test]
     fn a_type_or_a_namespace_is_no_value() {
         let head = "public struct P {\n    public X: int;\n    public static S(): int => 1;\n    \
-                    public struct N {\n        public Y: int;\n    }\n    \
+                    public struct N {\n        public Y: int;\n        \
+                    public static NS(): int => 1;\n        public const NK: int = 1;\n    }\n    \
                     Probe(): int {\n        BARE\n        return 0;\n    }\n}\n\
                     public enum Color { Red }\n";
         for (bare, line, expected) in [
             ("let a = N;", "", vec!["MR0127"]),
             ("", "let a = p.N;", vec!["MR0127"]),
             ("", "let a = P.N;", vec!["MR0127"]),
+            // A member of a value is no way to write a type, even as a
+            // receiver; through the type it is.
+            ("", "let a = p.N.NS();", vec!["MR0127"]),
+            ("", "let a = p.N.NK;", vec!["MR0127"]),
+            ("", "let a = p.N.NS;", vec!["MR0127"]),
+            ("", "let a = nameof(p.N);", vec!["MR0127"]),
+            ("", "let a = P.N.NS();", vec![]),
+            // A type keyword is a type too.
+            ("", "let a = int;", vec!["MR0127"]),
+            ("", "let a = int.Parse(\"1\");", vec![]),
             ("", "p.N();", vec!["MR0127"]),
             ("", "P.N();", vec!["MR0127"]),
             ("", "let a = P;", vec!["MR0127"]),
@@ -3689,9 +3723,11 @@ mod tests {
                     public static SG: int => 1;\n    public const K: int = 2;\n    \
                     public static SQ: Q => new Q { Y = 1 };\n    \
                     public GQ: Q => new Q { Y = 1 };\n    \
+                    public static mut SR: Q = new Q { Y = 1 };\n    \
                     Probe() {\n        BARE\n    }\n}\n\
                     public struct Q {\n    public mut Y: int;\n}\n\
-                    public enum Color { Red }\nOne(): int => 1;\n";
+                    public struct R {\n    public mut Q: Q;\n}\n\
+                    public enum Color { Red }\nOne(): int => 1;\nOne2(): Q => new Q { Y = 1 };\n";
         for (bare, line, expected) in [
             ("Inst = 1;", "", vec!["MR0186"]),
             ("G = 1;", "", vec!["MR0186"]),
@@ -3699,7 +3735,8 @@ mod tests {
             ("SF = 1;", "", vec![]),
             ("M = 1;", "", vec![]),
             // The path names the getter and then a field of what it gives.
-            ("GQ.Y = 1;", "", vec![]),
+            ("GQ.Y = 1;", "", vec!["MR0186"]),
+            ("L() {}\n        L = L;", "", vec!["MR0186"]),
             ("", "q.Inst = 1;", vec!["MR0186"]),
             ("", "q.Inst += 1;", vec!["MR0186"]),
             ("", "q.Inst++;", vec!["MR0186"]),
@@ -3727,8 +3764,21 @@ mod tests {
             ("", "q.SF = 1;", vec![]),
             ("", "q.K = 1;", vec![]),
             ("", "q.Nope = 1;", vec![]),
-            // A field of what a static getter gives is a field.
-            ("", "P.SQ.Y = 1;", vec![]),
+            // A field of a struct is a place only when the value that
+            // holds it is one: not what a getter or a call gives.
+            ("", "P.SQ.Y = 1;", vec!["MR0186"]),
+            ("", "One2().Y = 1;", vec!["MR0186"]),
+            ("", "One2().Y++;", vec!["MR0186"]),
+            ("", "One2().Y += 1;", vec!["MR0186"]),
+            ("", "new Q { Y = 1 }.Y++;", vec!["MR0186"]),
+            ("", "var b = true;\n    (b ? q : q).M = 1;", vec!["MR0186"]),
+            ("", "var r = new Q { Y = 1 };\n    r.Y = 2;", vec![]),
+            ("", "P.SR.Y = 1;", vec![]),
+            (
+                "",
+                "xs[0] = 1;\n    var s = new R { Q = new Q { Y = 1 } };\n    s.Q.Y = 2;",
+                vec![],
+            ),
         ] {
             let text = format!(
                 "{}F(p: P, xs: int[]) {{\n    var q = p;\n    {line}\n}}\n",
@@ -3750,6 +3800,39 @@ mod tests {
     }
 
     #[test]
+    fn a_constant_in_a_namespace_is_no_place() {
+        let head = "public const C1: int = 1;\npublic static mut G1: int = 1;\n";
+        for (line, expected) in [
+            ("C1 = 2;", vec!["MR0186"]),
+            ("C1++;", vec!["MR0186"]),
+            ("C1 += 1;", vec!["MR0186"]),
+            ("UsersApi.C1 = 2;", vec!["MR0186"]),
+            ("G1 = 2;", vec![]),
+            ("G1++;", vec![]),
+            ("UsersApi.G1 = 2;", vec![]),
+        ] {
+            let text = format!("{head}F() {{\n    {line}\n}}\n");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_static_overload_through_a_value_leaves_a_new_its_target() {
+        // The call is not checked before statics (D-152), so a `new` passed
+        // to it waits for its target; what is inside it is checked now.
+        let head = "public struct Q {\n    public Y: int;\n}\npublic struct P {\n    \
+                    public X: int;\n    public static S3(q: Q): int => 1;\n    \
+                    public S3(x: int): int => X;\n}\n";
+        for (line, expected) in [
+            ("p.S3(new { Y = 1 });", vec![]),
+            ("p.S3(new { Y = Undefined });", vec!["MR0127"]),
+        ] {
+            let text = format!("{head}F(p: P) {{\n    {line}\n}}\n");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
+    }
+
+    #[test]
     fn a_body_outside_every_type_has_no_this() {
         // A function in a namespace and the top-level statements (§4.2).
         let p = "struct P {\n    public X: int;\n    G(): int => this.X;\n}\n";
@@ -3758,6 +3841,9 @@ mod tests {
             ("F(): int => this.X;\n", vec!["MR0149"]),
             ("let a = this;\n", vec!["MR0149"]),
             ("F() {\n    L(): int => this.X;\n}\n", vec!["MR0149"]),
+            // A constant or a static declared in a namespace.
+            ("const C2: int = this.X;\n", vec!["MR0149"]),
+            ("static S2: int = this.X;\n", vec!["MR0149"]),
             ("", vec![]),
         ] {
             assert_eq!(reported(&format!("{p}{text}")), expected, "{text}");

@@ -1093,7 +1093,7 @@ impl Check<'_> {
     /// `++` and `--`, prefix or postfix: the operand keeps its numeric type.
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
         let found = self.infer(operand);
-        self.require_place(operand);
+        self.require_place(operand, false);
         let found = found?;
         let result = numeric::as_numeric(&found);
         if result.is_none() && (!is_known(&found) || is_struct(&found)) {
@@ -1289,12 +1289,12 @@ impl Check<'_> {
         match op {
             None => {
                 let places = self.place_type(lhs);
-                self.require_place(lhs);
+                self.require_place(lhs, true);
                 self.deconstruct(lhs, &places, rhs);
             }
             Some(op) => {
                 let result = self.binary(expr, op, lhs, rhs);
-                self.require_place(lhs);
+                self.require_place(lhs, false);
                 // The result converts back to the type of the place as a
                 // cast would (§7.12).
                 let place = self.exprs[arena_index(lhs)].clone();
@@ -1345,8 +1345,12 @@ impl Check<'_> {
                     self.deconstruct_type(place, places, value, &found, &mut 0);
                 }
             }
-            // One place takes a value of its type; `_`, a discarded element or
-            // a place of unknown type, takes any value.
+            // `_` discards any value, which has no target type.
+            (Expr::Discard, ..) => {
+                self.infer(value);
+            }
+            // One place takes a value of its type; a place of unknown type
+            // takes any value.
             _ => self.check(value, places),
         }
     }

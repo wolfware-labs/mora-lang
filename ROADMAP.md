@@ -654,7 +654,7 @@ Done when:
 | [M3.8](#m38-generics-and-constraints) | Generics and constraints | `hir` | M3.1 |
 | [M3.9](#m39-monomorphization) | Monomorphization | `mir` | M3.8 |
 | [M3.10](#m310-interfaces-and-static-dispatch) | Interfaces and static dispatch | `hir` | M3.9 |
-| [M3.11](#m311-dynamic-interface-values) | Dynamic interface values | `codegen` | M3.10 |
+| [M3.11](#m311-dynamic-interface-values) | Dynamic interface values | `codegen` | M3.5, M3.10 |
 | [M3.12](#m312-tuples-collection-expressions-and-smaller-expressions) | Tuples, collection expressions and smaller expressions | `hir` | M3.9 |
 | [M3.13](#m313-statics) | Statics | `hir` | M1.11, M3.5 |
 | [M3.14](#m314-local-path-dependencies-and-library-projects) | Local path dependencies and library projects | `driver` | M3.10 |
@@ -779,7 +779,7 @@ Done when:
 
 ### M3.11 Dynamic interface values
 
-Spec: [§7.5](docs/design/mora.md#75-option-operators), [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.10.
+Spec: [§7.5](docs/design/mora.md#75-option-operators), [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.5, M3.10.
 
 Interface values as data and vtable pointers, boxing of value types with the LSP-visible boxing marker, vtables and BLAKE3 type ids of §13.6, `is C c`, `as C`, checked casts, `MR0230`, `MR0231`, erasure of associated types for `IEnumerable<T>` values, and `any I` satisfying a constraint `T : I`.
 
