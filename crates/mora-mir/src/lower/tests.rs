@@ -749,11 +749,12 @@ fn the_message_names_the_body_and_the_expression() {
 #[test]
 fn a_static_member_named_through_a_value_comes_with_statics() {
     // MR0155 from M3.13 on (D-152): a static method, a static getter and a
-    // static field, each through a value.
+    // constant, each through a value; the constant's own M1.11 is earlier.
     let text = "struct S {\n    public X: int;\n    public static K(): int => 1;\n    \
-                public static G: int => 2;\n}\n\
-                A(s: S): int => s.K();\nB(s: S): int => s.G;\nC(s: S): int => s.G();\n";
-    for name in ["A", "B", "C"] {
+                public static G: int => 2;\n    public const N: int = 3;\n}\n\
+                A(s: S): int => s.K();\nB(s: S): int => s.G;\nC(s: S): int => s.G();\n\
+                D(s: S): int => s.N;\n";
+    for name in ["A", "B", "C", "D"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!(
@@ -2759,15 +2760,6 @@ fn this_in_a_local_function_is_lifted() {
             "call UsersApi.P.Set.H(copy _2) -> bb1;",
         ],
     );
-}
-
-#[test]
-#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
-fn a_constant_read_through_a_value_is_not_lowered() {
-    let lowered = lowered(
-        "struct P {\n    public X: int;\n    public const K: int = 2;\n}\nF(p: P): int => p.K;\n",
-    );
-    lowered.mir("F");
 }
 
 #[test]

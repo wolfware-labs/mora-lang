@@ -269,9 +269,8 @@ fn expressions_later(
 }
 
 /// Whether `expr` is a member of a struct value whose name is a static
-/// member of the struct, a method, a field or a getter, which is named
-/// through the type (`MR0155`, D-152). A constant is not one: it comes
-/// with constant evaluation.
+/// member of the struct, a method, a field, a getter or a constant, which
+/// is named through the type (`MR0155`, D-152).
 fn static_through_value(db: &dyn Db, hir: &Body, inference: &Inference, expr: ExprId) -> bool {
     struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
         let tree = item_tree(db, ty.file);
@@ -282,7 +281,7 @@ fn static_through_value(db: &dyn Db, hir: &Body, inference: &Inference, expr: Ex
         }) || data
             .values
             .iter()
-            .any(|value| value.name == name && value.is_static && value.kind != ValueKind::Const)
+            .any(|value| value.name == name && value.is_static)
     })
 }
 
