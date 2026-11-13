@@ -711,13 +711,14 @@ Done when:
 
 Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `std`. Blocked by: M3.4.
 
-`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
+`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
 
 Done when:
 
 - Run tests for every operator.
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
+- UI tests: `x as T` on an `any I` value gives `T?`, `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
 
 ### M3.6 Operators, conversions and indexers
 

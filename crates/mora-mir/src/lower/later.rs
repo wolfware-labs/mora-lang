@@ -200,8 +200,8 @@ pub(crate) fn lowered_later(
 
 /// The milestone that lowers the body of `owner` for an expression or a
 /// statement that a later milestone brings: a static member named through
-/// a value, error `MR0155` then, comes with statics, a getter read or
-/// called with classes, which bring getters, a member of a type keyword, as
+/// a value, error `MR0155` then, comes with statics, `as` with options,
+/// which bring `T?`, a getter read or called with classes, which bring getters, a member of a type keyword, as
 /// `int.MaxValue`, with the standard library, an array creation with
 /// constant evaluation, which brings arrays, `with` with positional
 /// structs, a `match` and an `is` test with patterns, `?` with results, a
@@ -241,6 +241,7 @@ fn expressions_later(
                 ("an index of a string", STRINGS)
             }
             Expr::Await(_) => ("`await`", ASYNC),
+            Expr::As { .. } => ("`as`", OPTIONS),
             Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
             Expr::Match { .. } => ("a `match`", PATTERNS),
             Expr::Is { .. } => ("an `is` test", PATTERNS),

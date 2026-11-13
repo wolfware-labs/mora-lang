@@ -146,6 +146,7 @@ registry! {
     MR0207 = 207: "a named argument that names no parameter, names one twice, or comes before a positional one",
     MR0208 = 208: "a call of a value that is not a function",
     MR0209 = 209: "a default value on a `ref` parameter",
+    MR0210 = 210: "`as` where the run-time type cannot differ from the type it tests, or between numeric types",
     MR0220 = 220: "polymorphic recursion without bound",
     MR0230 = 230: "a move-only value converted to an interface value",
     MR0231 = 231: "an interface with static abstract members or generic methods used as a type",

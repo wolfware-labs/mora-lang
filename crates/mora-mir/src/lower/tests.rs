@@ -3080,11 +3080,12 @@ fn later_expressions_and_statements_come_with_their_milestone() {
 }
 
 #[test]
-#[should_panic(expected = "the local `s` has no type")]
-fn an_as_expression_is_an_internal_error() {
-    // The spec gives `as` a precedence but no meaning, and no milestone
-    // of the roadmap brings it.
-    lowered("F() {\n    let s = 1 as long;\n}\n").mir("F");
+fn an_as_expression_comes_with_options() {
+    // `x as T` gives `T?` (D-153).
+    assert_eq!(
+        later_error("F() {\n    let s = 1 as long;\n}\n", |l| l.owner("F")),
+        "internal error lowering UsersApi.F: `as` is not lowered until M3.5"
+    );
 }
 
 #[test]

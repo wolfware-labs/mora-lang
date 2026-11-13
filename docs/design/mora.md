@@ -1105,11 +1105,12 @@ The enclosing function is the innermost function, lambda or async block. Inside 
 
 ### 7.5 Option operators
 
-`a ?? b`, `a ??= b`, `a?.m`, `a?[i]` work on `T?`:
+`a ?? b`, `a ??= b`, `a?.m`, `a?[i]` work on `T?`, and `x as T` gives one:
 
 - `a ?? b` evaluates `a`, and gives its value when it holds one; otherwise it evaluates `b` and gives that. When `a` has type `T?`, `b` has type `T` or `T?`, and so does the result.
 - `a ??= b` does nothing when `a` holds a value; when `a` is `none`, it evaluates `b` and assigns it to `a`. `a` is a mutable place of type `T?`, and `b` has type `T` or `T?`.
 - `a?.m` and `a?[i]` give `none` when `a` is `none`, without evaluating the index or the arguments, and otherwise access the member or element of `a`'s value. The member accesses, calls and indexing that follow in the same chain are skipped too, so `a?.B.C()` is `none` when `a` is. `a?.m` has type `U?` when `m` has type `U`, and `U?` (not `U??`) when `m` already has type `U?`.
+- `x as T` gives `T?`: the value of `x` when its run-time type is `T`, and `none` otherwise (§5.10). It is allowed only where the answer can vary, on an `any I` value or a value of a supertype of `T`; anywhere else it is error `MR0210`. `as` never converts a number: `1 as long` is `MR0210` too, with a fix to the cast `(long)1` (D-153).
 
 ### 7.6 Lambdas
 
@@ -3425,6 +3426,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-150 | A lambda or a `new` without a type passed to a call, or a conditional, `match`, tuple or collection with one in a branch, an arm or an element, takes the type of its parameter: with one function, its parameter of that name or at that position; with overloads, the type that every overload able to take the arguments has there, when they agree, where an overload is able when it takes their count and names, every argument fits its parameter's mode and every other argument, typed first without a target, fits its parameter's type; when they do not, such an argument gets no target type and a `new` without a type is `MR0154`, unless the call is already `MR0205`, `MR0206` or `MR0207`, or another argument or a parameter of those overloads has a type not known yet, an error included, which leaves the call unresolved and unreported (D-137) | author | 6.9 |
 | D-151 | Two visibilities on one declaration, two modes on one parameter, and `mut` with `move` on one method are `MR0112`, with a fix that removes the later modifier, since each set says one thing at most; a modifier that repeats an earlier one is `MR0111` alone | author | 6.1, 10.3 |
 | D-152 | Naming a `static` member through a value, as `p.S()` for a static method or `p.K` for a static field or getter, is `MR0155`, with a fix that writes the type's name in place of the value (`P.S()`); the check lands in M3.13 | user | 6.10 |
+| D-153 | `x as T` gives `T?`, the value when its run-time type is `T` and `none` otherwise; it is allowed only where the answer can vary, on an `any I` value or a supertype of `T`, and is `MR0210` elsewhere; it never converts a number, so `1 as long` is `MR0210` with a fix to the cast `(long)1`; it lands with options in M3.5 | user | 7.5 |
 
 ## 24. Open questions
 
