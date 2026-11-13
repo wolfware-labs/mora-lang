@@ -199,8 +199,9 @@ pub(crate) fn lowered_later(
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
-/// statement that a later milestone brings: a member of a type keyword, as
-/// `int.MaxValue`, comes with the standard library, an array creation with
+/// statement that a later milestone brings: a getter read or called comes
+/// with classes, which bring getters, a member of a type keyword, as
+/// `int.MaxValue`, with the standard library, an array creation with
 /// constant evaluation, which brings arrays, `with` with positional
 /// structs, a `match` and an `is` test with patterns, `?` with results, a
 /// collection expression, a range, an index from the end, `nameof`,
@@ -217,8 +218,10 @@ fn expressions_later(
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
-    let exprs = hir.exprs.iter().map(|(_, expr)| {
+    let resolution = body_resolution(db, project, file, owner);
+    let exprs = hir.exprs.iter().map(|(id, expr)| {
         let (what, milestone) = match expr {
+            _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
             // The members of a built-in type are declared in the library.
             Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
             Expr::NewArray { .. } => ("an array creation", CONSTANT_EVALUATION),
@@ -257,6 +260,29 @@ fn expressions_later(
         _ => None,
     });
     latest(exprs.chain(stmts))
+}
+
+/// Whether `expr` reads or calls a getter of a struct: a name or a path
+/// that names one, as `G` in a method or `S.K`, or a member of its name
+/// of a struct value.
+fn names_getter(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    resolution: &BodyResolution,
+    expr: ExprId,
+) -> bool {
+    let getter = |kind| kind == ValueKind::Getter;
+    resolution
+        .value_member(db, expr)
+        .is_some_and(|member| getter(member.kind))
+        || struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
+            let tree = item_tree(db, ty.file);
+            tree.item(ty.item)
+                .values
+                .iter()
+                .any(|value| value.name == name && getter(value.kind))
+        })
 }
 
 /// The milestone that lowers the body of `owner` for a lambda in it:

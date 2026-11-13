@@ -9,14 +9,16 @@ use la_arena::Arena;
 
 use super::{Check, Expect};
 use crate::arena::arena_index;
-use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
+use crate::bodies::{
+    Arg, ArgMode, BodyOwner, Expr, ExprId, LocalId, LocalKind, Stmt, Target, body, body_resolution,
+};
 use crate::defs::ItemId;
 use crate::diverging::calls_diverging;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::ValueKind;
+use crate::items::{ValueKind, item_tree};
 use crate::resolve::{Resolved, is_visible, item_data};
 use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
@@ -401,9 +403,13 @@ impl<'a> Check<'a> {
             return Callees::Unknown;
         };
         let named: Vec<_> = instance_methods(self.db, *ty, name).collect();
+        // A field or a getter of a type that is not a function type is not
+        // callable (`MR0208`).
         let Some(&first) = named.first() else {
-            let field = self.field(receiver, name);
-            return self.not_callable(field);
+            let value = self
+                .field(receiver, name)
+                .or_else(|| self.getter_type(*ty, name));
+            return self.not_callable(value);
         };
         // Only the methods visible from the call are candidates, as name
         // resolution sees only visible declarations (§4.5).
@@ -416,6 +422,18 @@ impl<'a> Check<'a> {
             return Callees::Hidden(first);
         }
         Callees::Functions(methods)
+    }
+
+    /// The type of the instance getter `name` of the struct `item`, which
+    /// its body declares.
+    fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
+        let tree = item_tree(self.db, item.file);
+        let index = tree.item(item.item).values.iter().position(|value| {
+            value.name == name && value.kind == ValueKind::Getter && !value.is_static
+        })?;
+        let owner = BodyOwner::Value(item.item, u32::try_from(index).ok()?);
+        let getter = body(self.db, item.file, owner);
+        Some(body_resolution(self.db, item.project, item.file, owner).return_type(getter.ret))
     }
 
     /// A function or method as a candidate.

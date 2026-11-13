@@ -2630,15 +2630,6 @@ fn a_constant_in_an_initializer_is_not_lowered_yet() {
 }
 
 #[test]
-#[should_panic(expected = "a member that is not a field of a struct is not lowered")]
-fn a_getter_read_is_not_lowered() {
-    let lowered = lowered(
-        "struct P {\n    public X: int;\n    public Get: int => X;\n}\nF(p: P): int => p.Get;\n",
-    );
-    lowered.mir("F");
-}
-
-#[test]
 #[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
 fn a_static_field_named_in_a_method_is_not_lowered() {
     let lowered = lowered(
@@ -3086,6 +3077,23 @@ fn a_member_of_a_type_keyword_comes_with_the_library() {
             )
         );
     }
+}
+
+#[test]
+fn a_getter_comes_with_classes() {
+    // Read through a value, called through a value when its type is a
+    // function type, read by name in a method, and a static one.
+    let text = "struct S {\n    public X: int;\n    public G: int => X;\n    \
+                public static K: int => 1;\n    Get(): int => G;\n}\n\
+                A(s: S): int => s.G;\nB(): int => S.K;\nC(s: S): int => s.X;\n";
+    for (name, label) in [("A", "A"), ("B", "B"), ("Get", "S.Get")] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{label}: a getter is not lowered until M2.1")
+        );
+    }
+    // A field of a struct with getters is read now.
+    assert!(!lowered(text).code("C").is_empty());
 }
 
 #[test]

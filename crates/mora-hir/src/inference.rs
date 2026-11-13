@@ -2275,6 +2275,18 @@ mod tests {
             messages(&diagnostics_of("let n = 1;\nn(2);\n")),
             ["cannot call a value of type `int`"]
         );
+        // A getter has the type its body declares; a static getter is not
+        // an instance one, and a method is called.
+        let getters = "struct S {\n    public X: int;\n    public G: int => X;\n    \
+                       public static K: int => 1;\n    public M(): int => X;\n}\n";
+        for (call, expected) in [
+            ("s.G();", vec!["MR0208"]),
+            ("s.M();", vec![]),
+            ("s.K();", vec![]),
+        ] {
+            let text = format!("{getters}H(s: S) {{\n    {call}\n}}\n");
+            assert_eq!(reported(&text), expected, "{call}");
+        }
         // Calls of unknown things, and arguments inside them, still work.
         let unknown = "let f = (x: int) => x;\nf(1);\nlet s: string = Console.ReadLine(!1);\n";
         assert_eq!(reported(unknown), ["MR0204"]);
