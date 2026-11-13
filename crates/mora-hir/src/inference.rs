@@ -3601,6 +3601,21 @@ mod tests {
     }
 
     #[test]
+    fn a_body_outside_every_type_has_no_this() {
+        // A function in a namespace and the top-level statements (§4.2).
+        let p = "struct P {\n    public X: int;\n    G(): int => this.X;\n}\n";
+        for (text, expected) in [
+            ("F() {\n    let a = this;\n}\n", vec!["MR0149"]),
+            ("F(): int => this.X;\n", vec!["MR0149"]),
+            ("let a = this;\n", vec!["MR0149"]),
+            ("F() {\n    L(): int => this.X;\n}\n", vec!["MR0149"]),
+            ("", vec![]),
+        ] {
+            assert_eq!(reported(&format!("{p}{text}")), expected, "{text}");
+        }
+    }
+
+    #[test]
     fn a_returned_tuple_that_does_not_fit_reports_its_new() {
         let p = "struct P {\n    public X: int;\n}\n";
         for text in [

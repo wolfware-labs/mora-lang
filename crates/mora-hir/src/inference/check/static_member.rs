@@ -33,6 +33,23 @@ impl Check<'_> {
     /// member of a nested type naming an instance member of a type around
     /// it (`MR0149`).
     pub(super) fn instance_uses(&mut self, owner: BodyOwner) {
+        // A function in a namespace behaves as a static method of it, and
+        // the top-level statements as the body of one: neither has `this`
+        // (§4.2, §6.10).
+        if self.outside_types(owner) {
+            let this = self
+                .body
+                .exprs
+                .iter()
+                .filter(|(_, node)| matches!(node, Expr::This))
+                .map(|(expr, _)| TypeError::StaticThis {
+                    expr,
+                    used: InstanceUse::This,
+                });
+            let errors: Vec<_> = this.collect();
+            self.errors.extend(errors);
+            return;
+        }
         let Some(member) = self.member(owner) else {
             return;
         };
@@ -87,6 +104,19 @@ impl Check<'_> {
                 continue;
             };
             self.errors.push(error);
+        }
+    }
+
+    /// Whether `owner` is a body outside every type: a function declared
+    /// in a namespace, or the top-level statements.
+    fn outside_types(&self, owner: BodyOwner) -> bool {
+        match owner {
+            BodyOwner::TopLevel => true,
+            BodyOwner::Item(item) => {
+                let data = item_tree(self.db, self.scope.file).item(item);
+                data.kind == ItemKind::Function && data.parent.is_none()
+            }
+            BodyOwner::Value(..) | BodyOwner::Member(..) | BodyOwner::Extension(..) => false,
         }
     }
 

@@ -23,15 +23,15 @@
 //! [`mir`]: super::mir
 //! [`mir_dump`]: super::mir_dump
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use mora_hir::{
-    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Construct, Creation, Expr, ExprId,
-    FnSignature, Inference, Item, ItemId, ItemKind, Resolved, Signature, Stmt, Target, Ty, UnaryOp,
-    ValueKind, ValueMember, body, body_resolution, creation, enclosing_types, infer,
-    instance_fields, instance_methods, is_generic_type, item_tree, local_functions, signature,
-    struct_field,
+    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Callee, Construct, Creation, Expr,
+    ExprId, FnSignature, Inference, Item, ItemId, ItemKind, Literal, LocalKind, Resolved,
+    Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body, body_resolution, creation,
+    enclosing_types, infer, instance_fields, instance_methods, is_generic_type, item_tree,
+    local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -200,19 +200,22 @@ pub(crate) fn lowered_later(
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
-/// statement that a later milestone brings: a static member named through
-/// a value, error `MR0155` then, comes with statics, `as` with options,
-/// which bring `T?`, a getter read or called with classes, which bring
-/// getters, a member of a type keyword, as `int.MaxValue`, with the
-/// standard library, an array creation with constant evaluation, which
-/// brings arrays, `with` with positional structs, a `match` and an `is`
-/// test with patterns, `?` with results, a collection expression, a
-/// range, an index from the end, `nameof`, `sizeof`, `default`, a
-/// deconstruction and an element of a tuple read by name with the smaller
-/// expressions, an index of a string, which is `MR0130`, with strings,
-/// `foreach` with enumeration, a quote, a splice or a macro call with
-/// expansion, and `await` with async lowering. The first in the order of
-/// the body names it on a tie; `None` when it has none.
+/// statement that a later milestone brings. Statics bring a static member
+/// named through a value, error `MR0155` then, or through its type or its
+/// bare name; classes bring getters; closures bring a function used as a
+/// value; the standard library brings its own values and the members of
+/// built-in types and of their values; extension blocks, with the smaller
+/// expressions, bring members a struct does not declare. Options bring
+/// `?.`, `??` and `none`, operators an index of a number or a tuple,
+/// dynamic interface values `as`, and constant evaluation an array
+/// creation. Positional structs bring `with`, patterns `match` and `is`,
+/// results `?`, strings an index of a string (`MR0130`), enumeration
+/// `foreach`, expansion a quote, a splice or a macro call, and async
+/// lowering `await`. The smaller expressions bring the rest: an element of
+/// a tuple read by name, a collection expression, a range, an index from
+/// the end, `nameof`, `sizeof`, `default` and a deconstruction, declared or
+/// assigned. On a tie the expressions name it before the statements, each
+/// in the order of the arena; `None` when there is none.
 fn expressions_later(
     db: &dyn Db,
     project: Project,
@@ -222,15 +225,50 @@ fn expressions_later(
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
+    let uses = Uses::of(db, project, file, owner, hir, inference, resolution);
     let exprs = hir.exprs.iter().map(|(id, expr)| {
         let (what, milestone) = match expr {
             // Error `MR0155` from statics on.
-            _ if static_through_value(db, hir, inference, id) => {
+            _ if static_through_value(db, hir, inference, &uses, id) => {
                 ("a static member named through a value", STATICS)
             }
+            // Through its type or by its bare name, a static field, a
+            // static getter or a constant comes with statics.
+            _ if resolution.value_member(db, id).is_some_and(|member| {
+                member.is_static
+                    && matches!(
+                        member.kind,
+                        ValueKind::Field | ValueKind::Getter | ValueKind::Const
+                    )
+            }) =>
+            {
+                ("a static member", STATICS)
+            }
             _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
-            // The members of a built-in type are declared in the library.
+            _ if uses.function_value(db, hir, inference, resolution, id) => {
+                ("a function used as a value", CLOSURES)
+            }
+            _ if uses.library_value(hir, inference, resolution, id) => {
+                ("a value of the standard library", STD_BOOTSTRAP)
+            }
+            // A member a struct does not declare is an extension member.
+            Expr::Member { .. }
+                if struct_member(hir, inference, id)
+                    .is_some_and(|(ty, name)| declarations(db, ty, name).next().is_none()) =>
+            {
+                ("an extension member", SMALLER_EXPRESSIONS)
+            }
+            // The members of a built-in type, and of its values, are
+            // declared in the library.
             Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
+            Expr::Member { receiver, .. }
+                if matches!(
+                    inference.expr(*receiver),
+                    Some(Ty::Primitive(_) | Ty::String)
+                ) =>
+            {
+                ("a member of a value of a built-in type", STD_BOOTSTRAP)
+            }
             Expr::NewArray { .. } => ("an array creation", CONSTANT_EVALUATION),
             Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
             // Inference types no member of a tuple yet.
@@ -239,11 +277,33 @@ fn expressions_later(
             {
                 ("an element of a tuple", SMALLER_EXPRESSIONS)
             }
+            Expr::Member { optional: true, .. } | Expr::Index { optional: true, .. } => {
+                ("`?.`", OPTIONS)
+            }
+            Expr::Binary {
+                op: BinaryOp::Coalesce,
+                ..
+            }
+            | Expr::Assign {
+                op: Some(BinaryOp::Coalesce),
+                ..
+            } => ("`??`", OPTIONS),
+            Expr::Literal(Literal::None) => ("`none`", OPTIONS),
             Expr::Index { base, .. } if inference.expr(*base) == Some(&Ty::String) => {
                 ("an index of a string", STRINGS)
             }
+            // A number or a tuple has no indexer; indexers come with
+            // operators, which report it.
+            Expr::Index { base, .. }
+                if matches!(inference.expr(*base), Some(Ty::Primitive(_) | Ty::Tuple(_))) =>
+            {
+                ("an index", OPERATORS)
+            }
+            Expr::Assign { op: None, lhs, .. } if matches!(hir.exprs[*lhs], Expr::Tuple(_)) => {
+                ("a deconstruction", SMALLER_EXPRESSIONS)
+            }
             Expr::Await(_) => ("`await`", ASYNC),
-            Expr::As { .. } => ("`as`", OPTIONS),
+            Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
             Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
             Expr::Match { .. } => ("a `match`", PATTERNS),
             Expr::Is { .. } => ("an `is` test", PATTERNS),
@@ -270,11 +330,160 @@ fn expressions_later(
     latest(exprs.chain(stmts))
 }
 
+/// Adds `expr`, an expression in statement position, to `statements`,
+/// and the branches of a conditional there, which are statements too.
+fn statement_branches(hir: &Body, expr: ExprId, statements: &mut HashSet<ExprId>) {
+    statements.insert(expr);
+    if let Expr::Conditional { then, r#else, .. } = hir.exprs[expr] {
+        statement_branches(hir, then, statements);
+        statement_branches(hir, r#else, statements);
+    }
+}
+
+/// How the expressions of a body are used, for the rules of
+/// [`expressions_later`] that depend on it.
+struct Uses {
+    /// The callees of calls, each with whether inference resolved the call
+    /// to a static function, `None` when it did not resolve it.
+    callees: HashMap<ExprId, Option<bool>>,
+    /// The receivers of members.
+    receivers: HashSet<ExprId>,
+    /// The expressions whose value nothing uses: expression statements,
+    /// and the expression body of a function that returns `()`.
+    statements: HashSet<ExprId>,
+}
+
+impl Uses {
+    /// The uses in the body `hir` of `owner`, in `file` of `project`.
+    fn of(
+        db: &dyn Db,
+        project: Project,
+        file: SourceFile,
+        owner: BodyOwner,
+        hir: &Body,
+        inference: &Inference,
+        resolution: &BodyResolution,
+    ) -> Self {
+        let mut callees = HashMap::new();
+        let mut receivers = HashSet::new();
+        for (id, expr) in hir.exprs.iter() {
+            match expr {
+                Expr::Call { callee, .. } => {
+                    let resolved = match inference.callee(id) {
+                        Some(Callee::Item(item)) => {
+                            Some(item_tree(db, item.file).item(item.item).is_static)
+                        }
+                        Some(Callee::Local(_)) => Some(false),
+                        None => None,
+                    };
+                    callees.insert(*callee, resolved);
+                }
+                Expr::Member { receiver, .. } => {
+                    receivers.insert(*receiver);
+                }
+                _ => {}
+            }
+        }
+        let mut statements = HashSet::new();
+        for (_, stmt) in hir.stmts.iter() {
+            match stmt {
+                Stmt::Expr(expr) => statement_branches(hir, *expr, &mut statements),
+                Stmt::Function(function)
+                    if resolution.return_type(function.ret) == Ty::UNIT
+                        && let Some(root) = function.body =>
+                {
+                    statement_branches(hir, root, &mut statements);
+                }
+                _ => {}
+            }
+        }
+        let returns_unit = match owner {
+            BodyOwner::Item(item) => matches!(
+                signature(db, ItemId { project, file, item }),
+                Signature::Function(function) if function.ret == Ty::UNIT
+            ),
+            // The top-level statements are a block, and every other body
+            // with an expression of its own comes later for what it is.
+            _ => false,
+        };
+        if returns_unit && let Some(root) = hir.root {
+            statement_branches(hir, root, &mut statements);
+        }
+        Self {
+            callees,
+            receivers,
+            statements,
+        }
+    }
+
+    /// Whether `expr` is a function used as a value, not called: a path to
+    /// a function, a method of a struct value, or a local function.
+    fn function_value(
+        &self,
+        db: &dyn Db,
+        hir: &Body,
+        inference: &Inference,
+        resolution: &BodyResolution,
+        expr: ExprId,
+    ) -> bool {
+        if self.callees.contains_key(&expr) {
+            return false;
+        }
+        let names_functions = resolution
+            .paths
+            .get(&expr)
+            .is_some_and(|path| matches!(path.target, Target::Item(Resolved::Functions(_))));
+        let method = struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
+            declarations(db, ty, name).any(|declaration| {
+                matches!(declaration, Declaration::Item(item) if item.kind == ItemKind::Function)
+            })
+        });
+        let local = matches!(hir.exprs[expr], Expr::Local(local)
+            if hir.locals[local].kind == LocalKind::Function);
+        names_functions || method || local
+    }
+
+    /// Whether `expr` is a value of the standard library that the body
+    /// uses: a path into it, or a member of one, that is neither called
+    /// nor the receiver of a member, and a call of one of its functions
+    /// whose value is used. A call that never returns has no value.
+    fn library_value(
+        &self,
+        hir: &Body,
+        inference: &Inference,
+        resolution: &BodyResolution,
+        expr: ExprId,
+    ) -> bool {
+        if self.callees.contains_key(&expr)
+            || self.receivers.contains(&expr)
+            || !from_library(hir, resolution, expr)
+        {
+            return false;
+        }
+        // A value that never exists is never used.
+        if inference.expr(expr) == Some(&Ty::Never) {
+            return false;
+        }
+        !matches!(hir.exprs[expr], Expr::Call { .. }) || !self.statements.contains(&expr)
+    }
+}
+
 /// Whether `expr` is a member of a struct value whose name is a static
 /// member of the struct, a method, a field, a getter or a constant, which
 /// is named through the type (`MR0155`, D-152).
-fn static_through_value(db: &dyn Db, hir: &Body, inference: &Inference, expr: ExprId) -> bool {
+fn static_through_value(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    uses: &Uses,
+    expr: ExprId,
+) -> bool {
     struct_member(hir, inference, expr).is_some_and(|(ty, name)| {
+        // The callee of a call inference resolved names what it calls,
+        // whatever overloads share its name.
+        if let Some(&Some(is_static)) = uses.callees.get(&expr) {
+            return is_static;
+        }
         declarations(db, ty, name).any(|declaration| match declaration {
             Declaration::Item(item) => item.kind == ItemKind::Function && item.is_static,
             Declaration::Value(value) => value.is_static,

@@ -700,24 +700,21 @@ fn external_call_is_a_statement_without_dest() {
 }
 
 #[test]
-#[should_panic(expected = "external")]
-fn external_call_value_used_is_internal_error() {
-    let lowered = lowered("Console.WriteLine(Console.ReadLine());\n");
-    lowered.mir("top-level");
-}
-
-#[test]
-#[should_panic(expected = "external")]
-fn external_call_stored_in_a_local_is_internal_error() {
-    let lowered = lowered("let line = Console.ReadLine();\n");
-    lowered.mir("top-level");
-}
-
-#[test]
-#[should_panic(expected = "external")]
-fn external_call_stored_in_a_typed_local_is_internal_error() {
-    let lowered = lowered("let line: string = Console.ReadLine();\n");
-    lowered.mir("top-level");
+fn a_value_of_the_library_comes_with_the_library() {
+    // The value of a call of one of its functions, used as an argument or
+    // stored, and a function of it used as a value.
+    for text in [
+        "Console.WriteLine(Console.ReadLine());\n",
+        "let line = Console.ReadLine();\n",
+        "let line: string = Console.ReadLine();\n",
+        "let f = Console.WriteLine;\n",
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner("top-level")),
+            "internal error lowering top-level: a value of the standard library is not lowered until M1.15",
+            "{text}"
+        );
+    }
 }
 
 #[test]
@@ -2644,23 +2641,19 @@ fn an_initializer_of_plain_values_lowers() {
 }
 
 #[test]
-#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
-fn a_constant_in_an_initializer_is_not_lowered_yet() {
-    let lowered = lowered(
-        "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n}\n\
-         F(): P => new P();\n",
+fn a_static_member_named_by_its_name_comes_with_statics() {
+    // A constant in a field initializer, and a static field read in a
+    // method, each by its bare name.
+    let text = "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n    \
+                public static S: int = 1;\n    Get(): int => S;\n}\nF(): P => new P();\n";
+    assert_eq!(
+        later_error(text, |l| l.initializer("P", "X")),
+        "internal error lowering UsersApi.P.X: a static member is not lowered until M3.13"
     );
-    lowered.mir_of(lowered.initializer("P", "X"));
-}
-
-#[test]
-#[should_panic(expected = "a static member is not lowered until M3.13, nor a constant until M1.11")]
-fn a_static_field_named_in_a_method_is_not_lowered() {
-    let lowered = lowered(
-        "struct P {\n    public X: int;\n    public static S: int = 1;\n    \
-         Get(): int => S;\n}\n",
+    assert_eq!(
+        later_error(text, |l| l.owner("Get")),
+        "internal error lowering UsersApi.P.Get: a static member is not lowered until M3.13"
     );
-    lowered.mir("Get");
 }
 
 #[test]
@@ -3074,11 +3067,11 @@ fn later_expressions_and_statements_come_with_their_milestone() {
 }
 
 #[test]
-fn an_as_expression_comes_with_options() {
-    // `x as T` gives `T?` (D-153).
+fn an_as_expression_comes_with_dynamic_interfaces() {
+    // `x as T` on an `any I` value gives `T?` (D-153).
     assert_eq!(
         later_error("F() {\n    let s = 1 as long;\n}\n", |l| l.owner("F")),
-        "internal error lowering UsersApi.F: `as` is not lowered until M3.5"
+        "internal error lowering UsersApi.F: `as` is not lowered until M3.11"
     );
 }
 
@@ -3098,19 +3091,106 @@ fn a_member_of_a_type_keyword_comes_with_the_library() {
 
 #[test]
 fn a_getter_comes_with_classes() {
-    // Read through a value, read by name in a method, and a static one
-    // read through its type.
+    // Read through a value and read by name in a method; a static one
+    // read through its type comes later still, with statics.
     let text = "struct S {\n    public X: int;\n    public G: int => X;\n    \
                 public static K: int => 1;\n    Get(): int => G;\n}\n\
                 A(s: S): int => s.G;\nB(): int => S.K;\nC(s: S): int => s.X;\n";
-    for (name, label) in [("A", "A"), ("B", "B"), ("Get", "S.Get")] {
+    for (name, label) in [("A", "A"), ("Get", "S.Get")] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!("internal error lowering UsersApi.{label}: a getter is not lowered until M2.1")
         );
     }
+    assert_eq!(
+        later_error(text, |l| l.owner("B")),
+        "internal error lowering UsersApi.B: a static member is not lowered until M3.13"
+    );
     // A field of a struct with getters is read now.
     assert!(!lowered(text).code("C").is_empty());
+}
+
+#[test]
+fn every_member_and_expression_the_front_end_accepts_lowers_or_waits() {
+    let text = "struct P {\n    public X: int;\n    public mut M: int;\n    \
+                public Inst(): int => X;\n    public static S(): int => 1;\n}\n\
+                extension (p: P) {\n    EG: int => 2;\n}\n\
+                One(p: P) {}\nOpt(): int? => none;\n\
+                F1(p: P) {\n    let f = One;\n}\nF2(p: P) {\n    let f = p.Inst;\n}\n\
+                F3() {\n    let f = P.S;\n}\nF4(): int {\n    L(): int => 1;\n    let f = L;\n    return 1;\n}\n\
+                F5() {\n    let f = Console.WriteLine;\n}\n\
+                E1(p: P) {\n    let a = p.Nope;\n}\nE2(p: P) {\n    var q = p;\n    q.Nope = 1;\n}\n\
+                E3(p: P) {\n    let a = p.EG;\n}\n\
+                B1() {\n    let n = \"abc\".Length;\n}\nB2() {\n    let s = 1.ToString();\n}\n\
+                B3(p: P) {\n    let s = p.X.ToString();\n}\n\
+                O1(p: P) {\n    let x = p?.X;\n}\nO2(p: P) {\n    let x = p.X ?? 1;\n}\n\
+                O3() {\n    var x = 1;\n    x ??= 2;\n}\nO4() {\n    let x = none;\n}\n\
+                I1(p: P) {\n    let x = p.X[0];\n}\nI2() {\n    let x = (1, 2)[0];\n}\n\
+                D1() {\n    var a = 1;\n    var b = 2;\n    (a, b) = (b, a);\n}\n\
+                R1(): string => Console.ReadLine();\n\
+                R2() {\n    L(): string => Console.ReadLine();\n}\n\
+                W1() => Console.WriteLine(\"a\");\n\
+                W2() {\n    L() => Console.WriteLine(\"a\");\n    L();\n}\n";
+    for (name, what, milestone) in [
+        ("F1", "a function used as a value", "M2.11"),
+        ("F2", "a function used as a value", "M2.11"),
+        ("F3", "a function used as a value", "M2.11"),
+        ("F4", "a function used as a value", "M2.11"),
+        ("F5", "a value of the standard library", "M1.15"),
+        ("E1", "an extension member", "M3.12"),
+        ("E2", "an extension member", "M3.12"),
+        ("E3", "an extension member", "M3.12"),
+        ("B1", "a member of a value of a built-in type", "M1.15"),
+        ("B2", "a member of a value of a built-in type", "M1.15"),
+        ("B3", "a member of a value of a built-in type", "M1.15"),
+        ("O1", "`?.`", "M3.5"),
+        ("O2", "`??`", "M3.5"),
+        ("O3", "`??`", "M3.5"),
+        ("O4", "`none`", "M3.5"),
+        ("I1", "an index", "M3.6"),
+        ("I2", "an index", "M3.6"),
+        ("D1", "a deconstruction", "M3.12"),
+        ("R1", "a value of the standard library", "M1.15"),
+        ("R2", "a value of the standard library", "M1.15"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: {what} is not lowered until {milestone}"
+            )
+        );
+    }
+    // A call of the library whose value nothing uses is lowered.
+    let lowered = lowered(text);
+    for name in ["W1", "W2"] {
+        assert!(!lowered.code(name).is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn an_instance_overload_with_a_static_sibling_is_lowered() {
+    // The call names what inference resolved it to, whatever overloads
+    // share its name; a call it leaves to statics comes with them.
+    for (methods, call) in [
+        (
+            "public static S2(x: int): int => 1;\n    public S2(): int => X;",
+            "s.S2()",
+        ),
+        (
+            "public static S2(): int => 1;\n    public S2(x: int): int => X;",
+            "s.S2(1)",
+        ),
+    ] {
+        let text = format!(
+            "struct S {{\n    public X: int;\n    {methods}\n}}\nH(s: S): int => {call};\n\
+             G(s: S): int => s.S2(1, 2);\n"
+        );
+        assert!(!lowered(&text).code("H").is_empty(), "{call}");
+        assert_eq!(
+            later_error(&text, |l| l.owner("G")),
+            "internal error lowering UsersApi.G: a static member named through a value is not lowered until M3.13"
+        );
+    }
 }
 
 #[test]

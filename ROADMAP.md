@@ -718,7 +718,7 @@ Done when:
 - Run tests for every operator.
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
-- UI tests: `x as T` on an `any I` value gives `T?`, `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
+- UI tests: `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
 
 ### M3.6 Operators, conversions and indexers
 
@@ -779,7 +779,7 @@ Done when:
 
 ### M3.11 Dynamic interface values
 
-Spec: [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.10.
+Spec: [§7.5](docs/design/mora.md#75-option-operators), [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.10.
 
 Interface values as data and vtable pointers, boxing of value types with the LSP-visible boxing marker, vtables and BLAKE3 type ids of §13.6, `is C c`, `as C`, checked casts, `MR0230`, `MR0231`, erasure of associated types for `IEnumerable<T>` values, and `any I` satisfying a constraint `T : I`.
 
@@ -788,6 +788,7 @@ Done when:
 - Run tests for `List<IShape>` holding a class and a boxed struct.
 - A failing `(C)i` cast panics with the message of §11.4.
 - UI tests for the boxing and interface-value rows of §5.10.
+- Run tests: `x as T` on an `any I` value gives `T?`, the value when its run-time type is `T` and `none` otherwise (D-153).
 
 ### M3.12 Tuples, collection expressions and smaller expressions
 
