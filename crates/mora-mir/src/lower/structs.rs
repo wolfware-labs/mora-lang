@@ -77,7 +77,8 @@ impl Lowerer<'_> {
 
     /// The place of the field `name` of the struct at `base`, which `expr`
     /// names. A body that names a static or constant member, which no value
-    /// stores, comes with statics ([`super::later`]), so it never gets here.
+    /// stores, comes with statics or constant evaluation ([`super::later`]),
+    /// so it never gets here.
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
         let db = self.owner.db;
         let Ty::Struct(item) = self.builder.body().place_ty(&base, db) else {

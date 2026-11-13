@@ -1,11 +1,11 @@
-//! The diagnostics for type errors: `MR0010`, `MR0127` for a type or a
-//! namespace used as a value, `MR0185`, `MR0186`, `MR0203` and `MR0204`,
-//! those of calls, `MR0205` to `MR0208`, in [`call`], and those of memberwise
-//! creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with `MR0129` for a
-//! field it cannot see, in [`struct_new`]. A static member that uses `this`
-//! is `MR0149`, and so is a member of a nested type that uses an instance
-//! member of a type around it; an instance field's initializer that uses
-//! `this` is `MR0152`.
+//! The diagnostics for type errors: `MR0010`, `MR0127` for a type, a type
+//! keyword or a namespace used as a value, `MR0185`, `MR0186`, `MR0203` and
+//! `MR0204`, those of calls, `MR0205` to `MR0208`, in [`call`], and those of
+//! memberwise creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with
+//! `MR0129` for a field it cannot see, in [`struct_new`]. A static member
+//! that uses `this` is `MR0149`, and so is a member of a nested type that
+//! uses an instance member of a type around it; an instance field's
+//! initializer that uses `this` is `MR0152`.
 
 mod call;
 mod struct_new;
@@ -260,7 +260,8 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             initializer_this(source, *expr, used, field)
         }
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
-        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named.as_ref()),
+        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named),
+        TypeError::TypeKeywordAsValue { expr } => type_keyword_as_value(source, *expr),
         TypeError::NotAPlace { expr, problem } => not_a_place(source, *expr, *problem),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
@@ -343,19 +344,10 @@ fn initializer_this(
     )
 }
 
-/// `MR0127`: `expr` names `named`, a type or a namespace, or a type keyword
-/// when `named` is `None`, where a value is expected; for a struct the note
-/// says how to create one.
-fn type_as_value(source: &Source<'_>, expr: ExprId, named: Option<&Resolved>) -> Diagnostic {
+/// `MR0127`: `expr` names `named`, a type or a namespace, where a value is
+/// expected; for a struct the note says how to create one.
+fn type_as_value(source: &Source<'_>, expr: ExprId, named: &Resolved) -> Diagnostic {
     let text = source.text(expr);
-    let Some(named) = named else {
-        return Diagnostic::error(
-            codes::MR0127,
-            format!("`{text}` is not a value"),
-            Label::new(source.span(expr), "this is a built-in type"),
-        )
-        .with_note("a type names no value");
-    };
     let full = full_name(source.db, named).unwrap_or_default();
     let what = kind_name(source.db, named);
     let diagnostic = Diagnostic::error(
@@ -376,6 +368,16 @@ fn type_as_value(source: &Source<'_>, expr: ExprId, named: Option<&Resolved>) ->
             )),
         _ => diagnostic.with_note("a type or a namespace names no value"),
     }
+}
+
+/// `MR0127`: `expr`, a type keyword, stands where a value is expected.
+fn type_keyword_as_value(source: &Source<'_>, expr: ExprId) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0127,
+        format!("`{}` is not a value", source.text(expr)),
+        Label::new(source.span(expr), "this is a built-in type"),
+    )
+    .with_note("a type names no value")
 }
 
 /// `MR0186`: `expr`, the left side of an assignment or the operand of `++`

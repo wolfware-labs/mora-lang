@@ -42,24 +42,26 @@ impl Check<'_> {
             }
         }
         for (expr, node) in body.exprs.iter() {
-            let through_value = !self.resolution.paths.contains_key(&expr);
             if let Expr::Type(_) = node {
                 if !allowed.contains(&expr) {
-                    self.errors
-                        .push(TypeError::TypeAsValue { expr, named: None });
+                    self.errors.push(TypeError::TypeKeywordAsValue { expr });
                 }
                 continue;
             }
-            if allowed.contains(&expr) && !(through_value && matches!(node, Expr::Member { .. })) {
+            if allowed.contains(&expr) && !self.member_of_value(expr) {
                 continue;
             }
             if let Some(named) = self.named_type(expr) {
-                self.errors.push(TypeError::TypeAsValue {
-                    expr,
-                    named: Some(named),
-                });
+                self.errors.push(TypeError::TypeAsValue { expr, named });
             }
         }
+    }
+
+    /// Whether `expr` is a member of a value, which no path resolution
+    /// names, rather than a member of a type or a namespace.
+    fn member_of_value(&self, expr: ExprId) -> bool {
+        matches!(self.body.exprs[expr], Expr::Member { .. })
+            && !self.resolution.paths.contains_key(&expr)
     }
 
     /// The type or namespace that `expr`, a path or a member, names as a
@@ -113,9 +115,8 @@ impl Check<'_> {
     /// (D-152) are not reported. A type or a namespace is `MR0127` already.
     fn place_problem(&self, expr: ExprId, discard: bool) -> Option<NotAPlace> {
         match &self.body.exprs[expr] {
-            Expr::Local(local) => {
-                (self.body.locals[*local].kind == LocalKind::Function).then_some(NotAPlace::Method)
-            }
+            Expr::Local(local) => (self.body.locals[*local].kind == LocalKind::Function)
+                .then_some(NotAPlace::Function),
             Expr::This | Expr::Index { .. } | Expr::Missing => None,
             Expr::Discard => (!discard).then_some(NotAPlace::Discard),
             Expr::Path(_) => self.named_member(expr),
@@ -125,15 +126,11 @@ impl Check<'_> {
                 }
                 // A member of a type, as a static field through it, has no
                 // value around it.
-                if self.resolution.paths.contains_key(&expr) {
+                if !self.member_of_value(expr) {
                     return None;
                 }
                 let (ty, name) = self.struct_member(expr)?;
-                let is_static = item_data(self.db, ty)
-                    .values
-                    .iter()
-                    .any(|value| value.name == name && value.is_static);
-                (!is_static && self.place_problem(*receiver, false).is_some())
+                (!self.is_static_value(ty, name) && self.place_problem(*receiver, false).is_some())
                     .then_some(NotAPlace::FieldOfValue)
             }
             Expr::Call { .. } => Some(NotAPlace::Call),
@@ -146,7 +143,7 @@ impl Check<'_> {
     fn named_member(&self, expr: ExprId) -> Option<NotAPlace> {
         if let Some(resolution) = self.resolution.paths.get(&expr) {
             return match &resolution.target {
-                Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Method),
+                Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Function),
                 // A constant at namespace level; a static there is a place.
                 Target::Item(Resolved::Item(item)) => {
                     let data = item_data(self.db, *item);
@@ -158,7 +155,7 @@ impl Check<'_> {
         }
         let (ty, name) = self.struct_member(expr)?;
         if instance_methods(self.db, ty, name).next().is_some() {
-            return Some(NotAPlace::Method);
+            return Some(NotAPlace::Function);
         }
         item_data(self.db, ty)
             .values

@@ -202,16 +202,17 @@ pub(crate) fn lowered_later(
 /// The milestone that lowers the body of `owner` for an expression or a
 /// statement that a later milestone brings. Statics bring a static member
 /// named through a value, error `MR0155` then, or through its type or its
-/// bare name; classes bring getters; closures bring a function used as a
-/// value; the standard library brings its own values and the members of
-/// built-in types and of their values; extension blocks, with the smaller
-/// expressions, bring members a struct does not declare. Options bring
-/// `?.`, `??` and `none`, operators an index of a number or a tuple,
-/// dynamic interface values `as`, and constant evaluation an array
-/// creation. Positional structs bring `with`, patterns `match` and `is`,
-/// results `?`, strings an index of a string (`MR0130`), enumeration
-/// `foreach`, expansion a quote, a splice or a macro call, and async
-/// lowering `await`. The smaller expressions bring the rest: an element of
+/// bare name, and a static declared in a namespace; enums bring an enum
+/// member and unions a union case; classes bring getters; closures bring a
+/// function used as a value; the standard library brings its own values
+/// and the members of built-in types and of their values; extension blocks,
+/// with the smaller expressions, bring members a struct does not declare.
+/// Options bring `?.`, `??` and `none`, operators an index of a number or a
+/// tuple, dynamic interface values `as`, and constant evaluation an array
+/// creation and a constant declared in a namespace. Positional structs
+/// bring `with`, patterns `match` and `is`, results `?`, strings an index
+/// of a string (`MR0130`), enumeration `foreach`, expansion a quote, a
+/// splice or a macro call, and async lowering `await`. The smaller expressions bring the rest: an element of
 /// a tuple read by name, a collection expression, a range, an index from
 /// the end, `nameof`, `sizeof`, `default` and a deconstruction, declared or
 /// assigned. On a tie the expressions name it before the statements, each
@@ -232,37 +233,7 @@ fn expressions_later(
             _ if static_through_value(db, hir, inference, &uses, id) => {
                 ("a static member named through a value", STATICS)
             }
-            // Through its type or by its bare name, a static field, a
-            // static getter or a constant comes with statics.
-            _ if resolution.value_member(db, id).is_some_and(|member| {
-                member.is_static
-                    && matches!(
-                        member.kind,
-                        ValueKind::Field | ValueKind::Getter | ValueKind::Const
-                    )
-            }) =>
-            {
-                ("a static member", STATICS)
-            }
-            // An enum member and a union case come with their kinds of type.
-            _ if resolution
-                .value_member(db, id)
-                .is_some_and(|member| member.kind == ValueKind::EnumMember) =>
-            {
-                ("an enum member", ENUMS)
-            }
-            _ if resolution
-                .value_member(db, id)
-                .is_some_and(|member| member.kind == ValueKind::UnionCase) =>
-            {
-                ("a union case", UNIONS)
-            }
-            // A static or a constant declared in a namespace: statics, and
-            // constant evaluation.
-            _ if namespace_value(db, resolution, id) == Some(true) => ("a static", STATICS),
-            _ if namespace_value(db, resolution, id) == Some(false) => {
-                ("a constant", CONSTANT_EVALUATION)
-            }
+            _ if let Some(found) = named_value_later(db, resolution, id) => found,
             _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
             _ if uses.function_value(db, hir, inference, resolution, id) => {
                 ("a function used as a value", CLOSURES)
@@ -346,14 +317,39 @@ fn expressions_later(
     latest(exprs.chain(stmts))
 }
 
-/// Whether `expr` names a static (`true`) or a constant (`false`) that a
-/// namespace declares, `None` for anything else.
-fn namespace_value(db: &dyn Db, resolution: &BodyResolution, expr: ExprId) -> Option<bool> {
-    let Target::Item(Resolved::Item(item)) = &resolution.paths.get(&expr)?.target else {
-        return None;
-    };
-    let data = item_tree(db, item.file).item(item.item);
-    (data.kind == ItemKind::Field).then_some(data.is_static)
+/// What the path `expr` names, as `a union case`, and the milestone that
+/// lowers it, when it names a value that comes later: through its type or
+/// by its bare name, a static field, a static getter or a constant comes
+/// with statics; an enum member and a union case come with their kinds of
+/// type; and a static or a constant declared in a namespace with statics
+/// and constant evaluation.
+fn named_value_later(
+    db: &dyn Db,
+    resolution: &BodyResolution,
+    expr: ExprId,
+) -> Option<(&'static str, Milestone)> {
+    match &resolution.paths.get(&expr)?.target {
+        Target::Value(value) => {
+            let member = value.member(db)?;
+            match member.kind {
+                ValueKind::Field | ValueKind::Getter | ValueKind::Const if member.is_static => {
+                    Some(("a static member", STATICS))
+                }
+                ValueKind::Field | ValueKind::Getter | ValueKind::Const => None,
+                ValueKind::EnumMember => Some(("an enum member", ENUMS)),
+                ValueKind::UnionCase => Some(("a union case", UNIONS)),
+            }
+        }
+        Target::Item(Resolved::Item(item)) => {
+            let data = item_tree(db, item.file).item(item.item);
+            match data.kind {
+                ItemKind::Field if data.is_static => Some(("a static", STATICS)),
+                ItemKind::Field => Some(("a constant", CONSTANT_EVALUATION)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Adds `expr`, an expression in statement position, to `statements`,

@@ -247,7 +247,7 @@ impl InstanceMember {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NotAPlace {
     /// A method or a function.
-    Method,
+    Function,
     /// A getter, which has no setter.
     Getter,
     /// A constant.
@@ -268,7 +268,7 @@ impl NotAPlace {
     /// What the message calls it.
     pub(crate) fn what(self) -> &'static str {
         match self {
-            NotAPlace::Method => "a method or a function",
+            NotAPlace::Function => "a method or a function",
             NotAPlace::Getter => "a getter, which has no setter",
             NotAPlace::Constant => "a constant",
             NotAPlace::Case => "an enum member or a union case",
@@ -476,12 +476,11 @@ pub(crate) enum TypeError {
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
     AssignmentValue { expr: ExprId, split: Option<ExprId> },
-    /// `expr` names a type or a namespace, `named`, or a type keyword when
-    /// `named` is `None`, where a value is expected (`MR0127`).
-    TypeAsValue {
-        expr: ExprId,
-        named: Option<Resolved>,
-    },
+    /// `expr` names a type or a namespace, `named`, where a value is
+    /// expected (`MR0127`).
+    TypeAsValue { expr: ExprId, named: Resolved },
+    /// `expr`, a type keyword, stands where a value is expected (`MR0127`).
+    TypeKeywordAsValue { expr: ExprId },
     /// `expr`, the left side of an assignment or the operand of a step, is
     /// not a place (`MR0186`).
     NotAPlace { expr: ExprId, problem: NotAPlace },
@@ -3817,7 +3816,7 @@ mod tests {
     }
 
     #[test]
-    fn a_static_overload_through_a_value_leaves_a_new_its_target() {
+    fn a_new_passed_to_a_static_overload_through_a_value_waits_for_its_target() {
         // The call is not checked before statics (D-152), so a `new` passed
         // to it waits for its target; what is inside it is checked now.
         let head = "public struct Q {\n    public Y: int;\n}\npublic struct P {\n    \
