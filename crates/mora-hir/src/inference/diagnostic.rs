@@ -12,9 +12,14 @@ mod struct_new;
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
-use super::{Context, InstanceMember, InstanceUse, TypeError, constant, numeric, ty_name};
+use super::{
+    Context, InstanceMember, InstanceUse, NotAPlace, TypeError, constant, numeric, ty_name,
+};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
+use crate::items::ItemKind;
 use crate::report::Declared;
+use crate::report::{full_name, kind_name};
+use crate::resolve::{Resolved, item_data};
 use crate::ty::{Primitive, Ty};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
@@ -255,6 +260,8 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             initializer_this(source, *expr, used, field)
         }
         TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
+        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named),
+        TypeError::NotAPlace { expr, problem } => not_a_place(source, *expr, *problem),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
         }
@@ -339,6 +346,45 @@ fn initializer_this(
 /// `MR0185`: an assignment whose value is used. When `split` is the
 /// statement of a block that `assignment` is the value of, the fix writes it
 /// as a statement before that one.
+/// `MR0127`: `expr` names `named`, a type or a namespace, where a value is
+/// expected; for a struct the note says how to create one.
+fn type_as_value(source: &Source<'_>, expr: ExprId, named: &Resolved) -> Diagnostic {
+    let text = source.text(expr);
+    let full = full_name(source.db, named).unwrap_or_default();
+    let what = kind_name(source.db, named);
+    let diagnostic = Diagnostic::error(
+        codes::MR0127,
+        format!("`{text}` is not a value"),
+        Label::new(source.span(expr), format!("this is {what} `{full}`")),
+    );
+    // A path names the type as written; a member of a value is not a
+    // way to write a type, so the note uses the type's full name.
+    let written = match source.body.exprs[expr] {
+        Expr::Path(_) => text.to_owned(),
+        _ => full.clone(),
+    };
+    match named {
+        Resolved::Item(item) if item_data(source.db, *item).kind == ItemKind::Struct => diagnostic
+            .with_note(format!(
+                "a type names no value; `new {written} {{ ... }}` creates one"
+            )),
+        _ => diagnostic.with_note("a type or a namespace names no value"),
+    }
+}
+
+/// `MR0186`: `expr`, the left side of an assignment or the operand of `++`
+/// or `--`, is not a place.
+fn not_a_place(source: &Source<'_>, expr: ExprId, problem: NotAPlace) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0186,
+        format!("cannot assign to `{}`", source.text(expr)),
+        Label::new(source.span(expr), format!("this is {}", problem.what())),
+    )
+    .with_note(
+        "an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element",
+    )
+}
+
 fn assignment_value(source: &Source<'_>, assignment: ExprId, split: Option<ExprId>) -> Diagnostic {
     let Expr::Assign { lhs, .. } = &source.body.exprs[assignment] else {
         unreachable!("MR0185 is reported on an assignment");

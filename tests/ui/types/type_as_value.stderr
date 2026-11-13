@@ -1,0 +1,71 @@
+error[MR0127]: `N` is not a value
+  --> tests/ui/types/type_as_value.mr:10:17
+   |
+10 |         let a = N; //~ ERROR MR0127
+   |                 ^ this is the struct `App.P.N`
+   |
+   = note: a type names no value; `new N { ... }` creates one
+
+error[MR0127]: `p.N` is not a value
+  --> tests/ui/types/type_as_value.mr:18:13
+   |
+18 |     let a = p.N; //~ ERROR MR0127
+   |             ^^^ this is the struct `App.P.N`
+   |
+   = note: a type names no value; `new App.P.N { ... }` creates one
+
+error[MR0127]: `P.N` is not a value
+  --> tests/ui/types/type_as_value.mr:19:13
+   |
+19 |     let b = P.N; //~ ERROR MR0127
+   |             ^^^ this is the struct `App.P.N`
+   |
+   = note: a type names no value; `new App.P.N { ... }` creates one
+
+error[MR0127]: `p.N` is not a value
+  --> tests/ui/types/type_as_value.mr:20:5
+   |
+20 |     p.N(); //~ ERROR MR0127
+   |     ^^^ this is the struct `App.P.N`
+   |
+   = note: a type names no value; `new App.P.N { ... }` creates one
+
+error[MR0127]: `P.N` is not a value
+  --> tests/ui/types/type_as_value.mr:21:5
+   |
+21 |     P.N(); //~ ERROR MR0127
+   |     ^^^ this is the struct `App.P.N`
+   |
+   = note: a type names no value; `new App.P.N { ... }` creates one
+
+error[MR0127]: `P` is not a value
+  --> tests/ui/types/type_as_value.mr:22:13
+   |
+22 |     let c = P; //~ ERROR MR0127
+   |             ^ this is the struct `App.P`
+   |
+   = note: a type names no value; `new P { ... }` creates one
+
+error[MR0127]: `P` is not a value
+  --> tests/ui/types/type_as_value.mr:23:5
+   |
+23 |     P(); //~ ERROR MR0127
+   |     ^ this is the struct `App.P`
+   |
+   = note: a type names no value; `new P { ... }` creates one
+
+error[MR0127]: `Color` is not a value
+  --> tests/ui/types/type_as_value.mr:24:13
+   |
+24 |     let d = Color; //~ ERROR MR0127
+   |             ^^^^^ this is the enum `App.Color`
+   |
+   = note: a type or a namespace names no value
+
+error[MR0127]: `App` is not a value
+  --> tests/ui/types/type_as_value.mr:25:13
+   |
+25 |     let e = App; //~ ERROR MR0127
+   |             ^^^ this is the namespace `App`
+   |
+   = note: a type or a namespace names no value

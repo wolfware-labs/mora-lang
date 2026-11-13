@@ -28,7 +28,7 @@ use crate::arena::arena_index;
 use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, TypeId, UnaryOp};
 use crate::defs::ItemId;
 use crate::items::Visibility;
-use crate::resolve::{Scope, item_data};
+use crate::resolve::{Resolved, Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
 pub use constant::literal_constant;
@@ -242,6 +242,38 @@ impl InstanceMember {
     }
 }
 
+/// What the left side of an assignment, or the operand of a step, is
+/// instead of a place (`MR0186`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotAPlace {
+    /// A method or a function.
+    Method,
+    /// A getter, which has no setter.
+    Getter,
+    /// A constant.
+    Constant,
+    /// An enum member or a union case.
+    Case,
+    /// The result of a call.
+    Call,
+    /// Any other value, as a literal or an operation.
+    Value,
+}
+
+impl NotAPlace {
+    /// What the message calls it.
+    pub(crate) fn what(self) -> &'static str {
+        match self {
+            NotAPlace::Method => "a method",
+            NotAPlace::Getter => "a getter, which has no setter",
+            NotAPlace::Constant => "a constant",
+            NotAPlace::Case => "an enum member or a union case",
+            NotAPlace::Call => "the result of a call",
+            NotAPlace::Value => "a value",
+        }
+    }
+}
+
 /// Why a `new` has nothing to create (`MR0154`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NewTarget {
@@ -438,6 +470,12 @@ pub(crate) enum TypeError {
     /// statement of a block it is the value of, when a fix can write it as a
     /// statement before that one.
     AssignmentValue { expr: ExprId, split: Option<ExprId> },
+    /// `expr` names a type or a namespace, `named`, where a value is
+    /// expected (`MR0127`).
+    TypeAsValue { expr: ExprId, named: Resolved },
+    /// `expr`, the left side of an assignment or the operand of a step, is
+    /// not a place (`MR0186`).
+    NotAPlace { expr: ExprId, problem: NotAPlace },
     /// The callee `expr` names methods of a value, none of which is visible
     /// from `from`; `item` is the first (`MR0129`).
     NotVisible {
@@ -3598,6 +3636,102 @@ mod tests {
             let text = format!("{head}let b = true;\n{line}\n");
             assert_eq!(reported(&text), vec!["MR0154"; errors], "{line}");
         }
+    }
+
+    #[test]
+    fn a_type_or_a_namespace_is_no_value() {
+        let head = "public struct P {\n    public X: int;\n    public static S(): int => 1;\n    \
+                    public struct N {\n        public Y: int;\n    }\n    \
+                    Probe(): int {\n        BARE\n        return 0;\n    }\n}\n\
+                    public enum Color { Red }\n";
+        for (bare, line, expected) in [
+            ("let a = N;", "", vec!["MR0127"]),
+            ("", "let a = p.N;", vec!["MR0127"]),
+            ("", "let a = P.N;", vec!["MR0127"]),
+            ("", "p.N();", vec!["MR0127"]),
+            ("", "P.N();", vec!["MR0127"]),
+            ("", "let a = P;", vec!["MR0127"]),
+            ("", "P();", vec!["MR0127"]),
+            ("", "let a = Color;", vec!["MR0127"]),
+            ("", "let a = UsersApi;", vec!["MR0127"]),
+            // The receiver of a member, `nameof` and a pattern name types.
+            ("", "let a = P.S();", vec![]),
+            ("", "let a = nameof(P);", vec![]),
+            ("", "let a = p is P;", vec![]),
+            ("", "let a = new P.N { Y = 1 };", vec![]),
+            ("", "let a = Color.Red;", vec![]),
+            ("", "let a = p.X;", vec![]),
+        ] {
+            let text = format!("{}F(p: P) {{\n    {line}\n}}\n", head.replace("BARE", bare));
+            assert_eq!(reported(&text), expected, "{bare}{line}");
+        }
+        let found = diagnostics_of(&format!("{}let a = P;\n", head.replace("BARE", "")));
+        assert_eq!(found[0].message, "`P` is not a value");
+        let notes = format!("{:?}", found[0]);
+        assert!(notes.contains("`new P { ... }` creates one"), "{notes}");
+        let found = diagnostics_of(&format!("{}let a = Color;\n", head.replace("BARE", "")));
+        assert!(format!("{:?}", found[0]).contains("a type or a namespace names no value"));
+        let found = diagnostics_of(&format!(
+            "{}F(p: P) {{\n    let a = p.N;\n}}\n",
+            head.replace("BARE", "")
+        ));
+        assert!(format!("{:?}", found[0]).contains("`new UsersApi.P.N { ... }`"));
+    }
+
+    #[test]
+    fn only_a_place_takes_an_assignment() {
+        let head = "public struct P {\n    public X: int;\n    public mut M: int;\n    \
+                    public G: int => X;\n    public Inst(): int => X;\n    \
+                    public static S(): int => 1;\n    public static mut SF: int = 1;\n    \
+                    public static SG: int => 1;\n    public const K: int = 2;\n    \
+                    Probe() {\n        BARE\n    }\n}\n\
+                    public enum Color { Red }\nOne(): int => 1;\n";
+        for (bare, line, expected) in [
+            ("Inst = 1;", "", vec!["MR0186"]),
+            ("G = 1;", "", vec!["MR0186"]),
+            ("K = 1;", "", vec!["MR0186"]),
+            ("SF = 1;", "", vec![]),
+            ("M = 1;", "", vec![]),
+            ("", "q.Inst = 1;", vec!["MR0186"]),
+            ("", "q.Inst += 1;", vec!["MR0186"]),
+            ("", "q.Inst++;", vec!["MR0186"]),
+            ("", "q.G = 1;", vec!["MR0186"]),
+            ("", "q.G--;", vec!["MR0186"]),
+            ("", "P.S = 1;", vec!["MR0186"]),
+            ("", "P.SG = 1;", vec!["MR0186"]),
+            ("", "P.K = 1;", vec!["MR0186"]),
+            ("", "Color.Red = 1;", vec!["MR0186"]),
+            ("", "One() = 1;", vec!["MR0186"]),
+            ("", "(1 + 2) = 1;", vec!["MR0186"]),
+            ("", "var a = 1;\n    (a, One()) = (1, 2);", vec!["MR0186"]),
+            // Places; a static member through a value waits for statics.
+            ("", "q.M = 1;", vec![]),
+            ("", "q.M += 1;", vec![]),
+            ("", "q.M++;", vec![]),
+            ("", "P.SF = 1;", vec![]),
+            ("", "xs[0] = 1;", vec![]),
+            (
+                "",
+                "var a = 1;\n    var b = 2;\n    (a, b) = (b, a);",
+                vec![],
+            ),
+            ("", "var a = 1;\n    (a, _) = (1, 2);", vec![]),
+            ("", "q.SF = 1;", vec![]),
+            ("", "q.K = 1;", vec![]),
+            ("", "q.Nope = 1;", vec![]),
+        ] {
+            let text = format!(
+                "{}F(p: P, xs: int[]) {{\n    var q = p;\n    {line}\n}}\n",
+                head.replace("BARE", bare)
+            );
+            assert_eq!(reported(&text), expected, "{bare}{line}");
+        }
+        let found = diagnostics_of(&format!(
+            "{}F(p: P) {{\n    var q = p;\n    q.G = 1;\n}}\n",
+            head.replace("BARE", "")
+        ));
+        assert_eq!(found[0].message, "cannot assign to `q.G`");
+        assert!(format!("{:?}", found[0]).contains("a getter, which has no setter"));
     }
 
     #[test]

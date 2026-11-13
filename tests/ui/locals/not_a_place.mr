@@ -1,0 +1,45 @@
+// The left side of `=`, a compound assignment, `++` and `--` is a place:
+// a local, a parameter, a field or an element.
+public struct P {
+    public X: int;
+    public mut M: int;
+    public G: int => X;
+    public Inst(): int => X;
+    public static S(): int => 1;
+    public static mut SF: int = 1;
+    public static SG: int => 1;
+    public const K: int = 2;
+    Probe() {
+        Inst = 1; //~ ERROR MR0186
+        G = 1; //~ ERROR MR0186
+        K = 1; //~ ERROR MR0186
+        SF = 1;
+    }
+}
+
+public enum Color { Red }
+
+One(): int => 1;
+
+F(p: P, xs: int[]) {
+    var q = p;
+    q.Inst = 1; //~ ERROR MR0186
+    q.Inst += 1; //~ ERROR MR0186
+    q.Inst++; //~ ERROR MR0186
+    q.G = 1; //~ ERROR MR0186
+    q.G--; //~ ERROR MR0186
+    P.S = 1; //~ ERROR MR0186
+    P.SG = 1; //~ ERROR MR0186
+    P.K = 1; //~ ERROR MR0186
+    Color.Red = 1; //~ ERROR MR0186
+    One() = 1; //~ ERROR MR0186
+    q.M = 1;
+    q.M += 1;
+    q.M++;
+    P.SF = 1;
+    xs[0] = 1;
+    var a = 1;
+    var b = 2;
+    (a, b) = (b, a);
+    (a, _) = (1, 2);
+}

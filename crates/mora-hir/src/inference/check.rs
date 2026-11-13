@@ -1,6 +1,7 @@
 //! The walk over a body that gives each expression and local its type.
 
 mod call;
+mod places;
 mod static_member;
 
 use std::collections::{HashMap, HashSet};
@@ -223,6 +224,7 @@ pub(super) fn infer_body(
         check.function_body(root, expected, statement);
     }
     check.instance_uses(owner);
+    check.types_as_values();
     Inference {
         exprs: check.exprs,
         locals: check.locals,
@@ -1078,7 +1080,9 @@ impl Check<'_> {
 
     /// `++` and `--`, prefix or postfix: the operand keeps its numeric type.
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
-        let found = self.infer(operand)?;
+        let found = self.infer(operand);
+        self.require_place(operand);
+        let found = found?;
         let result = numeric::as_numeric(&found);
         if result.is_none() && (!is_known(&found) || is_struct(&found)) {
             return None;
@@ -1273,10 +1277,12 @@ impl Check<'_> {
         match op {
             None => {
                 let places = self.place_type(lhs);
+                self.require_place(lhs);
                 self.deconstruct(lhs, &places, rhs);
             }
             Some(op) => {
                 let result = self.binary(expr, op, lhs, rhs);
+                self.require_place(lhs);
                 // The result converts back to the type of the place as a
                 // cast would (§7.12).
                 let place = self.exprs[arena_index(lhs)].clone();

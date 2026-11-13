@@ -136,6 +136,7 @@ registry! {
     MR0183 = 183: "`break` or `continue` outside a loop",
     MR0184 = 184: "a function that returns a value can end without one",
     MR0185 = 185: "an assignment used as a value",
+    MR0186 = 186: "the left side of an assignment, or the operand of `++` or `--`, that is not a place",
     MR0190 = 190: "`default` of a type that has no default value",
     MR0201 = 201: "`?` cannot convert the error to the function's error type",
     MR0202 = 202: "`?` on an option in a function that does not return an option",

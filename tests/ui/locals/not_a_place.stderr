@@ -1,0 +1,103 @@
+error[MR0186]: cannot assign to `Inst`
+  --> tests/ui/locals/not_a_place.mr:13:9
+   |
+13 |         Inst = 1; //~ ERROR MR0186
+   |         ^^^^ this is a method
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `G`
+  --> tests/ui/locals/not_a_place.mr:14:9
+   |
+14 |         G = 1; //~ ERROR MR0186
+   |         ^ this is a getter, which has no setter
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `K`
+  --> tests/ui/locals/not_a_place.mr:15:9
+   |
+15 |         K = 1; //~ ERROR MR0186
+   |         ^ this is a constant
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `q.Inst`
+  --> tests/ui/locals/not_a_place.mr:26:5
+   |
+26 |     q.Inst = 1; //~ ERROR MR0186
+   |     ^^^^^^ this is a method
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `q.Inst`
+  --> tests/ui/locals/not_a_place.mr:27:5
+   |
+27 |     q.Inst += 1; //~ ERROR MR0186
+   |     ^^^^^^ this is a method
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `q.Inst`
+  --> tests/ui/locals/not_a_place.mr:28:5
+   |
+28 |     q.Inst++; //~ ERROR MR0186
+   |     ^^^^^^ this is a method
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `q.G`
+  --> tests/ui/locals/not_a_place.mr:29:5
+   |
+29 |     q.G = 1; //~ ERROR MR0186
+   |     ^^^ this is a getter, which has no setter
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `q.G`
+  --> tests/ui/locals/not_a_place.mr:30:5
+   |
+30 |     q.G--; //~ ERROR MR0186
+   |     ^^^ this is a getter, which has no setter
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `P.S`
+  --> tests/ui/locals/not_a_place.mr:31:5
+   |
+31 |     P.S = 1; //~ ERROR MR0186
+   |     ^^^ this is a method
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `P.SG`
+  --> tests/ui/locals/not_a_place.mr:32:5
+   |
+32 |     P.SG = 1; //~ ERROR MR0186
+   |     ^^^^ this is a getter, which has no setter
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `P.K`
+  --> tests/ui/locals/not_a_place.mr:33:5
+   |
+33 |     P.K = 1; //~ ERROR MR0186
+   |     ^^^ this is a constant
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `Color.Red`
+  --> tests/ui/locals/not_a_place.mr:34:5
+   |
+34 |     Color.Red = 1; //~ ERROR MR0186
+   |     ^^^^^^^^^ this is an enum member or a union case
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
+
+error[MR0186]: cannot assign to `One()`
+  --> tests/ui/locals/not_a_place.mr:35:5
+   |
+35 |     One() = 1; //~ ERROR MR0186
+   |     ^^^^^ this is the result of a call
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field or an element
