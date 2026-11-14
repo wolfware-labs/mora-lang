@@ -1202,7 +1202,7 @@ let total = 4;       // MR0180: `total` is in scope
 
 `if`/`else`, `while`, `do`/`while`, `for`, `foreach`, `break`, `continue`, `return`, blocks, local functions, expression statements (calls, assignments, increments, `await`) and `match`. The condition of `if`, `while`, `do`/`while` and `for`, like that of `c ? a : b`, is a `bool`, and there is no implicit conversion to `bool` (`MR0203`). The two branches of `c ? a : b` take the type expected of it, or else have one type that the other converts to. **Control flow.** `break` and `continue` act on the innermost `while`, `do`, `for` or `foreach` around them; outside any loop they are error `MR0183`, and a lambda or a local function does not see the loops around it. A function that returns a value, one whose return type is not `()`, ends every path through its block body in `return` with a value, a call of `panic`, `Unreachable` or `Todo` (§11.4), written alone or as `Std.panic`, a loop whose condition is the literal `true` and that no `break` leaves, or a `match` whose every arm ends the path. A path that reaches the end of the body, or `return;` without a value, is error `MR0184`. Code that no path reaches reports nothing about assignment (D-138).
 
-`foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
+`foreach (let x in xs)`, `foreach (var x in xs)`, `foreach (let x: T in xs)` and `foreach (ref var x in span)` iterate anything with a `GetEnumerator()` method whose result implements `IEnumerator<T>` (§15.5). The loop variable may also be a tuple designation, as in `foreach (let (word, count) in counts)` over a sequence of tuples: each element is deconstructed as `let (word, count) = element;` would be (§5.5), `_` discards a part, and a name bound twice is `MR0180`. Mutating a collection while a `foreach` runs over it panics (§10.10). `yield return` iterators are post-MVP (OQ-9). `using arena { }` is post-MVP (§10.12).
 
 ### 7.12 Arithmetic
 
@@ -2993,7 +2993,7 @@ This section keeps the original direction for libraries and packages so that MVP
 
 ### 18.1 WebAssembly target
 
-`mora build --target wasm32-wasi` (WASI preview 2) and `--target wasm32-unknown` (browser) lower MIR to WebAssembly with `wasm-encoder`. Layouts are those of §13 with 4-byte pointers; the shared-object header is 8 bytes, as on every target. The runtime is `mora-rt` compiled for the wasm targets. Async on wasm uses the WASI event loop on `wasm32-wasi` and the host's promise integration in the browser. `mora run --target wasm32-wasi` runs the module in embedded Wasmtime.
+`mora build --target wasm32-wasi` (WASI 0.3) and `--target wasm32-unknown` (browser) lower MIR to WebAssembly with `wasm-encoder`. Layouts are those of §13 with 4-byte pointers; the shared-object header is 8 bytes, as on every target. The runtime is `mora-rt` compiled for the wasm targets. Async on wasm uses the WASI event loop on `wasm32-wasi` and the host's promise integration in the browser. `mora run --target wasm32-wasi` runs the module in embedded Wasmtime.
 
 ### 18.2 The library format
 
@@ -3419,5 +3419,5 @@ Source: **user** means decided by the project owner in the design discussion; **
 - Joe Duffy. The Midori blog series, on a safe systems language with ownership and no collector, used to write the Midori research operating system.
 - Luc Maranget. *Warnings for pattern matching*. Journal of Functional Programming, 2007.
 - David F. Bacon, V. T. Rajan. *Concurrent Cycle Collection in Reference Counted Systems*. ECOOP 2001.
-- WebAssembly Component Model and WIT; WASI preview 2.
+- WebAssembly Component Model and WIT; WASI 0.3, released 2026-06-11 (https://wasi.dev/releases).
 - Sigstore: keyless signing and the Rekor transparency log.

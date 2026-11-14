@@ -220,6 +220,7 @@ Done when:
 | [M1.18](#m118-third-instruction-set-under-emulation) | Third instruction set under emulation | `ci` | M1.16 |
 | [M1.19](#m119-grammar-driven-parser-fuzzing) | Grammar-driven parser fuzzing | `syntax` | M1.4 |
 | [M1.20](#m120-fix-applicability-mora-fix-and-watch-mode) | Fix applicability, `mora fix` and watch mode | `driver` | M1.16 |
+| [M1.21](#m121-error-recovery-that-keeps-types) | Error recovery that keeps types | `check` | M1.9 |
 
 ### M1.1 Lexer
 
@@ -441,6 +442,18 @@ Done when:
 - Two runs of `mora check --message-format json` on the same project print the same bytes.
 - A watch-mode test edits a file and receives a new round that ends with the summary object.
 
+### M1.21 Error recovery that keeps types
+
+Spec: [§14.5](docs/design/mora.md#145-name-resolution-and-types), [§8.1](docs/design/mora.md#81-generic-declarations), [§17.6](docs/design/mora.md#176-diagnostics), [§17.8](docs/design/mora.md#178-language-server). Crates: `mora-hir`, `mora-check`. Blocked by: M1.9.
+
+The checker gives `Ty::Error` to an expression it cannot type and reports no diagnostic caused by one, so a mistake does not cascade, but the type is lost: hover, completion and inlay hints show nothing for that expression and for every local built from it, and later mistakes that involve it are not reported. This makes recovery a rule of §14.5 for every construct M1 checks: an ill-typed expression keeps its diagnostic and the type it would have had whenever that type is known without guessing (the declared return type of the only candidate, the declared type of a local, the type expected from context), and `Ty::Error` stays for the rest. Later deliverables follow the rule for the constructs they add, so the language server and `mora query` keep working in code that does not compile yet. To settle in the spec: whether a call with two or more overloads and a bad argument takes the return type the other arguments select, and whether an unresolved name takes the type expected at its position.
+
+Done when:
+
+- §14.5 states which mistakes keep a recovered type and which give the error type, and that neither is ever the cause of a diagnostic.
+- UI tests: for each M1 code that has a recovered type, a body with that mistake reports it once, and a type error placed after it in the same body is reported too.
+- Analysis-database tests: the type of each local declared after the mistake is the recovered type.
+
 ## M2: Memory model
 
 **Goal.** Classes, structs, unique classes, parameter modes, moves, drops, destructors, borrows, views, weak references and closures, with ARC inserted and optimized, and a test suite that proves the rules of §10.
@@ -602,12 +615,13 @@ Done when:
 
 Spec: [§10.13](docs/design/mora.md#1013-what-the-optimizer-guarantees), [§14.12](docs/design/mora.md#1412-arc-optimization). Crates: `mora-mir`. Blocked by: M2.12.
 
-Last-use moves, retain/release pair cancellation, borrowed forwarding and immortal elimination, delivering the seven guarantees of §10.13.
+Last-use moves, retain/release pair cancellation, borrowed forwarding and immortal elimination, delivering the seven guarantees of §10.13. Ownership summaries mark a parameter borrow-only only within a frame-limited bound: a borrow inferred for a callee does not keep the caller's object alive across a call of unbounded depth when the caller could release it before the call, and where a `with` reuse would fire the summary prefers owned (frame-limited reuse, Lorenzen and Leijen, ICFP 2022). §14.12 states the rule.
 
 Done when:
 
 - One MIR snapshot test per guarantee of §10.13 with zero `Retain`/`Release` statements.
 - The M2 run tests still pass and stay leak-free.
+- A MIR snapshot of a recursive function that passes a list it no longer needs shows the release before the recursive call, and a 100,000-deep run test stays leak-free with peak memory independent of the depth.
 
 ### M2.14 Debug runtime: poisoning and leak report
 
@@ -657,6 +671,8 @@ Done when:
 | [M3.16](#m316-platform-capabilities-and-standard-library-layers) | Platform capabilities and standard library layers | `std` | M3.15 |
 | [M3.17](#m317-interpolation-handlers) | Interpolation handlers | `hir` | M3.10 |
 | [M3.18](#m318-effect-inference-and-uses-bounds) | Effect inference and `uses` bounds | `check` | M2.11, M3.11, M3.16, M3.17 |
+| [M3.19](#m319-let-with-a-refutable-pattern-and-else) | `let` with a refutable pattern and `else` | `syntax` | M3.3, M3.4 |
+| [M3.20](#m320-labeled-break-and-continue) | Labeled `break` and `continue` | `syntax` | M1.10 |
 
 ### M3.1 Unions
 
@@ -717,15 +733,17 @@ Done when:
 
 ### M3.6 Operators, conversions and indexers
 
-Spec: [§6.9](docs/design/mora.md#69-members), [§5.10](docs/design/mora.md#510-conversions). Crates: `mora-hir`. Blocked by: M3.3.
+Spec: [§6.9](docs/design/mora.md#69-members), [§5.10](docs/design/mora.md#510-conversions), [§10.4](docs/design/mora.md#104-borrowing-from-places). Crates: `mora-hir`. Blocked by: M3.3.
 
-User-defined arithmetic, bitwise and unary operators, comparison operators from `IEquatable<T>` and `IComparable<T>` with `MR0238` (D-90), implicit conversions through `IFrom<S>` (D-91), and indexers.
+User-defined arithmetic, bitwise and unary operators, comparison operators from `IEquatable<T>` and `IComparable<T>` with `MR0238` (D-90), implicit conversions through `IFrom<S>` (D-91), and indexers, including addressor indexers: an accessor `ref => ...` that returns a `ref` into the collection's storage after the bounds check, with no coroutine. `List<T>` uses one once it exists (M5.4), and `Dictionary` keeps its `TValue?` getter; yielding accessors stay out until a collection needs them. The spec changes first: §10.4 (collection elements are not places, `MR0323`) for collections with an addressor, the accessor list of §6.9, and `MR0320` for two `ref` elements of one collection in a call.
 
 Done when:
 
 - Run tests for a vector type with operators and an indexer.
 - UI test for an unpaired `==`.
 - UI tests for the newtype-to-underlying-type row of §5.10, and for a conversion through a user type's `IFrom<S>`.
+- On a collection type with an addressor indexer, `Bump(ref slots[i])` and `slots[i].Hits += 1` compile, and the MIR snapshot shows one store and no copy-back; growing the collection during the call panics as for a view (§10.10).
+- UI test: `ref slots[i]` and `ref slots[j]` in one call is `MR0320`.
 
 ### M3.7 Results and `?` propagation
 
@@ -786,13 +804,14 @@ Done when:
 
 ### M3.12 Tuples, collection expressions and smaller expressions
 
-Spec: [§5.5](docs/design/mora.md#55-tuples), [§7.9](docs/design/mora.md#79-collection-expressions), [§7.13](docs/design/mora.md#713-other-expressions), [§6.9](docs/design/mora.md#69-members). Crates: `mora-hir`, `mora-mir`. Blocked by: M3.9.
+Spec: [§5.5](docs/design/mora.md#55-tuples), [§7.9](docs/design/mora.md#79-collection-expressions), [§7.13](docs/design/mora.md#713-other-expressions), [§6.9](docs/design/mora.md#69-members), [§7.6](docs/design/mora.md#76-lambdas). Crates: `mora-hir`, `mora-mir`. Blocked by: M3.9.
 
-Tuples and deconstruction, collection expressions with spreads and target types (D-20, `MR0171`) and `[]` as an empty dictionary (D-99), extension blocks with their parsing (D-98), `nameof`, `sizeof`, `default` with `MR0190`, ranges and `^` indexes.
+Tuples and deconstruction, collection expressions with spreads and target types (D-20, `MR0171`) and `[]` as an empty dictionary (D-99), extension blocks with their parsing (D-98), `nameof`, `sizeof`, `default` with `MR0190`, ranges and `^` indexes, and tuple designations as lambda parameters, `((word, count)) => ...` (new in `LambdaParam`; the double parentheses are needed because `(a, b) =>` is two parameters, §7.6).
 
 Done when:
 
 - Run tests for each form; `[1, 2, 3]` with no target type is a `List<int>`.
+- Run test: the lambda `((word, count)) => count > 10`, passed where a function from `(string, int)` to `bool` is expected, binds both parts.
 
 ### M3.13 Statics
 
@@ -865,6 +884,32 @@ Done when:
 - `list.Sort(compare)` infers exactly the effects of `compare`, and a call through a stored function value without a bound adds `dyn`.
 - UI tests for `MR0251` reporting a loop, a heap allocation, a mutation and a failure, each naming the call.
 - `mora explain-effects` prints each effect of a function with its call path.
+
+### M3.19 `let` with a refutable pattern and `else`
+
+Spec: [§7.10](docs/design/mora.md#710-locals), [§7.8](docs/design/mora.md#78-patterns), [§7.11](docs/design/mora.md#711-statements). Crates: `mora-syntax`, `mora-hir`, `mora-check`, `mora-mir`. Blocked by: M3.3, M3.4.
+
+`let PATTERN = expr else { ... };` binds the pattern's names for the rest of the block and runs the `else` block when the pattern does not match, as in `let Object(let fields) = config else { return Err(ConfigError.NotAnObject); };`. The `else` block must end its path (`return`, `panic`, `Unreachable`, `Todo`, `break`, `continue` or a loop that never exits) under the rules of D-138. The bindings of an `is` test reach only the end of its statement (D-132), so `if (r is not Ok(let v)) return;` cannot bind `v` for the code below, and taking a union apart step by step takes one `match` per step today; no existing construct does this job (D-66). The parser decides without types (D-115): after `let`, a name, a tuple of names or `_` stays a declaration or a deconstruction, and any other pattern starts this form and requires `else`. To settle in the spec: whether each binding keeps its inner `let`, and whether `var` starts the form too.
+
+Done when:
+
+- §7.10 and the ungrammar's `LocalDecl` and `DeconstructStmt` define the form, and the grammar fuzz target of M1.19 keeps passing.
+- Run tests for a union case, a nested case and a constant pattern, each through the binding path and the `else` path.
+- UI tests: an `else` block whose end is reachable, and a refutable pattern after `let` without `else`, each report a code the spec assigns; with a pattern that always matches, the `else` block is reported unreachable.
+- UI test: the bindings are definitely assigned after the statement and not visible inside the `else` block.
+
+### M3.20 Labeled `break` and `continue`
+
+Spec: [§7.11](docs/design/mora.md#711-statements), [§7.10](docs/design/mora.md#710-locals). Crates: `mora-syntax`, `mora-hir`, `mora-check`, `mora-mir`. Blocked by: M1.10.
+
+A loop may carry a label between its keyword and `(`, as in `foreach records (let line in lines)`, and `break records;` or `continue records;` act on that loop instead of the innermost one, so leaving an outer loop from an inner one no longer takes a flag variable and a second test. The label position parses without types (D-115). The other spellings clash with existing rules: `records: foreach` reads as a name and its type (D-58), `'records` as a character literal (§3.5) and `@records` as an attribute (§6.11). A lambda or a local function still does not see the loops around it, and labeled blocks that produce a value are not part of this: §7.7 asks for a function instead. To settle in the spec: where the label goes on `do`/`while`.
+
+Done when:
+
+- §7.11 and the ungrammar's loop, `BreakStmt` and `ContinueStmt` rules define labels, and the grammar fuzz target of M1.19 keeps passing.
+- Run tests for a labeled `break` and `continue` on each loop kind (`while`, `do`, `for`, `foreach`), from two levels of nesting.
+- UI tests: an unknown label, a label reused by a nested loop (no shadowing, as for locals under D-131) and a label named inside a lambda or local function within the loop each report a code the spec assigns.
+- UI tests: D-138 and §7.10 count `break outer` as leaving `outer`, so a `while outer (true)` that an inner `break outer` leaves does not end the path, and definite assignment follows the labeled exits.
 
 ## M4: Macros
 
@@ -1068,12 +1113,13 @@ Done when:
 
 Spec: [§7.11](docs/design/mora.md#711-statements), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§10.10](docs/design/mora.md#1010-growable-collections-and-interior-views). Crates: `std`, `mora-mir`. Blocked by: M5.4.
 
-`IEnumerable<T>` and `IEnumerator<T>`, `foreach` with `let`, `var` and `ref var`, version-checked enumerators (D-42), and boxed enumerators through `IEnumerable<T>` values.
+`IEnumerable<T>` and `IEnumerator<T>`, `foreach` with `let`, `var` and `ref var`, a tuple designation in the head (`foreach (let (key, value) in pairs)`), version-checked enumerators (D-42), and boxed enumerators through `IEnumerable<T>` values.
 
 Done when:
 
 - Modifying a list inside `foreach` panics with `collection was modified during enumeration`.
 - A method returning `IEnumerable<User>` works with `foreach` and the sequence operators.
+- Run test: `foreach (let (word, count) in counts)` over a `List<(string, int)>` binds both parts; UI test: a name bound twice in the designation is `MR0180`.
 
 ### M5.7 Sequence operators
 
@@ -1365,6 +1411,8 @@ Done when:
 | [M7.11](#m711-installers-and-self-update) | Installers and self update | `release` | M7.10 |
 | [M7.12](#m712-benchmarks-and-budgets) | Benchmarks and budgets | `ci` | M6.8, M1.20, M7.9 |
 | [M7.13](#m713-v010-release) | v0.1.0 release | `release` | M7.5, M7.6, M7.7, M7.9, M7.11, M7.12 |
+| [M7.14](#m714-parallel-code-generation-in-a-fixed-output-order) | Parallel code generation in a fixed output order | `codegen` | M1.12, M3.9 |
+| [M7.15](#m715-reproducible-builds-checked-in-ci) | Reproducible builds checked in CI | `ci` | M7.14, M7.10 |
 
 ### M7.1 Formatter
 
@@ -1511,19 +1559,45 @@ Done when:
 - Every channel of §19.3 serves v0.1.0.
 - The spec says what an edition may change, how an edition is chosen in `mora.toml`, and that every edition change ships with a `safe` fix.
 
+### M7.14 Parallel code generation in a fixed output order
+
+Spec: [§14.13](docs/design/mora.md#1413-cranelift-lowering), [§14.1](docs/design/mora.md#141-pipeline), [§20.6](docs/design/mora.md#206-budgets), [§24](docs/design/mora.md#24-open-questions). Crates: `mora-codegen`, `mora-driver`. Blocked by: M1.12, M3.9.
+
+Cranelift code generation of monomorphized bodies runs on a thread pool, one body per job, and the results are written in a fixed order that does not depend on which job finished first, so the object files are the same bytes whatever the number of threads and a build stays a pure function of its inputs (D-119). Code generation is the phase that grows with the number of instantiated bodies, and once MIR is optimized it has no dependencies between bodies. A per-function cache of generated code is not part of this: it stays under OQ-17 and comes only if the budgets of §20.6 fail with parallel code generation in place. To settle in the spec: whether the order key is the mangled symbol name (§13.7) or the order in which monomorphization reached each body, and whether the pool also runs MIR optimization per body.
+
+Done when:
+
+- §14.13 says that bodies are generated independently and in what order their code, data and debug sections are written.
+- `mora build --jobs <n>` sets the number of threads, defaulting to the available cores.
+- `users-api` built with `--jobs 1` and `--jobs 8` gives byte-identical object files and executables in `dev` and `release`.
+- The `bench` workflow of M7.12 records the `users-api` build time with one job and with all cores.
+
+### M7.15 Reproducible builds checked in CI
+
+Spec: [§19.2](docs/design/mora.md#192-toolchain-archive), [§14.14](docs/design/mora.md#1414-linking), [§11.4](docs/design/mora.md#114-panics), [§20.5](docs/design/mora.md#205-continuous-integration). Crates: `.github/workflows`, `xtask`, `mora-driver`. Blocked by: M7.14, M7.10.
+
+D-119 says a build is a pure function of its inputs, and this tests it: CI builds the same sources twice in different directories and compares the bytes. The release archives are signed through Sigstore (M7.10), and a byte-for-byte rebuild is what lets anyone check that a signed archive matches its sources. The usual causes of drift are absolute paths in panic locations and debug information, timestamps in archives, and output order, which M7.14 fixes for parallel code generation. Rebuilding published releases by a second party belongs with the registry and signing work of M12.
+
+Done when:
+
+- §19.2 states the guarantee and lists its inputs: sources, lockfile, toolchain version, target and profile.
+- Panic locations (§11.4) and debug information name source paths relative to the project root, so the checkout path does not reach the output.
+- A CI job builds `users-api` in `dev` and `release` twice, from two checkout paths and with different temporary directories and clocks, and fails unless the outputs are byte-identical.
+- The same job runs `cargo xtask dist` twice and compares the toolchain archives of §19.2.
+
 ## Post-MVP milestones
 
 | Milestone | Scope | Spec |
 |---|---|---|
-| M8: WebAssembly and libraries | Wasm targets, the `.wasm` library format with `mora.meta`, `mora.ir`, `mora.deps`, `mora.caps` and `mora.abi`, linking modes and ABI checks (OQ-15), and a stable plugin ABI at an opt-in boundary: `[abi] stable` interface packages, `@Frozen` types, and native and Wasm plugins loaded from one interface. | [§18.1](docs/design/mora.md#181-webassembly-target), [§18.2](docs/design/mora.md#182-the-library-format), [§18.3](docs/design/mora.md#183-linking-libraries), [§18.4](docs/design/mora.md#184-abi-stability), [§24](docs/design/mora.md#24-open-questions) |
+| M8: WebAssembly and libraries | Wasm targets, the `.wasm` library format with `mora.meta`, `mora.ir`, `mora.deps`, `mora.caps` and `mora.abi`, linking modes and ABI checks (OQ-15), and a stable plugin ABI at an opt-in boundary: `[abi] stable` interface packages, `@Frozen` types, and native and Wasm plugins loaded from one interface; WASI 0.3 with async in the Component Model for `wasm32-wasi`, and `mora bindgen wit` to import a WIT interface as Mora declarations. | [§18.1](docs/design/mora.md#181-webassembly-target), [§18.2](docs/design/mora.md#182-the-library-format), [§18.3](docs/design/mora.md#183-linking-libraries), [§18.4](docs/design/mora.md#184-abi-stability), [§24](docs/design/mora.md#24-open-questions) |
 | M9: Packages and capabilities | URL and git dependency sources, inline imports in scripts, lockfile hashes, `mora fetch`, and capability grants enforced on wasm and native targets, narrowed per dependency, with sandboxed runs. | [§18.5](docs/design/mora.md#185-imports-manifest-and-lockfile), [§18.6](docs/design/mora.md#186-capabilities) |
-| M10: Threads | `shared` classes with atomic counts, sendable checks, `Thread`, `Task.Run`, `Mutex`, `Atomic`, `Channel`, a multi-threaded executor (OQ-6, OQ-7, OQ-1), and supervised worker processes as a framework option. | [§12.6](docs/design/mora.md#126-threads-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
-| M11: Language growth | Class inheritance, variance, `yield return`, retroactive implementations, arenas, allocators, user `unsafe`, `decimal`, conditionally async higher-order functions (`async?`), and more macro kinds (OQ-3, 4, 5, 9, 10, 11, 12, 13). | [§9.10](docs/design/mora.md#910-not-in-the-mvp), [§10.12](docs/design/mora.md#1012-arenas-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
-| M12: Registry and signing | The package registry and registry dependency sources, Sigstore-signed publishing, the transparency log and mirrors (OQ-16). | [§18.7](docs/design/mora.md#187-registry), [§24](docs/design/mora.md#24-open-questions) |
-| M13: Backends and targets | LLVM release backend, Component Model export, Windows debug information, embedded targets (OQ-2). | [§18.3](docs/design/mora.md#183-linking-libraries), [§19.1](docs/design/mora.md#191-targets), [§24](docs/design/mora.md#24-open-questions) |
+| M10: Threads | `shared` classes with atomic counts, sendable checks, `Thread`, `Task.Run`, `Mutex`, `Atomic`, `Channel`, a multi-threaded executor (OQ-6, OQ-7, OQ-1), supervised worker processes as a framework option, sending a freshly built object graph to another thread as one region, and `Parallel.For` and `Parallel.Map` whose bodies effects keep deterministic. | [§12.6](docs/design/mora.md#126-threads-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
+| M11: Language growth | Class inheritance, variance, `yield return`, retroactive implementations, arenas, allocators, user `unsafe`, `decimal`, conditionally async higher-order functions (`async?`), more macro kinds (OQ-3, 4, 5, 9, 10, 11, 12, 13), value parameters for generics (integers, `bool` and enums), and must-consume unique classes. | [§9.10](docs/design/mora.md#910-not-in-the-mvp), [§10.12](docs/design/mora.md#1012-arenas-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
+| M12: Registry and signing | The package registry and registry dependency sources, Sigstore-signed publishing, the transparency log and mirrors (OQ-16), and rebuild verification of published releases. | [§18.7](docs/design/mora.md#187-registry), [§24](docs/design/mora.md#24-open-questions) |
+| M13: Backends and targets | LLVM release backend, Component Model export, Windows debug information, embedded targets (OQ-2), and an aliasing model that lets the LLVM backend emit `noalias` facts. | [§18.3](docs/design/mora.md#183-linking-libraries), [§19.1](docs/design/mora.md#191-targets), [§24](docs/design/mora.md#24-open-questions) |
 | M14: Contracts and checked types | `contract` sections with `requires`, `fails`, `ensures` and `invariant`, `where` predicates on newtypes, property tests generated from types and contracts, unit algebra, and compile-time evaluation of effect-free functions. | [§6.12](docs/design/mora.md#612-newtypes), [§6.13](docs/design/mora.md#613-contract-sections-post-mvp), [§14.6](docs/design/mora.md#146-constant-evaluation), [§15.9](docs/design/mora.md#159-testing) |
-| M15: Test and run tooling | The simulated World, sound test caching and flaky-test triage from effects, `mora run --record` and `mora replay`, and hot reload of function bodies in dev builds. | [§12.1](docs/design/mora.md#121-execution-model-in-the-mvp), [§15.9](docs/design/mora.md#159-testing), [§17.5](docs/design/mora.md#175-test-runner) |
-| M16: Agent tooling and API evolution | `mora query`, `mora context` and `mora mcp`, JSON Schema from types and `@Tool` signatures as MCP tools, semantic diff with compiler-checked semver (contract changes count once M14 lands), and editions with `mora migrate`. | [§6.14](docs/design/mora.md#614-effects), [§16.3](docs/design/mora.md#163-json-stdjson), [§17.1](docs/design/mora.md#171-commands), [§18.4](docs/design/mora.md#184-abi-stability) |
-| M17: Standard library growth | Time zones and the tz database, typed configuration with `@Config`, `Retry` policies, `@CancelSafe` and `Task.Shield`. | [§12.5](docs/design/mora.md#125-cancellation), [§15.6](docs/design/mora.md#156-console-environment-and-time), [§15.12](docs/design/mora.md#1512-what-is-not-in-the-mvp) |
-| M18: Optimizer | General reuse when unique, merging identical MIR bodies, `Vector128<T>`, closed-world devirtualization of `any I` and function values, and checked `@NoAlloc` and `scoped`. | [§10.13](docs/design/mora.md#1013-what-the-optimizer-guarantees), [§14.19](docs/design/mora.md#1419-reuse-when-unique), [§6.14](docs/design/mora.md#614-effects), [§13.1](docs/design/mora.md#131-the-runtime-library), [§14.14](docs/design/mora.md#1414-linking) |
+| M15: Test and run tooling | The simulated World, sound test caching and flaky-test triage from effects, `mora run --record` and `mora replay`, hot reload of function bodies in dev builds, mutation testing with `mora test --mutate`, coverage reports and coverage-guided fuzzing with a committed corpus, PCT scheduling in `mora test`, and error return traces in `dev` builds. | [§12.1](docs/design/mora.md#121-execution-model-in-the-mvp), [§15.9](docs/design/mora.md#159-testing), [§17.5](docs/design/mora.md#175-test-runner) |
+| M16: Agent tooling and API evolution | `mora query`, `mora context` and `mora mcp`, JSON Schema from types and `@Tool` signatures as MCP tools, semantic diff with compiler-checked semver (contract changes count once M14 lands), editions with `mora migrate`, typed holes (`Todo()` reports its expected type and what fits), grammar export for constrained generation, and `mora query complete`. | [§6.14](docs/design/mora.md#614-effects), [§16.3](docs/design/mora.md#163-json-stdjson), [§17.1](docs/design/mora.md#171-commands), [§18.4](docs/design/mora.md#184-abi-stability) |
+| M17: Standard library growth | Time zones and the tz database, typed configuration with `@Config`, `Retry` policies, `@CancelSafe` and `Task.Shield`, and `Task.Race`, `Task.Quorum` and collect-all completion policies. | [§12.5](docs/design/mora.md#125-cancellation), [§15.6](docs/design/mora.md#156-console-environment-and-time), [§15.12](docs/design/mora.md#1512-what-is-not-in-the-mvp) |
+| M18: Optimizer | General reuse when unique, merging identical MIR bodies, `Vector128<T>`, closed-world devirtualization of `any I` and function values, checked `@NoAlloc` and `scoped`, and acyclic types inferred from the type graph. | [§10.13](docs/design/mora.md#1013-what-the-optimizer-guarantees), [§14.19](docs/design/mora.md#1419-reuse-when-unique), [§6.14](docs/design/mora.md#614-effects), [§13.1](docs/design/mora.md#131-the-runtime-library), [§14.14](docs/design/mora.md#1414-linking) |
 
