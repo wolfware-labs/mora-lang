@@ -652,13 +652,18 @@ impl Lower {
             }
             ast::Expr::PostfixExpr(it) => Expr::Postfix {
                 increment: it.op().is_some_and(|op| op.kind() == SyntaxKind::PlusPlus),
-                expr: self.expr(it.expr(), range),
+                expr: self.step_operand(it.expr(), range),
             },
             ast::Expr::PropagateExpr(it) => Expr::Propagate(self.expr(it.expr(), range)),
             ast::Expr::PrefixExpr(it) => {
-                let expr = self.expr(it.expr(), range);
                 // The operator is what makes the node a prefix expression.
                 let op = it.op().and_then(|op| unary_op(op.kind()));
+                let expr = match op {
+                    Some(UnaryOp::PreIncrement | UnaryOp::PreDecrement) => {
+                        self.step_operand(it.expr(), range)
+                    }
+                    _ => self.expr(it.expr(), range),
+                };
                 op.map_or(Expr::Missing, |op| Expr::Unary { op, expr })
             }
             ast::Expr::CastExpr(it) => Expr::Cast {
@@ -788,6 +793,17 @@ impl Lower {
             }
         };
         self.alloc_expr(lowered, range)
+    }
+
+    /// The operand of `++` or `--`, which changes it: `_` there is a discard,
+    /// which type checking reports as no place (§7.11).
+    fn step_operand(&mut self, operand: Option<ast::Expr>, range: TextRange) -> ExprId {
+        match unparen(operand) {
+            Some(expr) if is_discard(&expr) => {
+                self.alloc_expr(Expr::Discard, expr.syntax().text_range())
+            }
+            operand => self.expr(operand, range),
+        }
     }
 
     /// The place an assignment assigns: `_` alone discards the value of `=`

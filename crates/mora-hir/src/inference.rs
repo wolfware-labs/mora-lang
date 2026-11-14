@@ -1218,9 +1218,36 @@ mod tests {
             codes(&diagnostics_of("F() {\n    _ += 1;\n}\n")),
             ["MR0186"]
         );
+        // No operator is defined for a tuple: a tuple on the left of `op=`
+        // is one `MR0204`, whatever its elements are.
+        for text in [
+            "F() {\n    (_, _) += (1, 2);\n}\n",
+            "F(i: int) {\n    var j = i;\n    (j, _) += (1, 2);\n}\n",
+            "F(i: int) {\n    var j = i;\n    (j, j) += (1, 2);\n}\n",
+            "F() {\n    (One(), 1) += (1, 2);\n}\nOne(): int => 1;\n",
+        ] {
+            assert_eq!(codes(&diagnostics_of(text)), ["MR0204"], "{text}");
+        }
+        // `_` under `++` or `--` is no place either.
+        for step in ["_++;", "++_;", "_--;", "--_;", "(_)++;"] {
+            let text = format!("F() {{\n    {step}\n}}\n");
+            assert_eq!(codes(&diagnostics_of(&text)), ["MR0186"], "{step}");
+        }
+        // A type keyword on the left is `MR0127` alone.
+        for line in [
+            "int = 1;",
+            "int++;",
+            "--int;",
+            "int += 1;",
+            "var i = 1;\n    (int, i) = (1, 2);",
+            "string = \"a\";",
+        ] {
+            let text = format!("F() {{\n    {line}\n}}\n");
+            assert_eq!(codes(&diagnostics_of(&text)), ["MR0127"], "{line}");
+        }
         assert_eq!(
-            codes(&diagnostics_of("F() {\n    (_, _) += (1, 2);\n}\n")),
-            ["MR0186", "MR0186"]
+            codes(&diagnostics_of("F() {\n    int = int;\n}\n")),
+            ["MR0127", "MR0127"]
         );
         assert_eq!(
             codes(&diagnostics_of("F(a: int) {\n    a += (_, 1).Item1;\n}\n")),
@@ -3724,7 +3751,7 @@ mod tests {
                     public GQ: Q => new Q { Y = 1 };\n    \
                     public static mut SR: Q = new Q { Y = 1 };\n    \
                     Probe() {\n        BARE\n    }\n}\n\
-                    public struct Q {\n    public mut Y: int;\n}\n\
+                    public struct Q {\n    public mut Y: int;\n    public static QS(): int => 1;\n}\n\
                     public struct R {\n    public mut Q: Q;\n}\n\
                     public enum Color { Red }\nOne(): int => 1;\nOne2(): Q => new Q { Y = 1 };\n";
         for (bare, line, expected) in [
@@ -3770,6 +3797,14 @@ mod tests {
             ("", "One2().Y++;", vec!["MR0186"]),
             ("", "One2().Y += 1;", vec!["MR0186"]),
             ("", "new Q { Y = 1 }.Y++;", vec!["MR0186"]),
+            // Only a declared instance field is part of the value: any
+            // other name keeps the rule of its own milestone.
+            ("", "One2().QS = 1;", vec![]),
+            ("", "One2().Nope = 1;", vec![]),
+            ("", "One2().Nope++;", vec![]),
+            ("", "One2().Item1 = 1;", vec![]),
+            ("", "P.SQ.Item1 = 1;", vec![]),
+            ("", "var b = true;\n    (b ? q : q).Item1 = 1;", vec![]),
             ("", "var b = true;\n    (b ? q : q).M = 1;", vec!["MR0186"]),
             ("", "var r = new Q { Y = 1 };\n    r.Y = 2;", vec![]),
             ("", "P.SR.Y = 1;", vec![]),

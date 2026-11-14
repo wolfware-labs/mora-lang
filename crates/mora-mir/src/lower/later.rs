@@ -391,15 +391,13 @@ impl Uses {
         for (id, expr) in hir.exprs.iter() {
             match expr {
                 Expr::Call { callee, args } => {
-                    // A `new` without a type that has none was left for
-                    // statics, with a static overload of the name (D-152):
-                    // the name decides, as for an unresolved call.
-                    let untyped_new = args.iter().any(|arg| {
-                        matches!(hir.exprs[arg.expr], Expr::New { ty: None, .. })
-                            && inference.expr(arg.expr).is_none()
-                    });
+                    // An argument without a type, as one that holds a `new`
+                    // left for statics by a static overload of the name
+                    // (D-152), leaves the call to the name, as an
+                    // unresolved call is (D-137).
+                    let untyped = args.iter().any(|arg| inference.expr(arg.expr).is_none());
                     let resolved = match inference.callee(id) {
-                        _ if untyped_new => None,
+                        _ if untyped => None,
                         Some(Callee::Item(item)) => {
                             Some(item_tree(db, item.file).item(item.item).is_static)
                         }

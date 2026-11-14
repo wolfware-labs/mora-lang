@@ -165,3 +165,53 @@ error[MR0186]: cannot assign to `L`
    |     ^ this is a method or a function
    |
    = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field of a place or an element
+
+error[MR0186]: cannot assign to `_`
+  --> tests/ui/locals/not_a_place.mr:76:5
+   |
+76 |     _++; //~ ERROR MR0186
+   |     ^ this is `_`, which only `=` assigns to
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field of a place or an element
+
+error[MR0186]: cannot assign to `_`
+  --> tests/ui/locals/not_a_place.mr:77:7
+   |
+77 |     --_; //~ ERROR MR0186
+   |       ^ this is `_`, which only `=` assigns to
+   |
+   = note: an assignment, `++` or `--` changes a place: a local, a parameter, a field of a place or an element
+
+error[MR0127]: `int` is not a value
+  --> tests/ui/locals/not_a_place.mr:78:5
+   |
+78 |     int = 1; //~ ERROR MR0127
+   |     ^^^ this is a built-in type
+   |
+   = note: a type names no value
+
+error[MR0127]: `int` is not a value
+  --> tests/ui/locals/not_a_place.mr:79:5
+   |
+79 |     int++; //~ ERROR MR0127
+   |     ^^^ this is a built-in type
+   |
+   = note: a type names no value
+
+error[MR0204]: `+=` is not defined for `(int, _)` and `(int, int)`
+  --> tests/ui/locals/not_a_place.mr:81:5
+   |
+81 |     (j, _) += (1, 2); //~ ERROR MR0204
+   |     ------^^^^------
+   |     |         |
+   |     |         this is `(int, int)`
+   |     this is `(int, _)`
+
+error[MR0204]: `+=` is not defined for `(_, _)` and `(int, int)`
+  --> tests/ui/locals/not_a_place.mr:82:5
+   |
+82 |     (_, _) += (1, 2); //~ ERROR MR0204
+   |     ------^^^^------
+   |     |         |
+   |     |         this is `(int, int)`
+   |     this is `(_, _)`

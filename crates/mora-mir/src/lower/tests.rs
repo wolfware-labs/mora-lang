@@ -3191,14 +3191,58 @@ fn values_by_where_they_are_declared_come_with_their_milestone() {
         ("G", "a union case", "M3.1"),
         ("H", "a union case", "M3.1"),
         ("I", "a static member named through a value", "M3.13"),
-        // The instance overload is called; only the library value waits.
-        ("J", "a value of the standard library", "M1.15"),
+        // An argument without a type leaves the call to the name (D-137).
+        ("J", "a static member named through a value", "M3.13"),
     ] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!(
                 "internal error lowering UsersApi.{name}: {what} is not lowered until {milestone}"
             )
+        );
+    }
+}
+
+#[test]
+fn an_argument_left_without_a_type_leaves_the_call_to_statics() {
+    // A call through a value with a static overload checks its arguments
+    // when statics do (D-152): an argument that holds a `new` without a
+    // type, a lambda or a collection, at any depth, has no type until then,
+    // and the body waits for statics instead of reaching lowering.
+    let head = "struct Q {\n    public Y: int;\n}\n\
+                struct P {\n    public X: int;\n    \
+                public static S3(q: Q): int => 1;\n    public S3(x: int): int => X;\n    \
+                public static S4(x: int): int => 1;\n    public S4(q: Q): int => X;\n    \
+                public static S6(x: int): int => 1;\n    public S6(t: (Q, int)): int => X;\n    \
+                public static S7(x: int): int => 1;\n    public S7(a: int, q: Q): int => X;\n}\n\
+                One(): int => 1;\n";
+    let calls = [
+        // The reviewer's programs.
+        "p.S4(b ? new { Y = 1 } : q);",
+        "p.S4(b ? new { Y = 1 } : new { Y = 2 });",
+        "p.S3(b ? new { Y = 1 } : new { Y = 2 });",
+        "p.S4(b ? (b ? new { Y = 1 } : q) : q);",
+        "var s = 0;\n    s = p.S4(b ? new { Y = 1 } : q);",
+        "p.S7(1, b ? new { Y = 1 } : q);",
+        "p.S7(One(), b ? q : new { Y = 1 });",
+        "p.S6((new { Y = 1 }, 1));",
+        // Depth 0, 1 and 2, in parentheses, a tuple and a conditional.
+        "p.S4(new { Y = 1 });",
+        "p.S4((new { Y = 1 }));",
+        "p.S4((b ? (new { Y = 1 }) : q));",
+        "p.S6(((b ? new { Y = 1 } : q), 1));",
+        "p.S6((b ? (new { Y = 1 }, 1) : (q, 1)));",
+        // A lambda and a collection in a conditional.
+        "p.S4(b ? () => 1 : q);",
+        "p.S4(b ? [1] : q);",
+    ];
+    for (n, call) in calls.iter().enumerate() {
+        let text = format!("{head}F(p: P, q: Q, b: bool) {{\n    {call}\n}}\n");
+        let lowered = lowered(&text);
+        assert_eq!(
+            lowered.internal_error("F"),
+            "internal error lowering UsersApi.F: a static member named through a value is not lowered until M3.13",
+            "{n}: {call}"
         );
     }
 }

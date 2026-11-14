@@ -69,3 +69,15 @@ H(b: bool, r: R) {
     L() {}
     L = L; //~ ERROR MR0186
 }
+
+// `_` under `++` or `--` is no place; a type keyword on the left is no
+// value, once; a tuple on the left of `op=` has no operator.
+J(i: int) {
+    _++; //~ ERROR MR0186
+    --_; //~ ERROR MR0186
+    int = 1; //~ ERROR MR0127
+    int++; //~ ERROR MR0127
+    var j = i;
+    (j, _) += (1, 2); //~ ERROR MR0204
+    (_, _) += (1, 2); //~ ERROR MR0204
+}

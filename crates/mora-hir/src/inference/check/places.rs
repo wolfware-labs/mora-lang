@@ -9,7 +9,7 @@ use crate::bodies::{Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
 use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, item_data, members_named};
-use crate::signature::instance_methods;
+use crate::signature::{instance_fields, instance_methods};
 
 impl Check<'_> {
     /// Reports each expression that names a type or a namespace where a
@@ -117,7 +117,8 @@ impl Check<'_> {
         match &self.body.exprs[expr] {
             Expr::Local(local) => (self.body.locals[*local].kind == LocalKind::Function)
                 .then_some(NotAPlace::Function),
-            Expr::This | Expr::Index { .. } | Expr::Missing => None,
+            // A type keyword is `MR0127` already.
+            Expr::This | Expr::Index { .. } | Expr::Missing | Expr::Type(_) => None,
             Expr::Discard => (!discard).then_some(NotAPlace::Discard),
             Expr::Path(_) => self.named_member(expr),
             Expr::Member { receiver, .. } => {
@@ -129,8 +130,11 @@ impl Check<'_> {
                 if !self.member_of_value(expr) {
                     return None;
                 }
+                // Only a declared instance field is part of the value; any
+                // other name keeps the rule of its own milestone.
                 let (ty, name) = self.struct_member(expr)?;
-                (!self.is_static_value(ty, name) && self.place_problem(*receiver, false).is_some())
+                let field = instance_fields(self.db, ty).any(|(_, field)| field.name == name);
+                (field && self.place_problem(*receiver, false).is_some())
                     .then_some(NotAPlace::FieldOfValue)
             }
             Expr::Call { .. } => Some(NotAPlace::Call),

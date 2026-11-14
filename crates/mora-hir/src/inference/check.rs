@@ -1293,7 +1293,28 @@ impl Check<'_> {
                 self.deconstruct(lhs, &places, rhs);
             }
             Some(op) => {
+                let reported = self.errors.len();
                 let result = self.binary(expr, op, lhs, rhs);
+                // No operator is defined for a tuple, so a tuple on the left
+                // of `op=` is that one mistake, whatever its elements are
+                // (§7.11): `MR0204`, reported here when an element of a type
+                // not known yet, as `_`, kept the operation silent.
+                if matches!(self.body.exprs[lhs], Expr::Tuple(_)) {
+                    let binary = self.errors[reported..].iter().any(
+                        |error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr),
+                    );
+                    if !binary {
+                        self.errors.push(TypeError::Binary {
+                            expr,
+                            op,
+                            lhs,
+                            rhs,
+                            lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
+                            rhs_ty: self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error),
+                        });
+                    }
+                    return;
+                }
                 self.require_place(lhs, false);
                 // The result converts back to the type of the place as a
                 // cast would (§7.12).
