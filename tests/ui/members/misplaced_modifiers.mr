@@ -39,6 +39,22 @@ public interface IMembers {
     const type Item; //~ ERROR MR0113
 }
 
+// An interface has no fields and an extension adds none, so a constant
+// goes in the namespace or in the type.
+public interface ILimits {
+    const Max: int = 10; //~ ERROR MR0113
+    const Min: int; //~ ERROR MR0113
+}
+
+public extension(counter: Counter) {
+    const Step: int = 1; //~ ERROR MR0113
+    const Start: int; //~ ERROR MR0113
+}
+
+public extension<T>(item: T) where T : IShape {
+    public const Corners: int = 4; //~ ERROR MR0113
+}
+
 const Free(): int => 1; //~ ERROR MR0113
 
 Take(const x: int) {} //~ ERROR MR0113

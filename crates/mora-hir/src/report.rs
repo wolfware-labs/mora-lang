@@ -324,8 +324,10 @@ enum Lookup {
 /// as the first one; a `mut` whose write scope differs from the first
 /// one's leaves the choice to the author. The fix for a conflict removes
 /// the later modifier, and the one for a modifier that does not apply
-/// removes it. With them comes `MR0114`, a `const` field without a value,
-/// which has no fix. A file whose text did not change keeps its
+/// removes it, unless it is a `const` member of an interface or an
+/// extension, where only the author knows what is meant. With them comes
+/// `MR0114`, a `const` field without a value where a constant may be
+/// declared, which has no fix. A file whose text did not change keeps its
 /// result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
@@ -356,8 +358,12 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             frame.written.push(written);
         }
         visited += 1;
-        let parent = frame.node.kind();
-        stack.push(ModifierFrame::new(child, parent, visited));
+        // A member list is part of the declaration that holds it.
+        let container = match frame.node.kind() {
+            SyntaxKind::MemberList => frame.container,
+            kind => kind,
+        };
+        stack.push(ModifierFrame::new(child, container, visited));
     }
     // A stable sort keeps the diagnostics of one node in their order.
     found.sort_by_key(|&(order, _)| order);
@@ -373,9 +379,11 @@ struct ModifierFrame<'a> {
     node: SyntaxNode<'a>,
     /// The children not walked yet.
     children: SyntaxNodeChildren<'a>,
-    /// The kind of the node's parent, which tells a method from a
-    /// function.
-    parent: SyntaxKind,
+    /// The kind of the node the node is in: its parent, or for a member
+    /// in a member list, the declaration that holds the list. It tells a
+    /// method from a function, and a member of an interface or an
+    /// extension from one of a type.
+    container: SyntaxKind,
     /// The node's place in preorder.
     order: usize,
     /// The keyword and the range of each modifier among the children seen.
@@ -383,11 +391,11 @@ struct ModifierFrame<'a> {
 }
 
 impl<'a> ModifierFrame<'a> {
-    fn new(node: SyntaxNode<'a>, parent: SyntaxKind, order: usize) -> Self {
+    fn new(node: SyntaxNode<'a>, container: SyntaxKind, order: usize) -> Self {
         Self {
             node,
             children: node.children(),
-            parent,
+            container,
             order,
             written: Vec::new(),
         }
@@ -425,7 +433,7 @@ fn check_modifiers(
             report(repeated_modifier(id, text, name, range, first));
             continue;
         }
-        if let Some(misplaced) = misplaced(frame.parent, node, keyword) {
+        if let Some(misplaced) = misplaced(frame.container, frame.node, keyword) {
             report(misplaced_modifier(id, text, name, range, &misplaced));
             continue;
         }
@@ -510,29 +518,70 @@ struct Misplaced {
     declaration: &'static str,
     /// Why the modifier does not apply to it.
     reason: &'static str,
+    /// What to write instead, when removing the modifier would not give
+    /// what is meant. The diagnostic then has no fix.
+    instead: Option<&'static str>,
 }
 
-/// Why the modifier `keyword` does not apply to a node of the kind `node`,
-/// whose parent is of the kind `parent`, if it does not. `const` declares a
-/// constant, a value fixed at compile time, so of the declarations,
-/// parameters and accessors the parser takes it on, it applies to a field
-/// alone, in a type or a namespace (§6.1, D-156). An error node, where the
-/// parser found no declaration after the modifiers, is reported already.
-/// A function whose parent is the file is declared in a namespace; any
-/// other is a method of a type, an interface or an extension, since a
+/// Why the modifier `keyword` does not apply to `node`, which is in a node
+/// of the kind `container` ([`ModifierFrame::container`]), if it does not.
+/// `const` declares a constant, a value fixed at compile time, so of the
+/// declarations, parameters and accessors the parser takes it on, it
+/// applies to a field alone, of a struct, a class or a union or in a
+/// namespace (§6.1, D-156). An interface and an extension have no fields:
+/// there `const` on a field, or on a getter without a body, which is how
+/// an interface reads `const K: int;`, gets no fix, since the author may
+/// mean a constant in the namespace or a member without `const`. An error
+/// node, where the parser found no declaration after the modifiers, is
+/// reported already. A function in the file is declared in a namespace;
+/// any other is a method of a type, an interface or an extension, since a
 /// local function never starts with `const`.
-fn misplaced(parent: SyntaxKind, node: SyntaxKind, keyword: SyntaxKind) -> Option<Misplaced> {
+fn misplaced(
+    container: SyntaxKind,
+    node: SyntaxNode<'_>,
+    keyword: SyntaxKind,
+) -> Option<Misplaced> {
+    use SyntaxKind as K;
+    if keyword != K::ConstKw {
+        return None;
+    }
+    let field = node.kind() == K::FieldDecl
+        || ast::GetterDecl::cast(node).is_some_and(|getter| getter.expr_body().is_none());
+    let (declaration, reason, instead) = match container {
+        K::InterfaceDecl if field => (
+            "a member of an interface",
+            "an interface has no fields",
+            "a value every implementation shares is a constant in the namespace, next to \
+             the interface, as `const K: int = 1;`; a value each implementing type gives is \
+             a static abstract getter, as `static abstract K: int;`",
+        ),
+        K::ExtensionDecl if field => (
+            "a member of an extension",
+            "an extension adds no fields",
+            "a constant goes in the namespace, next to the extension, or in the type \
+             itself, as `const K: int = 1;`",
+        ),
+        _ => return misplaced_anywhere(container, node.kind()),
+    };
+    Some(Misplaced {
+        declaration,
+        reason,
+        instead: Some(instead),
+    })
+}
+
+/// Why `const` does not apply to a node of the kind `node` in a node of the
+/// kind `container`, wherever it is, if it does not: removing it gives a
+/// declaration that is right as it is.
+fn misplaced_anywhere(container: SyntaxKind, node: SyntaxKind) -> Option<Misplaced> {
     use SyntaxKind as K;
     /// What runs as code holds no value fixed at compile time.
     const CODE: &str = "it is code that runs, not a value";
     /// What declares a type holds no value at all.
     const TYPE: &str = "it declares a type, not a value";
-    if keyword != K::ConstKw {
-        return None;
-    }
     let (declaration, reason) = match node {
         K::GetterDecl => ("a getter", "a getter computes its value on each read"),
-        K::FunctionDecl if parent == K::SourceFile => ("a function", CODE),
+        K::FunctionDecl if container == K::SourceFile => ("a function", CODE),
         K::FunctionDecl => ("a method", CODE),
         K::ConstructorDecl => ("a constructor", CODE),
         K::DestructorDecl => ("a destructor", CODE),
@@ -553,11 +602,13 @@ fn misplaced(parent: SyntaxKind, node: SyntaxKind, keyword: SyntaxKind) -> Optio
     Some(Misplaced {
         declaration,
         reason,
+        instead: None,
     })
 }
 
 /// `MR0113`: the modifier `name` at `range` does not apply to the
-/// declaration it is on, for the reason in `misplaced`. The fix removes it.
+/// declaration it is on, for the reason in `misplaced`. The fix removes it,
+/// unless `misplaced` says what to write instead.
 fn misplaced_modifier(
     file: FileId,
     text: &str,
@@ -565,28 +616,33 @@ fn misplaced_modifier(
     range: TextRange,
     misplaced: &Misplaced,
 ) -> Diagnostic {
-    Diagnostic::error(
+    let diagnostic = Diagnostic::error(
         codes::MR0113,
         format!("`{name}` does not apply to {}", misplaced.declaration),
         Label::new(Span::new(file, range), misplaced.reason),
-    )
-    .with_note(
-        "a constant is a value fixed at compile time; for one, write a field with an \
+    );
+    if let Some(instead) = misplaced.instead {
+        return diagnostic.with_note(instead);
+    }
+    diagnostic
+        .with_note(
+            "a constant is a value fixed at compile time; for one, write a field with an \
          initializer, as `const K: int = 1;`",
-    )
-    .with_fix(remove_keyword(
-        file,
-        text,
-        range,
-        format!("remove `{name}`"),
-    ))
+        )
+        .with_fix(remove_keyword(
+            file,
+            text,
+            range,
+            format!("remove `{name}`"),
+        ))
 }
 
-/// `MR0114`: the node of `frame` is a `const` field, in a type or a
-/// namespace, without a value (§6.1, D-156). A constant is a value fixed
-/// at compile time, so it is declared with it. No fix: only the author
-/// knows the value. A field with `=` and no expression after it is a
-/// syntax error already.
+/// `MR0114`: the node of `frame` is a `const` field without a value, where
+/// a constant may be declared (§6.1, D-156): in an interface or an
+/// extension, `const` is `MR0113` whatever the value. A constant is a value
+/// fixed at compile time, so it is declared with it. No fix: only the
+/// author knows the value. A field with `=` and no expression after it is
+/// a syntax error already.
 fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
     if !frame
         .written
@@ -596,7 +652,9 @@ fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Dia
         return None;
     }
     let declarator = ast::FieldDecl::cast(frame.node)?.variable_declarator()?;
-    if declarator.eq_token().is_some() {
+    if declarator.eq_token().is_some()
+        || misplaced(frame.container, frame.node, SyntaxKind::ConstKw).is_some()
+    {
         return None;
     }
     let name = declarator.name()?.ident_token()?;
@@ -1845,6 +1903,66 @@ mod tests {
             )),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn const_on_a_field_of_an_interface_or_an_extension_is_mr0113_without_a_fix() {
+        let interface = (
+            "a member of an interface",
+            "an interface has no fields",
+            "a value every implementation shares is a constant in the namespace, next to the \
+             interface, as `const K: int = 1;`; a value each implementing type gives is a \
+             static abstract getter, as `static abstract K: int;`",
+        );
+        let extension = (
+            "a member of an extension",
+            "an extension adds no fields",
+            "a constant goes in the namespace, next to the extension, or in the type itself, \
+             as `const K: int = 1;`",
+        );
+        let cases = [
+            ("interface I {\n    const K: int = 1;\n}\n", interface),
+            (
+                "interface I {\n    public const K: int = 1;\n}\n",
+                interface,
+            ),
+            // Without a value, an interface reads it as a getter.
+            ("interface I {\n    const K: int;\n}\n", interface),
+            (
+                "struct P {}\nextension(p: P) {\n    const K: int = 1;\n}\n",
+                extension,
+            ),
+            // Without a value, `const` is wrong there all the same, and
+            // `MR0114` is not reported as well.
+            (
+                "struct P {}\nextension(p: P) {\n    const K: int;\n}\n",
+                extension,
+            ),
+            (
+                "interface J {}\nextension<T>(p: T) where T : J {\n    const K: int = 1;\n}\n",
+                extension,
+            ),
+        ];
+        for (text, (declaration, reason, note)) in cases {
+            let found = diagnostics_of(text);
+            assert_eq!(codes(&found), ["MR0113"], "{text}");
+            assert_eq!(
+                found[0].message,
+                format!("`const` does not apply to {declaration}"),
+                "{text}"
+            );
+            assert_eq!(&text[found[0].primary.span.range], "const", "{text}");
+            assert_eq!(found[0].primary.message.as_deref(), Some(reason), "{text}");
+            assert_eq!(found[0].note.as_deref(), Some(note), "{text}");
+            assert!(found[0].fixes.is_empty(), "{text}: {found:#?}");
+        }
+        // A getter with a body is a getter there too, and the fix removes
+        // `const`; a constant of a union is one.
+        let text = "interface I {\n    const K: int => 1;\n}\n\
+                    union U {\n    A;\n    const K: int = 1;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(messages(&found), ["`const` does not apply to a getter"]);
+        assert_eq!(found[0].fixes.len(), 1);
     }
 
     #[test]
