@@ -3615,6 +3615,11 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.P.-: an operator is not lowered until M3.6",
         ),
         (
+            "enum E { A = 1, B }\n",
+            |l| l.initializer("E", "A"),
+            "UsersApi.E.A: the value of an enum member is not lowered until M3.2",
+        ),
+        (
             "union U { C(x: int), D }\n",
             |l| l.initializer("U", "C"),
             "UsersApi.U.C: a union case is not lowered until M3.1",
@@ -4062,4 +4067,66 @@ fn every_owner_lowered_later_names_its_milestone() {
             "{text}"
         );
     }
+}
+
+#[test]
+fn a_break_gets_past_a_do_condition_that_does_not_return() {
+    let lowered = lowered(
+        "F(c: bool) {\n    do {\n        if (c) {\n            break;\n        }\n    } while (Todo());\n}\n",
+    );
+    // The condition in bb2 does not return, and the `break` in bb4 goes
+    // to the end of the loop all the same.
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "goto bb1;",
+            "switch copy (*c#0) [false -> bb5] otherwise bb4;",
+            "call Todo{external}() -> !;",
+            "_0 = ();",
+            "return;",
+            "goto bb3;",
+            "goto bb6;",
+            "goto bb2;",
+        ]
+    );
+}
+
+#[test]
+fn a_for_whose_body_is_one_statement_ends_its_locals_after_it() {
+    let lowered =
+        lowered("F() {\n    var n = 0;\n    for (var i = 0; i < 3; i++)\n        n += i;\n}\n");
+    let dump = lowered.dump("F");
+    // Without a closing brace, `i` ends where the body's statement does.
+    assert!(dump.contains("storage_dead(i#1); // 4:16"), "{dump}");
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "n#0 = copy n#0 + copy i#1;",
+            "storage_dead(i#1);",
+            "i#1 = copy i#1 + 1;",
+        ],
+    );
+}
+
+#[test]
+fn a_conditional_whose_branches_do_not_return_has_no_value() {
+    let lowered = lowered("F(c: bool): int => c ? Todo() : Todo();\n");
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_2);",
+            "switch copy (*c#0) [false -> bb2] otherwise bb1;",
+            "call Todo{external}() -> !;",
+            "call Todo{external}() -> !;",
+        ]
+    );
+}
+
+#[test]
+fn a_field_of_a_field_of_this_is_one_place() {
+    let lowered = lowered(
+        "struct In {\n    public V: int;\n}\n\
+         struct Out {\n    public Q: In;\n    M(): int => Q.V;\n}\n",
+    );
+    assert_eq!(lowered.code("M"), ["_0 = copy (*this).Q.V;", "return;"]);
 }

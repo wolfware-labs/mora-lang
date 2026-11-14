@@ -119,12 +119,10 @@ pub fn file_named(db: &TestDb, project: Project, path: &str) -> SourceFile {
 ///
 /// When the file declares no item of that name.
 pub fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -> ItemId {
-    let Some((idx, _)) = item_tree(db, file)
+    let (idx, _) = item_tree(db, file)
         .items()
         .find(|(_, item)| item.name == name)
-    else {
-        panic!("no item named {name}");
-    };
+        .unwrap_or_else(|| panic!("no item named {name}"));
     Scope::file(project, file).item(idx)
 }
 

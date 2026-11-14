@@ -628,4 +628,52 @@ mod tests {
         ];
         assert_eq!(summary(text, "F"), [entry("G", None, &all)]);
     }
+
+    #[test]
+    fn a_capture_is_found_in_every_kind_of_pattern() {
+        let text = "struct P {\n    public X: int;\n    \
+                    Get(): int {\n        G(): int {\n            let f = [this] () => 1;\n            \
+                    return 0;\n        }\n        return G();\n    }\n}\n\
+                    union S {\n    C(R: int),\n    D(W: int),\n}\n\
+                    F(a: int, b: bool, c: int, d: int, e: int, g: int, p: P, s: S, xs: int[]) {\n    \
+                    G() {\n        \
+                    let t1 = match (a) { 0 when b => 1, _ => 2 };\n        \
+                    let t2 = p is P { X: > c } q;\n        \
+                    let t3 = s is S.C(R: let r);\n        \
+                    let t4 = a is not 0 and (> d or < e);\n        \
+                    let t5 = xs is [_, .. let rest];\n        \
+                    let t6 = s is S ss;\n        \
+                    let t7 = s is S.C(g);\n    \
+                    }\n}\n";
+        assert_eq!(summary(text, "Get"), [entry("G", None, &["this:in"])]);
+        let all = [
+            "a:in", "b:in", "c:in", "d:in", "e:in", "g:in", "p:in", "s:in", "xs:in",
+        ];
+        assert_eq!(summary(text, "F"), [entry("G", None, &all)]);
+    }
+
+    #[test]
+    fn a_capture_that_names_nothing_is_not_taken() {
+        // The front end reports the name that is not found; the walk still
+        // finds what the rest of the local function uses.
+        let db = TestDb::new();
+        let text = "F(a: int) {\n    G() {\n        let f = [missing] () => a;\n    }\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        assert_ne!(codes(diagnostics(&db, project)), Vec::<String>::new());
+        let tree = item_tree(&db, file);
+        let (item, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let owner = BodyOwner::Item(item);
+        let body = body(&db, file, owner);
+        let found = local_functions(&db, project, file, owner);
+        let captured: Vec<_> = found[0]
+            .captures
+            .iter()
+            .map(|(captured, _)| match captured {
+                Captured::This => "this",
+                Captured::Local(local) => body.locals[*local].name.as_str(),
+            })
+            .collect();
+        assert_eq!(captured, ["a"]);
+    }
 }

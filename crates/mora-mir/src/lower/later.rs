@@ -35,6 +35,8 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile};
 
+use super::{as_function, as_struct};
+
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,58 +53,122 @@ impl fmt::Display for Milestone {
     }
 }
 
-/// The milestone of the roadmap numbered `M<phase>.<number>`.
-const fn milestone(phase: u8, number: u8) -> Milestone {
-    Milestone { phase, number }
-}
-
 /// M1.11, constant evaluation.
-pub(super) const CONSTANT_EVALUATION: Milestone = milestone(1, 11);
+pub(super) const CONSTANT_EVALUATION: Milestone = Milestone {
+    phase: 1,
+    number: 11,
+};
 /// M1.15, the standard library bootstrap.
-const STD_BOOTSTRAP: Milestone = milestone(1, 15);
+const STD_BOOTSTRAP: Milestone = Milestone {
+    phase: 1,
+    number: 15,
+};
 /// M2.1, classes, fields, getters and constructors.
-const CLASSES: Milestone = milestone(2, 1);
+const CLASSES: Milestone = Milestone {
+    phase: 2,
+    number: 1,
+};
 /// M2.2, positional structs.
-const POSITIONAL_STRUCTS: Milestone = milestone(2, 2);
+const POSITIONAL_STRUCTS: Milestone = Milestone {
+    phase: 2,
+    number: 2,
+};
 /// M2.6, destructors and drop order.
-const DESTRUCTORS: Milestone = milestone(2, 6);
+const DESTRUCTORS: Milestone = Milestone {
+    phase: 2,
+    number: 6,
+};
 /// M2.9, spans, views and memory slices, which collect the arguments of
 /// a `params` parameter into a span.
-const SPANS: Milestone = milestone(2, 9);
+const SPANS: Milestone = Milestone {
+    phase: 2,
+    number: 9,
+};
 /// M2.10, weak references.
-const WEAK_REFERENCES: Milestone = milestone(2, 10);
+const WEAK_REFERENCES: Milestone = Milestone {
+    phase: 2,
+    number: 10,
+};
 /// M2.11, closures and function types.
-const CLOSURES: Milestone = milestone(2, 11);
+const CLOSURES: Milestone = Milestone {
+    phase: 2,
+    number: 11,
+};
 /// M3.1, unions.
-const UNIONS: Milestone = milestone(3, 1);
+const UNIONS: Milestone = Milestone {
+    phase: 3,
+    number: 1,
+};
 /// M3.2, enums.
-const ENUMS: Milestone = milestone(3, 2);
+const ENUMS: Milestone = Milestone {
+    phase: 3,
+    number: 2,
+};
 /// M3.3, patterns and `match`.
-const PATTERNS: Milestone = milestone(3, 3);
+const PATTERNS: Milestone = Milestone {
+    phase: 3,
+    number: 3,
+};
 /// M3.5, options.
-const OPTIONS: Milestone = milestone(3, 5);
+const OPTIONS: Milestone = Milestone {
+    phase: 3,
+    number: 5,
+};
 /// M3.6, operators, conversions and indexers.
-const OPERATORS: Milestone = milestone(3, 6);
+const OPERATORS: Milestone = Milestone {
+    phase: 3,
+    number: 6,
+};
 /// M3.7, results and `?` propagation.
-const RESULTS: Milestone = milestone(3, 7);
+const RESULTS: Milestone = Milestone {
+    phase: 3,
+    number: 7,
+};
 /// M3.9, monomorphization, which lowers generic code.
-const MONOMORPHIZATION: Milestone = milestone(3, 9);
+const MONOMORPHIZATION: Milestone = Milestone {
+    phase: 3,
+    number: 9,
+};
 /// M3.10, interfaces and static dispatch.
-const INTERFACES: Milestone = milestone(3, 10);
+const INTERFACES: Milestone = Milestone {
+    phase: 3,
+    number: 10,
+};
 /// M3.11, dynamic interface values.
-const DYNAMIC_INTERFACES: Milestone = milestone(3, 11);
+const DYNAMIC_INTERFACES: Milestone = Milestone {
+    phase: 3,
+    number: 11,
+};
 /// M3.12, tuples, collection expressions and smaller expressions.
-const SMALLER_EXPRESSIONS: Milestone = milestone(3, 12);
+const SMALLER_EXPRESSIONS: Milestone = Milestone {
+    phase: 3,
+    number: 12,
+};
 /// M3.13, statics.
-pub(super) const STATICS: Milestone = milestone(3, 13);
+pub(super) const STATICS: Milestone = Milestone {
+    phase: 3,
+    number: 13,
+};
 /// M4.4, macro expansion, ordering and hygiene.
-const EXPANSION: Milestone = milestone(4, 4);
+const EXPANSION: Milestone = Milestone {
+    phase: 4,
+    number: 4,
+};
 /// M5.2, strings, text and formatting.
-const STRINGS: Milestone = milestone(5, 2);
+const STRINGS: Milestone = Milestone {
+    phase: 5,
+    number: 2,
+};
 /// M5.6, the enumeration protocol and `foreach`.
-const ENUMERATION: Milestone = milestone(5, 6);
+const ENUMERATION: Milestone = Milestone {
+    phase: 5,
+    number: 6,
+};
 /// M6.2, async lowering.
-const ASYNC: Milestone = milestone(6, 2);
+const ASYNC: Milestone = Milestone {
+    phase: 6,
+    number: 2,
+};
 
 /// A body that is not lowered yet: what it is and the milestone of the
 /// roadmap that lowers it.
@@ -635,9 +701,7 @@ fn unresolved_later(
     functions: &[ItemId],
 ) -> Option<Later> {
     let params = functions.iter().map(|&item| {
-        let Signature::Function(function) = signature(db, item) else {
-            return None;
-        };
+        let function = as_function(signature(db, item))?;
         types_later(db, function.params.iter().map(|param| &param.ty))?
             .later(|what| format!("a call of an overload with {what}"))
     });
@@ -709,10 +773,8 @@ fn struct_member<'a>(
     let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
         return None;
     };
-    match inference.expr(*receiver) {
-        Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
-        _ => None,
-    }
+    let item = as_struct(inference.expr(*receiver)?)?;
+    Some((item, name.as_str()))
 }
 
 /// The milestone that checks and lowers a call that one of `functions`
@@ -722,9 +784,7 @@ fn struct_member<'a>(
 /// them names it on a tie; `None` when none of them comes later.
 fn call_later(db: &dyn Db, functions: impl IntoIterator<Item = ItemId>) -> Option<Later> {
     latest(functions.into_iter().map(|item| {
-        let Signature::Function(function) = signature(db, item) else {
-            return None;
-        };
+        let function = as_function(signature(db, item))?;
         let later = function_later(function)?;
         Some(Later::new(
             format!("a call of {}", later.what),
@@ -1055,9 +1115,7 @@ fn local_functions_later(
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
     latest(functions.iter().map(|function| {
-        let Stmt::Function(def) = &hir.stmts[function.stmt] else {
-            return None;
-        };
+        let def = hir.local_function(function.stmt)?;
         let name = &hir.locals[def.local].name;
         let ret = resolution.return_type(def.ret);
         let types = def

@@ -137,11 +137,9 @@ impl Checker<'_> {
             return entries;
         };
         *entry = Some(PathStorage::default());
-        let mut queue = std::collections::VecDeque::from([BlockId::ENTRY]);
-        while let Some(id) = queue.pop_front() {
-            let Some(mut path) = entries[id.index()].clone() else {
-                continue;
-            };
+        let mut queue =
+            std::collections::VecDeque::from([(BlockId::ENTRY, PathStorage::default())]);
+        while let Some((id, mut path)) = queue.pop_front() {
             self.storage_walk(id, &mut path, problems);
             let at = format!("fn {} bb{}[term]", body.name, id.0);
             let kind = &body.block(id).terminator.kind;
@@ -154,7 +152,7 @@ impl Checker<'_> {
                 match entries.get_mut(target.index()) {
                     Some(slot @ None) => {
                         *slot = Some(path.clone());
-                        queue.push_back(target);
+                        queue.push_back((target, path.clone()));
                     }
                     Some(Some(entry)) => {
                         if let Some(problem) = join_problem(&path.live, &entry.live) {
@@ -1449,6 +1447,21 @@ mod tests {
             next: None,
         });
         rejects(&fx, &mir, true, "no local function 4");
+        // A body whose locals do not hold its parameters.
+        mir.bodies[1].locals.truncate(2);
+        mir.bodies[0].blocks[0].terminator = term(TerminatorKind::Call {
+            callee: Callee::Local(1),
+            args: vec![int_const(1), int_const(2)],
+            dest: Some(place(3)),
+            next: Some(BlockId(1)),
+        });
+        assert_eq!(
+            errors(&fx, &mir, true),
+            [
+                "fn F bb0[term]: local function 1 has fewer locals than parameters",
+                "fn F.Inner: 2 parameters need 3 locals but the body has 2",
+            ]
+        );
     }
 
     #[test]
@@ -2540,6 +2553,15 @@ mod tests {
             assert!(!cast(Implicit, from, to), "{from:?} to {to:?}");
         }
         assert!(cast(Implicit, Byte, Int));
+        // A value that is not a number does not widen.
+        let unit = with_stmt(assign(
+            place(2),
+            Rvalue::Cast(Implicit, Operand::Const(Const::Unit), int()),
+        ));
+        assert_eq!(
+            errors(&fx, &unit, true),
+            ["fn F bb0[0]: Implicit cast from Tuple([]) to Primitive(Int)"]
+        );
         // Numeric casts go between any two numeric types, and only those.
         assert!(cast(Numeric, Long, Short));
         assert!(cast(Numeric, Double, Int));
@@ -2607,6 +2629,43 @@ mod tests {
         assert_eq!(
             errors(&fx, &mir, true),
             ["fn F bb0[1]: storage_live of _2, which is already live"]
+        );
+    }
+
+    #[test]
+    fn rejects_storage_dead_of_a_local_ended_two_blocks_before() {
+        let fx = fx();
+        let mir = blocks(vec![
+            block(vec![live(2), dead(2)], TerminatorKind::Goto(BlockId(1))),
+            block(vec![live(3), dead(3)], TerminatorKind::Goto(BlockId(2))),
+            block(vec![dead(2)], TerminatorKind::Return),
+        ]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb2[0]: storage_dead of _2, which is already dead"]
+        );
+    }
+
+    #[test]
+    fn rejects_a_path_that_joins_without_a_local_live_on_the_first() {
+        // The search enters bb3 from bb1 first, with `_2` live.
+        let fx = fx();
+        let mir = blocks(vec![
+            block(
+                vec![],
+                TerminatorKind::Switch {
+                    discr: copy(3),
+                    targets: vec![(Const::Bool(false), BlockId(1))],
+                    otherwise: BlockId(2),
+                },
+            ),
+            block(vec![live(2)], TerminatorKind::Goto(BlockId(3))),
+            block(vec![], TerminatorKind::Goto(BlockId(3))),
+            block(vec![dead(2)], TerminatorKind::Return),
+        ]);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            ["fn F bb2[term]: bb3 is entered with _2 live on another path but not here"]
         );
     }
 

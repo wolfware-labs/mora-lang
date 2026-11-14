@@ -2,12 +2,12 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{
-    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, Ty, body, creation, instance_fields,
+    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, body, creation, instance_fields,
 };
 use mora_span::Db;
 
 use super::expr::Dest;
-use super::{Lowered, Lowerer};
+use super::{Lowered, Lowerer, as_struct};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
 
 impl Lowerer<'_> {
@@ -22,15 +22,10 @@ impl Lowerer<'_> {
         args: Option<&[Arg]>,
         inits: Option<&[(String, ExprId)]>,
     ) -> Lowered<Rvalue> {
-        let Ty::Struct(item) = self.ty(expr) else {
-            self.ice(
-                expr,
-                "the creation of a value that is not a struct is not lowered",
-            )
-        };
-        if creation(self.owner.db, item, args) != Creation::Memberwise {
-            self.ice(expr, "a constructor call is not lowered");
-        }
+        let what = "the creation of a value that is not a struct is not lowered";
+        let item = self.expect(as_struct(&self.ty(expr)), expr, what);
+        let memberwise = creation(self.owner.db, item, args) == Creation::Memberwise;
+        self.check(memberwise, expr, "a constructor call is not lowered");
         let inits = inits.unwrap_or_default();
         let values: Vec<ExprId> = inits.iter().map(|&(_, value)| value).collect();
         let mut written: Vec<Option<Operand>> =
@@ -59,9 +54,12 @@ impl Lowerer<'_> {
         field: &Field,
     ) -> Lowered<Operand> {
         let owner = BodyOwner::Value(item.item, index);
-        if body(self.owner.db, item.file, owner).root.is_none() {
-            self.ice(expr, "a field without an initializer is left out");
-        }
+        let initialized = body(self.owner.db, item.file, owner).root.is_some();
+        self.check(
+            initialized,
+            expr,
+            "a field without an initializer is left out",
+        );
         let dest = self.finish_call(
             expr,
             Callee::Initializer(item, n),
@@ -69,10 +67,11 @@ impl Lowerer<'_> {
             field.ty.clone(),
             Dest::Temp,
         );
-        match dest {
-            Some(place) => Ok(Operand::Copy(place)),
-            None => self.ice(expr, "the initializer has no result"),
-        }
+        Ok(Operand::Copy(self.expect(
+            dest,
+            expr,
+            "the initializer has no result",
+        )))
     }
 
     /// The place of the field `name` of the struct at `base`, which `expr`
@@ -81,21 +80,16 @@ impl Lowerer<'_> {
     /// so it never gets here.
     pub(super) fn field_place(&self, expr: ExprId, mut base: Place, name: &str) -> Place {
         let db = self.owner.db;
-        let Ty::Struct(item) = self.builder.body().place_ty(&base, db) else {
-            self.ice(
-                expr,
-                "a member that is not a field of a struct is not lowered",
-            )
-        };
+        let what = "a member that is not a field of a struct is not lowered";
+        let item = self.expect(
+            as_struct(&self.builder.body().place_ty(&base, db)),
+            expr,
+            what,
+        );
         let field = (0u32..)
             .zip(instance_fields(db, item))
             .find(|(_, (_, field))| field.name == name);
-        let Some((n, _)) = field else {
-            self.ice(
-                expr,
-                "a member that is not a field of a struct is not lowered",
-            )
-        };
+        let (n, _) = self.expect(field, expr, what);
         base.projections.push(Projection::Field(n));
         base
     }
@@ -110,9 +104,8 @@ impl Lowerer<'_> {
                 resolution.segments.max(1),
             ))
         });
-        let Some((member, named)) = field else {
-            self.ice(expr, "a name that is not a field of `this` is not lowered")
-        };
+        let what = "a name that is not a field of `this` is not lowered";
+        let (member, named) = self.expect(field, expr, what);
         let mut place = self.field_place(expr, self.this_place(expr), &member.name);
         for segment in path.segments.iter().skip(named) {
             place = self.field_place(expr, place, segment);

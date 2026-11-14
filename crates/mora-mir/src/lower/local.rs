@@ -9,9 +9,9 @@
 //! same body, in blocks side by side, are told apart by a suffix after the
 //! first: `App.F.G#2` for the second in the order of the text.
 
-use mora_hir::{Captured, LocalFunction, ParamMode, Stmt, Ty, local_functions};
+use mora_hir::{Captured, LocalFunction, ParamMode, Ty, local_functions};
 
-use super::{BodyShape, Owner};
+use super::{BodyShape, LOCAL_WITHOUT_TYPE, Owner};
 use crate::types::param_ty;
 
 /// A local function of an owner.
@@ -36,12 +36,10 @@ impl<'a> Owner<'a> {
         // The name each function would have without a suffix.
         let mut bases: Vec<String> = Vec::with_capacity(found.len());
         for function in found {
-            let Stmt::Function(def) = &hir.stmts[function.stmt] else {
-                panic!(
-                    "internal error lowering {}: a local function that is not one",
-                    self.name
-                );
-            };
+            let def = self.expect(
+                hir.local_function(function.stmt),
+                "a local function that is not one",
+            );
             let prefix = function
                 .outer
                 .map_or(&self.name, |outer| &functions[outer].name);
@@ -67,17 +65,17 @@ impl<'a> Owner<'a> {
     pub(super) fn function_shape(&self, function: &LocalFn<'_>) -> BodyShape {
         let def = function.def;
         let at = self.map.local(def.local);
-        let Some(root) = def.body else {
-            self.ice_at(&function.name, at, "a local function without a body");
-        };
+        let name = &function.name;
+        let root = self.expect_at(def.body, name, at, "a local function without a body");
         let mut this = None;
         let mut captures = Vec::new();
         for &(captured, mode) in function.captures {
             match captured {
-                Captured::This => match &self.this_ty {
-                    Some(ty) => this = Some(param_ty(mode, ty.clone())),
-                    None => self.ice_at(&function.name, at, "`this` outside a method"),
-                },
+                Captured::This => {
+                    let ty =
+                        self.expect_at(self.this_ty.as_ref(), name, at, "`this` outside a method");
+                    this = Some(param_ty(mode, ty.clone()));
+                }
                 Captured::Local(local) => captures.push((local, mode)),
             }
         }
@@ -100,14 +98,9 @@ impl<'a> Owner<'a> {
 
     /// The type of `local`, in the body `body`.
     fn local_ty(&self, body: &str, local: mora_hir::LocalId) -> Ty {
-        match self.inference.local(local) {
-            Some(ty) => ty.clone(),
-            None => self.ice_at(
-                body,
-                self.map.local(local),
-                &format!("the local `{}` has no type", self.hir.locals[local].name),
-            ),
-        }
+        let ty = self.inference.local(local);
+        self.expect_at(ty, body, self.map.local(local), LOCAL_WITHOUT_TYPE)
+            .clone()
     }
 
     /// The local function `local`, with the position of its body in the

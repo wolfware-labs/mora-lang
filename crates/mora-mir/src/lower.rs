@@ -35,9 +35,9 @@ use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Signature,
-    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known,
-    owner_name, signature, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, FnSignature, Inference, ItemId, ItemIdx, STD,
+    Signature, Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer,
+    is_known, owner_name, signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
@@ -55,6 +55,9 @@ mod tests;
 /// whose body [`later::lowered_later`] leaves to a later milestone, alone
 /// or as a branch of a statement conditional.
 const STATEMENT_NOT_LOWERED: &str = "the statement is not lowered";
+
+/// The internal error for a local that inference gives no type.
+const LOCAL_WITHOUT_TYPE: &str = "the local has no type";
 
 /// The MIR of the body of `owner` in `file`. It is checked by
 /// [`debug_validate`] before it is returned.
@@ -329,9 +332,11 @@ impl Builder {
     ///
     /// When no scope is open.
     pub(crate) fn leave_scope(&mut self, span: Span) {
-        let Some(locals) = self.scopes.pop() else {
-            panic!("body {}: a scope left that is not open", self.body.name);
-        };
+        let name = &self.body.name;
+        let locals = self
+            .scopes
+            .pop()
+            .unwrap_or_else(|| panic!("body {name}: no scope is open"));
         self.storage_dead(locals.into_iter().rev(), span);
     }
 
@@ -399,9 +404,11 @@ impl Builder {
             );
             self.terminate(TerminatorKind::Unreachable, span);
         }
-        if let Some(open) = self.ended.iter().position(|ended| !ended) {
-            panic!("body {}: bb{open} has no terminator", self.body.name);
-        }
+        assert!(
+            self.ended.iter().all(|&ended| ended),
+            "body {}: a block has no terminator",
+            self.body.name
+        );
         number_densely(&mut self.body);
         self.body
     }
@@ -464,9 +471,23 @@ fn number_densely(body: &mut Body) {
 
 /// A position in a body's list of locals or blocks, as the id holds it.
 fn index_u32(index: usize) -> u32 {
-    match u32::try_from(index) {
-        Ok(index) => index,
-        Err(_) => panic!("a body with more than u32::MAX locals or blocks"),
+    u32::try_from(index)
+        .unwrap_or_else(|_| panic!("a body with more than u32::MAX locals or blocks"))
+}
+
+/// The function `signature` describes; `None` for another kind of item.
+pub(crate) fn as_function(signature: &Signature) -> Option<&FnSignature> {
+    match signature {
+        Signature::Function(function) => Some(function),
+        _ => None,
+    }
+}
+
+/// The struct `ty` is; `None` for another type.
+pub(crate) fn as_struct(ty: &Ty) -> Option<ItemId> {
+    match ty {
+        Ty::Struct(item) => Some(*item),
+        _ => None,
     }
 }
 
@@ -545,28 +566,22 @@ impl<'a> Owner<'a> {
 
     /// The shape of the body of `owner` itself.
     fn shape(&self, owner: BodyOwner) -> BodyShape {
-        let name = &self.name;
-        let Some(root) = self.hir.root else {
-            panic!("internal error lowering {name}: the body has no code");
-        };
+        let root = self.expect(self.hir.root, "the body has no code");
         let (ret, this, params) = match owner {
             BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
             BodyOwner::Item(item) => self.function_signature(self.item(item)),
             BodyOwner::Value(ty, index) => {
-                let Some(field) = structs::field_of_value(self.db, self.item(ty), index) else {
-                    panic!(
-                        "internal error lowering {name}: only the initializer of a field is lowered"
-                    );
-                };
+                let field = structs::field_of_value(self.db, self.item(ty), index);
+                let field = self.expect(field, "only the initializer of a field is lowered");
                 (field.ty.clone(), None, Vec::new())
             }
-            _ => panic!(
-                "internal error lowering {name}: only functions, methods, field initializers and top-level statements are lowered"
+            _ => self.fail(
+                "only functions, methods, field initializers and top-level statements are lowered",
             ),
         };
         let params = self.hir.params.iter().copied().zip(params).collect();
         BodyShape {
-            name: name.clone(),
+            name: self.name.clone(),
             ret,
             this,
             params,
@@ -577,34 +592,32 @@ impl<'a> Owner<'a> {
     /// The return type, the type of `this` and the types of the
     /// parameters of the function or method `item`.
     fn function_signature(&self, item: ItemId) -> (Ty, Option<LocalTy>, Vec<LocalTy>) {
-        let name = &self.name;
-        let Signature::Function(function) = signature(self.db, item) else {
-            panic!("internal error lowering {name}: the owner is not a function");
-        };
+        let function = self.expect(
+            as_function(signature(self.db, item)),
+            "the owner is not a function",
+        );
         if function.params.len() != self.hir.params.len() {
-            panic!(
-                "internal error lowering {name}: the signature has {} parameters but the body {}",
+            self.fail(&format!(
+                "the signature has {} parameters but the body {}",
                 function.params.len(),
                 self.hir.params.len()
-            )
+            ));
         }
-        let this = function.receiver.map(|mode| match &self.this_ty {
-            Some(ty) => param_ty(mode, ty.clone()),
-            None => panic!("internal error lowering {name}: `this` has no type"),
+        let this = function.receiver.map(|mode| {
+            let ty = self.expect(self.this_ty.as_ref(), "`this` has no type");
+            param_ty(mode, ty.clone())
         });
-        let mut params = Vec::with_capacity(function.params.len());
-        for param in &function.params {
-            if !is_known(&param.ty) {
-                panic!(
-                    "internal error lowering {name}: the parameter `{}` has a type that is not lowered",
-                    param.name
-                );
-            }
-            params.push(param_ty(param.mode, param.ty.clone()));
-        }
-        if !is_known(&function.ret) {
-            panic!("internal error lowering {name}: the return type is not lowered");
-        }
+        let types = function.params.iter().map(|param| &param.ty);
+        let known = types.chain([&function.ret]).all(is_known);
+        self.expect(
+            known.then_some(()),
+            "the signature has a type that is not lowered",
+        );
+        let params = function
+            .params
+            .iter()
+            .map(|param| param_ty(param.mode, param.ty.clone()))
+            .collect();
         (function.ret.clone(), this, params)
     }
 
@@ -627,6 +640,22 @@ impl<'a> Owner<'a> {
         }
     }
 
+    /// Panics with an internal error in the body of the owner itself.
+    fn fail(&self, what: &str) -> ! {
+        fail_in(&self.name, what)
+    }
+
+    /// `value`, or an internal error in the body of the owner itself.
+    fn expect<T>(&self, value: Option<T>, what: &str) -> T {
+        value.unwrap_or_else(|| self.fail(what))
+    }
+
+    /// `value`, or an internal error about the code at `range` in the
+    /// body `body`.
+    fn expect_at<T>(&self, value: Option<T>, body: &str, range: TextRange, what: &str) -> T {
+        value.unwrap_or_else(|| self.ice_at(body, range, what))
+    }
+
     /// Panics with an internal error, about the code at `range`, in the
     /// body `body`.
     fn ice_at(&self, body: &str, range: TextRange, what: &str) -> ! {
@@ -640,8 +669,14 @@ impl<'a> Owner<'a> {
             usize::from(range.start()),
         )
         .unwrap_or_default();
-        panic!("internal error lowering {body}: {what}: `{code}` at {line}:{column}");
+        fail_in(body, &format!("{what}: `{code}` at {line}:{column}"));
     }
+}
+
+/// Panics with an internal error in the body `body`: lowering got what
+/// the front end should have reported or a later milestone lowers.
+fn fail_in(body: &str, what: &str) -> ! {
+    panic!("internal error lowering {body}: {what}");
 }
 
 /// The lowering of one body: what its owner shares with its other bodies,
@@ -734,15 +769,8 @@ impl<'a> Lowerer<'a> {
         found.retain(|local| only.is_none_or(|only| only.contains(local)));
         let declared = found.len();
         for local in found {
-            let Some(ty) = self.owner.inference.local(local) else {
-                self.ice_at(
-                    self.owner.map.local(local),
-                    &format!(
-                        "the local `{}` has no type",
-                        self.owner.hir.locals[local].name
-                    ),
-                );
-            };
+            let at = self.owner.map.local(local);
+            let ty = self.expect_at(self.owner.inference.local(local), at, LOCAL_WITHOUT_TYPE);
             let decl = LocalDecl {
                 ty: LocalTy::Value(ty.clone()),
                 mutable: self.owner.hir.locals[local].kind == mora_hir::LocalKind::Var,
@@ -791,9 +819,8 @@ impl<'a> Lowerer<'a> {
         if let mora_hir::Expr::Block(stmts) = &self.owner.hir.exprs[root] {
             self.stmts(stmts);
             if self.builder.is_reachable() {
-                if *ret != Ty::UNIT {
-                    self.ice(root, "the end of a body that returns a value is reachable");
-                }
+                let what = "the end of a body that returns a value is reachable";
+                self.check(*ret == Ty::UNIT, root, what);
                 self.return_unit(self.end_span(root));
             }
             return;
@@ -855,12 +882,8 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(stmts) => {
                 self.builder.enter_scope();
                 self.stmts(stmts);
-                let Some(&end) = self.owner.map.block_ends.get(&stmt) else {
-                    panic!(
-                        "internal error lowering {}: a block without its closing brace",
-                        self.name
-                    );
-                };
+                let end = self.owner.map.block_ends.get(&stmt).copied();
+                let end = self.expect_in(end, "a block without its closing brace");
                 self.builder.leave_scope(self.owner.span_at(end));
             }
             Stmt::Return(value) => {
@@ -917,16 +940,8 @@ impl<'a> Lowerer<'a> {
 
     /// The MIR local of the HIR local `local`.
     fn local(&self, local: mora_hir::LocalId) -> LocalId {
-        match self.locals.get(&local) {
-            Some(id) => *id,
-            None => self.ice_at(
-                self.owner.map.local(local),
-                &format!(
-                    "`{}` is not a local of the body",
-                    self.owner.hir.locals[local].name
-                ),
-            ),
-        }
+        let id = self.locals.get(&local).copied();
+        self.expect_at(id, self.owner.map.local(local), "a local of another body")
     }
 
     /// The span of `expr`.
@@ -936,18 +951,34 @@ impl<'a> Lowerer<'a> {
 
     /// The span of the statement `stmt`.
     fn stmt_span(&self, stmt: StmtId) -> Span {
-        let Some(&range) = self.owner.map.stmts.get(&stmt) else {
-            panic!(
-                "internal error lowering {}: a statement without its range",
-                self.name
-            );
-        };
-        self.owner.span_at(range)
+        let range = self.owner.map.stmts.get(&stmt).copied();
+        self.owner
+            .span_at(self.expect_in(range, "a statement without its range"))
     }
 
     /// Panics with an internal error about `expr`.
     fn ice(&self, expr: ExprId, what: &str) -> ! {
         self.ice_at(self.owner.map.expr(expr), what)
+    }
+
+    /// `value`, or an internal error about `expr`.
+    fn expect<T>(&self, value: Option<T>, expr: ExprId, what: &str) -> T {
+        self.expect_at(value, self.owner.map.expr(expr), what)
+    }
+
+    /// An internal error about `expr` unless `holds`.
+    fn check(&self, holds: bool, expr: ExprId, what: &str) {
+        self.expect(holds.then_some(()), expr, what);
+    }
+
+    /// `value`, or an internal error about the code at `range`.
+    fn expect_at<T>(&self, value: Option<T>, range: TextRange, what: &str) -> T {
+        self.owner.expect_at(value, &self.name, range, what)
+    }
+
+    /// `value`, or an internal error in the body.
+    fn expect_in<T>(&self, value: Option<T>, what: &str) -> T {
+        value.unwrap_or_else(|| fail_in(&self.name, what))
     }
 
     /// Panics with an internal error about the code at `range`.

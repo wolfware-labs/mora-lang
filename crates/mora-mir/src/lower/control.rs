@@ -149,9 +149,8 @@ impl Lowerer<'_> {
     /// the loop's target. The scopes stay open for the code after it.
     pub(super) fn loop_jump(&mut self, stmt: StmtId, jump: Jump) {
         let span = self.stmt_span(stmt);
-        let Some(target) = self.loops.last() else {
-            self.ice_at(span.range, "`break` or `continue` outside a loop")
-        };
+        let what = "`break` or `continue` outside a loop";
+        let target = self.expect_at(self.loops.last(), span.range, what);
         let to = match jump {
             Jump::Break => target.r#break,
             Jump::Continue => target.r#continue,

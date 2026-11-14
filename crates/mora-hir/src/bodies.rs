@@ -195,6 +195,14 @@ pub struct ScopeData {
 }
 
 impl Body {
+    /// The local function `stmt` declares; `None` for another statement.
+    pub fn local_function(&self, stmt: StmtId) -> Option<&LocalFunction> {
+        match &self.stmts[stmt] {
+            Stmt::Function(function) => Some(function),
+            _ => None,
+        }
+    }
+
     /// Whether `expr` is an expression the parser recovered from.
     pub(crate) fn is_missing(&self, expr: ExprId) -> bool {
         matches!(self.exprs[expr], Expr::Missing)
@@ -872,7 +880,7 @@ mod tests {
     #[test]
     fn a_local_function_is_not_generic_for_the_item_around_it() {
         let db = TestDb::new();
-        let text = "F<T>() {\n    G() {}\n    H<U>() {}\n}\n";
+        let text = "F<T>() {\n    let n = 1;\n    G() {}\n    H<U>() {}\n}\n";
         assert_eq!(
             generic_local_functions(&db, text),
             [("G", false), ("H", true)]
@@ -910,10 +918,7 @@ mod tests {
         let functions = body
             .stmts
             .iter()
-            .filter_map(|(_, stmt)| match stmt {
-                Stmt::Function(function) => Some(function),
-                _ => None,
-            })
+            .filter_map(|(stmt, _)| body.local_function(stmt))
             .collect();
         (body, functions)
     }

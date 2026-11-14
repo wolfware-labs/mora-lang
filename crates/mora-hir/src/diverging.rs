@@ -70,7 +70,7 @@ mod tests {
         use crate::{BodyOwner, Stmt, body};
 
         let db = TestDb::new();
-        let text = "let a = true;\nlet b = false;\nlet c = !false;\nlet d = 1 < 2;\n";
+        let text = "let a = true;\nlet b = false;\nlet c = !false;\nlet d = 1 < 2;\nif (a) {}\n";
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
         let body = body(&db, file, BodyOwner::TopLevel);

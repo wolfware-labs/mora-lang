@@ -116,13 +116,13 @@ impl Lowerer<'_> {
             Expr::Member { .. } | Expr::Path(_) | Expr::This => Operand::Copy(self.place(expr)?),
             // The base comes first, and may not return.
             Expr::Index { base, .. } => {
-                self.operand(*base)?;
-                self.ice(expr, "an index is not lowered")
+                let what = "an index is not lowered";
+                self.operand(*base).map(|_| self.ice(expr, what))?
             }
-            Expr::Call { callee, args } => match self.call(expr, *callee, args, Dest::Temp)? {
-                Some(place) => Operand::Copy(place),
-                None => self.ice(expr, "the call has no result"),
-            },
+            Expr::Call { callee, args } => {
+                let result = self.call(expr, *callee, args, Dest::Temp)?;
+                Operand::Copy(self.expect(result, expr, "the call has no result"))
+            }
             Expr::Binary {
                 op: op @ (BinaryOp::And | BinaryOp::Or),
                 lhs,
@@ -201,10 +201,8 @@ impl Lowerer<'_> {
 
     /// The type inference gives `expr`.
     pub(super) fn ty(&self, expr: ExprId) -> Ty {
-        match self.owner.inference.expr(expr) {
-            Some(ty) => ty.clone(),
-            None => self.ice(expr, "the value has no type"),
-        }
+        let ty = self.owner.inference.expr(expr);
+        self.expect(ty, expr, "the value has no type").clone()
     }
 
     /// The constant `expr` stands for, if it is one.
@@ -229,16 +227,6 @@ impl Lowerer<'_> {
         self.builder
             .assign(Place::local(temp), cast(conversion, value), span);
         Operand::Copy(Place::local(temp))
-    }
-
-    /// The type of the value of `operand`.
-    fn operand_ty(&self, operand: &Operand) -> Ty {
-        match operand {
-            Operand::Copy(place) | Operand::Move(place) => {
-                self.builder.body().place_ty(place, self.owner.db)
-            }
-            Operand::Const(constant) => constant.ty(),
-        }
     }
 
     // Places.
@@ -286,10 +274,8 @@ impl Lowerer<'_> {
 
     /// The place of `this`, which `expr` uses.
     pub(super) fn this_place(&self, expr: ExprId) -> Place {
-        match self.this {
-            Some(this) => self.value_of(this),
-            None => self.ice(expr, "`this` is not lowered outside a method"),
-        }
+        let what = "`this` is not lowered outside a method";
+        self.value_of(self.expect(self.this, expr, what))
     }
 
     /// The place of the value of `local`: the local itself, or what it
@@ -362,9 +348,7 @@ impl Lowerer<'_> {
     // Operators and assignments.
 
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Lowered<Rvalue> {
-        let Some(op) = bin_op(op) else {
-            self.ice(expr, "the operator is not lowered")
-        };
+        let op = self.expect(bin_op(op), expr, OPERATOR_NOT_LOWERED);
         let left = self.operand(lhs)?;
         let left = self.stable(left, &[rhs], self.span(lhs));
         let right = self.operand(rhs)?;
@@ -389,13 +373,15 @@ impl Lowerer<'_> {
         let Some(op) = op else {
             return self.expr_into(rhs, place);
         };
-        let Some(op) = bin_op(op) else {
-            self.ice(expr, "the operator is not lowered")
-        };
-        // The conversion recorded on `lhs` applies to reading it.
+        let op = self.expect(bin_op(op), expr, OPERATOR_NOT_LOWERED);
+        // The conversion recorded on `lhs` applies to reading it, and the
+        // operation is in the type it converts to.
         let conversion = self.owner.inference.conversion(lhs);
+        let result_ty = match conversion {
+            Some(conversion) => conversion.to.clone(),
+            None => self.builder.body().place_ty(&place, self.owner.db),
+        };
         let read = self.converted(conversion, Operand::Copy(place.clone()), self.span(lhs));
-        let result_ty = self.operand_ty(&read);
         let read = self.stable(read, &[rhs], self.span(lhs));
         let right = self.operand(rhs)?;
         let value = Rvalue::Binary(op, read, right);
@@ -429,9 +415,7 @@ impl Lowerer<'_> {
             }
             _ => None,
         };
-        let Some(one) = one else {
-            self.ice(target, "a step of a value that is not a number")
-        };
+        let one = self.expect(one, target, "a step of a value that is not a number");
         let op = if increment { BinOp::Add } else { BinOp::Sub };
         let value = Rvalue::Binary(op, Operand::Copy(place.clone()), Operand::Const(one));
         self.builder.assign(place, value, self.span(expr));
@@ -473,19 +457,16 @@ impl Lowerer<'_> {
         let mut pieces = Vec::with_capacity(parts.len());
         for part in parts {
             pieces.push(match part {
-                InterpPart::Text { value, .. } => match value {
-                    Some(value) => InterpPiece::Text(value.clone()),
-                    None => self.ice(expr, "the text of the string has no value"),
-                },
+                InterpPart::Text { value, .. } => {
+                    let what = "the text of the string has no value";
+                    InterpPiece::Text(self.expect(value.clone(), expr, what))
+                }
                 InterpPart::Hole {
                     alignment, format, ..
                 } => {
-                    let value = operands.next();
-                    let aligned = alignment.map(|_| operands.next());
-                    let (Some(value), None | Some(Some(_))) = (value, &aligned) else {
-                        self.ice(expr, "a hole without its value")
-                    };
-                    let alignment = aligned.flatten();
+                    let what = "a hole without its value";
+                    let value = self.expect(operands.next(), expr, what);
+                    let alignment = alignment.map(|_| self.expect(operands.next(), expr, what));
                     InterpPiece::Operand {
                         value,
                         alignment,
@@ -497,6 +478,10 @@ impl Lowerer<'_> {
         Ok(Rvalue::Interpolate(pieces))
     }
 }
+
+/// The internal error for an operator that is not an operation on two
+/// values.
+const OPERATOR_NOT_LOWERED: &str = "the operator is not lowered";
 
 /// The constant `expr` of `hir` stands for: a literal, or an operation
 /// on literals, whose value inference records for a number.

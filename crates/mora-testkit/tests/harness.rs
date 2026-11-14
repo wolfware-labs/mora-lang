@@ -15,8 +15,9 @@ use mora_testkit::{Backend, Checked, Compiler, Output};
 /// Compiles a toy language, one statement per line, with `//` comments:
 /// `fail MRnnnn` reports an error on the word `fail`, `warn MRnnnn` a
 /// warning, `print text` prints a line, `jit-print text` prints it under the
-/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR
-/// and `panic` crashes the compiler.
+/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR,
+/// `mir text` one to the MIR, `unlowered MRnnnn` reports an error only when
+/// the program is lowered to MIR, and `panic` crashes the compiler.
 struct Fake {
     backends: &'static [Backend],
 }
@@ -116,7 +117,20 @@ impl Compiler for Fake {
     }
 
     fn mir(&self, path: &str, text: &str) -> Result<String, Checked> {
-        let checked = self.check(path, text);
+        let mut checked = self.check(path, text);
+        for (at, word, rest) in statements(text) {
+            if word == "unlowered" {
+                let span = Span::new(
+                    checked.sources[0],
+                    TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
+                );
+                checked.diagnostics.push(Diagnostic::error(
+                    rest.parse::<Code>().unwrap(),
+                    "fake lowering failure",
+                    Label::new(span, "here"),
+                ));
+            }
+        }
         if checked
             .diagnostics
             .iter()
@@ -370,6 +384,27 @@ fn run_reports_a_program_that_does_not_compile_once() {
         "{problems}"
     );
     assert!(!problems.contains("jit:"), "{problems}");
+}
+
+#[test]
+fn run_reports_a_program_that_compiles_but_does_not_lower() {
+    let root = suite_dir(
+        "run-lower",
+        "run",
+        &[(
+            "a.mr",
+            "hir one
+unlowered MR0300
+",
+        )],
+    );
+    let none = Fake { backends: &[] };
+    let report = run(&none, &root);
+    let problems = failure(&report);
+    assert!(
+        problems.starts_with("the program does not lower:\nerror[MR0300]: fake lowering failure\n"),
+        "{problems}"
+    );
 }
 
 #[test]

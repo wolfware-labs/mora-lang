@@ -6,13 +6,13 @@
 //! change it; a `move` receiver is a value taken before them (D-146).
 
 use mora_hir::{
-    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Signature, Ty, body,
+    Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Ty, body,
     calls_diverging, infer, signature,
 };
 use mora_span::Span;
 
 use super::expr::{Dest, constant};
-use super::{Diverged, Lowered, Lowerer};
+use super::{Diverged, Lowered, Lowerer, as_function};
 use crate::{BorrowMode, Callee, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
 impl Lowerer<'_> {
@@ -34,25 +34,19 @@ impl Lowerer<'_> {
                 if let Expr::Member { receiver, .. } = &self.owner.hir.exprs[callee]
                     && self.owner.inference.expr(callee) == Some(&Ty::Never)
                 {
-                    self.operand(*receiver)?;
-                    self.ice(expr, "a value of the never type was made");
+                    let what = "a value of the never type was made";
+                    return self.operand(*receiver).map(|_| self.ice(expr, what));
                 }
-                let Some(path) = self.external_path(callee) else {
-                    self.ice(expr, "the call has no callee")
-                };
+                let path = self.external_path(callee);
+                let path = self.expect(path, expr, "the call has no callee");
                 // A call that does not return has no value to store.
                 let diverges = calls_diverging(self.owner.hir, self.owner.resolution, callee);
-                if !matches!(dest, Dest::Discard) && !diverges {
-                    self.reject_external(expr);
-                }
+                let what = "the value of an external call is used";
+                self.check(matches!(dest, Dest::Discard) || diverges, expr, what);
                 self.external_call(expr, path, args, diverges)?;
                 Ok(None)
             }
         }
-    }
-
-    fn reject_external(&self, expr: ExprId) -> ! {
-        self.ice(expr, "the value of an external call is used")
     }
 
     /// The path of `callee` when it names a function of the standard
@@ -110,9 +104,8 @@ impl Lowerer<'_> {
         args: &[Arg],
         dest: Dest,
     ) -> Lowered<Option<Place>> {
-        let Signature::Function(function) = signature(self.owner.db, item) else {
-            self.ice(expr, "the callee is not a function")
-        };
+        let function = as_function(signature(self.owner.db, item));
+        let function = self.expect(function, expr, "the callee is not a function");
         let values = arg_values(args);
         // The receiver is evaluated first. One taken by `in`, `ref` or `mut`
         // is borrowed once the arguments are, as a local function borrows
@@ -175,9 +168,8 @@ impl Lowerer<'_> {
         dest: Dest,
     ) -> Lowered<Option<Place>> {
         let owner = self.owner;
-        let Some((index, function)) = owner.function(local) else {
-            self.ice(expr, "the callee is not a local function of the body")
-        };
+        let what = "the callee is not a local function of the body";
+        let (index, function) = self.expect(owner.function(local), expr, what);
         let def = function.def;
         let span = self.span(expr);
         let values = arg_values(args);
@@ -230,9 +222,8 @@ impl Lowerer<'_> {
         values: &[ExprId],
         modes: &[ParamMode],
     ) -> Lowered<Vec<Option<Operand>>> {
-        let Some(bound) = self.owner.inference.arguments(call) else {
-            self.ice(call, "the arguments of the call are not bound")
-        };
+        let bound = self.owner.inference.arguments(call);
+        let bound = self.expect(bound, call, "the arguments of the call are not bound");
         debug_assert_eq!(
             bound.len(),
             values.len(),
@@ -360,9 +351,8 @@ impl Lowerer<'_> {
                 .find(|&&(local, _)| local == param)
                 .map(|&(_, default)| default)
         });
-        let Some(default) = default else {
-            self.ice(call, "an argument without a default value is left out")
-        };
+        let what = "an argument without a default value is left out";
+        let default = self.expect(default, call, what);
         let Some(value) = constant(callee, inference, default) else {
             self.ice(
                 call,
