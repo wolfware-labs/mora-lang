@@ -1323,19 +1323,27 @@ impl Check<'_> {
     /// A compound `op=` with a tuple on the left, whose elements are not
     /// checked as places (§7.11, D-155): the operation is checked as
     /// [`Check::binary`] checks it. When an element of a type not known yet,
-    /// as `_`, kept that silent, no operator takes the tuple, `MR0204`,
-    /// unless the right side is a struct, whose operators come with M3.6, its
-    /// type is not known, or the operands reported an error already.
+    /// as `_`, kept that silent, no operator takes the tuple: `MR0204`. It
+    /// is not reported when either operand has an error already, a name in
+    /// the left tuple that did not resolve included, nor when the right side
+    /// is a struct, whose operators come with M3.6. Arithmetic needs the
+    /// right side's type too; a tuple is never shifted, so a shift is
+    /// decided from the left side alone, whatever its count is.
     fn tuple_operation(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) {
         let reported = self.errors.len();
         self.binary(expr, op, lhs, rhs);
-        if self.errors.len() > reported {
+        let operation = self.errors[reported..]
+            .iter()
+            .any(|error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr));
+        if operation || self.has_unknown_element(lhs) {
             return;
         }
-        let Some(rhs_ty) = self.exprs[arena_index(rhs)].clone().filter(is_known) else {
+        let rhs_ty = self.exprs[arena_index(rhs)].clone();
+        if rhs_ty.as_ref().is_some_and(is_struct) {
             return;
-        };
-        if is_struct(&rhs_ty) {
+        }
+        let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr);
+        if !shift && (self.errors.len() > reported || !rhs_ty.as_ref().is_some_and(is_known)) {
             return;
         }
         self.errors.push(TypeError::Binary {
@@ -1344,8 +1352,24 @@ impl Check<'_> {
             lhs,
             rhs,
             lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
-            rhs_ty,
+            rhs_ty: rhs_ty.unwrap_or(Ty::Error),
         });
+    }
+
+    /// Whether an element of the tuple `tuple`, at any depth, has no type or
+    /// is an error, as a name that did not resolve or a type keyword: a
+    /// mistake reported on its own. A discarded element `_` is not one.
+    fn has_unknown_element(&self, tuple: ExprId) -> bool {
+        let Expr::Tuple(elems) = &self.body.exprs[tuple] else {
+            return false;
+        };
+        elems.iter().any(|&(_, elem)| match &self.body.exprs[elem] {
+            Expr::Tuple(_) => self.has_unknown_element(elem),
+            Expr::Discard => false,
+            _ => !self.exprs[arena_index(elem)]
+                .as_ref()
+                .is_some_and(|ty| *ty != Ty::Error),
+        })
     }
 
     /// The type of the place `place` of `=`: a tuple for a tuple of places

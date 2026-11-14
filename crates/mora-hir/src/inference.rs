@@ -1242,6 +1242,21 @@ mod tests {
             ("(x, y) += new { Y = 1 };", vec!["MR0154"]),
             ("(x, x) += (_, 1);", vec!["MR0127"]),
             ("(x, y) += (q, 1);", vec!["MR0204"]),
+            // A name that did not resolve in the left tuple is the mistake
+            // too, as one in the right operand is.
+            ("(x, Nope) += (1, 2);", vec!["MR0127"]),
+            ("(int, x) += 1;", vec!["MR0127"]),
+            ("((x, Nope), y) += ((1, 2), 3);", vec!["MR0127"]),
+            ("(x, _) += One(1);", vec!["MR0205"]),
+            ("(x, y) += (Nope, 1);", vec!["MR0127"]),
+            // A tuple is never shifted: the left side decides, whatever the
+            // count is, and a bad count is a second mistake.
+            ("(x, y) <<= \"a\";", vec!["MR0204", "MR0203"]),
+            ("(x, _) <<= \"a\";", vec!["MR0204", "MR0203"]),
+            ("(x, _) <<= (1, 2);", vec!["MR0204", "MR0203"]),
+            ("(x, _) <<= 1;", vec!["MR0204"]),
+            ("(x, _) >>>= Nope;", vec!["MR0204", "MR0127"]),
+            ("(x, Nope) <<= 1;", vec!["MR0127"]),
             // `??=` waits for options (M3.5), and checks no element as a
             // place before then.
             ("(x, _) ??= (1, 2);", vec![]),
