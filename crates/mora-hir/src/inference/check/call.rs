@@ -3,9 +3,9 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
 use la_arena::Arena;
+use rustc_hash::FxHashMap;
 
 use super::{Check, Expect};
 use crate::arena::arena_index;
@@ -468,7 +468,7 @@ impl<'a> Check<'a> {
     /// Whether the struct `item` declares a static field, a static getter
     /// or a constant named `name`.
     fn is_static_value(&self, item: ItemId, name: &str) -> bool {
-        item_data(self.db, item)
+        self.item_data(item)
             .values
             .iter()
             .any(|value| value.name == name && value.is_static)
@@ -477,7 +477,8 @@ impl<'a> Check<'a> {
     /// The type of the getter `name` of the struct `item`, which its body
     /// declares.
     pub(super) fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
-        let (_, index) = item_data(self.db, item)
+        let (_, index) = self
+            .item_data(item)
             .values
             .iter()
             .zip(0u32..)
@@ -521,7 +522,7 @@ impl<'a> Check<'a> {
                     Stmt::Function(function) => Some((function.local, id)),
                     _ => None,
                 })
-                .collect::<HashMap<_, _>>()
+                .collect::<FxHashMap<_, _>>()
         });
         let Stmt::Function(function) = &body.stmts[*functions.get(&local)?] else {
             return None;

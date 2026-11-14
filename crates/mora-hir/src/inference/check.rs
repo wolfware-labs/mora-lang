@@ -4,12 +4,13 @@ mod call;
 mod places;
 mod static_member;
 
-use std::collections::{HashMap, HashSet};
+use std::cell::Cell;
 
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::constant::Value;
 use super::{
@@ -19,17 +20,17 @@ use super::{
 use crate::arena::arena_index;
 use crate::bodies::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Expr, ExprId, InterpPart, Literal,
-    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, body, body_resolution,
-    body_scope,
+    LocalId, MatchArm, Pat, PatId, Stmt, StmtId, Target, TypeId, UnaryOp, ValueRef, body,
+    body_resolution, body_scope,
 };
 use crate::defs::ItemId;
-use crate::items::{ItemKind, ValueKind};
-use crate::resolve::{Resolved, Scope, item_data, value_visible};
+use crate::items::{Item, ItemKind, ItemTree, ValueKind, ValueMember, item_tree};
+use crate::resolve::{Resolved, Scope, value_visible};
 use crate::signature::{
     Creation, creation, instance_field_named, instance_fields, signature, struct_field, this_type,
 };
 use crate::suggest::closest;
-use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
+use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -138,21 +139,23 @@ pub(super) fn infer_body(
         resolution,
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
-        calls: HashMap::new(),
-        arguments: HashMap::new(),
+        calls: FxHashMap::default(),
+        arguments: FxHashMap::default(),
         local_functions: None,
-        constants: HashMap::new(),
-        literals: HashMap::new(),
-        conversions: HashMap::new(),
-        element_conversions: HashMap::new(),
+        constants: FxHashMap::default(),
+        literals: FxHashMap::default(),
+        conversions: FxHashMap::default(),
+        element_conversions: FxHashMap::default(),
         errors: Vec::new(),
-        statements: HashSet::new(),
-        splittable: HashMap::new(),
+        statements: FxHashSet::default(),
+        splittable: FxHashMap::default(),
         block_stmt: None,
         ret: None,
         ret_later: false,
         scope: body_scope(project, file, owner),
-        this: None,
+        item: None,
+        tree: Cell::new(None),
+        signature: Cell::new(None),
     };
     check.locals = body
         .locals
@@ -170,7 +173,7 @@ pub(super) fn infer_body(
         }),
         _ => None,
     };
-    check.this = item.and_then(|item| this_type(db, item));
+    check.item = item;
     match item.map(|item| signature(db, item)) {
         Some(Signature::Function(function)) => {
             // A parameter the parser recovered from declares no local, and
@@ -254,28 +257,28 @@ struct Check<'a> {
     /// The type of each local so far.
     locals: Vec<Option<Ty>>,
     /// The function each checked call calls, so far.
-    calls: HashMap<ExprId, Callee>,
+    calls: FxHashMap<ExprId, Callee>,
     /// The parameter of each argument of a checked call, so far.
-    arguments: HashMap<ExprId, Vec<usize>>,
+    arguments: FxHashMap<ExprId, Vec<usize>>,
     /// The statement of each local function, found on the first call of
     /// one.
-    local_functions: Option<HashMap<LocalId, StmtId>>,
+    local_functions: Option<FxHashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
-    constants: HashMap<ExprId, Constant>,
+    constants: FxHashMap<ExprId, Constant>,
     /// The value of each number literal and negated literal so far.
-    literals: HashMap<ExprId, Constant>,
+    literals: FxHashMap<ExprId, Constant>,
     /// The conversions applied so far.
-    conversions: HashMap<ExprId, Conversion>,
+    conversions: FxHashMap<ExprId, Conversion>,
     /// The conversions of deconstructed elements so far.
-    element_conversions: HashMap<(ExprId, u32), Conversion>,
+    element_conversions: FxHashMap<(ExprId, u32), Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
     /// The assignments written as statements of their own, whose value
     /// nothing uses.
-    statements: HashSet<ExprId>,
+    statements: FxHashSet<ExprId>,
     /// The assignments that are the value of another one written as a
     /// statement in a block, each with that statement: a fix can split them.
-    splittable: HashMap<ExprId, ExprId>,
+    splittable: FxHashMap<ExprId, ExprId>,
     /// The statement of the block being walked whose turn it is.
     block_stmt: Option<StmtId>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
@@ -287,8 +290,52 @@ struct Check<'a> {
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
-    /// The type of `this`, in a method of a struct.
-    this: Option<Ty>,
+    /// The item whose body this is, whose receiver, in a method of a
+    /// struct, gives `this` its type. The type is looked up at each `this`,
+    /// which few bodies use.
+    item: Option<ItemId>,
+    /// The item tree read last, with its file: most items a body names are
+    /// in its own file, and one read serves them all.
+    tree: Cell<Option<(SourceFile, &'a ItemTree)>>,
+    /// The signature read last, with its item: the members a body uses
+    /// are mostly those of one struct.
+    signature: Cell<Option<(ItemId, &'a Signature)>>,
+}
+
+impl<'a> Check<'a> {
+    /// The item tree of `file`.
+    fn tree(&self, file: SourceFile) -> &'a ItemTree {
+        if let Some((read, tree)) = self.tree.get()
+            && read == file
+        {
+            return tree;
+        }
+        let tree = item_tree(self.db, file);
+        self.tree.set(Some((file, tree)));
+        tree
+    }
+
+    /// The signature of `item`.
+    fn signature(&self, item: ItemId) -> &'a Signature {
+        if let Some((read, signature)) = self.signature.get()
+            && read == item
+        {
+            return signature;
+        }
+        let read = signature(self.db, item);
+        self.signature.set(Some((item, read)));
+        read
+    }
+
+    /// What the item tree says about `item`.
+    fn item_data(&self, item: ItemId) -> &'a Item {
+        self.tree(item.file).item(item.item)
+    }
+
+    /// The value member `value` refers to.
+    fn value_member(&self, value: ValueRef) -> Option<&'a ValueMember> {
+        self.item_data(value.ty).values.get(value.index)
+    }
 }
 
 impl Check<'_> {
@@ -830,7 +877,7 @@ impl Check<'_> {
                 self.block(stmts);
                 None
             }
-            Expr::This => self.this.clone(),
+            Expr::This => self.item.and_then(|item| this_type(self.db, item)),
             Expr::Type(_) | Expr::Default(_) | Expr::Macro => None,
         }
     }
@@ -840,14 +887,14 @@ impl Check<'_> {
         match target {
             Target::Error => Some(Ty::Error),
             // Only a constant or a static has a value signature.
-            Target::Item(Resolved::Item(item)) => match signature(self.db, *item) {
+            Target::Item(Resolved::Item(item)) => match self.signature(*item) {
                 Signature::Value(ty) => Some(ty.clone()),
                 _ => None,
             },
             Target::Item(_) => None,
             // A getter has the type its body declares.
             Target::Value(value) => {
-                let member = value.member(self.db)?;
+                let member = self.value_member(*value)?;
                 self.struct_field(value.ty, &member.name).or_else(|| {
                     (member.kind == ValueKind::Getter)
                         .then(|| self.getter_type(value.ty, &member.name))
@@ -879,7 +926,7 @@ impl Check<'_> {
     }
 
     fn struct_field(&self, item: ItemId, name: &str) -> Option<Ty> {
-        match signature(self.db, item) {
+        match self.signature(item) {
             Signature::Struct(fields) => fields
                 .iter()
                 .find(|field| field.name == name)
@@ -1455,7 +1502,7 @@ impl Check<'_> {
                     self.deconstruct_type(place, &ty.ty, value, &elem.ty, leaf);
                 }
             }
-            (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
+            (_, Ty::Struct(item)) if self.item_data(*item).is_positional => {}
             (_, Ty::Tuple(_) | Ty::Primitive(_) | Ty::String | Ty::Struct(_)) => {
                 self.errors.push(TypeError::Mismatch {
                     expr: value,
@@ -1569,7 +1616,7 @@ impl Check<'_> {
                 Construct::Class | Construct::External | Construct::Splice => true,
                 Construct::Generic => ty.item.is_some_and(|item| {
                     matches!(
-                        item_data(self.db, item).kind,
+                        self.item_data(item).kind,
                         ItemKind::Struct | ItemKind::Class
                     )
                 }),
@@ -1604,7 +1651,7 @@ impl Check<'_> {
     ) {
         // A positional struct's constructor is the one its parameters
         // declare (§6.5).
-        let positional = item_data(self.db, item).is_positional;
+        let positional = self.item_data(item).is_positional;
         for (position, (name, init)) in inits.iter().enumerate() {
             match self.assigned_field(item, name, *init) {
                 Some(index) => {
@@ -1664,7 +1711,14 @@ impl Check<'_> {
     /// field's index among the value members; infers `value` and gives
     /// `None` when `name` is no instance field.
     fn assigned_field(&mut self, item: ItemId, name: &str, value: ExprId) -> Option<u32> {
-        match instance_field_named(self.db, item, name) {
+        self.assign_field(instance_field_named(self.db, item, name), value)
+    }
+
+    /// Checks `value` against the type of `field`, an instance field with
+    /// its index among the value members, and gives that index; infers
+    /// `value` and gives `None` when there is no such field.
+    fn assign_field(&mut self, field: Option<(u32, &Field)>, value: ExprId) -> Option<u32> {
+        match field {
             Some((index, field)) => {
                 self.check(value, &field.ty);
                 Some(index)
@@ -1679,18 +1733,30 @@ impl Check<'_> {
     /// The memberwise creation `expr` of the struct `item`, of type `ty`,
     /// with `inits` (§6.9).
     fn memberwise(&mut self, expr: ExprId, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
+        // The instance fields, and whether the body sees each, looked up
+        // once for all the initializers.
+        let fields: Vec<(u32, &Field)> = instance_fields(self.db, item).collect();
+        let visible: Vec<bool> = fields
+            .iter()
+            .map(|&(index, _)| self.field_visible(item, index))
+            .collect();
         // Memberwise creation needs every required field visible (`MR0144`);
         // where one is hidden, that error replaces `MR0129` for the hidden
         // fields assigned and `MR0143` for those left out.
-        let hidden = instance_fields(self.db, item)
-            .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
+        let hidden = fields
+            .iter()
+            .zip(&visible)
+            .find(|&(&(_, field), &visible)| field.needs_init && !visible)
+            .map(|(&field, _)| field);
         for (position, (name, init)) in inits.iter().enumerate() {
+            let found = fields.iter().position(|(_, field)| field.name == *name);
+            let field = found.map(|found| fields[found]);
             // A repeated field is reported as repeated (`MR0148`) alone: its
             // first assignment reports it hidden.
-            if let Some(index) = self.assigned_field(item, name, *init)
+            if let Some(index) = self.assign_field(field, *init)
                 && hidden.is_none()
                 && assigned_before(inits, position).is_none()
-                && !self.field_visible(item, index)
+                && found.is_some_and(|found| !visible[found])
             {
                 self.errors.push(TypeError::HiddenField {
                     value: *init,
@@ -1701,7 +1767,7 @@ impl Check<'_> {
                     fixable: true,
                 });
             }
-            if let Some(error) = self.init_name(item, ty, inits, position) {
+            if let Some(error) = self.init_name(item, ty, inits, position, field.is_some()) {
                 self.errors.push(error);
             }
         }
@@ -1714,7 +1780,7 @@ impl Check<'_> {
             });
             return;
         }
-        let missing = instance_fields(self.db, item).find(|(_, field)| {
+        let missing = fields.iter().find(|(_, field)| {
             field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
         });
         if let Some((_, missing)) = missing {
@@ -1736,23 +1802,24 @@ impl Check<'_> {
     /// Whether the body sees the value member at `index` of the struct
     /// `item`, one of its instance fields (§4.5).
     fn field_visible(&self, item: ItemId, index: u32) -> bool {
-        let member = &item_data(self.db, item).values[index as usize];
+        let member = &self.item_data(item).values[index as usize];
         value_visible(self.db, item, member, self.scope)
     }
 
     /// What is wrong with the name of the initializer at `position` of
     /// `inits`, the memberwise creation of the struct `item` of type `ty`:
     /// one assigned before, or a name that is not an instance field
-    /// ([`Self::not_a_field`]).
+    /// ([`Self::not_a_field`]). `is_field` says whether the name is one.
     fn init_name(
         &self,
         item: ItemId,
         ty: &Ty,
         inits: &[(String, ExprId)],
         position: usize,
+        is_field: bool,
     ) -> Option<TypeError> {
         let (name, value) = &inits[position];
-        if instance_field_named(self.db, item, name).is_some() {
+        if is_field {
             return Some(TypeError::RepeatedField {
                 value: *value,
                 first: assigned_before(inits, position)?,
@@ -1784,7 +1851,8 @@ impl Check<'_> {
         if name.is_empty() {
             return None;
         }
-        let member = item_data(self.db, item)
+        let member = self
+            .item_data(item)
             .values
             .iter()
             .find(|member| member.name == *name)

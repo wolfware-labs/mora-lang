@@ -18,11 +18,11 @@ mod lower;
 mod owners;
 mod resolve;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use la_arena::{Arena, Idx};
 use mora_span::{Db, SourceFile, TextRange};
+use rustc_hash::FxHashMap;
 
 use crate::arena::arena_index;
 use crate::items::{ItemIdx, Visibility, item_tree, parse};
@@ -124,7 +124,7 @@ pub struct Body {
     pub types: Arena<TypeRef>,
     /// The type parameters of the local functions around a type, for the
     /// types inside a generic local function.
-    pub type_params: HashMap<TypeId, Vec<String>>,
+    pub type_params: FxHashMap<TypeId, Vec<String>>,
     /// The parameters of the function, in order.
     pub params: Vec<LocalId>,
     /// The default value of each parameter that has one.
@@ -695,33 +695,33 @@ pub struct BodySourceMap {
     /// The name of each local, indexed like [`Body::locals`].
     pub locals: Vec<TextRange>,
     /// The segments of each [`Expr::Path`].
-    pub path_segments: HashMap<ExprId, Vec<TextRange>>,
+    pub path_segments: FxHashMap<ExprId, Vec<TextRange>>,
     /// The name of each [`Expr::Member`].
-    pub member_names: HashMap<ExprId, TextRange>,
+    pub member_names: FxHashMap<ExprId, TextRange>,
     /// The marker of each argument written with one, by the argument's
     /// expression.
-    pub markers: HashMap<ExprId, TextRange>,
+    pub markers: FxHashMap<ExprId, TextRange>,
     /// Each statement but a local declaration, as written.
-    pub stmts: HashMap<StmtId, TextRange>,
+    pub stmts: FxHashMap<StmtId, TextRange>,
     /// The `let` written right before the name of a local, which the fix
     /// of `MR0182` turns into `var`.
-    pub lets: HashMap<LocalId, TextRange>,
+    pub lets: FxHashMap<LocalId, TextRange>,
     /// The closing brace of each function and local function body written
     /// as a block, by the block's expression.
-    pub ends: HashMap<ExprId, TextRange>,
+    pub ends: FxHashMap<ExprId, TextRange>,
     /// The closing brace of each block statement.
-    pub block_ends: HashMap<StmtId, TextRange>,
+    pub block_ends: FxHashMap<StmtId, TextRange>,
     /// The name of each capture, or its `this`, by its lambda and position.
-    pub captures: HashMap<(ExprId, usize), TextRange>,
+    pub captures: FxHashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
     /// [`crate::type_ref::PathRef::index`].
     pub type_paths: Vec<Vec<TextRange>>,
     /// Where the `ref` and the default of each of [`Body::ref_defaults`] are.
-    pub ref_defaults: HashMap<LocalId, RefDefaultRanges>,
+    pub ref_defaults: FxHashMap<LocalId, RefDefaultRanges>,
     /// Where each member initializer `F = v` of a `new` or `with`
     /// expression is written, by the expression of its value, when it has
     /// a name.
-    pub inits: HashMap<ExprId, InitRanges>,
+    pub inits: FxHashMap<ExprId, InitRanges>,
 }
 
 /// Where a member initializer `F = v` is written.
@@ -764,7 +764,7 @@ struct FileBodies {
     /// order of the text.
     owners: Vec<BodyOwner>,
     /// The body and source map of each owner.
-    bodies: HashMap<BodyOwner, Lowered>,
+    bodies: FxHashMap<BodyOwner, Lowered>,
 }
 
 /// A body and its source map, shared so that [`body`] and

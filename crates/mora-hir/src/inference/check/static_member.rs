@@ -3,15 +3,14 @@
 //! function in a namespace and the top-level statements, and a member of a
 //! nested type has no value of the types around it (`MR0149`, `MR0152`).
 
-use std::collections::HashSet;
-
 use mora_span::Db;
+use rustc_hash::FxHashSet;
 
 use super::Check;
 use crate::bodies::{BodyOwner, Expr, ExprId, Target};
 use crate::defs::ItemId;
 use crate::inference::{Callee, InstanceMember, InstanceUse, TypeError};
-use crate::items::{ItemKind, ValueKind, item_tree};
+use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, declaring_type, item_data};
 use crate::signature::signature;
 use crate::ty::Signature;
@@ -56,7 +55,7 @@ impl Check<'_> {
         let body = self.body;
         // The call reports a callee that names an instance method; any other
         // path that names one is a method group.
-        let callees: HashSet<ExprId> = body
+        let callees: FxHashSet<ExprId> = body
             .exprs
             .iter()
             .filter_map(|(_, node)| match node {
@@ -89,8 +88,8 @@ impl Check<'_> {
                     expr: at,
                     kind,
                     name,
-                    outer: item_data(self.db, ty).name.clone(),
-                    nested: item_data(self.db, member.ty).name.clone(),
+                    outer: self.item_data(ty).name.clone(),
+                    nested: self.item_data(member.ty).name.clone(),
                 }
             } else if let Some(field) = &member.field {
                 TypeError::InitializerThis {
@@ -114,7 +113,7 @@ impl Check<'_> {
             BodyOwner::TopLevel => true,
             // A function, a constant or a static declared in a namespace.
             BodyOwner::Item(item) => {
-                let data = item_tree(self.db, self.scope.file).item(item);
+                let data = self.tree(self.scope.file).item(item);
                 matches!(data.kind, ItemKind::Function | ItemKind::Field) && data.parent.is_none()
             }
             BodyOwner::Value(..) | BodyOwner::Member(..) | BodyOwner::Extension(..) => false,
@@ -126,7 +125,7 @@ impl Check<'_> {
     /// interface member, or the initializer or getter of a static or
     /// constant value.
     fn member(&self, owner: BodyOwner) -> Option<Member> {
-        let tree = item_tree(self.db, self.scope.file);
+        let tree = self.tree(self.scope.file);
         let (ty, is_static, field) = match owner {
             BodyOwner::Item(item) => {
                 let data = tree.item(item);
@@ -157,7 +156,7 @@ impl Check<'_> {
     /// the type that declares it.
     fn instance_value(&self, path: ExprId) -> Option<(ItemId, InstanceUse)> {
         let value = self.resolution.value_ref(path)?;
-        let member = value.member(self.db)?;
+        let member = self.value_member(value)?;
         if member.is_static {
             return None;
         }

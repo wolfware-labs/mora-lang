@@ -1,8 +1,7 @@
 //! The names of a body that are not locals (§14.5).
 
-use std::collections::HashMap;
-
 use mora_span::{Db, Project, SourceFile};
+use rustc_hash::FxHashMap;
 
 use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, TypeId, body};
 use crate::arena::arena_index;
@@ -20,7 +19,7 @@ use crate::ty::Ty;
 pub struct BodyResolution {
     /// What each [`Expr::Path`] names, and each [`Expr::Member`] whose
     /// receiver names a namespace or a type.
-    pub paths: HashMap<ExprId, PathResolution>,
+    pub paths: FxHashMap<ExprId, PathResolution>,
     /// Each of [`super::Body::types`], with its names looked up.
     pub types: Vec<Ty>,
     /// What does not resolve.
@@ -199,7 +198,7 @@ pub fn body_resolution(
     // first.
     // Every path of a body is looked up from the same scope, so a name used
     // again gives the same answer.
-    let mut cache = HashMap::new();
+    let mut cache = FxHashMap::default();
     for (id, expr) in body.exprs.iter() {
         match expr {
             Expr::Path(path) => {

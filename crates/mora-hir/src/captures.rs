@@ -8,9 +8,10 @@
 //! local is inside a local function when the function's code declares it:
 //! its parameters, its locals and those of the code nested in it.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use mora_span::{Db, Project, SourceFile};
+use rustc_hash::FxHashSet;
 
 use crate::bodies::{
     ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, InterpPart, LocalId,
@@ -80,7 +81,7 @@ struct Found {
     local: LocalId,
     outer: Option<usize>,
     /// The locals declared inside it.
-    declared: HashSet<LocalId>,
+    declared: FxHashSet<LocalId>,
     /// What it takes itself, in the order it takes them.
     captures: BTreeMap<Captured, ParamMode>,
     /// The local functions it calls that are not inside it.
@@ -217,7 +218,7 @@ impl Walk<'_> {
                     stmt,
                     local: function.local,
                     outer: self.open.last().copied(),
-                    declared: HashSet::new(),
+                    declared: FxHashSet::default(),
                     captures: BTreeMap::new(),
                     calls: Vec::new(),
                 });

@@ -20,9 +20,8 @@ mod constant;
 mod diagnostic;
 mod numeric;
 
-use std::collections::HashMap;
-
 use mora_span::{Db, Project, SourceFile};
+use rustc_hash::FxHashMap;
 
 use crate::arena::arena_index;
 use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, TypeId, UnaryOp};
@@ -44,19 +43,19 @@ pub struct Inference {
     /// The type of each local, indexed like [`crate::Body::locals`].
     locals: Vec<Option<Ty>>,
     /// The function each call that is checked calls.
-    calls: HashMap<ExprId, Callee>,
+    calls: FxHashMap<ExprId, Callee>,
     /// The parameter each argument of a checked call goes to.
-    arguments: HashMap<ExprId, Vec<usize>>,
+    arguments: FxHashMap<ExprId, Vec<usize>>,
     /// The value of each operation made only of literals that took a target
     /// type and fits it.
-    constants: HashMap<ExprId, Constant>,
+    constants: FxHashMap<ExprId, Constant>,
     /// The value of each number literal and negated number literal.
-    literals: HashMap<ExprId, Constant>,
+    literals: FxHashMap<ExprId, Constant>,
     /// The conversion applied to each expression that changes type.
-    conversions: HashMap<ExprId, Conversion>,
+    conversions: FxHashMap<ExprId, Conversion>,
     /// The conversion applied to an element of a value that an assignment
     /// deconstructs, by the value and the element's position.
-    element_conversions: HashMap<(ExprId, u32), Conversion>,
+    element_conversions: FxHashMap<(ExprId, u32), Conversion>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
 }

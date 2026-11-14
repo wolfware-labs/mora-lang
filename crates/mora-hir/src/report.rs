@@ -2,8 +2,8 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{
     Db, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size,
 };
-use mora_syntax::SyntaxKind;
 use mora_syntax::ast::{self, AstNode};
+use mora_syntax::{SyntaxKind, SyntaxNode, SyntaxNodeChildren};
 
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -327,44 +327,103 @@ enum Lookup {
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
     let text = file.text(db);
-    let mut out = Vec::new();
-    for node in parse(db, file).syntax().descendants() {
-        let written: Vec<(SyntaxKind, TextRange)> = node
-            .children()
-            .filter_map(ast::Modifier::cast)
-            .filter_map(|modifier| {
-                let keyword = modifier.kind()?.kind();
-                let mut tokens = modifier
-                    .syntax()
-                    .tokens()
-                    .filter(|token| !token.kind().is_trivia());
-                let start = tokens.next()?.text_range();
-                let end = tokens.last().map_or(start, |token| token.text_range());
-                Some((keyword, start.cover(end)))
-            })
-            .collect();
-        for (index, &(keyword, range)) in written.iter().enumerate() {
-            let earlier = &written[..index];
-            let name = keyword.text().unwrap_or_default();
-            if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
-                out.push(repeated_modifier(id, text, name, range, first));
-                continue;
+    // One walk over the tree, with a frame for each node on the way down:
+    // the frame gathers the modifiers among the node's children as the walk
+    // passes them, and the node is checked once they are all seen. Each
+    // diagnostic carries its node's place in preorder, so they come out in
+    // the order of the nodes.
+    let mut found: Vec<(usize, Diagnostic)> = Vec::new();
+    let mut stack = vec![ModifierFrame::new(parse(db, file).syntax(), 0)];
+    let mut visited = 0;
+    while let Some(frame) = stack.last_mut() {
+        let Some(child) = frame.children.next() else {
+            if let Some(frame) = stack.pop() {
+                let order = frame.order;
+                check_modifiers(id, text, frame.kind, &frame.written, |diagnostic| {
+                    found.push((order, diagnostic));
+                });
             }
-            let Some(exclusive) = exclusive(node.kind(), keyword) else {
-                continue;
-            };
-            if let Some(&(other, first)) = earlier
-                .iter()
-                .find(|(kind, _)| exclusive.keywords.contains(kind))
-            {
-                let other = other.text().unwrap_or_default();
-                out.push(conflicting_modifier(
-                    id, text, name, range, other, first, exclusive,
-                ));
-            }
+            continue;
+        };
+        if let Some(written) = ast::Modifier::cast(child).and_then(written_modifier) {
+            frame.written.push(written);
+        }
+        visited += 1;
+        stack.push(ModifierFrame::new(child, visited));
+    }
+    // A stable sort keeps the diagnostics of one node in their order.
+    found.sort_by_key(|&(order, _)| order);
+    found
+        .into_iter()
+        .map(|(_, diagnostic)| diagnostic)
+        .collect()
+}
+
+/// A node on the way down the walk of [`modifier_diagnostics`].
+struct ModifierFrame<'a> {
+    /// The children not walked yet.
+    children: SyntaxNodeChildren<'a>,
+    /// The kind of the node.
+    kind: SyntaxKind,
+    /// The node's place in preorder.
+    order: usize,
+    /// The keyword and the range of each modifier among the children seen.
+    written: Vec<(SyntaxKind, TextRange)>,
+}
+
+impl<'a> ModifierFrame<'a> {
+    fn new(node: SyntaxNode<'a>, order: usize) -> Self {
+        Self {
+            children: node.children(),
+            kind: node.kind(),
+            order,
+            written: Vec::new(),
         }
     }
-    out
+}
+
+/// The keyword of `modifier` and where it is written, from its first token
+/// to its last, trivia aside.
+fn written_modifier(modifier: ast::Modifier<'_>) -> Option<(SyntaxKind, TextRange)> {
+    let keyword = modifier.kind()?.kind();
+    let mut tokens = modifier
+        .syntax()
+        .tokens()
+        .filter(|token| !token.kind().is_trivia());
+    let start = tokens.next()?.text_range();
+    let end = tokens.last().map_or(start, |token| token.text_range());
+    Some((keyword, start.cover(end)))
+}
+
+/// Reports, through `report`, each of the modifiers `written` of one node
+/// of the kind `node` that repeats an earlier one or conflicts with one.
+fn check_modifiers(
+    id: FileId,
+    text: &str,
+    node: SyntaxKind,
+    written: &[(SyntaxKind, TextRange)],
+    mut report: impl FnMut(Diagnostic),
+) {
+    for (index, &(keyword, range)) in written.iter().enumerate() {
+        let earlier = &written[..index];
+        let name = keyword.text().unwrap_or_default();
+        if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
+            report(repeated_modifier(id, text, name, range, first));
+            continue;
+        }
+        let Some(exclusive) = exclusive(node, keyword) else {
+            continue;
+        };
+        if let Some(&(other, first)) = earlier
+            .iter()
+            .find(|(kind, _)| exclusive.keywords.contains(kind))
+        {
+            let other = other.text().unwrap_or_default();
+            report(conflicting_modifier(
+                id, text, name, range, other, first, exclusive,
+            ));
+        }
+    }
 }
 
 /// `MR0111`: the modifier `name` at `range` repeats the one at `first`.
@@ -1503,6 +1562,13 @@ mod tests {
         // Three times is two repetitions of the first.
         let found = diagnostics_of("struct S {\n    public public public N: int;\n}\n");
         assert_eq!(codes(&found), ["MR0111"; 2]);
+        // A declaration's modifiers come before those of its parameters.
+        let found =
+            diagnostics_of("struct S {\n    static static F(ref ref n: int): int => n;\n}\n");
+        assert_eq!(
+            messages(&found),
+            ["`static` is written twice", "`ref` is written twice"]
+        );
     }
 
     #[test]

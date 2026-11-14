@@ -2,13 +2,12 @@
 //! namespace is no value (`MR0127`, §14.5), and what an assignment or a
 //! step changes is a place (`MR0186`, §7.11).
 
-use std::collections::HashSet;
-
 use super::Check;
+use crate::arena::arena_index;
 use crate::bodies::{Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
 use crate::items::{ItemKind, ValueKind};
-use crate::resolve::{Resolved, item_data, members_named};
+use crate::resolve::{Resolved, members_named};
 use crate::signature::{instance_field_named, instance_methods};
 
 impl Check<'_> {
@@ -20,15 +19,12 @@ impl Check<'_> {
     /// a type keyword anywhere but as a receiver, as `int` in `int.Parse`.
     pub(super) fn types_as_values(&mut self) {
         let body = self.body;
-        let mut allowed = HashSet::new();
+        // Whether each expression, by its index, stands where a type may.
+        let mut allowed = vec![false; body.exprs.len()];
         for (_, node) in body.exprs.iter() {
             match node {
-                Expr::Member { receiver, .. } => {
-                    allowed.insert(*receiver);
-                }
-                Expr::Nameof(inner) => {
-                    allowed.insert(*inner);
-                }
+                Expr::Member { receiver, .. } => allowed[arena_index(*receiver)] = true,
+                Expr::Nameof(inner) => allowed[arena_index(*inner)] = true,
                 _ => {}
             }
         }
@@ -36,19 +32,25 @@ impl Check<'_> {
         for (_, pat) in body.pats.iter() {
             match pat {
                 Pat::Constant(expr) | Pat::Case { path: expr, .. } => {
-                    allowed.insert(*expr);
+                    allowed[arena_index(*expr)] = true;
                 }
                 _ => {}
             }
         }
         for (expr, node) in body.exprs.iter() {
-            if let Expr::Type(_) = node {
-                if !allowed.contains(&expr) {
-                    self.errors.push(TypeError::TypeKeywordAsValue { expr });
+            let allowed = allowed[arena_index(expr)];
+            match node {
+                Expr::Type(_) => {
+                    if !allowed {
+                        self.errors.push(TypeError::TypeKeywordAsValue { expr });
+                    }
+                    continue;
                 }
-                continue;
+                // Only a path or a member names a type or a namespace.
+                Expr::Path(_) | Expr::Member { .. } => {}
+                _ => continue,
             }
-            if allowed.contains(&expr) && !self.member_of_value(expr) {
+            if allowed && !self.member_of_value(expr) {
                 continue;
             }
             if let Some(named) = self.named_type(expr) {
@@ -75,7 +77,7 @@ impl Check<'_> {
         if let Some(resolution) = self.resolution.paths.get(&expr) {
             return match &resolution.target {
                 Target::Item(named @ Resolved::Namespace(_)) => Some(named.clone()),
-                Target::Item(Resolved::Item(item)) if item_data(self.db, *item).kind.is_type() => {
+                Target::Item(Resolved::Item(item)) if self.item_data(*item).kind.is_type() => {
                     Some(Resolved::Item(*item))
                 }
                 _ => None,
@@ -152,10 +154,10 @@ impl Check<'_> {
                 Target::Item(Resolved::Functions(_)) => Some(NotAPlace::Function),
                 // A constant at namespace level; a static there is a place.
                 Target::Item(Resolved::Item(item)) => {
-                    let data = item_data(self.db, *item);
+                    let data = self.item_data(*item);
                     (data.kind == ItemKind::Field && !data.is_static).then_some(NotAPlace::Constant)
                 }
-                Target::Value(value) => value_problem(value.member(self.db)?.kind),
+                Target::Value(value) => value_problem(self.value_member(*value)?.kind),
                 _ => None,
             };
         }
@@ -163,7 +165,7 @@ impl Check<'_> {
         if instance_methods(self.db, ty, name).next().is_some() {
             return Some(NotAPlace::Function);
         }
-        item_data(self.db, ty)
+        self.item_data(ty)
             .values
             .iter()
             .find(|value| value.name == name && !value.is_static)
