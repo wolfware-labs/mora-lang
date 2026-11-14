@@ -26,9 +26,9 @@ use crate::type_ref::type_keywords;
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
 /// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
-/// `MR0113`), the locals of its bodies (`MR0180`), the types in its bodies
-/// (`MR0010`, `MR0203`, `MR0204`) and its entry point (`MR0124`,
-/// `MR0125`). Lexical and syntax errors come from [`crate::parse`].
+/// `MR0113`), its constants without a value (`MR0114`), the locals of its
+/// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
+/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     let map = def_map(db, project);
@@ -323,7 +323,8 @@ enum Lookup {
 /// as the first one; a `mut` whose write scope differs from the first
 /// one's leaves the choice to the author. The fix for a conflict removes
 /// the later modifier, and the one for a modifier that does not apply
-/// removes it. A file whose text did not change keeps its
+/// removes it. With them comes `MR0114`, a `const` field without a value,
+/// which has no fix. A file whose text did not change keeps its
 /// result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
@@ -335,15 +336,18 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     // diagnostic carries its node's place in preorder, so they come out in
     // the order of the nodes.
     let mut found: Vec<(usize, Diagnostic)> = Vec::new();
-    let mut stack = vec![ModifierFrame::new(parse(db, file).syntax(), 0)];
+    let root = parse(db, file).syntax();
+    let mut stack = vec![ModifierFrame::new(root, root.kind(), 0)];
     let mut visited = 0;
     while let Some(frame) = stack.last_mut() {
         let Some(child) = frame.children.next() else {
             if let Some(frame) = stack.pop() {
                 let order = frame.order;
-                check_modifiers(id, text, frame.kind, &frame.written, |diagnostic| {
-                    found.push((order, diagnostic));
-                });
+                let mut report = |diagnostic| found.push((order, diagnostic));
+                check_modifiers(id, text, &frame, &mut report);
+                if let Some(diagnostic) = constant_without_value(id, &frame) {
+                    report(diagnostic);
+                }
             }
             continue;
         };
@@ -351,7 +355,8 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             frame.written.push(written);
         }
         visited += 1;
-        stack.push(ModifierFrame::new(child, visited));
+        let parent = frame.node.kind();
+        stack.push(ModifierFrame::new(child, parent, visited));
     }
     // A stable sort keeps the diagnostics of one node in their order.
     found.sort_by_key(|&(order, _)| order);
@@ -363,10 +368,13 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
 
 /// A node on the way down the walk of [`modifier_diagnostics`].
 struct ModifierFrame<'a> {
+    /// The node.
+    node: SyntaxNode<'a>,
     /// The children not walked yet.
     children: SyntaxNodeChildren<'a>,
-    /// The kind of the node.
-    kind: SyntaxKind,
+    /// The kind of the node's parent, which tells a method from a
+    /// function.
+    parent: SyntaxKind,
     /// The node's place in preorder.
     order: usize,
     /// The keyword and the range of each modifier among the children seen.
@@ -374,10 +382,11 @@ struct ModifierFrame<'a> {
 }
 
 impl<'a> ModifierFrame<'a> {
-    fn new(node: SyntaxNode<'a>, order: usize) -> Self {
+    fn new(node: SyntaxNode<'a>, parent: SyntaxKind, order: usize) -> Self {
         Self {
+            node,
             children: node.children(),
-            kind: node.kind(),
+            parent,
             order,
             written: Vec::new(),
         }
@@ -397,16 +406,17 @@ fn written_modifier(modifier: ast::Modifier<'_>) -> Option<(SyntaxKind, TextRang
     Some((keyword, start.cover(end)))
 }
 
-/// Reports, through `report`, each of the modifiers `written` of one node
-/// of the kind `node` that repeats an earlier one, does not apply to the
-/// node or conflicts with an earlier one.
+/// Reports, through `report`, each of the modifiers written on the node of
+/// `frame` that repeats an earlier one, does not apply to the node or
+/// conflicts with an earlier one.
 fn check_modifiers(
     id: FileId,
     text: &str,
-    node: SyntaxKind,
-    written: &[(SyntaxKind, TextRange)],
+    frame: &ModifierFrame<'_>,
     mut report: impl FnMut(Diagnostic),
 ) {
+    let node = frame.node.kind();
+    let written = &frame.written;
     for (index, &(keyword, range)) in written.iter().enumerate() {
         let earlier = &written[..index];
         let name = keyword.text().unwrap_or_default();
@@ -414,8 +424,8 @@ fn check_modifiers(
             report(repeated_modifier(id, text, name, range, first));
             continue;
         }
-        if let Some(misplaced) = misplaced(node, keyword) {
-            report(misplaced_modifier(id, text, name, range, misplaced));
+        if let Some(misplaced) = misplaced(frame.parent, node, keyword) {
+            report(misplaced_modifier(id, text, name, range, &misplaced));
             continue;
         }
         let Some(exclusive) = exclusive(node, keyword) else {
@@ -499,26 +509,50 @@ struct Misplaced {
     declaration: &'static str,
     /// Why the modifier does not apply to it.
     reason: &'static str,
-    /// What to write when the modifier was meant.
-    instead: &'static str,
 }
 
-/// `const` on a getter (§6.9, D-156): a constant is a value fixed at
-/// compile time, and a getter computes its value on each read.
-const CONST_GETTER: Misplaced = Misplaced {
-    declaration: "a getter",
-    reason: "a getter computes its value on each read",
-    instead: "a constant is a value fixed at compile time; for one, write a field with an \
-              initializer, as `const K: int = 1;`",
-};
-
 /// Why the modifier `keyword` does not apply to a node of the kind `node`,
-/// if it does not. Only `const` on a getter is checked so far.
-fn misplaced(node: SyntaxKind, keyword: SyntaxKind) -> Option<&'static Misplaced> {
-    match (node, keyword) {
-        (SyntaxKind::GetterDecl, SyntaxKind::ConstKw) => Some(&CONST_GETTER),
-        _ => None,
+/// whose parent is of the kind `parent`, if it does not. `const` declares a
+/// constant, a value fixed at compile time, so of the declarations,
+/// parameters and accessors the parser takes it on, it applies to a field
+/// alone, in a type or a namespace (§6.1, D-156). An error node, where the
+/// parser found no declaration after the modifiers, is reported already.
+/// A function whose parent is the file is declared in a namespace; any
+/// other is a method of a type, an interface or an extension, since a
+/// local function never starts with `const`.
+fn misplaced(parent: SyntaxKind, node: SyntaxKind, keyword: SyntaxKind) -> Option<Misplaced> {
+    use SyntaxKind as K;
+    /// What runs as code holds no value fixed at compile time.
+    const CODE: &str = "it is code that runs, not a value";
+    /// What declares a type holds no value at all.
+    const TYPE: &str = "it declares a type, not a value";
+    if keyword != K::ConstKw {
+        return None;
     }
+    let (declaration, reason) = match node {
+        K::GetterDecl => ("a getter", "a getter computes its value on each read"),
+        K::FunctionDecl if parent == K::SourceFile => ("a function", CODE),
+        K::FunctionDecl => ("a method", CODE),
+        K::ConstructorDecl => ("a constructor", CODE),
+        K::DestructorDecl => ("a destructor", CODE),
+        K::OperatorDecl => ("an operator", CODE),
+        K::IndexerDecl => ("an indexer", CODE),
+        K::Accessor => ("an accessor", CODE),
+        K::MacroDecl => ("a macro", CODE),
+        K::Param => ("a parameter", "a parameter takes its value from each call"),
+        K::StructDecl => ("a struct", TYPE),
+        K::ClassDecl => ("a class", TYPE),
+        K::InterfaceDecl => ("an interface", TYPE),
+        K::UnionDecl => ("a union", TYPE),
+        K::EnumDecl => ("an enum", TYPE),
+        K::AssocTypeDecl => ("an associated type", TYPE),
+        K::ExtensionDecl => ("an extension", "it adds members to a type, not a value"),
+        _ => return None,
+    };
+    Some(Misplaced {
+        declaration,
+        reason,
+    })
 }
 
 /// `MR0113`: the modifier `name` at `range` does not apply to the
@@ -535,13 +569,50 @@ fn misplaced_modifier(
         format!("`{name}` does not apply to {}", misplaced.declaration),
         Label::new(Span::new(file, range), misplaced.reason),
     )
-    .with_note(misplaced.instead)
+    .with_note(
+        "a constant is a value fixed at compile time; for one, write a field with an \
+         initializer, as `const K: int = 1;`",
+    )
     .with_fix(remove_keyword(
         file,
         text,
         range,
         format!("remove `{name}`"),
     ))
+}
+
+/// `MR0114`: the node of `frame` is a `const` field, in a type or a
+/// namespace, without a value (§6.1, D-156). A constant is a value fixed
+/// at compile time, so it is declared with it. No fix: only the author
+/// knows the value. A field with `=` and no expression after it is a
+/// syntax error already.
+fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
+    if !frame
+        .written
+        .iter()
+        .any(|&(keyword, _)| keyword == SyntaxKind::ConstKw)
+    {
+        return None;
+    }
+    let declarator = ast::FieldDecl::cast(frame.node)?.variable_declarator()?;
+    if declarator.eq_token().is_some() {
+        return None;
+    }
+    let name = declarator.name()?.ident_token()?;
+    Some(
+        Diagnostic::error(
+            codes::MR0114,
+            format!("constant `{}` has no value", name.text()),
+            Label::new(
+                Span::new(file, name.text_range()),
+                "a constant is declared with its value",
+            ),
+        )
+        .with_note(
+            "a constant is a value fixed at compile time; write that value after the type, \
+             as `const K: int = 1;`",
+        ),
+    )
 }
 
 /// The fix, described by `message`, that removes the keyword at `range` in
@@ -1677,6 +1748,124 @@ mod tests {
             )),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn const_on_any_declaration_but_a_field_is_mr0113_with_a_fix_that_removes_it() {
+        let code = "it is code that runs, not a value";
+        let ty = "it declares a type, not a value";
+        let cases = [
+            (
+                "struct S {\n    public const M(): int => 1;\n}\n",
+                "a method",
+                code,
+            ),
+            ("interface I {\n    const M(): int;\n}\n", "a method", code),
+            (
+                "union U {\n    A;\n    const M(): int => 1;\n}\n",
+                "a method",
+                code,
+            ),
+            (
+                "extension(x: int) {\n    const M(): int => x;\n}\n",
+                "a method",
+                code,
+            ),
+            ("const F(): int => 1;\n", "a function", code),
+            (
+                "class C {\n    public const C() {}\n}\n",
+                "a constructor",
+                code,
+            ),
+            ("class C {\n    const ~C() {}\n}\n", "a destructor", code),
+            (
+                "struct V {\n    public const static operator +(a: V, b: V): V => a;\n}\n",
+                "an operator",
+                code,
+            ),
+            (
+                "struct S {\n    public const this[i: int]: int { get => i; }\n}\n",
+                "an indexer",
+                code,
+            ),
+            (
+                "struct S {\n    public this[i: int]: int { const get => i; }\n}\n",
+                "an accessor",
+                code,
+            ),
+            ("const macro M() {}\n", "a macro", code),
+            (
+                "F(const x: int) {}\n",
+                "a parameter",
+                "a parameter takes its value from each call",
+            ),
+            (
+                "extension(const x: int) {}\n",
+                "a parameter",
+                "a parameter takes its value from each call",
+            ),
+            ("const struct S {\n    public X: int;\n}\n", "a struct", ty),
+            ("const class C {}\n", "a class", ty),
+            ("const interface I {}\n", "an interface", ty),
+            ("const union U { A }\n", "a union", ty),
+            ("const enum E { A }\n", "an enum", ty),
+            (
+                "interface I {\n    const type E;\n}\n",
+                "an associated type",
+                ty,
+            ),
+            (
+                "const extension(x: int) {}\n",
+                "an extension",
+                "it adds members to a type, not a value",
+            ),
+        ];
+        for (text, declaration, reason) in cases {
+            let found = diagnostics_of(text);
+            assert_eq!(codes(&found), ["MR0113"], "{text}");
+            assert_eq!(
+                found[0].message,
+                format!("`const` does not apply to {declaration}"),
+                "{text}"
+            );
+            assert_eq!(&text[found[0].primary.span.range], "const", "{text}");
+            assert_eq!(found[0].primary.message.as_deref(), Some(reason), "{text}");
+            let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+            assert_eq!(fixed.remaining, Vec::<String>::new(), "{text}");
+            assert_eq!(fixed.text, text.replacen("const ", "", 1), "{text}");
+        }
+        // Written twice, the first does not apply and the second repeats it.
+        let text = "struct Q {\n    const const M(): int => 1;\n}\n";
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0113", "MR0111"]);
+        // Other modifiers on these declarations are not checked here.
+        assert_eq!(
+            codes(&diagnostics_of(
+                "public static struct S {\n    public static M(ref x: int): int => x;\n}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_constant_without_a_value_is_mr0114_without_a_fix() {
+        let text = "struct S {\n    public const K: int;\n    public X: int;\n}\n\
+                    const N: int;\nstatic T: int;\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0114"; 2]);
+        assert_eq!(
+            messages(&found),
+            ["constant `K` has no value", "constant `N` has no value"]
+        );
+        assert_eq!(&text[found[0].primary.span.range], "K");
+        assert_eq!(&text[found[1].primary.span.range], "N");
+        assert_eq!(
+            found[0].primary.message.as_deref(),
+            Some("a constant is declared with its value")
+        );
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+        // Written twice, `const` repeats and the constant still has no value.
+        let found = diagnostics_of("struct S {\n    const const K: int;\n}\n");
+        assert_eq!(codes(&found), ["MR0111", "MR0114"]);
     }
 
     #[test]

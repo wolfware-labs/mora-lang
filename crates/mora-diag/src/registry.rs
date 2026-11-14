@@ -99,6 +99,7 @@ registry! {
     MR0111 = 111: "a modifier written twice",
     MR0112 = 112: "two modifiers that conflict: two visibilities, two parameter modes, or `mut` and `move` on a method",
     MR0113 = 113: "a modifier that does not apply to the declaration it is on",
+    MR0114 = 114: "a constant without a value",
     MR0121 = 121: "a folder under `src/` does not give a namespace name, or two folders give the same one",
     MR0122 = 122: "a dependency source the MVP does not support",
     MR0123 = 123: "a signature mentions a type less visible than the member",
