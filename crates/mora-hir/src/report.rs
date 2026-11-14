@@ -363,9 +363,10 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             frame.written.push(written);
         }
         visited += 1;
-        // A member list is part of the declaration that holds it.
+        // A member list or a union body is part of the declaration that
+        // holds it.
         let container = match frame.node.kind() {
-            SyntaxKind::MemberList => frame.container,
+            SyntaxKind::MemberList | SyntaxKind::UnionBody => frame.container,
             kind => kind,
         };
         stack.push(ModifierFrame::new(child, container, visited));
@@ -385,9 +386,9 @@ struct ModifierFrame<'a> {
     /// The children not walked yet.
     children: SyntaxNodeChildren<'a>,
     /// The kind of the node the node is in: its parent, or for a member
-    /// in a member list, the declaration that holds the list. It tells a
-    /// method from a function, and a member of an interface or an
-    /// extension from one of a type.
+    /// in a member list or a union body, the declaration that holds it. It
+    /// tells a method from a function, and a member of an interface, an
+    /// extension or a union from one of another type.
     container: SyntaxKind,
     /// The node's place in preorder.
     order: usize,
@@ -404,6 +405,22 @@ impl<'a> ModifierFrame<'a> {
             order,
             written: Vec::new(),
         }
+    }
+
+    /// Where the modifier `keyword` is first written on the node, if it is.
+    fn modifier(&self, keyword: SyntaxKind) -> Option<TextRange> {
+        self.written
+            .iter()
+            .find(|&&(kind, _)| kind == keyword)
+            .map(|&(_, range)| range)
+    }
+
+    /// Whether `const` is written on the node and does not apply to it
+    /// (`MR0113`). The node then gets no `MR0114` or `MR0115`, so that it
+    /// has one error.
+    fn misplaced_const(&self) -> bool {
+        self.modifier(SyntaxKind::ConstKw).is_some()
+            && misplaced(self.container, self.node, SyntaxKind::ConstKw).is_some()
     }
 }
 
@@ -595,14 +612,9 @@ fn misplaced_anywhere(container: SyntaxKind, node: SyntaxKind) -> Option<Misplac
         K::Accessor => ("an accessor", CODE),
         K::MacroDecl => ("a macro", CODE),
         K::Param => ("a parameter", "a parameter takes its value from each call"),
-        K::StructDecl => ("a struct", TYPE),
-        K::ClassDecl => ("a class", TYPE),
-        K::InterfaceDecl => ("an interface", TYPE),
-        K::UnionDecl => ("a union", TYPE),
-        K::EnumDecl => ("an enum", TYPE),
         K::AssocTypeDecl => ("an associated type", TYPE),
         K::ExtensionDecl => ("an extension", "it adds members to a type, not a value"),
-        _ => return None,
+        kind => (type_declaration(kind)?, TYPE),
     };
     Some(Misplaced {
         declaration,
@@ -649,17 +661,9 @@ fn misplaced_modifier(
 /// author knows the value. A field with `=` and no expression after it is
 /// a syntax error already.
 fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
-    if !frame
-        .written
-        .iter()
-        .any(|&(keyword, _)| keyword == SyntaxKind::ConstKw)
-    {
-        return None;
-    }
+    frame.modifier(SyntaxKind::ConstKw)?;
     let declarator = ast::FieldDecl::cast(frame.node)?.variable_declarator()?;
-    if declarator.eq_token().is_some()
-        || misplaced(frame.container, frame.node, SyntaxKind::ConstKw).is_some()
-    {
+    if declarator.eq_token().is_some() || frame.misplaced_const() {
         return None;
     }
     let name = declarator.name()?.ident_token()?;
@@ -685,25 +689,18 @@ fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Dia
 /// static members are `static abstract`; an extension adds only methods
 /// and getters, so no fields, destructors, static members, indexers,
 /// nested or associated types, and an operator is a static method; a
-/// union's data is in its cases, so it has no instance fields. Where `const` on the node is `MR0113`, that is the one error reported.
-/// No fix: only the author knows where the member belongs. A constructor
+/// union's data is in its cases, so it has no instance fields. Where
+/// `const` on the node is `MR0113`, that is the one error reported. No
+/// fix: only the author knows where the member belongs. A constructor
 /// cannot be written in an interface or an extension: there, `P() {}` is
 /// a method.
 fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
     use SyntaxKind as K;
-    let written = |keyword| {
-        frame
-            .written
-            .iter()
-            .find(|&&(kind, _)| kind == keyword)
-            .map(|&(_, range)| range)
-    };
-    if written(K::ConstKw).is_some() && misplaced(frame.container, frame.node, K::ConstKw).is_some()
-    {
+    if frame.misplaced_const() {
         return None;
     }
     let node = frame.node;
-    let static_kw = written(K::StaticKw);
+    let static_kw = frame.modifier(K::StaticKw);
     let field = || {
         let name = ast::FieldDecl::cast(node)?.variable_declarator()?.name()?;
         Some(name.syntax().text_range())
@@ -728,7 +725,7 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
                 .text_range(),
         )
     };
-    let abstract_kw = written(K::AbstractKw);
+    let abstract_kw = frame.modifier(K::AbstractKw);
     let (message, range, label, note) = match (frame.container, node.kind()) {
         (K::InterfaceDecl, K::FieldDecl) if static_kw.is_some() => (
             "an interface has no fields",
@@ -747,13 +744,17 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
              the namespace, next to the interface, as `const K: int = 1;`",
         ),
         // A union's constants and static fields are its own (§6.10).
-        (K::UnionBody, K::FieldDecl) if static_kw.is_none() && written(K::ConstKw).is_none() => (
-            "a union has no instance fields",
-            field()?,
-            "a union has no fields besides its cases",
-            "put the value in each case, or wrap the union in a struct, as \
-             `struct Drawn { Shape: Shape; Color: string; }`",
-        ),
+        (K::UnionDecl, K::FieldDecl)
+            if static_kw.is_none() && frame.modifier(K::ConstKw).is_none() =>
+        {
+            (
+                "a union has no instance fields",
+                field()?,
+                "a union has no fields besides its cases",
+                "put the value in each case, or wrap the union in a struct, as \
+                 `struct Drawn { Shape: Shape; Color: string; }`",
+            )
+        }
         (K::InterfaceDecl, K::DestructorDecl) => (
             "an interface has no destructors",
             destructor()?,
@@ -761,23 +762,28 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
             "a destructor is declared in each type that needs one, which may implement the \
              interface",
         ),
-        (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl)) if abstract_kw.is_none() => (
-            "a static member of an interface is `static abstract`",
-            static_kw?,
-            if kind == K::FunctionDecl {
-                "a static method without `abstract`"
-            } else {
-                "a static getter without `abstract`"
-            },
-            "a member each implementing type gives is `static abstract`, as \
-             `static abstract M(): int;`, with a body for a default, as \
-             `static abstract M(): int => 1;`; a function every implementation shares goes in \
-             the namespace, next to the interface",
-        ),
-        (K::InterfaceDecl, kind) => (
+        (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl))
+            if abstract_kw.is_none()
+                && let Some(range) = static_kw =>
+        {
+            (
+                "a static member of an interface is `static abstract`",
+                range,
+                if kind == K::FunctionDecl {
+                    "a static method without `abstract`"
+                } else {
+                    "a static getter without `abstract`"
+                },
+                "a member each implementing type gives is `static abstract`, as \
+                 `static abstract M(): int;`, with a body for a default, as \
+                 `static abstract M(): int => 1;`; a function every implementation shares goes \
+                 in the namespace, next to the interface",
+            )
+        }
+        (K::InterfaceDecl, kind) if let Some(declaration) = type_declaration(kind) => (
             "an interface has no nested types",
             name()?,
-            nested_type(kind)?,
+            declaration,
             "a type is declared in the namespace, next to the interface",
         ),
         (K::ExtensionDecl, K::FieldDecl) if static_kw.is_some() => (
@@ -814,10 +820,10 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
             "an associated type is declared in an interface and bound by each type that \
              implements it",
         ),
-        (K::ExtensionDecl, kind) if nested_type(kind).is_some() => (
+        (K::ExtensionDecl, kind) if let Some(declaration) = type_declaration(kind) => (
             "an extension adds no nested types",
             name()?,
-            nested_type(kind)?,
+            declaration,
             "a type is declared in the namespace, next to the extension",
         ),
         (K::ExtensionDecl, kind) => {
@@ -849,9 +855,10 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
     )
 }
 
-/// What a type declared as a member of the kind `kind` is, with its
-/// article, if it is one.
-fn nested_type(kind: SyntaxKind) -> Option<&'static str> {
+/// What a declaration of the kind `kind` that declares a type (a struct, a
+/// class, a union, an enum or an interface) is, with its article, if it
+/// is one.
+fn type_declaration(kind: SyntaxKind) -> Option<&'static str> {
     use SyntaxKind as K;
     Some(match kind {
         K::StructDecl => "a struct",
@@ -2171,10 +2178,12 @@ mod tests {
         const UNION_LABEL: &str = "a union has no fields besides its cases";
         const UNION_NOTE: &str = "put the value in each case, or wrap the union in a struct, \
                                   as `struct Drawn { Shape: Shape; Color: string; }`";
-        let field_note = "a field is declared in the type itself; an extension may add a \
-                          getter, as `K: int => 1;`, which computes its value on each read";
-        let static_field_note = "a static field is declared in the type itself, or in the \
-                                 namespace, next to the extension, as `static mut K: int = 1;`";
+        const FIELD_NOTE: &str = "a field is declared in the type itself; an extension may \
+                                  add a getter, as `K: int => 1;`, which computes its value on \
+                                  each read";
+        const STATIC_FIELD_NOTE: &str = "a static field is declared in the type itself, or in \
+                                         the namespace, next to the extension, as \
+                                         `static mut K: int = 1;`";
         let cases = [
             (
                 "interface I {\n    K: int = 1;\n}\n",
@@ -2207,21 +2216,21 @@ mod tests {
                 "K",
                 FIELDS,
                 "a field",
-                field_note,
+                FIELD_NOTE,
             ),
             (
                 "struct P {}\nextension(p: P) {\n    mut K: int;\n}\n",
                 "K",
                 FIELDS,
                 "a field",
-                field_note,
+                FIELD_NOTE,
             ),
             (
                 "struct P {}\nextension(p: P) {\n    static K: int = 1;\n}\n",
                 "K",
                 FIELDS,
                 "a static field",
-                static_field_note,
+                STATIC_FIELD_NOTE,
             ),
             (
                 "struct P {}\nextension(p: P) {\n    ~ P() {}\n}\n",
