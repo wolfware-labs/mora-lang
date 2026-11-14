@@ -1,0 +1,35 @@
+error[MR0209]: the `ref` parameter `x` cannot have a default value, because every call must pass a variable it can change
+ --> tests/ui/calls/ref_default.mr:2:19
+  |
+2 | Bump(ref x: int = 1) { //~ ERROR MR0209
+  |                   ^ this default cannot be passed by `ref`
+  |
+  = note: a `ref` argument is a variable the function changes, and a default is a fixed value
+help: remove the default value
+  |
+2 - Bump(ref x: int = 1) { //~ ERROR MR0209
+2 + Bump(ref x: int) { //~ ERROR MR0209
+  |
+help: remove `ref`
+  |
+2 - Bump(ref x: int = 1) { //~ ERROR MR0209
+2 + Bump(x: int = 1) { //~ ERROR MR0209
+  |
+
+error[MR0209]: the `ref` parameter `n` cannot have a default value, because every call must pass a variable it can change
+ --> tests/ui/calls/ref_default.mr:7:24
+  |
+7 |     Inner(ref n: int = 2) { //~ ERROR MR0209
+  |                        ^ this default cannot be passed by `ref`
+  |
+  = note: a `ref` argument is a variable the function changes, and a default is a fixed value
+help: remove the default value
+  |
+7 -     Inner(ref n: int = 2) { //~ ERROR MR0209
+7 +     Inner(ref n: int) { //~ ERROR MR0209
+  |
+help: remove `ref`
+  |
+7 -     Inner(ref n: int = 2) { //~ ERROR MR0209
+7 +     Inner(n: int = 2) { //~ ERROR MR0209
+  |

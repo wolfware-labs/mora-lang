@@ -1,0 +1,23 @@
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/structs/field_types.mr:3:24
+  |
+3 |     public X: string = 7; //~ ERROR MR0203
+  |                        ^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+3 |     public X: string = $"{7}"; //~ ERROR MR0203
+  |                        +++ ++
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/structs/field_types.mr:6:29
+  |
+6 |     public Get(): string => this.Y; //~ ERROR MR0203
+  |                             ^^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+6 |     public Get(): string => $"{this.Y}"; //~ ERROR MR0203
+  |                             +++      ++

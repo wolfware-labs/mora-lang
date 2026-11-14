@@ -1,13 +1,18 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Db, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
+use mora_span::{
+    Db, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size,
+};
+use mora_syntax::SyntaxKind;
+use mora_syntax::ast::{self, AstNode};
 
 use crate::arena::arena_index;
 use crate::bodies::{
-    BodyError, LocalKind, body, body_owners, body_resolution, body_scope, body_source_map,
+    BodyError, LocalKind, RefDefaultRanges, body, body_owners, body_resolution, body_scope,
+    body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
 use crate::inference::{Source, type_error, type_errors};
-use crate::items::{ItemKind, Visibility, item_source_map, item_tree, signature_sources};
+use crate::items::{ItemKind, Visibility, item_source_map, item_tree, parse, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
     resolve_using, value_visible, visible_names,
@@ -19,7 +24,8 @@ use crate::type_ref::type_keywords;
 
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
-/// `MR0123`), the member names of its types (`MR0146`), the locals of its
+/// `MR0123`), the member names of its types (`MR0146`), the modifiers
+/// written twice or that conflict (`MR0111`, `MR0112`), the locals of its
 /// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
 /// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and
 /// syntax errors come from [`crate::parse`].
@@ -34,6 +40,7 @@ pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
         usings(db, project, file, &mut out);
         signatures(db, project, file, &mut out);
         member_names(db, file, &mut out);
+        out.extend(modifier_diagnostics(db, file).iter().cloned());
         out.extend(body_diagnostics(db, project, file).iter().cloned());
     }
     entry_point(db, project, map, &mut out);
@@ -150,6 +157,33 @@ fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagn
     )
 }
 
+/// `MR0209`: the `ref` parameter `name` has a default value, with the fixes
+/// that remove the default or the `ref`.
+fn ref_default(db: &dyn Db, file: SourceFile, name: &str, written: RefDefaultRanges) -> Diagnostic {
+    let id = file.id(db);
+    // The `ref` goes with the space after it, so the name stays.
+    let keyword = with_space_after(file.text(db), written.keyword);
+    Diagnostic::error(
+        codes::MR0209,
+        format!(
+            "the `ref` parameter `{name}` cannot have a default value, because every call must pass a variable it can change"
+        ),
+        Label::new(
+            Span::new(id, written.value),
+            "this default cannot be passed by `ref`",
+        ),
+    )
+    .with_note("a `ref` argument is a variable the function changes, and a default is a fixed value")
+    .with_fix(Fix::new(
+        "remove the default value",
+        vec![TextEdit::replace(Span::new(id, written.default), "")],
+    ))
+    .with_fix(Fix::new(
+        "remove `ref`",
+        vec![TextEdit::replace(Span::new(id, keyword), "")],
+    ))
+}
+
 /// The errors in the bodies of a file: `MR0180`, names and types that do
 /// not resolve, and type errors. A file whose bodies did not change keeps
 /// its result.
@@ -182,6 +216,14 @@ fn body_diagnostics(db: &dyn Db, project: Project, file: SourceFile) -> Vec<Diag
                     "a local may not shadow another; a name can be used again once the first is out of scope",
                 ),
             );
+        }
+        for &local in &body.ref_defaults {
+            out.push(ref_default(
+                db,
+                file,
+                &body.locals[local].name,
+                map.ref_defaults[&local],
+            ));
         }
         for error in &body_resolution(db, project, file, owner).errors {
             out.push(match error {
@@ -273,6 +315,175 @@ enum Lookup {
     Expr(Vec<String>),
 }
 
+/// `MR0111` and `MR0112`: a modifier written again in the modifiers of
+/// one declaration, parameter or lambda, or one that conflicts with an
+/// earlier one (§6.1). The grammar takes any number of them, so the parser
+/// lets both through. The fix for a repetition removes it when it is
+/// written as the first one; a `mut` whose write scope differs from the
+/// first one's leaves the choice to the author. The fix for a conflict
+/// removes the later modifier. A file whose text did not change keeps its
+/// result.
+#[salsa::tracked(returns(ref))]
+fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
+    let id = file.id(db);
+    let text = file.text(db);
+    let mut out = Vec::new();
+    for node in parse(db, file).syntax().descendants() {
+        let written: Vec<(SyntaxKind, TextRange)> = node
+            .children()
+            .filter_map(ast::Modifier::cast)
+            .filter_map(|modifier| {
+                let keyword = modifier.kind()?.kind();
+                let mut tokens = modifier
+                    .syntax()
+                    .tokens()
+                    .filter(|token| !token.kind().is_trivia());
+                let start = tokens.next()?.text_range();
+                let end = tokens.last().map_or(start, |token| token.text_range());
+                Some((keyword, start.cover(end)))
+            })
+            .collect();
+        for (index, &(keyword, range)) in written.iter().enumerate() {
+            let earlier = &written[..index];
+            let name = keyword.text().unwrap_or_default();
+            if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
+                out.push(repeated_modifier(id, text, name, range, first));
+                continue;
+            }
+            let Some(exclusive) = exclusive(node.kind(), keyword) else {
+                continue;
+            };
+            if let Some(&(other, first)) = earlier
+                .iter()
+                .find(|(kind, _)| exclusive.keywords.contains(kind))
+            {
+                let other = other.text().unwrap_or_default();
+                out.push(conflicting_modifier(
+                    id, text, name, range, other, first, exclusive,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// `MR0111`: the modifier `name` at `range` repeats the one at `first`.
+/// The fix removes it only when both are spelled the same.
+fn repeated_modifier(
+    file: FileId,
+    text: &str,
+    name: &str,
+    range: TextRange,
+    first: TextRange,
+) -> Diagnostic {
+    let spelled = |range: TextRange| -> String { text[range].split_whitespace().collect() };
+    let diagnostic = Diagnostic::error(
+        codes::MR0111,
+        format!("`{name}` is written twice"),
+        Label::new(Span::new(file, range), "written again here"),
+    )
+    .with_secondary(Label::new(Span::new(file, first), "first written here"));
+    if spelled(range) != spelled(first) {
+        return diagnostic
+            .with_note("the two give different write scopes; keep the one that is meant");
+    }
+    diagnostic
+        .with_note("a modifier says the same thing however often it is written")
+        .with_fix(Fix::new(
+            format!("remove the repeated `{name}`"),
+            vec![TextEdit::replace(
+                Span::new(file, with_space_after(text, range)),
+                "",
+            )],
+        ))
+}
+
+/// `MR0112`: the modifier `name` at `range` conflicts with the earlier
+/// `other` at `first` under the rule of `exclusive`. The fix removes the
+/// later one.
+fn conflicting_modifier(
+    file: FileId,
+    text: &str,
+    name: &str,
+    range: TextRange,
+    other: &str,
+    first: TextRange,
+    exclusive: &Exclusive,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0112,
+        format!("`{name}` conflicts with `{other}`: {}", exclusive.rule),
+        Label::new(
+            Span::new(file, range),
+            format!("`{other}` is written already"),
+        ),
+    )
+    .with_secondary(Label::new(Span::new(file, first), "written first here"))
+    .with_note("keep the one that is meant; the fix keeps the first")
+    .with_fix(Fix::new(
+        format!("remove `{name}`"),
+        vec![TextEdit::replace(
+            Span::new(file, with_space_after(text, range)),
+            "",
+        )],
+    ))
+}
+
+/// `range` with the white space after it in `text`: what a fix removes so
+/// that a keyword goes without leaving its space behind. A comment after
+/// it stays.
+pub(crate) fn with_space_after(text: &str, range: TextRange) -> TextRange {
+    let space = text
+        .get(usize::from(range.end())..)
+        .map_or(0, |rest| rest.len() - rest.trim_start().len());
+    TextRange::new(range.start(), range.end() + to_text_size(space))
+}
+
+/// Modifiers of which a declaration, parameter or lambda takes one at
+/// most, and the rule that says so.
+struct Exclusive {
+    /// The modifiers.
+    keywords: &'static [SyntaxKind],
+    /// Why only one of them fits, for the message.
+    rule: &'static str,
+}
+
+/// The visibilities (§4.5).
+const VISIBILITIES: Exclusive = Exclusive {
+    keywords: &[
+        SyntaxKind::PrivateKw,
+        SyntaxKind::FileKw,
+        SyntaxKind::InternalKw,
+        SyntaxKind::PublicKw,
+    ],
+    rule: "a declaration has one visibility",
+};
+
+/// The modes of a parameter (§10.3).
+const MODES: Exclusive = Exclusive {
+    keywords: &[SyntaxKind::InKw, SyntaxKind::RefKw, SyntaxKind::MoveKw],
+    rule: "a parameter has one mode",
+};
+
+/// How a method takes `this`: `mut` by `ref`, `move` by `move` (§10.3).
+const RECEIVERS: Exclusive = Exclusive {
+    keywords: &[SyntaxKind::MutKw, SyntaxKind::MoveKw],
+    rule: "a method takes `this` one way",
+};
+
+/// The modifiers that exclude `keyword` in the modifiers of a node of the
+/// kind `node`, if any do.
+fn exclusive(node: SyntaxKind, keyword: SyntaxKind) -> Option<&'static Exclusive> {
+    let sets: &[&'static Exclusive] = match node {
+        SyntaxKind::Param | SyntaxKind::LambdaParam => &[&VISIBILITIES, &MODES],
+        SyntaxKind::FunctionDecl => &[&VISIBILITIES, &RECEIVERS],
+        _ => &[&VISIBILITIES],
+    };
+    sets.iter()
+        .copied()
+        .find(|set| set.keywords.contains(&keyword))
+}
+
 /// `MR0146`: two members of one type with one name, unless both are
 /// methods. The members are the nested types, the methods and the value
 /// members (§14.5); constructors, operators and indexers have no name.
@@ -295,7 +506,7 @@ fn member_names(db: &dyn Db, file: SourceFile, out: &mut Vec<Diagnostic>) {
             item.values
                 .iter()
                 .zip(&map.item(idx).values)
-                .map(|(value, &range)| (value.name.as_str(), range, false)),
+                .map(|(value, source)| (value.name.as_str(), source.name, false)),
         );
         members.sort_by_key(|&(_, range, _)| range.start());
         for (index, &(name, range, method)) in members.iter().enumerate() {
@@ -347,7 +558,9 @@ fn resolve_error(
             unresolved(db, name, span, within, suggestion)
         }
         ResolveErrorKind::Ambiguous(candidates) => ambiguous(db, name, span, &candidates),
-        ResolveErrorKind::NotVisible(item) => not_visible(db, scope, name, span, item),
+        ResolveErrorKind::NotVisible(item) => {
+            not_visible(db, scope, name, span, Declared::Item(item))
+        }
     }
 }
 
@@ -416,7 +629,7 @@ fn less_visible(
     if let Some(keyword) = keyword.filter(|_| parents_allow) {
         diagnostic = diagnostic.with_fix(Fix::new(
             format!("mark `{name}` `{keyword}`"),
-            vec![widen(db, ty, keyword)],
+            vec![widen(db, Declared::Item(ty), keyword)],
         ));
     }
     diagnostic
@@ -468,17 +681,72 @@ fn ambiguous(db: &dyn Db, name: &str, span: Span, candidates: &[Resolved]) -> Di
     diagnostic
 }
 
+/// A declaration a use may not see: an item, or the value member at an
+/// index of a type, such as a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Declared {
+    Item(ItemId),
+    Value(ItemId, u32),
+}
+
+impl Declared {
+    /// The item, or the type that declares the value member.
+    fn item(self) -> ItemId {
+        match self {
+            Self::Item(item) | Self::Value(item, _) => item,
+        }
+    }
+
+    /// The visibility after the types around the declaration narrow it.
+    fn visibility(self, db: &dyn Db) -> Visibility {
+        match self {
+            Self::Item(item) => effective_visibility(db, item),
+            Self::Value(ty, index) => item_data(db, ty).values[index as usize]
+                .visibility
+                .min(effective_visibility(db, ty)),
+        }
+    }
+
+    /// Where its name is written.
+    fn name_span(self, db: &dyn Db) -> Span {
+        match self {
+            Self::Item(item) => item_name_span(db, item),
+            Self::Value(ty, index) => {
+                let source = item_source_map(db, ty.file).item(ty.item);
+                Span::new(ty.file.id(db), source.values[index as usize].name)
+            }
+        }
+    }
+
+    /// Its visibility modifier, when it has one, and where a modifier goes.
+    fn modifiers(self, db: &dyn Db) -> (Option<TextRange>, TextSize) {
+        let item = self.item();
+        let source = item_source_map(db, item.file).item(item.item);
+        match self {
+            Self::Item(_) => (source.visibility, source.modifiers_start),
+            Self::Value(_, index) => {
+                let value = &source.values[index as usize];
+                (value.visibility, value.modifiers_start)
+            }
+        }
+    }
+}
+
+/// `MR0129`: the use at `span`, in `scope`, names `name`, the declaration
+/// `declared`, which it cannot see. Names where the declaration is visible
+/// and where the use is, and offers to widen it (§4.5).
 pub(crate) fn not_visible(
     db: &dyn Db,
     scope: Scope,
     name: &str,
     span: Span,
-    item: ItemId,
+    declared: Declared,
 ) -> Diagnostic {
+    let item = declared.item();
     let declared_in = file_namespace(db, item.project, item.file).unwrap_or_default();
     let used_in = file_namespace(db, scope.project, scope.file).unwrap_or_default();
     let same_project = item.project == scope.project;
-    let (message, note) = match effective_visibility(db, item) {
+    let (message, note) = match declared.visibility(db) {
         _ if !same_project => (
             format!("`{name}` is not public, so `{used_in}` cannot see it"),
             format!(
@@ -502,23 +770,22 @@ pub(crate) fn not_visible(
     };
     let keyword = if same_project { "internal" } else { "public" };
     Diagnostic::error(codes::MR0129, message, Label::new(span, "not visible here"))
-        .with_secondary(Label::new(item_name_span(db, item), "declared here"))
+        .with_secondary(Label::new(declared.name_span(db), "declared here"))
         .with_note(note)
         .with_fix(Fix::new(
             format!("mark `{name}` `{keyword}`"),
-            vec![widen(db, item, keyword)],
+            vec![widen(db, declared, keyword)],
         ))
 }
 
-/// The edit that gives `item` the visibility modifier `keyword`. Only the
-/// item needs it: a type around it that the use cannot see fails the lookup
-/// first.
-fn widen(db: &dyn Db, item: ItemId, keyword: &str) -> TextEdit {
-    let source = item_source_map(db, item.file).item(item.item);
-    let file = item.file.id(db);
-    match source.visibility {
-        Some(range) => TextEdit::replace(Span::new(file, range), keyword),
-        None => TextEdit::insert(file, source.modifiers_start, format!("{keyword} ")),
+/// The edit that gives `declared` the visibility modifier `keyword`. Only
+/// the declaration needs it: a type around it that the use cannot see
+/// fails the lookup first.
+fn widen(db: &dyn Db, declared: Declared, keyword: &str) -> TextEdit {
+    let file = declared.item().file.id(db);
+    match declared.modifiers(db) {
+        (Some(range), _) => TextEdit::replace(Span::new(file, range), keyword),
+        (None, start) => TextEdit::insert(file, start, format!("{keyword} ")),
     }
 }
 
@@ -643,7 +910,9 @@ mod tests {
     use mora_diag::Diagnostic;
     use mora_span::{Dependency, Project, ProjectKind};
 
-    use crate::test_db::{TestDb, app, codes, function, messages, resolve, signature_of};
+    use crate::test_db::{
+        TestDb, app, codes, diagnostics_of, function, messages, resolve, signature_of,
+    };
     use crate::*;
 
     /// The text a diagnostic's primary span covers.
@@ -811,6 +1080,46 @@ mod tests {
         );
         assert_eq!(reported[0].fixes[0].message, "mark `Lexer` `public`");
         assert_eq!(reported[0].fixes[0].edits[0].replacement, "public");
+    }
+
+    #[test]
+    fn a_dependency_field_that_is_not_public_gets_a_public_fix() {
+        let db = TestDb::new();
+        let core = db.project(
+            "core",
+            ProjectKind::Lib,
+            &[(
+                "src/Text/Token.mr",
+                "public struct Token {\n    public Kind: int;\n    internal Width: int = 1;\n}\n",
+            )],
+            Vec::new(),
+        );
+        let project = db.project(
+            "users-api",
+            ProjectKind::App,
+            &[(
+                "src/Program.mr",
+                "using Core.Text;\nlet t = new Token { Kind = 1, Width = 2 };\n",
+            )],
+            vec![Dependency {
+                name: "Core".into(),
+                project: core,
+            }],
+        );
+        let reported = diagnostics(&db, project);
+        assert_eq!(codes(reported), ["MR0129"]);
+        assert_eq!(
+            reported[0].message,
+            "`Width` is not public, so `UsersApi` cannot see it"
+        );
+        assert_eq!(
+            reported[0].secondary[0].message.as_deref(),
+            Some("declared here")
+        );
+        assert_eq!(reported[0].fixes[0].message, "mark `Width` `public`");
+        let edit = &reported[0].fixes[0].edits[0];
+        assert_eq!(edit.replacement, "public");
+        assert_eq!(u32::from(edit.span.range.len()), 8);
     }
 
     #[test]
@@ -1159,5 +1468,83 @@ mod tests {
             .map(|&(message, primary, first)| (message.to_owned(), primary, first))
             .collect();
         assert_eq!(reported, expected);
+    }
+
+    #[test]
+    fn a_modifier_written_twice_is_mr0111_with_a_fix_that_removes_it() {
+        let text = "struct Q {\n    public mut mut N: int;\n    public public X: int;\n    \
+                    static static F(): int => 1;\n    public M(ref ref n: int) {}\n}\n\
+                    G(): int {\n    static static L(): int => 1;\n    return L();\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0111"; 5]);
+        assert_eq!(found[0].message, "`mut` is written twice");
+        let primary = |d: &Diagnostic| &text[d.primary.span.range];
+        let first = |d: &Diagnostic| &text[d.secondary[0].span.range];
+        assert_eq!((primary(&found[0]), first(&found[0])), ("mut", "mut"));
+        assert!(found[0].primary.span.range.start() > found[0].secondary[0].span.range.start());
+        assert_eq!(primary(&found[3]), "ref");
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert_eq!(
+            fixed.text,
+            "struct Q {\n    public mut N: int;\n    public X: int;\n    \
+             static F(): int => 1;\n    public M(ref n: int) {}\n}\n\
+             G(): int {\n    static L(): int => 1;\n    return L();\n}\n"
+        );
+        // Write scopes that differ leave the choice to the author, and the
+        // same scope written twice is one repetition.
+        let text = "struct S {\n    public mut mut(private) N: int;\n    \
+                    public mut(private) mut(private) M: int;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0111"; 2]);
+        assert_eq!(&text[found[0].primary.span.range], "mut(private)");
+        assert!(found[0].fixes.is_empty(), "{found:#?}");
+        assert_eq!(found[1].fixes.len(), 1, "{found:#?}");
+        // Three times is two repetitions of the first.
+        let found = diagnostics_of("struct S {\n    public public public N: int;\n}\n");
+        assert_eq!(codes(&found), ["MR0111"; 2]);
+    }
+
+    #[test]
+    fn modifiers_that_conflict_are_mr0112_with_a_fix_that_removes_the_later() {
+        let text = "struct Q {\n    public private N: int;\n    internal file X: int;\n    \
+                    public M(ref move n: int, in ref m: int) {}\n    public mut move K() {}\n}\n\
+                    G(): int {\n    let f = (ref in x: int) => 1;\n    return 1;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0112"; 6]);
+        assert_eq!(
+            found[0].message,
+            "`private` conflicts with `public`: a declaration has one visibility"
+        );
+        assert_eq!(&text[found[0].primary.span.range], "private");
+        assert_eq!(&text[found[0].secondary[0].span.range], "public");
+        assert_eq!(
+            found[2].message,
+            "`move` conflicts with `ref`: a parameter has one mode"
+        );
+        assert_eq!(
+            found[4].message,
+            "`move` conflicts with `mut`: a method takes `this` one way"
+        );
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert_eq!(
+            fixed.text,
+            "struct Q {\n    public N: int;\n    internal X: int;\n    \
+             public M(ref n: int, in m: int) {}\n    public mut K() {}\n}\n\
+             G(): int {\n    let f = (ref x: int) => 1;\n    return 1;\n}\n"
+        );
+        // A repetition of the first is `MR0111` alone, and `mut` with
+        // `move` conflicts only on a method.
+        let text = "struct S {\n    public private public N: int;\n}\n";
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0112", "MR0111"]);
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.text, "struct S {\n    public N: int;\n}\n");
+        assert_eq!(
+            codes(&diagnostics_of(
+                "struct S {\n    public mut N: int;\n    static mut M: int = 1;\n}\n"
+            )),
+            Vec::<String>::new()
+        );
     }
 }

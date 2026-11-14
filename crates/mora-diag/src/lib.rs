@@ -17,7 +17,7 @@ mod sources;
 
 pub use code::{Code, ParseCodeError};
 pub use diagnostic::{Diagnostic, Fix, Label, Severity, TextEdit};
-pub use json::{JsonDiagnostic, JsonEdit, JsonFix, JsonLabel, JsonSpan, to_json_line};
+pub use json::{JsonDiagnostic, JsonEdit, JsonFix, JsonLabel, JsonSpan, line_column, to_json_line};
 pub use registry::codes;
 pub use render::render;
 pub use sources::{Files, Sources};

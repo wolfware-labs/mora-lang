@@ -385,6 +385,8 @@ Done when:
 
 - §2.1 prints `Hello, world!`.
 - Run tests interpolate every primitive type.
+- MIR has no `External` callee and no `Interpolate` rvalue, and diverging calls are known from their declarations: the M1.10 stand-ins are removed.
+- The strings run test prints `name.Length`.
 
 ### M1.16 Driver and the build, run and check commands
 
@@ -396,6 +398,7 @@ Done when:
 
 - CLI tests build and run a temporary hello-world project in both profiles.
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
+- A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
 
 ### M1.17 Debug information and symbol names
 
@@ -476,6 +479,7 @@ Done when:
 - UI tests for `MR0140`, `MR0143`, `MR0144` and assigning a read-only field.
 - UI tests for writes outside a field's write scope, `redundant-mut-scope` and `MR0252`.
 - Run tests showing that a `stored` getter reads the value recalculated by the last write to each input.
+- UI tests for reading a field the use cannot see (`MR0129`, §4.5), from another type, file, folder and project.
 
 ### M2.2 Positional structs
 
@@ -556,14 +560,15 @@ Done when:
 
 ### M2.9 Spans, views and memory slices
 
-Spec: [§5.9](docs/design/mora.md#59-views), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
+Spec: [§5.9](docs/design/mora.md#59-views), [§6.9](docs/design/mora.md#69-members), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
 
-`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, and the `where T : ref struct` constraint.
+`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : ref struct` constraint, and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9).
 
 Done when:
 
 - UI tests for each view error, with the wording of §10.6.
 - `let s = box.Data.AsSpan();` compiles and the snapshot lives until `s`'s last use.
+- Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 
 ### M2.10 Weak references and the cycle lint
 
@@ -649,7 +654,7 @@ Done when:
 | [M3.8](#m38-generics-and-constraints) | Generics and constraints | `hir` | M3.1 |
 | [M3.9](#m39-monomorphization) | Monomorphization | `mir` | M3.8 |
 | [M3.10](#m310-interfaces-and-static-dispatch) | Interfaces and static dispatch | `hir` | M3.9 |
-| [M3.11](#m311-dynamic-interface-values) | Dynamic interface values | `codegen` | M3.10 |
+| [M3.11](#m311-dynamic-interface-values) | Dynamic interface values | `codegen` | M3.5, M3.10 |
 | [M3.12](#m312-tuples-collection-expressions-and-smaller-expressions) | Tuples, collection expressions and smaller expressions | `hir` | M3.9 |
 | [M3.13](#m313-statics) | Statics | `hir` | M1.11, M3.5 |
 | [M3.14](#m314-local-path-dependencies-and-library-projects) | Local path dependencies and library projects | `driver` | M3.10 |
@@ -707,13 +712,14 @@ Done when:
 
 Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `std`. Blocked by: M3.4.
 
-`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
+`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
 
 Done when:
 
 - Run tests for every operator.
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
+- UI tests: `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
 
 ### M3.6 Operators, conversions and indexers
 
@@ -774,7 +780,7 @@ Done when:
 
 ### M3.11 Dynamic interface values
 
-Spec: [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.10.
+Spec: [§7.5](docs/design/mora.md#75-option-operators), [§8.4](docs/design/mora.md#84-dynamic-interface-values), [§13.6](docs/design/mora.md#136-vtables-and-type-ids). Crates: `mora-mir`, `mora-codegen`. Blocked by: M3.5, M3.10.
 
 Interface values as data and vtable pointers, boxing of value types with the LSP-visible boxing marker, vtables and BLAKE3 type ids of §13.6, `is C c`, `as C`, checked casts, `MR0230`, `MR0231`, erasure of associated types for `IEnumerable<T>` values, and `any I` satisfying a constraint `T : I`.
 
@@ -783,6 +789,7 @@ Done when:
 - Run tests for `List<IShape>` holding a class and a boxed struct.
 - A failing `(C)i` cast panics with the message of §11.4.
 - UI tests for the boxing and interface-value rows of §5.10.
+- Run tests: `x as T` on an `any I` value gives `T?`, the value when its run-time type is `T` and `none` otherwise (D-153).
 
 ### M3.12 Tuples, collection expressions and smaller expressions
 
@@ -796,14 +803,15 @@ Done when:
 
 ### M3.13 Statics
 
-Spec: [§4.7](docs/design/mora.md#47-static-state). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
+Spec: [§4.7](docs/design/mora.md#47-static-state), [§6.10](docs/design/mora.md#610-constants-and-statics). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
 
-`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, and `static mut`.
+`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut`, and `MR0155` for a static member named through a value (§6.10).
 
 Done when:
 
 - A lazy cycle panics with the message of §4.7.
 - A `const` string longer than 15 bytes is an immortal object in read-only data, and reading it never writes its count.
+- A UI test reports `MR0155` for a static method and a static getter named through a value, and its fix writes the type's name in place of the value.
 
 ### M3.14 Local path dependencies and library projects
 
@@ -1074,6 +1082,7 @@ Done when:
 
 - Modifying a list inside `foreach` panics with `collection was modified during enumeration`.
 - A method returning `IEnumerable<User>` works with `foreach` and the sequence operators.
+- A run test iterates the collection expression `["a", "b", "c"]` with `foreach`.
 
 ### M5.7 Sequence operators
 

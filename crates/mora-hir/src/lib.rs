@@ -24,7 +24,9 @@
 
 mod arena;
 mod bodies;
+mod captures;
 mod defs;
+mod diverging;
 mod inference;
 mod items;
 mod name;
@@ -43,26 +45,34 @@ pub mod test_support;
 pub use arena::arena_index;
 pub use bodies::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
-    CaptureTarget, Expr, ExprId, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId,
-    LocalKind, MatchArm, Pat, PatId, Path, PathResolution, ScopeData, ScopeId, Stmt, StmtId,
-    Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution, body_source_map,
-    hir_dump,
+    CaptureTarget, Expr, ExprId, InitRanges, InterpPart, Lambda, Literal, Local, LocalFunction,
+    LocalId, LocalKind, MatchArm, Pat, PatId, Path, PathResolution, RefDefaultRanges, ScopeData,
+    ScopeId, Stmt, StmtId, Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution,
+    body_source_map, escape_char, hir_dump, item_text, owner_name,
 };
+pub use captures::{Captured, LocalFunctionCaptures, local_functions};
 pub use defs::{
     DefMap, EntryPoint, FolderProblem, ItemId, Namespace, NamespaceId, NamespaceRef, def_map,
 };
-pub use inference::{Callee, Constant, Inference, infer};
+pub use diverging::{calls_diverging, is_literal_bool};
+pub use inference::{
+    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer, is_known,
+    literal_constant, real_text, ty_name,
+};
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
-    ValueMember, Visibility, item_source_map, item_tree, parse,
+    ValueMember, ValueSource, Visibility, item_source_map, item_tree, parse,
 };
 pub use name::pascal_case;
 pub use report::diagnostics;
 pub use resolve::{
-    ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, is_visible,
-    resolve_path,
+    ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types,
+    is_visible, resolve_path,
 };
-pub use signature::signature;
+pub use signature::{
+    Creation, creation, instance_fields, instance_methods, is_generic_type, signature,
+    struct_field, this_type,
+};
 pub use ty::{
     Construct, Field, FnSignature, Param, ParamMode, Primitive, Signature, TupleElem, Ty,
     Unsupported,

@@ -1,11 +1,14 @@
 use mora_span::{Db, Project, SourceFile};
 
 use crate::arena::arena_index;
+use crate::bodies::Arg;
 use crate::defs::ItemId;
-use crate::items::{ItemIdx, ItemKind, ItemTree, Visibility, item_tree, signature_refs};
+use crate::items::{
+    ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree, signature_refs,
+};
 use crate::resolve::{
-    ResolveErrorKind, Resolved, Scope, effective_visibility, enclosing_types, item_data,
-    resolve_path,
+    ResolveErrorKind, Resolved, Scope, declaring_type, effective_visibility, enclosing_types,
+    item_data, members_named, resolve_path,
 };
 use crate::ty::{Construct, Field, FnSignature, Param, Signature, TupleElem, Ty, Unsupported};
 use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
@@ -14,6 +17,126 @@ use crate::type_ref::{PathRef, SignatureRef, SignatureRefKind, TypeRef};
 /// It reads no text range, so an edit inside a body does not run it again.
 pub fn signature(db: &dyn Db, item: ItemId) -> &Signature {
     &item_signature(db, item.project, item.file, item.item).signature
+}
+
+/// The field of the struct `item` that its value member at `index`
+/// declares, with its position among the fields of [`Signature::Struct`]:
+/// a field or a constant, `static` or not. `None` for another member, or
+/// when `item` is not a struct.
+pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Field)> {
+    let Signature::Struct(fields) = signature(db, item) else {
+        return None;
+    };
+    let values = &item_data(db, item).values;
+    if !declares_field(values.get(index as usize)?) {
+        return None;
+    }
+    let n = values[..index as usize]
+        .iter()
+        .filter(|member| declares_field(member))
+        .count();
+    Some((n, fields.get(n)?))
+}
+
+/// The instance fields of the struct `item`, the fields stored in each of
+/// its values, in the order of the declaration: each with its position
+/// among the value members. A `static` field and a constant belong to the
+/// type and are not among them. Nothing when `item` is not a struct.
+pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, &Field)> + '_ {
+    let fields = match signature(db, item) {
+        Signature::Struct(fields) => fields.as_slice(),
+        _ => &[],
+    };
+    item_data(db, item)
+        .values
+        .iter()
+        .zip(0u32..)
+        .filter(|(member, _)| declares_field(member))
+        .zip(fields)
+        .filter(|((member, _), _)| member.is_instance_field())
+        .map(|((_, index), field)| (index, field))
+}
+
+/// The first instance field named `name` of the struct `item`, with its
+/// position among the value members ([`instance_fields`]).
+pub(crate) fn instance_field_named<'a>(
+    db: &'a dyn Db,
+    item: ItemId,
+    name: &str,
+) -> Option<(u32, &'a Field)> {
+    instance_fields(db, item).find(|(_, field)| field.name == name)
+}
+
+/// The methods named `name` that a value of the struct `item` calls: its
+/// member functions of that name that are not `static`, visible or not.
+pub fn instance_methods<'a>(
+    db: &'a dyn Db,
+    item: ItemId,
+    name: &'a str,
+) -> impl Iterator<Item = ItemId> + 'a {
+    members_named(db, item, name)
+        .filter(|(_, data)| data.kind == ItemKind::Function && !data.is_static)
+        .map(|(member, _)| member)
+}
+
+/// What `new T(args) { ... }` of a struct does (§6.5, §6.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Creation {
+    /// Memberwise creation: `T` has no constructor, declared or the one of
+    /// a positional struct, and the expression has no parentheses or empty
+    /// ones.
+    Memberwise,
+    /// A call, with parentheses, of a constructor that `T` declares.
+    Constructor,
+    /// A call, with parentheses, of the constructor of the positional
+    /// struct `T`.
+    Positional,
+    /// Braces without parentheses on a type that declares a constructor or
+    /// is positional, which turns memberwise creation off (`MR0153`).
+    MemberwiseOff,
+    /// Arguments in the parentheses of a type that has no constructor to
+    /// take them (`MR0205`).
+    NoConstructor,
+}
+
+/// What `new T(args) { ... }` of the struct `item` does, with `args` when
+/// it has parentheses (§6.5, §6.9).
+pub fn creation(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> Creation {
+    let data = item_data(db, item);
+    match args {
+        None if data.has_constructor || data.is_positional => Creation::MemberwiseOff,
+        Some(_) if data.is_positional => Creation::Positional,
+        Some(_) if data.has_constructor => Creation::Constructor,
+        Some(args) if !args.is_empty() => Creation::NoConstructor,
+        None | Some(_) => Creation::Memberwise,
+    }
+}
+
+/// Whether `member` declares a field of [`Signature::Struct`]: a field or a
+/// constant.
+fn declares_field(member: &ValueMember) -> bool {
+    matches!(member.kind, ValueKind::Field | ValueKind::Const)
+}
+
+/// The type of `this` in the method `item`: the struct it is declared in
+/// (§10.3). `None` for a function that takes no receiver, and for a method
+/// of any other type, or of a generic struct, whose type is not a
+/// [`Ty::Struct`].
+pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
+    let Signature::Function(function) = signature(db, item) else {
+        return None;
+    };
+    function.receiver?;
+    let parent = declaring_type(db, item)?;
+    (item_data(db, parent).kind == ItemKind::Struct && !is_generic_type(db, parent))
+        .then_some(Ty::Struct(parent))
+}
+
+/// Whether the type `item` declares type parameters (§8.1).
+pub fn is_generic_type(db: &dyn Db, item: ItemId) -> bool {
+    !signature_refs(db, item.file)[arena_index(item.item)]
+        .type_params
+        .is_empty()
 }
 
 /// What is wrong with the types of an item's signature.
@@ -91,6 +214,7 @@ fn item_signature(
             params,
             ret,
             is_async,
+            receiver,
         } => Signature::Function(FnSignature {
             params: params
                 .iter()
@@ -105,6 +229,10 @@ fn item_signature(
             ret: ret.as_ref().map_or(Ty::UNIT, |ret| lower.ty(ret)),
             is_async: *is_async,
             is_generic: !refs[arena_index(item)].type_params.is_empty(),
+            receiver: {
+                let data = tree.item(item);
+                (data.parent.is_some() && !data.is_static).then_some(*receiver)
+            },
         }),
         SignatureRefKind::Struct(fields) => {
             let owner = lower.member;
@@ -118,6 +246,8 @@ fn item_signature(
                         name: field.name.clone(),
                         visibility: field.visibility,
                         ty: lower.ty(&field.ty),
+                        needs_init: field.needs_init,
+                        writable: field.writable,
                     }
                 })
                 .collect();
@@ -255,10 +385,7 @@ impl ResolveTypes<'_> {
                 },
             ));
         }
-        let generic = path.generic
-            || !signature_refs(self.db, item.file)[arena_index(item.item)]
-                .type_params
-                .is_empty();
+        let generic = path.generic || is_generic_type(self.db, item);
         if construct == Construct::Generic && !generic {
             return Ty::Struct(item);
         }
@@ -392,6 +519,102 @@ mod tests {
         assert!(function(signature_of(&db, project, "src/Program.mr", "Id")).is_generic);
     }
 
+    /// A struct with a field, a getter, a constant, a `static` field and a
+    /// second field, and a class with a field.
+    const FIELDS: &str = "struct P {\n    X: int;\n    Get: int => X;\n    const K: int = 1;\n    \
+                          static S: long = 2;\n    Y: string;\n}\nclass C {\n    Z: int;\n}\n";
+
+    #[test]
+    fn a_value_member_finds_the_struct_field_it_declares() {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", FIELDS)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let p = item_named(&db, project, file, "P");
+        let found =
+            |index: u32| struct_field(&db, p, index).map(|(n, field)| (n, field.name.clone()));
+        assert_eq!(found(0), Some((0, "X".to_owned())));
+        assert_eq!(found(1), None);
+        assert_eq!(found(2), Some((1, "K".to_owned())));
+        assert_eq!(found(3), Some((2, "S".to_owned())));
+        assert_eq!(found(4), Some((3, "Y".to_owned())));
+        assert_eq!(found(5), None);
+        assert_eq!(
+            struct_field(&db, item_named(&db, project, file, "C"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn the_instance_fields_of_a_struct_are_in_declaration_order() {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", FIELDS)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let fields = |name: &str| -> Vec<(u32, String)> {
+            instance_fields(&db, item_named(&db, project, file, name))
+                .map(|(index, field)| (index, field.name.clone()))
+                .collect()
+        };
+        assert_eq!(fields("P"), [(0, "X".to_owned()), (4, "Y".to_owned())]);
+        assert_eq!(fields("C"), []);
+    }
+
+    #[test]
+    fn this_has_the_type_of_the_struct_of_its_method() {
+        let db = TestDb::new();
+        let text = "struct P {\n    M() {}\n    static S() {}\n}\nclass C {\n    M() {}\n}\n\
+                    struct G<T> {\n    M() {}\n    struct In {\n        N() {}\n    }\n}\nF() {}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let item = |name: &str, parent: &str| {
+            let (item, _) = tree
+                .items()
+                .find(|(_, data)| {
+                    data.name == name
+                        && data.parent.map(|p| tree.item(p).name.as_str()) == Some(parent)
+                })
+                .expect("the item");
+            ItemId {
+                project,
+                file,
+                item,
+            }
+        };
+        let p = item_named(&db, project, file, "P");
+        assert_eq!(this_type(&db, item("M", "P")), Some(Ty::Struct(p)));
+        assert_eq!(this_type(&db, item("S", "P")), None);
+        assert_eq!(this_type(&db, item("M", "C")), None);
+        assert_eq!(this_type(&db, item("M", "G")), None);
+        assert_eq!(
+            this_type(&db, item("N", "In")),
+            Some(Ty::Struct(item("In", "G")))
+        );
+        assert!(!is_generic_type(&db, item("In", "G")));
+        assert_eq!(this_type(&db, item_named(&db, project, file, "F")), None);
+    }
+
+    #[test]
+    fn a_method_records_how_it_takes_its_receiver() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "struct P {\n    X: int;\n    In(): int => X;\n    mut Ref() {}\n    \
+                 move Move() {}\n    static S() {}\n    static mut T() {}\n}\nF() {}\nmut G() {}\n",
+            )],
+        );
+        let receiver =
+            |name: &str| function(signature_of(&db, project, "src/Program.mr", name)).receiver;
+        assert_eq!(receiver("In"), Some(ParamMode::In));
+        assert_eq!(receiver("Ref"), Some(ParamMode::Ref));
+        assert_eq!(receiver("Move"), Some(ParamMode::Move));
+        assert_eq!(receiver("S"), None);
+        assert_eq!(receiver("T"), None);
+        assert_eq!(receiver("F"), None);
+        assert_eq!(receiver("G"), None);
+    }
+
     #[test]
     fn structs_are_nominal_and_list_their_fields() {
         let db = TestDb::new();
@@ -401,7 +624,7 @@ mod tests {
                 "src/Program.mr",
                 "struct Point {\n    public X: int;\n    private mut Y: Point;\n    file Z: float;\n    \
              internal W: char;\n    mut static V: bool;\n    Length(): int => X;\n}\n\
-             static Origin: Point = new Point {};\nF(p: Point) {}\n",
+             static Origin: Point = default;\nF(p: Point) {}\n",
             )],
         );
         let file = file_named(&db, project, "src/Program.mr");
@@ -411,16 +634,26 @@ mod tests {
         };
         let shape: Vec<_> = fields
             .iter()
-            .map(|f| (f.name.as_str(), f.visibility, f.ty.clone()))
+            .map(|f| (f.name.as_str(), f.visibility, f.ty.clone(), f.needs_init))
             .collect();
         assert_eq!(
             shape,
             [
-                ("X", Visibility::Public, Ty::Primitive(Primitive::Int)),
-                ("Y", Visibility::Private, Ty::Struct(point)),
-                ("Z", Visibility::File, Ty::Primitive(Primitive::Float)),
-                ("W", Visibility::Internal, Ty::Primitive(Primitive::Char)),
-                ("V", Visibility::Folder, Ty::Primitive(Primitive::Bool)),
+                ("X", Visibility::Public, Ty::Primitive(Primitive::Int), true),
+                ("Y", Visibility::Private, Ty::Struct(point), true),
+                ("Z", Visibility::File, Ty::Primitive(Primitive::Float), true),
+                (
+                    "W",
+                    Visibility::Internal,
+                    Ty::Primitive(Primitive::Char),
+                    true
+                ),
+                (
+                    "V",
+                    Visibility::Folder,
+                    Ty::Primitive(Primitive::Bool),
+                    false
+                ),
             ]
         );
         assert_eq!(
@@ -431,6 +664,26 @@ mod tests {
             function(signature_of(&db, project, "src/Program.mr", "F")).params[0].ty,
             Ty::Struct(point)
         );
+        assert_eq!(diagnostics(&db, project), &[]);
+    }
+
+    #[test]
+    fn a_struct_nested_in_a_generic_type_is_a_struct() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "struct G<T> {\n    public struct In {\n        public N: int;\n    }\n    \
+             M(i: In): In => i;\n}\n",
+            )],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let inner = item_named(&db, project, file, "In");
+        let m = function(signature_of(&db, project, "src/Program.mr", "M"));
+        assert_eq!(m.params[0].ty, Ty::Struct(inner));
+        assert_eq!(m.ret, Ty::Struct(inner));
+        assert!(matches!(signature(&db, inner), Signature::Struct(_)));
         assert_eq!(diagnostics(&db, project), &[]);
     }
 

@@ -1,0 +1,18 @@
+// A `ref` parameter has no default value: its argument must be a variable the call can change.
+Bump(ref x: int = 1) { //~ ERROR MR0209
+    x += 1;
+}
+
+Outer() {
+    Inner(ref n: int = 2) { //~ ERROR MR0209
+        n += 1;
+    }
+    var v = 0;
+    Inner(ref v);
+}
+
+// A default on a parameter that is not `ref` is fine.
+Plain(x: int = 1) {
+    Console.WriteLine(x);
+}
+Plain();

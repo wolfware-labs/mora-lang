@@ -1,0 +1,77 @@
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_target.mr:15:9
+   |
+15 | var a = new { X = 1, Y = 2 }; //~ ERROR MR0154
+   |         ^^^^^^^^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_target.mr:16:1
+   |
+16 | new(); //~ ERROR MR0154
+   | ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_target.mr:17:14
+   |
+17 | let n: int = new(); //~ ERROR MR0154
+   |              ^^^^^ `int` is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_target.mr:18:17
+   |
+18 | let o: Point? = new { X = 1, Y = 2 }; //~ ERROR MR0154
+   |                 ^^^^^^^^^^^^^^^^^^^^ an option type is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_target.mr:19:16
+   |
+19 | let c: Color = new(); //~ ERROR MR0154
+   |                ^^^^^ the enum `Color` is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_target.mr:21:21
+   |
+21 | Origin(): string => new(); //~ ERROR MR0154
+   |                     ^^^^^ `string` is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_target.mr:34:6
+   |
+34 | Draw(new { W = 1 }); //~ ERROR MR0154
+   |      ^^^^^^^^^^^^^ the overloads of `Draw` take different types here
+   |
+   = note: write the type, as in `new T { ... }`, so that it chooses the overload
+
+error[MR0154]: `new` cannot create a value of `int`
+  --> tests/ui/structs/new_target.mr:38:9
+   |
+38 | let i = new int(); //~ ERROR MR0154
+   |         ^^^^^^^^^ `int` is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of this type another way
+
+error[MR0154]: `new` cannot create a value of the enum `Color`
+  --> tests/ui/structs/new_target.mr:39:9
+   |
+39 | let k = new Color { }; //~ ERROR MR0154
+   |         ^^^^^^^^^^^^^ the enum `Color` is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of this type another way
+
+error[MR0127]: cannot find `Missing`
+  --> tests/ui/structs/new_target.mr:63:28
+   |
+63 | Mark(new { X = 1, Y = 2 }, Missing); //~ ERROR MR0127
+   |                            ^^^^^^^ not found

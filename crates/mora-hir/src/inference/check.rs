@@ -1,16 +1,20 @@
 //! The walk over a body that gives each expression and local its type.
 
 mod call;
+mod places;
+mod static_member;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
 
+use super::constant::Value;
 use super::{
-    Callee, Constant, Context, Inference, TypeError, constant, converts, is_known, numeric, same,
+    Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
+    TypeError, constant, converts, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -19,12 +23,53 @@ use crate::bodies::{
     body_scope,
 };
 use crate::defs::ItemId;
-use crate::resolve::{Resolved, Scope, item_data};
-use crate::signature::signature;
-use crate::ty::{Primitive, Signature, TupleElem, Ty};
+use crate::items::{ItemKind, ValueKind};
+use crate::resolve::{Resolved, Scope, item_data, value_visible};
+use crate::signature::{
+    Creation, creation, instance_field_named, instance_fields, signature, struct_field, this_type,
+};
+use crate::suggest::closest;
+use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
+
+/// The implicit conversion of a value of `from` to `to`, which `to`
+/// accepts: none when the types are the same, or for a value of the never
+/// type, which does not exist.
+fn widening(from: &Ty, to: &Ty) -> Option<Conversion> {
+    (!same(from, to) && *from != Ty::Never).then(|| Conversion {
+        to: to.clone(),
+        kind: ConversionKind::Implicit,
+    })
+}
+
+/// Whether `expr` assigns, so that the branches of a conditional that has
+/// it as a branch are statements when it is one (D-141): an assignment, a
+/// conditional with a branch that assigns, or a `match` with an arm that
+/// assigns.
+fn assigns(body: &Body, expr: ExprId) -> bool {
+    match &body.exprs[expr] {
+        Expr::Assign { .. } => true,
+        Expr::Conditional { then, r#else, .. } => assigns(body, *then) || assigns(body, *r#else),
+        Expr::Match { arms, .. } => arms.iter().any(|arm| assigns(body, arm.body)),
+        _ => false,
+    }
+}
+
+/// Whether `place` is a name, `this` or a field of one, which can be read
+/// again without a change.
+fn is_plain_place(body: &Body, place: ExprId) -> bool {
+    match &body.exprs[place] {
+        Expr::Path(_) | Expr::Local(_) | Expr::This => true,
+        Expr::Member {
+            receiver,
+            optional: false,
+            ..
+        } => is_plain_place(body, *receiver),
+        _ => false,
+    }
+}
 
 /// What the context of an expression asks of its type.
 #[derive(Clone, Copy)]
@@ -37,6 +82,40 @@ enum Expect<'t> {
     /// The type the value must convert to: a literal takes it, or does not
     /// fit it (`MR0010`).
     Target(&'t Ty),
+    /// A target type that is there but that this milestone does not pass
+    /// down: the parameter of an argument of a call that is not checked or
+    /// not resolved yet (D-137), or of one that is an error already, and
+    /// what [`Expect::within`] gives a part of a value that has a target.
+    /// As `None`, except that a `new` without a type is not reported.
+    Later,
+}
+
+impl Expect<'_> {
+    /// What a part of the value expects whose target type is the value's
+    /// own or comes from it, when the value's target does not give the
+    /// part one: a target that comes later stays one that comes later, and
+    /// a target type, which the part does not fit, or none gives it none.
+    fn within(self) -> Expect<'static> {
+        match self {
+            Expect::Later => Expect::Later,
+            Expect::Target(_) | Expect::None | Expect::Hint(_) => Expect::None,
+        }
+    }
+}
+
+/// What an element of a collection expects when the collection expects
+/// `expect`: the element type of an array target, a target that comes
+/// later for a collection type of the library, none for a target that is
+/// no collection (§7.9).
+fn collection_element(expect: Expect<'_>) -> Expect<'_> {
+    match expect {
+        Expect::Target(Ty::Unsupported(ty)) => match (ty.construct, ty.parts.as_slice()) {
+            (Construct::Array, [element]) => Expect::Target(element),
+            (Construct::External | Construct::Generic | Construct::Splice, _) => Expect::Later,
+            _ => Expect::None,
+        },
+        other => other.within(),
+    }
 }
 
 /// An expectation of `ty` as a hint, or none when it is unknown.
@@ -60,11 +139,20 @@ pub(super) fn infer_body(
         exprs: vec![None; body.exprs.len()],
         locals: Vec::with_capacity(body.locals.len()),
         calls: HashMap::new(),
+        arguments: HashMap::new(),
         local_functions: None,
         constants: HashMap::new(),
+        literals: HashMap::new(),
+        conversions: HashMap::new(),
+        element_conversions: HashMap::new(),
         errors: Vec::new(),
+        statements: HashSet::new(),
+        splittable: HashMap::new(),
+        block_stmt: None,
         ret: None,
+        ret_later: false,
         scope: body_scope(project, file, owner),
+        this: None,
     };
     check.locals = body
         .locals
@@ -82,6 +170,7 @@ pub(super) fn infer_body(
         }),
         _ => None,
     };
+    check.this = item.and_then(|item| this_type(db, item));
     match item.map(|item| signature(db, item)) {
         Some(Signature::Function(function)) => {
             // A parameter the parser recovered from declares no local, and
@@ -91,12 +180,26 @@ pub(super) fn infer_body(
                     check.locals[arena_index(local)].get_or_insert_with(|| param.ty.clone());
                 }
             }
-            // What an `async` function's body returns is for §12 to say.
-            if !function.is_async {
-                expected = Some(function.ret.clone());
-            }
+            // `return v` in an `async` function gives a value of its
+            // declared type too (§12).
+            expected = Some(function.ret.clone());
         }
         Some(Signature::Value(ty)) => expected = Some(ty.clone()),
+        // The initializer of a field of a struct, whose type the struct's
+        // signature holds.
+        _ if let BodyOwner::Value(ty, index) = owner
+            && let Some((_, field)) = struct_field(
+                db,
+                ItemId {
+                    project,
+                    file,
+                    item: ty,
+                },
+                index,
+            ) =>
+        {
+            expected = Some(field.ty.clone());
+        }
         _ => match body.kind {
             BodyKind::Initializer => {
                 if let [ty] = body.signature_types[..] {
@@ -105,7 +208,7 @@ pub(super) fn infer_body(
             }
             // A function that implements an interface member or extends a
             // type holds its own return type, `()` when none is written.
-            BodyKind::Function if !body.is_async => {
+            BodyKind::Function => {
                 expected = Some(check.resolution.return_type(body.ret));
             }
             _ => {}
@@ -116,13 +219,23 @@ pub(super) fn infer_body(
         check.infer(call);
     }
     if let Some(root) = body.root {
-        check.function_body(root, expected);
+        let statement = matches!(
+            body.kind,
+            BodyKind::Function | BodyKind::Constructor | BodyKind::Destructor | BodyKind::Set
+        );
+        check.function_body(root, expected, statement);
     }
+    check.instance_uses(owner);
+    check.types_as_values();
     Inference {
         exprs: check.exprs,
         locals: check.locals,
         calls: check.calls,
+        arguments: check.arguments,
         constants: check.constants,
+        literals: check.literals,
+        conversions: check.conversions,
+        element_conversions: check.element_conversions,
         errors: check.errors,
     }
 }
@@ -142,25 +255,47 @@ struct Check<'a> {
     locals: Vec<Option<Ty>>,
     /// The function each checked call calls, so far.
     calls: HashMap<ExprId, Callee>,
+    /// The parameter of each argument of a checked call, so far.
+    arguments: HashMap<ExprId, Vec<usize>>,
     /// The statement of each local function, found on the first call of
     /// one.
     local_functions: Option<HashMap<LocalId, StmtId>>,
     /// The value of each operation made only of literals so far.
     constants: HashMap<ExprId, Constant>,
+    /// The value of each number literal and negated literal so far.
+    literals: HashMap<ExprId, Constant>,
+    /// The conversions applied so far.
+    conversions: HashMap<ExprId, Conversion>,
+    /// The conversions of deconstructed elements so far.
+    element_conversions: HashMap<(ExprId, u32), Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
+    /// The assignments written as statements of their own, whose value
+    /// nothing uses.
+    statements: HashSet<ExprId>,
+    /// The assignments that are the value of another one written as a
+    /// statement in a block, each with that statement: a fix can split them.
+    splittable: HashMap<ExprId, ExprId>,
+    /// The statement of the block being walked whose turn it is.
+    block_stmt: Option<StmtId>,
     /// The type `return e` checks `e` against, `None` when it is unknown.
     ret: Option<Ty>,
+    /// Whether the return type is there when `ret` is unknown: in a lambda
+    /// whose target type gives no result type here, as one passed to a
+    /// call that is not checked yet.
+    ret_later: bool,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
+    /// The type of `this`, in a method of a struct.
+    this: Option<Ty>,
 }
 
 impl Check<'_> {
     /// The body of a function, a local function or a lambda, whose
     /// `return` statements check against `ret`. An expression body is the
     /// value returned, unless the function returns `()`.
-    fn function_body(&mut self, root: ExprId, ret: Option<Ty>) {
+    fn function_body(&mut self, root: ExprId, ret: Option<Ty>, statement: bool) {
         let outer = std::mem::replace(&mut self.ret, ret);
         match &self.ret {
             // A block body gives no type, so checking it only walks its
@@ -169,11 +304,27 @@ impl Check<'_> {
                 let ret = ret.clone();
                 self.check(root, &ret);
             }
-            _ => {
-                self.infer(root);
+            // The expression body of a function that returns `()`, or whose
+            // return type is not checked, is a statement: nothing uses its
+            // value. A lambda's may be its result.
+            Some(_) => self.statement(root, false),
+            None if statement => self.statement(root, false),
+            None => {
+                let expect = self.unknown_ret();
+                self.expr(root, expect);
             }
         }
         self.ret = outer;
+    }
+
+    /// What a returned value of a body whose return type is unknown
+    /// expects.
+    fn unknown_ret(&self) -> Expect<'static> {
+        if self.ret_later {
+            Expect::Later
+        } else {
+            Expect::None
+        }
     }
 
     /// Checks default values against the types of their parameters.
@@ -205,13 +356,31 @@ impl Check<'_> {
     }
 
     /// Reports `expr` when `context` does not accept its type `found` where
-    /// it expects `expected` (`Context::accepts`).
+    /// it expects `expected` (`Context::accepts`), and records its
+    /// conversion when it does.
     fn coerce(&mut self, expr: ExprId, found: Option<&Ty>, expected: &Ty, context: Context) {
         if let Some(found) = found
-            && is_known(found)
-            && is_known(expected)
-            && !context.accepts(found, expected)
+            && self.fits_or_report(expr, found, expected, context)
         {
+            self.widen(expr, found, expected);
+        }
+    }
+
+    /// Whether `context` accepts `expr`, of type `found`, where it expects
+    /// `expected` (`Context::accepts`); a `Mismatch` is reported when it
+    /// does not. `false` without a report when either type is not known.
+    fn fits_or_report(
+        &mut self,
+        expr: ExprId,
+        found: &Ty,
+        expected: &Ty,
+        context: Context,
+    ) -> bool {
+        if !is_known(found) || !is_known(expected) {
+            return false;
+        }
+        let fits = context.accepts(found, expected);
+        if !fits {
             self.errors.push(TypeError::Mismatch {
                 expr,
                 expected: expected.clone(),
@@ -219,11 +388,62 @@ impl Check<'_> {
                 context,
             });
         }
+        fits
+    }
+
+    /// Records that `expr`, of type `from`, converts to `to` where it is
+    /// used, when the types differ.
+    fn widen(&mut self, expr: ExprId, from: &Ty, to: &Ty) {
+        if let Some(Conversion { to, kind }) = widening(from, to) {
+            self.convert(expr, to, kind);
+        }
+    }
+
+    /// Records the conversion of `expr` to `to`.
+    fn convert(&mut self, expr: ExprId, to: Ty, kind: ConversionKind) {
+        let previous = self.conversions.insert(expr, Conversion { to, kind });
+        debug_assert!(previous.is_none(), "an expression is recorded once");
     }
 
     fn block(&mut self, stmts: &[StmtId]) {
         for &stmt in stmts {
+            self.block_stmt = Some(stmt);
             self.stmt(stmt);
+        }
+    }
+
+    /// Checks `expr` where nothing uses its value. An assignment is only
+    /// allowed there; `in_block` when a statement can be put before it.
+    fn statement(&mut self, expr: ExprId, in_block: bool) {
+        let body = self.body;
+        if let Expr::Assign { op, lhs, rhs } = &body.exprs[expr] {
+            self.statements.insert(expr);
+            // `a ??= b` evaluates `b` only when it must, so it is not split.
+            if in_block
+                && *op != Some(BinaryOp::Coalesce)
+                && let Expr::Assign { lhs: inner, .. } = &body.exprs[*rhs]
+                && is_plain_place(body, *lhs)
+                && is_plain_place(body, *inner)
+            {
+                self.splittable.insert(*rhs, expr);
+            }
+        }
+        match &body.exprs[expr] {
+            // The arms of a `match` in statement position are statements.
+            Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
+            // So are the branches of a conditional that assigns.
+            Expr::Conditional {
+                condition,
+                then,
+                r#else,
+            } if assigns(body, expr) => {
+                self.condition(*condition);
+                self.statement(*then, false);
+                self.statement(*r#else, false);
+            }
+            _ => {
+                self.infer(expr);
+            }
         }
     }
 
@@ -231,9 +451,7 @@ impl Check<'_> {
         let body = self.body;
         match &body.stmts[stmt] {
             Stmt::Missing | Stmt::Break | Stmt::Continue | Stmt::Return(None) => {}
-            Stmt::Expr(expr) => {
-                self.infer(*expr);
-            }
+            Stmt::Expr(expr) => self.statement(*expr, self.block_stmt == Some(stmt)),
             Stmt::Local { local, init } => {
                 let Some(init) = *init else { return };
                 let slot = arena_index(*local);
@@ -248,9 +466,9 @@ impl Check<'_> {
             }
             Stmt::Function(function) => {
                 self.defaults(&function.defaults);
-                let ret = (!function.is_async).then(|| self.resolution.return_type(function.ret));
+                let ret = self.resolution.return_type(function.ret);
                 if let Some(root) = function.body {
-                    self.function_body(root, ret);
+                    self.function_body(root, Some(ret), true);
                 }
             }
             Stmt::Block(stmts) => self.block(stmts),
@@ -275,12 +493,15 @@ impl Check<'_> {
                 update,
                 body,
             } => {
-                self.block(init);
+                // Not a block: nothing can be put before an initializer.
+                for &stmt in init {
+                    self.stmt(stmt);
+                }
                 if let Some(condition) = condition {
                     self.condition(*condition);
                 }
                 for &expr in update {
-                    self.infer(expr);
+                    self.statement(expr, false);
                 }
                 self.stmt(*body);
             }
@@ -301,24 +522,35 @@ impl Check<'_> {
                 match &ret {
                     Some(ret) => self.check(*expr, ret),
                     None => {
-                        self.infer(*expr);
+                        let expect = self.unknown_ret();
+                        self.expr(*expr, expect);
                     }
                 }
                 self.ret = ret;
             }
-            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms),
+            Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
         }
     }
 
-    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm]) {
+    /// A `match`: without `expect`, in statement position, its arms are
+    /// statements, whose values nothing uses; as a value, each arm checks
+    /// against the target type, or expects what [`Expect::within`] gives of
+    /// `expect`.
+    fn r#match(&mut self, scrutinee: ExprId, arms: &[MatchArm], expect: Option<Expect<'_>>) {
         self.infer(scrutinee);
         for arm in arms {
             self.pat(arm.pat);
             if let Some(guard) = arm.guard {
                 self.condition(guard);
             }
-            self.infer(arm.body);
+            match expect {
+                None => self.statement(arm.body, false),
+                Some(Expect::Target(target)) => self.check(arm.body, target),
+                Some(expect) => {
+                    self.expr(arm.body, expect.within());
+                }
+            }
         }
     }
 
@@ -367,9 +599,12 @@ impl Check<'_> {
         }
     }
 
+    /// The arguments of a call, a creation or an index that this milestone
+    /// does not check. A lambda or a `new` without a type among them takes
+    /// its target type when a later milestone checks them.
     fn args(&mut self, args: &[Arg]) {
         for arg in args {
-            self.infer(arg.expr);
+            self.expr(arg.expr, Expect::Later);
         }
     }
 
@@ -397,7 +632,7 @@ impl Check<'_> {
         }
         let value = constant::value(&body.exprs, expr)?;
         // A real for an integer type follows the usual rules.
-        if !numeric::is_floating_point(target)
+        if !target.is_floating_point()
             && matches!(
                 value,
                 constant::Value::Real(_)
@@ -417,7 +652,9 @@ impl Check<'_> {
                 if matches!(body.exprs[*operand], Expr::Literal(_))
         );
         if let Some(value) = fitting {
-            if !negated_literal {
+            if negated_literal {
+                self.literals.insert(expr, value);
+            } else {
                 self.constants.insert(expr, value);
             }
         } else {
@@ -467,8 +704,9 @@ impl Check<'_> {
             }
             Expr::Tuple(elems) => self.tuple(elems, expect),
             Expr::Collection(elems) => {
+                let element = collection_element(expect);
                 for &(_, elem) in elems {
-                    self.infer(elem);
+                    self.expr(elem, element);
                 }
                 None
             }
@@ -482,6 +720,10 @@ impl Check<'_> {
                 if let Some(resolution) = self.resolution.paths.get(&expr) {
                     return self.target(&resolution.target);
                 }
+                // A value that never exists has every member (§11.4).
+                if receiver == Some(Ty::Never) {
+                    return receiver;
+                }
                 // `x?.F` gives an option (§7.5).
                 if *optional {
                     return None;
@@ -490,9 +732,9 @@ impl Check<'_> {
             }
             Expr::Call { callee, args } => self.call(expr, *callee, args),
             Expr::Index { base, args, .. } => {
-                self.infer(*base);
+                let base = self.infer(*base);
                 self.args(args);
-                None
+                base.filter(|base| *base == Ty::Never)
             }
             Expr::Unary { op, expr: operand } => self.unary(expr, *op, *operand, expect),
             Expr::Postfix {
@@ -508,6 +750,10 @@ impl Check<'_> {
             }
             Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs),
             Expr::Assign { op, lhs, rhs } => {
+                if !self.statements.remove(&expr) {
+                    let split = self.splittable.get(&expr).copied();
+                    self.errors.push(TypeError::AssignmentValue { expr, split });
+                }
                 self.assign(expr, *op, *lhs, *rhs);
                 None
             }
@@ -523,7 +769,7 @@ impl Check<'_> {
                 None
             }
             Expr::Match { scrutinee, arms } => {
-                self.r#match(*scrutinee, arms);
+                self.r#match(*scrutinee, arms, Some(expect));
                 None
             }
             Expr::With { expr: value, inits } => {
@@ -532,7 +778,7 @@ impl Check<'_> {
                     match self.field(ty.as_ref(), name) {
                         Some(field) => self.check(*init, &field),
                         None => {
-                            self.infer(*init);
+                            self.expr(*init, Expect::Later);
                         }
                     }
                 }
@@ -550,17 +796,26 @@ impl Check<'_> {
             } => self.conditional(*condition, *then, *r#else, expect),
             Expr::Lambda(lambda) => {
                 self.defaults(&lambda.defaults);
-                self.function_body(lambda.body, None);
+                // Its result type is known only when a function type is
+                // expected; a unit result makes the body a statement.
+                let ret = match expect {
+                    Expect::Target(Ty::Unsupported(function))
+                        if function.construct == Construct::Function =>
+                    {
+                        function.parts.last().cloned()
+                    }
+                    _ => None,
+                };
+                // A lambda whose target a later milestone checks has its
+                // result type then.
+                let later = matches!(expect, Expect::Later);
+                let outer = std::mem::replace(&mut self.ret_later, later);
+                self.function_body(lambda.body, ret, false);
+                self.ret_later = outer;
                 None
             }
-            Expr::New { args, inits, .. } => {
-                if let Some(args) = args {
-                    self.args(args);
-                }
-                for &(_, init) in inits.iter().flatten() {
-                    self.infer(init);
-                }
-                None
+            Expr::New { ty, args, inits } => {
+                self.new_expr(expr, *ty, args.as_deref(), inits.as_deref(), expect)
             }
             Expr::NewArray { size, .. } => {
                 self.infer(*size);
@@ -575,7 +830,8 @@ impl Check<'_> {
                 self.block(stmts);
                 None
             }
-            Expr::This | Expr::Type(_) | Expr::Default(_) | Expr::Macro => None,
+            Expr::This => self.this.clone(),
+            Expr::Type(_) | Expr::Default(_) | Expr::Macro => None,
         }
     }
 
@@ -589,10 +845,27 @@ impl Check<'_> {
                 _ => None,
             },
             Target::Item(_) => None,
+            // A getter has the type its body declares.
             Target::Value(value) => {
                 let member = value.member(self.db)?;
-                self.struct_field(value.ty, &member.name)
+                self.struct_field(value.ty, &member.name).or_else(|| {
+                    (member.kind == ValueKind::Getter)
+                        .then(|| self.getter_type(value.ty, &member.name))
+                        .flatten()
+                })
             }
+        }
+    }
+
+    /// The struct and the name of `expr` when it is a member of a value of
+    /// a struct type, as `p.Scale`; `None` for any other expression.
+    pub(super) fn struct_member(&self, expr: ExprId) -> Option<(ItemId, &str)> {
+        let Expr::Member { receiver, name, .. } = &self.body.exprs[expr] else {
+            return None;
+        };
+        match &self.exprs[arena_index(*receiver)] {
+            Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
+            _ => None,
         }
     }
 
@@ -630,7 +903,7 @@ impl Check<'_> {
         let mut types = Vec::with_capacity(elems.len());
         let mut known = true;
         for (name, elem) in elems {
-            match self.infer(*elem) {
+            match self.expr(*elem, expect.within()) {
                 Some(ty) => types.push(TupleElem {
                     name: name.clone(),
                     ty,
@@ -652,7 +925,7 @@ impl Check<'_> {
     ) -> Option<Ty> {
         let ty = match literal {
             Literal::Int(text) => return self.integer(expr, text, negated, expect),
-            Literal::Real(text) => return self.real(expr, text, expect),
+            Literal::Real(text) => return self.real(expr, text, negated, expect),
             Literal::Char(_) => Primitive::Char,
             Literal::Bool(_) => Primitive::Bool,
             Literal::String(_) => return Some(Ty::String),
@@ -687,7 +960,7 @@ impl Check<'_> {
             IntSuffix::Ul => Primitive::ULong,
             IntSuffix::None => {
                 let (asked, target) = match expect {
-                    Expect::None => (None, false),
+                    Expect::None | Expect::Later => (None, false),
                     Expect::Hint(ty) => (numeric::as_numeric(ty), false),
                     Expect::Target(ty) => (numeric::as_numeric(ty), true),
                 };
@@ -712,12 +985,14 @@ impl Check<'_> {
         if suffix != IntSuffix::None && !numeric::holds(ty, value) {
             self.errors.push(TypeError::Literal { expr, ty: Some(ty) });
         }
+        self.record_literal(expr, Value::Int(value), ty);
         Some(Ty::Primitive(ty))
     }
 
-    /// A real literal (§3.5): its suffix's type, `float` when its context
-    /// asks for one, or `double`.
-    fn real(&mut self, expr: ExprId, text: &str, expect: Expect<'_>) -> Option<Ty> {
+    /// A real literal (§3.5), negated when it is the operand of unary `-`:
+    /// its suffix's type, `float` when its context asks for one, or
+    /// `double`.
+    fn real(&mut self, expr: ExprId, text: &str, negated: bool, expect: Expect<'_>) -> Option<Ty> {
         // The lexer reported a literal it cannot read or that is too large
         // for its suffix's type or for a `double`.
         let Some((value, suffix)) = real_value(text).filter(|(value, _)| value.is_finite()) else {
@@ -740,7 +1015,17 @@ impl Check<'_> {
             }
             _ => Primitive::Double,
         };
+        let value = if negated { -value } else { value };
+        self.record_literal(expr, Value::Real(value), ty);
         Some(Ty::Primitive(ty))
+    }
+
+    /// Records the value of the literal `expr` in its type `ty`, when the
+    /// type holds it.
+    fn record_literal(&mut self, expr: ExprId, value: Value, ty: Primitive) {
+        if let Some(value) = value.of_type(ty) {
+            self.literals.insert(expr, value);
+        }
     }
 
     /// Unary `+`, `-`, `~`, `!`, `^`, `++` and `--` (§7.12).
@@ -769,7 +1054,7 @@ impl Check<'_> {
                 if is_struct(&found) {
                     return None;
                 }
-                if found != BOOL {
+                if found != BOOL && found != Ty::Never {
                     self.errors.push(TypeError::Unary {
                         expr,
                         op,
@@ -789,11 +1074,14 @@ impl Check<'_> {
                 if is_struct(&found) {
                     return None;
                 }
+                if found == Ty::Never {
+                    return Some(Ty::Never);
+                }
                 let result = match numeric::as_numeric(&found) {
                     Some(ty) => match (op, ty) {
                         (UnaryOp::Neg, Primitive::UInt) => Some(Primitive::Long),
                         (UnaryOp::Neg, Primitive::ULong | Primitive::NUInt) => None,
-                        (UnaryOp::BitNot, ty) if numeric::is_floating_point(ty) => None,
+                        (UnaryOp::BitNot, ty) if ty.is_floating_point() => None,
                         _ => Some(numeric::widen_small(ty)),
                     },
                     None if !is_known(&found) => return None,
@@ -806,7 +1094,9 @@ impl Check<'_> {
 
     /// `++` and `--`, prefix or postfix: the operand keeps its numeric type.
     fn step(&mut self, expr: ExprId, op: UnaryOp, operand: ExprId) -> Option<Ty> {
-        let found = self.infer(operand)?;
+        let found = self.infer(operand);
+        self.require_place(operand, false);
+        let found = found?;
         let result = numeric::as_numeric(&found);
         if result.is_none() && (!is_known(&found) || is_struct(&found)) {
             return None;
@@ -825,7 +1115,11 @@ impl Check<'_> {
         result: Option<Primitive>,
     ) -> Option<Ty> {
         match result {
-            Some(ty) => Some(Ty::Primitive(ty)),
+            Some(result) => {
+                let result = Ty::Primitive(result);
+                self.widen(operand, &ty, &result);
+                Some(result)
+            }
             None => {
                 self.errors.push(TypeError::Unary {
                     expr,
@@ -883,7 +1177,7 @@ impl Check<'_> {
                 let mut known = true;
                 for operand in [lhs, rhs] {
                     match self.infer(operand).filter(is_known) {
-                        Some(ty) if ty != BOOL => {
+                        Some(ty) if ty != BOOL && ty != Ty::Never => {
                             self.errors.push(TypeError::Logical { op, operand, ty });
                         }
                         Some(_) => {}
@@ -906,8 +1200,15 @@ impl Check<'_> {
                 }
                 self.coerce(rhs, count.as_ref(), &INT, Context::Value);
                 let value = value?;
-                return match numeric::as_numeric(&value).filter(|&ty| numeric::is_integer(ty)) {
-                    Some(ty) => Some(Ty::Primitive(numeric::widen_small(ty))),
+                if value == Ty::Never {
+                    return Some(Ty::Never);
+                }
+                return match numeric::as_numeric(&value).filter(|ty| ty.is_integer()) {
+                    Some(ty) => {
+                        let widened = Ty::Primitive(numeric::widen_small(ty));
+                        self.widen(lhs, &value, &widened);
+                        Some(widened)
+                    }
                     None if !is_known(&value) => None,
                     None => {
                         self.errors.push(TypeError::Binary {
@@ -924,10 +1225,7 @@ impl Check<'_> {
             }
             _ => {}
         }
-        let comparison = matches!(
-            op,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge
-        );
+        let comparison = op.is_comparison();
         // An operand of unknown type leaves the result unknown, a comparison's
         // too, so that nothing is reported because of it.
         let (Some(l), Some(r)) = self.operands(lhs, rhs) else {
@@ -936,6 +1234,16 @@ impl Check<'_> {
         if !is_known(&l) || !is_known(&r) {
             return None;
         }
+        // An operand of the never type takes the other's type; with two, the
+        // operation is of the never type too, a comparison aside (§11.4).
+        let (found_l, found_r) = (l.clone(), r.clone());
+        let (l, r) = match (l, r) {
+            (Ty::Never, Ty::Never) if comparison => return Some(BOOL),
+            (Ty::Never, Ty::Never) => return Some(Ty::Never),
+            (Ty::Never, r) => (r.clone(), r),
+            (l, Ty::Never) => (l.clone(), l),
+            (l, r) => (l, r),
+        };
         // A struct may declare its arithmetic, bitwise and shift operators
         // (§6.9), which this milestone does not look up.
         if !comparison && (is_struct(&l) || is_struct(&r)) {
@@ -952,7 +1260,16 @@ impl Check<'_> {
             return None;
         }
         match operator(op, &l, &r) {
-            Some(ty) => Some(ty),
+            Some(ty) => {
+                if let (Some(a), Some(b)) = (numeric::as_numeric(&l), numeric::as_numeric(&r))
+                    && let Some(promoted) = numeric::promote(a, b)
+                {
+                    let promoted = Ty::Primitive(promoted);
+                    self.widen(lhs, &found_l, &promoted);
+                    self.widen(rhs, &found_r, &promoted);
+                }
+                Some(ty)
+            }
             None => {
                 self.errors.push(TypeError::Binary {
                     expr,
@@ -971,15 +1288,92 @@ impl Check<'_> {
     /// compound assignments, whose result converts back to the type of the
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
+        let tuple = matches!(self.body.exprs[lhs], Expr::Tuple(_));
         match op {
             None => {
                 let places = self.place_type(lhs);
+                self.require_place(lhs, true);
                 self.deconstruct(lhs, &places, rhs);
             }
+            // `??=` waits for options (M3.5) whatever its left side is.
+            Some(op) if tuple && op != BinaryOp::Coalesce => {
+                self.tuple_operation(expr, op, lhs, rhs);
+            }
             Some(op) => {
-                self.binary(expr, op, lhs, rhs);
+                let result = self.binary(expr, op, lhs, rhs);
+                // A tuple of places is for `=` only; `??=` on one, the only
+                // tuple that gets here, waits for options (M3.5).
+                if !tuple {
+                    self.require_place(lhs, false);
+                }
+                // The result converts back to the type of the place as a
+                // cast would (§7.12).
+                let place = self.exprs[arena_index(lhs)].clone();
+                if let (Some(result), Some(place)) = (result, place)
+                    && is_known(&result)
+                    && is_known(&place)
+                    && !same(&result, &place)
+                {
+                    self.convert(expr, place, ConversionKind::Numeric);
+                }
             }
         }
+    }
+
+    /// A compound `op=` with a tuple on the left, whose elements are not
+    /// checked as places (§7.11, D-155): the operation is checked as
+    /// [`Check::binary`] checks it. When an element of a type not known yet,
+    /// as `_`, kept that silent, no operator takes the tuple: `MR0204`. It
+    /// is not reported when either operand has an error already, a name in
+    /// the left tuple that did not resolve included, nor when the right side
+    /// is a struct, whose operators come with M3.6. Arithmetic needs the
+    /// right side's type too; a tuple is never shifted, so a shift is
+    /// decided from the left side alone, whatever its count is.
+    fn tuple_operation(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) {
+        let reported = self.errors.len();
+        self.binary(expr, op, lhs, rhs);
+        let operation = self.errors[reported..]
+            .iter()
+            .any(|error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr));
+        if operation || self.has_element_error(lhs) {
+            return;
+        }
+        let rhs_ty = self.exprs[arena_index(rhs)].clone();
+        if rhs_ty.as_ref().is_some_and(is_struct) {
+            return;
+        }
+        let shift = op.is_shift();
+        if !shift && (self.errors.len() > reported || !rhs_ty.as_ref().is_some_and(is_known)) {
+            return;
+        }
+        self.errors.push(TypeError::Binary {
+            expr,
+            op,
+            lhs,
+            rhs,
+            lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
+            rhs_ty: rhs_ty.unwrap_or(Ty::Error),
+        });
+    }
+
+    /// Whether an element of the tuple `tuple`, at any depth, is a mistake
+    /// reported on its own: a name that did not resolve, of the error type,
+    /// or a type, a type keyword or a namespace (`MR0127`, D-154). A
+    /// discarded element `_` is not one, nor is an element whose type is
+    /// not known yet, as a collection or a library call.
+    fn has_element_error(&self, tuple: ExprId) -> bool {
+        let Expr::Tuple(elems) = &self.body.exprs[tuple] else {
+            return false;
+        };
+        elems.iter().any(|&(_, elem)| match &self.body.exprs[elem] {
+            Expr::Tuple(_) => self.has_element_error(elem),
+            Expr::Discard => false,
+            Expr::Type(_) => true,
+            _ => match &self.exprs[arena_index(elem)] {
+                Some(ty) => *ty == Ty::Error,
+                None => self.named_type(elem).is_some(),
+            },
+        })
     }
 
     /// The type of the place `place` of `=`: a tuple for a tuple of places
@@ -1015,11 +1409,15 @@ impl Check<'_> {
             }
             (Expr::Tuple(_), ..) => {
                 if let Some(found) = self.infer(value) {
-                    self.deconstruct_type(place, places, value, &found);
+                    self.deconstruct_type(place, places, value, &found, &mut 0);
                 }
             }
-            // One place takes a value of its type; `_`, a discarded element or
-            // a place of unknown type, takes any value.
+            // `_` discards any value, which has no target type.
+            (Expr::Discard, ..) => {
+                self.infer(value);
+            }
+            // One place takes a value of its type; a place of unknown type
+            // takes any value.
             _ => self.check(value, places),
         }
     }
@@ -1028,16 +1426,33 @@ impl Check<'_> {
     /// the type of `value`: a tuple of places takes a tuple of as many
     /// elements, each stored in its place, or a positional struct, whose
     /// deconstruction is not checked yet, as in a declaration (D-139).
-    fn deconstruct_type(&mut self, place: ExprId, places: &Ty, value: ExprId, found: &Ty) {
+    ///
+    /// `leaf` counts the places that take an element, depth first, which is
+    /// the position an element's conversion is recorded at.
+    fn deconstruct_type(
+        &mut self,
+        place: ExprId,
+        places: &Ty,
+        value: ExprId,
+        found: &Ty,
+        leaf: &mut u32,
+    ) {
         let body = self.body;
         let Expr::Tuple(inner) = &body.exprs[place] else {
-            self.coerce(value, Some(found), places, Context::Value);
+            let index = *leaf;
+            *leaf += 1;
+            if self.fits_or_report(value, found, places, Context::Value)
+                && let Some(conversion) = widening(found, places)
+            {
+                let previous = self.element_conversions.insert((value, index), conversion);
+                debug_assert!(previous.is_none(), "an element is recorded once");
+            }
             return;
         };
         match (places, found) {
             (Ty::Tuple(types), Ty::Tuple(elems)) if elems.len() == inner.len() => {
                 for ((&(_, place), ty), elem) in inner.iter().zip(types).zip(elems) {
-                    self.deconstruct_type(place, &ty.ty, value, &elem.ty);
+                    self.deconstruct_type(place, &ty.ty, value, &elem.ty, leaf);
                 }
             }
             (_, Ty::Struct(item)) if item_data(self.db, *item).is_positional => {}
@@ -1049,8 +1464,359 @@ impl Check<'_> {
                     context: Context::Value,
                 });
             }
-            (_, Ty::Unsupported(_) | Ty::Error) => {}
+            // A value of the never type deconstructs to anything (§11.4).
+            (_, Ty::Unsupported(_) | Ty::Error | Ty::Never) => {}
         }
+    }
+
+    /// `new T(args) { F = v }`. For a struct built memberwise, each name
+    /// is an instance field visible from the body, assigned once, whose
+    /// value is checked against its type, and every field without an
+    /// initializer of its own must be visible and assigned (§6.9); its type
+    /// is the struct. Empty parentheses on a struct without a constructor
+    /// are memberwise creation, and braces alone on a struct with one, or
+    /// on a positional struct, are an error. A call of a constructor
+    /// assigns the fields itself, and the names after it are plain
+    /// assignments. `new() { .. }` without a type does the same where
+    /// `expect` gives the target type. The type written or taken from the
+    /// target must be one `new` creates (`MR0154`). A class or a generic
+    /// struct has its type, and nothing more is checked until classes and
+    /// generic code.
+    fn new_expr(
+        &mut self,
+        expr: ExprId,
+        ty: Option<TypeId>,
+        args: Option<&[Arg]>,
+        inits: Option<&[(String, ExprId)]>,
+        expect: Expect<'_>,
+    ) -> Option<Ty> {
+        if let Some(args) = args {
+            self.args(args);
+        }
+        let written = match (ty, expect) {
+            (Some(ty), _) => Some(self.resolution.written(ty)),
+            (None, Expect::Target(target)) => Some(target.clone()),
+            (None, Expect::Later) => None,
+            (None, Expect::Hint(_) | Expect::None) => {
+                self.errors.push(TypeError::NewTarget {
+                    expr,
+                    problem: NewTarget::Missing,
+                });
+                None
+            }
+        };
+        // What `new` cannot create has no type.
+        let written = written.and_then(|written| {
+            if self.creatable(&written) {
+                return Some(written);
+            }
+            let problem = match ty {
+                Some(_) => NewTarget::Written(written),
+                None => NewTarget::NotCreatable(written),
+            };
+            self.errors.push(TypeError::NewTarget { expr, problem });
+            None
+        });
+        // A struct type names a struct that is not generic. A class and a
+        // generic struct have their type, and a later milestone checks
+        // their creation.
+        // The fields of a type that is an error, or that a later milestone
+        // checks, have their types then.
+        let Some(written @ Ty::Struct(item)) = written else {
+            for &(_, init) in inits.into_iter().flatten() {
+                self.expr(init, Expect::Later);
+            }
+            return written;
+        };
+        let inits = inits.unwrap_or_default();
+        let creation = creation(self.db, item, args);
+        match creation {
+            Creation::Memberwise => self.memberwise(expr, item, &written, inits),
+            Creation::MemberwiseOff => {
+                let writable = self.writable_after_constructor(item, inits);
+                self.errors.push(TypeError::MemberwiseOff {
+                    expr,
+                    item,
+                    written: ty,
+                    from: self.scope,
+                    writable,
+                });
+                // The names are checked as after the constructor call that
+                // the fix writes.
+                self.after_constructor(item, &written, inits, creation);
+            }
+            Creation::Constructor | Creation::Positional => {
+                self.after_constructor(item, &written, inits, creation);
+            }
+            Creation::NoConstructor => {
+                self.errors.push(TypeError::NoConstructor {
+                    expr,
+                    ty: written.clone(),
+                });
+                self.assigned_values(item, inits);
+            }
+        }
+        Some(written)
+    }
+
+    /// Whether `new` creates a value of `ty`: a struct or a class, generic
+    /// or not (§7.3). A type this milestone knows nothing of, and one that
+    /// is an error already, count as such, so nothing more is reported.
+    fn creatable(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Struct(_) | Ty::Error => true,
+            Ty::Unsupported(ty) => match ty.construct {
+                Construct::Class | Construct::External | Construct::Splice => true,
+                Construct::Generic => ty.item.is_some_and(|item| {
+                    matches!(
+                        item_data(self.db, item).kind,
+                        ItemKind::Struct | ItemKind::Class
+                    )
+                }),
+                Construct::TypeParam
+                | Construct::Union
+                | Construct::Enum
+                | Construct::Interface
+                | Construct::Array
+                | Construct::Optional
+                | Construct::Function
+                | Construct::Weak
+                | Construct::Any => false,
+            },
+            Ty::Primitive(_) | Ty::String | Ty::Tuple(_) | Ty::Never => false,
+        }
+    }
+
+    /// The assignments `inits` after a call of a constructor of the struct
+    /// `item` of type `ty`, which are plain assignments (§6.9): each value
+    /// is checked against the type of the field it names, a hidden field is
+    /// `MR0129`, and, after a declared constructor, a name that is not an
+    /// instance field is `MR0147`. A field may be assigned twice.
+    /// `creation` is how the expression creates the value: the braces
+    /// alone that `MR0153` reports, [`Creation::MemberwiseOff`], stay an
+    /// error whatever the fields' visibility.
+    fn after_constructor(
+        &mut self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        creation: Creation,
+    ) {
+        // A positional struct's constructor is the one its parameters
+        // declare (§6.5).
+        let positional = item_data(self.db, item).is_positional;
+        for (position, (name, init)) in inits.iter().enumerate() {
+            match self.assigned_field(item, name, *init) {
+                Some(index) => {
+                    if !self.field_visible(item, index) {
+                        // Widening the field fixes the assignment only where
+                        // the assignment may write it, and once: the first
+                        // assignment carries the fix.
+                        let fixable = creation != Creation::MemberwiseOff
+                            && self.field_writable(item, index)
+                            && assigned_before(inits, position).is_none();
+                        self.errors.push(TypeError::HiddenField {
+                            value: *init,
+                            item,
+                            index,
+                            name: name.clone(),
+                            from: self.scope,
+                            fixable,
+                        });
+                    }
+                }
+                // The positional fields are not instance fields until M2.2,
+                // so a name that is no instance field may still be one of
+                // them.
+                None if positional => {}
+                None => {
+                    if let Some(error) = self.not_a_field(item, ty, inits, position, false) {
+                        self.errors.push(error);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether every name of `inits`, assigned in the creation of the struct
+    /// `item`, is an instance field that the body sees and may write once
+    /// the value exists, as the assignments after a constructor call need
+    /// (§6.9).
+    fn writable_after_constructor(&self, item: ItemId, inits: &[(String, ExprId)]) -> bool {
+        inits.iter().all(|(name, _)| {
+            instance_fields(self.db, item).any(|(index, field)| {
+                field.name == *name && field.writable && self.field_visible(item, index)
+            })
+        })
+    }
+
+    /// Checks each value of `inits` against the type of the instance field
+    /// of the struct `item` it names, and infers the others, without
+    /// looking at the names.
+    fn assigned_values(&mut self, item: ItemId, inits: &[(String, ExprId)]) {
+        for (name, init) in inits {
+            self.assigned_field(item, name, *init);
+        }
+    }
+
+    /// Checks `value`, assigned to `name` in the creation of the struct
+    /// `item`, against the type of the instance field `name`, and gives the
+    /// field's index among the value members; infers `value` and gives
+    /// `None` when `name` is no instance field.
+    fn assigned_field(&mut self, item: ItemId, name: &str, value: ExprId) -> Option<u32> {
+        match instance_field_named(self.db, item, name) {
+            Some((index, field)) => {
+                self.check(value, &field.ty);
+                Some(index)
+            }
+            None => {
+                self.expr(value, Expect::Later);
+                None
+            }
+        }
+    }
+
+    /// The memberwise creation `expr` of the struct `item`, of type `ty`,
+    /// with `inits` (§6.9).
+    fn memberwise(&mut self, expr: ExprId, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
+        // Memberwise creation needs every required field visible (`MR0144`);
+        // where one is hidden, that error replaces `MR0129` for the hidden
+        // fields assigned and `MR0143` for those left out.
+        let hidden = instance_fields(self.db, item)
+            .find(|&(index, field)| field.needs_init && !self.field_visible(item, index));
+        for (position, (name, init)) in inits.iter().enumerate() {
+            // A repeated field is reported as repeated (`MR0148`) alone: its
+            // first assignment reports it hidden.
+            if let Some(index) = self.assigned_field(item, name, *init)
+                && hidden.is_none()
+                && assigned_before(inits, position).is_none()
+                && !self.field_visible(item, index)
+            {
+                self.errors.push(TypeError::HiddenField {
+                    value: *init,
+                    item,
+                    index,
+                    name: name.clone(),
+                    from: self.scope,
+                    fixable: true,
+                });
+            }
+            if let Some(error) = self.init_name(item, ty, inits, position) {
+                self.errors.push(error);
+            }
+        }
+        if let Some((_, hidden)) = hidden {
+            self.errors.push(TypeError::NoMemberwise {
+                expr,
+                ty: ty.clone(),
+                field: hidden.name.clone(),
+                visibility: hidden.visibility,
+            });
+            return;
+        }
+        let missing = instance_fields(self.db, item).find(|(_, field)| {
+            field.needs_init && !inits.iter().any(|(name, _)| *name == field.name)
+        });
+        if let Some((_, missing)) = missing {
+            self.errors.push(TypeError::MissingField {
+                expr,
+                ty: ty.clone(),
+                field: missing.name.clone(),
+            });
+        }
+    }
+
+    /// Whether the instance field at `index` of the struct `item` is
+    /// declared `mut` without a write scope, so an assignment after a
+    /// constructor may write it (§6.9).
+    fn field_writable(&self, item: ItemId, index: u32) -> bool {
+        struct_field(self.db, item, index).is_some_and(|(_, field)| field.writable)
+    }
+
+    /// Whether the body sees the value member at `index` of the struct
+    /// `item`, one of its instance fields (§4.5).
+    fn field_visible(&self, item: ItemId, index: u32) -> bool {
+        let member = &item_data(self.db, item).values[index as usize];
+        value_visible(self.db, item, member, self.scope)
+    }
+
+    /// What is wrong with the name of the initializer at `position` of
+    /// `inits`, the memberwise creation of the struct `item` of type `ty`:
+    /// one assigned before, or a name that is not an instance field
+    /// ([`Self::not_a_field`]).
+    fn init_name(
+        &self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        position: usize,
+    ) -> Option<TypeError> {
+        let (name, value) = &inits[position];
+        if instance_field_named(self.db, item, name).is_some() {
+            return Some(TypeError::RepeatedField {
+                value: *value,
+                first: assigned_before(inits, position)?,
+                previous: inits[position - 1].1,
+                ty: ty.clone(),
+                name: name.clone(),
+            });
+        }
+        self.not_a_field(item, ty, inits, position, true)
+    }
+
+    /// `MR0147` for the initializer at `position` of `inits`, the creation
+    /// of the struct `item` of type `ty`, whose name is not an instance
+    /// field; `memberwise` when the creation is memberwise rather than a
+    /// constructor call. A name that is no member gets the closest visible
+    /// field as a suggestion: one not assigned yet in memberwise creation,
+    /// which assigns each field once, and after a constructor one the
+    /// assignment may write. `None` for an initializer without a
+    /// name, which is a syntax error.
+    fn not_a_field(
+        &self,
+        item: ItemId,
+        ty: &Ty,
+        inits: &[(String, ExprId)],
+        position: usize,
+        memberwise: bool,
+    ) -> Option<TypeError> {
+        let (name, value) = &inits[position];
+        if name.is_empty() {
+            return None;
+        }
+        let member = item_data(self.db, item)
+            .values
+            .iter()
+            .find(|member| member.name == *name)
+            .map_or(NotAField::Unknown, |member| match member.kind {
+                ValueKind::Getter => NotAField::Getter,
+                ValueKind::Const => NotAField::Constant,
+                // A field that is not an instance field is `static`.
+                ValueKind::Field => NotAField::Static,
+                ValueKind::EnumMember | ValueKind::UnionCase => NotAField::Unknown,
+            });
+        let suggestion = if member == NotAField::Unknown {
+            // Only a field the use can see is worth suggesting, and after a
+            // constructor only one the assignment may write.
+            let candidates: Vec<String> = instance_fields(self.db, item)
+                .filter(|&(index, field)| {
+                    self.field_visible(item, index) && (memberwise || field.writable)
+                })
+                .map(|(_, field)| field.name.clone())
+                .filter(|field| !memberwise || !inits.iter().any(|(name, _)| name == field))
+                .collect();
+            closest(name, &candidates).map(str::to_owned)
+        } else {
+            None
+        };
+        Some(TypeError::NotAField {
+            value: *value,
+            ty: ty.clone(),
+            name: name.clone(),
+            member,
+            suggestion,
+            memberwise,
+        })
     }
 
     /// `(T)x`: a cast converts between numeric types (§5.10).
@@ -1059,15 +1825,17 @@ impl Check<'_> {
         if let Some(from) = self.infer(operand)
             && is_known(&from)
             && is_known(&to)
-            && !same(&from, &to)
-            && (numeric::as_numeric(&from).is_none() || numeric::as_numeric(&to).is_none())
         {
-            self.errors.push(TypeError::Cast {
-                expr,
-                operand,
-                from,
-                to: to.clone(),
-            });
+            if numeric::as_numeric(&from).is_some() && numeric::as_numeric(&to).is_some() {
+                self.convert(operand, to.clone(), ConversionKind::Numeric);
+            } else if !same(&from, &to) {
+                self.errors.push(TypeError::Cast {
+                    expr,
+                    operand,
+                    from,
+                    to: to.clone(),
+                });
+            }
         }
         Some(to)
     }
@@ -1087,15 +1855,24 @@ impl Check<'_> {
             self.check(r#else, expected);
             return Some(expected.clone());
         }
-        let (Some(a), Some(b)) = self.operands(then, r#else) else {
+        let (a, b) = match expect {
+            Expect::Later => (
+                self.expr(then, Expect::Later),
+                self.expr(r#else, Expect::Later),
+            ),
+            _ => self.operands(then, r#else),
+        };
+        let (Some(a), Some(b)) = (a, b) else {
             return None;
         };
         if !is_known(&a) || !is_known(&b) {
             return None;
         }
         if converts(&b, &a) {
+            self.widen(r#else, &b, &a);
             Some(a)
         } else if converts(&a, &b) {
+            self.widen(then, &a, &b);
             Some(b)
         } else {
             self.errors.push(TypeError::Mismatch {
@@ -1121,6 +1898,16 @@ fn same_shape(a: &Ty, b: &Ty) -> bool {
     }
 }
 
+/// The value of the first initializer of `inits` that assigns the name of
+/// the one at `position`, when one before it does.
+fn assigned_before(inits: &[(String, ExprId)], position: usize) -> Option<ExprId> {
+    let (name, _) = &inits[position];
+    inits[..position]
+        .iter()
+        .find(|(earlier, _)| earlier == name)
+        .map(|&(_, value)| value)
+}
+
 /// Whether `ty` is a struct, which may declare operators (§6.9).
 fn is_struct(ty: &Ty) -> bool {
     matches!(ty, Ty::Struct(_))
@@ -1144,9 +1931,7 @@ fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
         let ty = numeric::promote(a, b)?;
         return match op {
             B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => Some(BOOL),
-            _ if numeric::is_integer_only(op) => {
-                numeric::is_integer(ty).then_some(Ty::Primitive(ty))
-            }
+            _ if numeric::is_integer_only(op) => ty.is_integer().then_some(Ty::Primitive(ty)),
             _ => Some(Ty::Primitive(ty)),
         };
     }

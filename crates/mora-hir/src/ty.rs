@@ -16,6 +16,9 @@ pub enum Ty {
     Unsupported(Unsupported),
     /// A type that could not be lowered; a diagnostic says why.
     Error,
+    /// The never type of §11.4: the type of a call that does not return
+    /// (D-138). It converts to every type and cannot be written.
+    Never,
 }
 
 impl Ty {
@@ -43,6 +46,42 @@ pub enum Primitive {
 }
 
 impl Primitive {
+    /// Whether it is a numeric type: an integer type, `float` or `double`.
+    pub fn is_numeric(self) -> bool {
+        !matches!(self, Primitive::Bool | Primitive::Char)
+    }
+
+    /// Whether it is a floating-point type: `float` or `double`.
+    pub fn is_floating_point(self) -> bool {
+        matches!(self, Primitive::Float | Primitive::Double)
+    }
+
+    /// Whether it is an integer type: a numeric type that is not a
+    /// floating-point one.
+    pub fn is_integer(self) -> bool {
+        self.is_numeric() && !self.is_floating_point()
+    }
+
+    /// The smallest and largest value of an integer type; `None` for any
+    /// other. `nint` and `nuint` have the range they have on every target,
+    /// that of `int` and `uint`.
+    pub fn integer_range(self) -> Option<(i128, i128)> {
+        let range = match self {
+            Primitive::Byte => (0, u8::MAX.into()),
+            Primitive::SByte => (i8::MIN.into(), i8::MAX.into()),
+            Primitive::Short => (i16::MIN.into(), i16::MAX.into()),
+            Primitive::UShort => (0, u16::MAX.into()),
+            Primitive::Int | Primitive::NInt => (i32::MIN.into(), i32::MAX.into()),
+            Primitive::UInt | Primitive::NUInt => (0, u32::MAX.into()),
+            Primitive::Long => (i64::MIN.into(), i64::MAX.into()),
+            Primitive::ULong => (0, u64::MAX.into()),
+            Primitive::Bool | Primitive::Float | Primitive::Double | Primitive::Char => {
+                return None;
+            }
+        };
+        Some(range)
+    }
+
     /// The keyword that names the type.
     pub fn keyword(self) -> &'static str {
         match self {
@@ -119,6 +158,27 @@ pub enum Construct {
     External,
 }
 
+impl Construct {
+    /// How a message names a type made with it, as `a class type`.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::TypeParam => "a type parameter",
+            Self::Generic => "a generic type",
+            Self::Class => "a class type",
+            Self::Union => "a union type",
+            Self::Enum => "an enum type",
+            Self::Interface => "an interface type",
+            Self::Array => "an array type",
+            Self::Optional => "an option type",
+            Self::Function => "a function type",
+            Self::Weak => "a weak reference type",
+            Self::Any => "an interface value type",
+            Self::Splice => "a spliced type",
+            Self::External => "a type of the standard library",
+        }
+    }
+}
+
 /// What an item declares about its types (§14.3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Signature {
@@ -145,6 +205,18 @@ pub struct FnSignature {
     pub is_async: bool,
     /// Whether the function declares type parameters of its own (§8.1).
     pub is_generic: bool,
+    /// How a method takes `this`: `in` by default, `ref` for a `mut`
+    /// method and `move` for a `move` one (§10.3). `None` for a function
+    /// that takes no receiver: one at namespace level, or a `static` one.
+    pub receiver: Option<ParamMode>,
+}
+
+impl FnSignature {
+    /// Whether one of its parameters is `params`, which takes the rest of
+    /// the arguments (§6.9).
+    pub fn has_params(&self) -> bool {
+        self.params.iter().any(|param| param.is_params)
+    }
 }
 
 /// A parameter of a function.
@@ -182,4 +254,11 @@ pub struct Field {
     pub visibility: Visibility,
     /// Its type.
     pub ty: Ty,
+    /// Whether memberwise creation must assign it: it has no initializer
+    /// and is not `static`.
+    pub needs_init: bool,
+    /// Whether it is declared `mut` without a write scope, so any code
+    /// that sees it may write it once the value exists (§6.9). Write
+    /// scopes are checked with M2.1.
+    pub writable: bool,
 }

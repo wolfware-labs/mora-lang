@@ -1,0 +1,72 @@
+error[MR0147]: `Point` has no field named `Width`
+  --> tests/ui/structs/field_names.mr:11:28
+   |
+11 | let b = new Point { X = 1, Width = 2 }; //~ ERROR MR0147
+   |                            ^^^^^ not a field of `Point`
+   |
+   = note: memberwise creation of `Point` assigns the fields that each value holds
+
+error[MR0147]: `Point` has no field named `Yy`
+  --> tests/ui/structs/field_names.mr:12:28
+   |
+12 | let c = new Point { X = 1, Yy = 2 }; //~ ERROR MR0147
+   |                            ^^ not a field of `Point`
+   |
+   = note: memberwise creation of `Point` assigns the fields that each value holds
+help: did you mean `Y`?
+   |
+12 - let c = new Point { X = 1, Yy = 2 }; //~ ERROR MR0147
+12 + let c = new Point { X = 1, Y = 2 }; //~ ERROR MR0147
+   |
+
+error[MR0147]: `Sum` is a getter of `Point` and cannot be assigned
+  --> tests/ui/structs/field_names.mr:13:28
+   |
+13 | let d = new Point { X = 1, Sum = 3 }; //~ ERROR MR0147
+   |                            ^^^ a getter computes its value
+   |
+   = note: memberwise creation of `Point` assigns the fields that each value holds
+
+error[MR0147]: `Origin` is a static field of `Point`, not a field of its values
+  --> tests/ui/structs/field_names.mr:14:28
+   |
+14 | let e = new Point { X = 1, Origin = 3 }; //~ ERROR MR0147
+   |                            ^^^^^^ belongs to the type
+   |
+   = note: memberwise creation of `Point` assigns the fields that each value holds
+
+error[MR0147]: `Dimensions` is a constant of `Point`, not a field of its values
+  --> tests/ui/structs/field_names.mr:15:28
+   |
+15 | let f = new Point { X = 1, Dimensions = 3 }; //~ ERROR MR0147
+   |                            ^^^^^^^^^^ belongs to the type
+   |
+   = note: memberwise creation of `Point` assigns the fields that each value holds
+
+error[MR0148]: memberwise creation of `Point` assigns `X` twice
+  --> tests/ui/structs/field_names.mr:16:28
+   |
+16 | let g = new Point { X = 1, X = 2 }; //~ ERROR MR0148
+   |                     -      ^ assigned again here
+   |                     |
+   |                     first assigned here
+   |
+help: remove the repeated assignment
+   |
+16 - let g = new Point { X = 1, X = 2 }; //~ ERROR MR0148
+16 + let g = new Point { X = 1 }; //~ ERROR MR0148
+   |
+
+error[MR0148]: memberwise creation of `Point` assigns `Y` twice
+  --> tests/ui/structs/field_names.mr:17:35
+   |
+17 | let h = new Point { Y = 1, X = 2, Y = 3 }; //~ ERROR MR0148
+   |                     -             ^ assigned again here
+   |                     |
+   |                     first assigned here
+   |
+help: remove the repeated assignment
+   |
+17 - let h = new Point { Y = 1, X = 2, Y = 3 }; //~ ERROR MR0148
+17 + let h = new Point { Y = 1, X = 2 }; //~ ERROR MR0148
+   |

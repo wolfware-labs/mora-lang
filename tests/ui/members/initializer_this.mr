@@ -1,0 +1,16 @@
+// The initializer of an instance field runs with no value of the type, so it
+// cannot use the instance members.
+public struct Counter {
+    public Count: int = 1;
+    public Twice: int => Count * 2;
+    public static Limit: int = 10;
+    public const Step: int = 2;
+
+    Value(): int => Count;
+    public FromField: int = Count; //~ ERROR MR0152
+    public FromGetter: int = Twice; //~ ERROR MR0152
+    public FromMethod: int = Value(); //~ ERROR MR0152
+    public FromThis: int = this.Count; //~ ERROR MR0152
+    public FromLambda: int = (() => Count)(); //~ ERROR MR0152
+    public Fine: int = Limit + Step;
+}

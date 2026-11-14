@@ -1,13 +1,13 @@
 //! The diagnostics of calls: `MR0205` to `MR0208`.
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
-use mora_span::{Span, TextRange, to_text_size};
+use mora_span::Span;
 
 use super::Source;
 use crate::bodies::{ArgMode, ExprId};
 use crate::defs::ItemId;
 use crate::inference::NamedProblem;
-use crate::report::item_name_span;
+use crate::report::{Declared, item_name_span, with_space_after};
 use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Ty};
 
@@ -90,13 +90,7 @@ pub(super) fn mode(
                 format!("remove `{word}`"),
                 // The marker and the space after it; a comment after it stays.
                 marker.map(|marker| {
-                    let after = TextRange::new(marker.end(), span.range.start());
-                    let space = source
-                        .file
-                        .text(source.db)
-                        .get(std::ops::Range::<usize>::from(after))
-                        .map_or(0, |between| between.len() - between.trim_start().len());
-                    let range = TextRange::new(marker.start(), marker.end() + to_text_size(space));
+                    let range = with_space_after(source.file.text(source.db), marker);
                     Fix::new(
                         format!("remove `{word}`"),
                         vec![TextEdit::replace(Span::new(file, range), "")],
@@ -214,7 +208,7 @@ pub(super) fn not_visible(
         from,
         name,
         Span::new(source.file.id(source.db), span),
-        item,
+        Declared::Item(item),
     )
 }
 

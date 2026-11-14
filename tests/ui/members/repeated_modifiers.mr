@@ -1,0 +1,16 @@
+// Each modifier is written once in the modifiers of a declaration, a
+// parameter or a lambda.
+public struct Counter {
+    public mut mut Count: int; //~ ERROR MR0111
+    public public Limit: int; //~ ERROR MR0111
+    public mut mut(private) Steps: int; //~ ERROR MR0111
+
+    public static static Zero(): int => 0; //~ ERROR MR0111
+
+    public Add(in in n: int): int => Limit + n; //~ ERROR MR0111
+}
+
+Run(): int {
+    static static Twice(n: int): int => n * 2; //~ ERROR MR0111
+    return Twice(1);
+}

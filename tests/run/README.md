@@ -7,12 +7,27 @@ Each `.mr` file here is a program (§20.1). Its `// expect:` lines give its stan
 Console.WriteLine(1 + 2);
 ```
 
-The harness first compiles the program, which must report no error, and compares the text form of its HIR with the `.hir` file beside it. Then it builds and runs the program through every backend the compiler has, the JIT and an AOT build, and compares each run with the expected output. While the compiler has no backend, compiling and the HIR snapshot are the whole test.
+The harness first compiles the program, which must report no error, and compares the text form of its HIR and of its MIR with the `.hir` and `.mir` files beside it. Then it builds and runs the program through every backend the compiler has, the JIT and an AOT build, and compares each run with the expected output. While the compiler has no backend, compiling and the two snapshots are the whole test. A program that reports errors has neither snapshot.
 
-In the HIR, a local is `name#n`, and a name that is not a local is followed by what it names in braces, as `Console{external}` or `X{field App.Point.X}`. An operand that is itself an operation is in parentheses. After a change to the HIR, update the snapshots and review the diff:
+In the HIR, a local is `name#n`, and a name that is not a local is followed by what it names in braces, as `Console{external}` or `X{field App.Point.X}`. An operand that is itself an operation is in parentheses.
+
+The MIR is one function per body (`fn name(params) -> type { ... }`), each a list of typed locals and numbered basic blocks, `bb0`, `bb1` and so on, without gaps. A block is a list of statements ending in one terminator: `goto bbN;`, `switch`, `return;`, a call, or `unreachable;` where control never gets. Every statement ends in `// line:col`, the place in the source it comes from. A local keeps its HIR number (`x#0`), `this` is the receiver and an unnamed temporary is `_n`, where `_0` is the return value. A real constant always has a decimal point (`5.0`), so it reads differently from an integer.
+
+A body that a later milestone of the roadmap lowers, such as a getter, a constructor or a function with a class type in its signature, is one line in place of its function: `// App.Point.Length: not lowered until M2.1`, the owner's name and the milestone.
+
+- `copy x` reads a place and leaves it usable. `move x` hands it over.
+- `&in x` and `&ref x` borrow a place, to read it or to change it. `(*x)` is the place a borrow `x` points to, so a parameter `n: int` is read as `copy (*n#0)`.
+- `(T)a` converts a number to `T` as the source wrote it. `(implicit T)a` is a conversion the compiler inserted because every value fits, such as `int` to `long`.
+- `call f(args) -> bbN;` calls `f` and continues in `bbN`; `x = call ...` stores the result. `-> !` marks a call that does not return.
+- `App.Point{struct App.Point}(a, b)` builds a struct from the values of its instance fields, in the order they are declared; `(a, b)` builds a tuple. `App.Point{struct App.Point}.Y{init}` is the initializer of the field `Y`, called for a field that `new` leaves out.
+- `Console.WriteLine{external}` is a function of the standard library, which is not loaded yet, called by the path as written. It is the only external callee here.
+- `$"text{a}"` builds an interpolated string. It stands in until the standard library formats values, and then it is replaced.
+- A local function is named after its owner, `Owner.Local`. When one owner has several local functions with the same name, the second is `Owner.Local#2`, the third `Owner.Local#3`, in the order of the text.
+
+After a change to the HIR or the MIR, update the snapshots and review the diff:
 
 ```sh
 cargo test -p mora-testkit --test run -- --bless [filter...]
 ```
 
-Filters run only the cases whose path contains one of them.
+`--bless` writes both snapshots, and removes one that is empty, instead of comparing. Filters run only the cases whose path contains one of them.

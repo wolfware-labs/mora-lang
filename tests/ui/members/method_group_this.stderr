@@ -1,0 +1,31 @@
+error[MR0149]: a static member has no `this`, so it cannot use the instance method `Value`
+  --> tests/ui/members/method_group_this.mr:11:17
+   |
+11 |         var f = Value; //~ ERROR MR0149
+   |                 ^^^^^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0149]: a static member has no `this`, so it cannot use the instance method `Value`
+  --> tests/ui/members/method_group_this.mr:12:22
+   |
+12 |         return Apply(Value); //~ ERROR MR0149
+   |                      ^^^^^ needs a value of the type
+   |
+   = note: a `static` member belongs to the type, not to a value of it
+
+error[MR0152]: the initializer of `Read` cannot use the instance member `Value`: initializers run before the value exists
+  --> tests/ui/members/method_group_this.mr:14:32
+   |
+14 |     public Read: (() => int) = Value; //~ ERROR MR0152
+   |                                ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members
+
+error[MR0152]: the initializer of `Applied` cannot use the instance member `Value`: initializers run before the value exists
+  --> tests/ui/members/method_group_this.mr:15:33
+   |
+15 |     public Applied: int = Apply(Value); //~ ERROR MR0152
+   |                                 ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members

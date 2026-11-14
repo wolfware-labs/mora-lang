@@ -53,6 +53,9 @@ pub(crate) enum SignatureRefKind {
         params: Vec<ParamRef>,
         ret: Option<TypeRef>,
         is_async: bool,
+        /// How `this` is taken, as the modifiers write it, should the
+        /// function be a method.
+        receiver: ParamMode,
     },
     Struct(Vec<FieldRef>),
     Value(TypeRef),
@@ -74,6 +77,8 @@ pub(crate) struct FieldRef {
     pub(crate) name: String,
     pub(crate) visibility: Visibility,
     pub(crate) ty: TypeRef,
+    pub(crate) needs_init: bool,
+    pub(crate) writable: bool,
 }
 
 /// Where the paths of one item's signature are.
@@ -102,6 +107,7 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             params,
             ret: it.ret().map(|ty| lower.ty(&ty)),
             is_async: Written::of(it.modifiers()).is_async,
+            receiver: receiver_mode(it.modifiers()),
         };
     } else if let Some(it) = ast::StructDecl::cast(node) {
         signature.type_params = type_param_names(it.type_param_list()).collect();
@@ -128,6 +134,42 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
     (signature, lower.source)
 }
 
+/// The mode of the parameter `param` as its modifiers write it (§10.3):
+/// `ref`, `move`, or `in` when neither is written.
+pub(crate) fn param_mode(param: &ast::Param) -> ParamMode {
+    let mut mode = ParamMode::In;
+    for token in param.modifiers().filter_map(|modifier| modifier.kind()) {
+        match token.kind() {
+            SyntaxKind::RefKw => mode = ParamMode::Ref,
+            SyntaxKind::MoveKw => mode = ParamMode::Move,
+            _ => {}
+        }
+    }
+    mode
+}
+
+/// Whether `param` is written `params`, taking the rest of the arguments.
+pub(crate) fn is_params(param: &ast::Param) -> bool {
+    param
+        .modifiers()
+        .filter_map(|modifier| modifier.kind())
+        .any(|token| token.kind() == SyntaxKind::ParamsKw)
+}
+
+/// How a method with the modifiers `modifiers` takes `this` (§10.3):
+/// `ref` when it is `mut`, `move` when it is `move`, `in` otherwise.
+fn receiver_mode<'a>(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> ParamMode {
+    let mut mode = ParamMode::In;
+    for token in modifiers.into_iter().filter_map(|modifier| modifier.kind()) {
+        match token.kind() {
+            SyntaxKind::MutKw => mode = ParamMode::Ref,
+            SyntaxKind::MoveKw => mode = ParamMode::Move,
+            _ => {}
+        }
+    }
+    mode
+}
+
 /// The names of the type parameters `list` declares, in order; a parameter
 /// whose name the parser recovered from has none.
 pub(crate) fn type_param_names<'a>(
@@ -151,20 +193,10 @@ impl LowerTypes {
     }
 
     fn param(&mut self, param: &ast::Param) -> ParamRef {
-        let mut mode = ParamMode::In;
-        let mut is_params = false;
-        for token in param.modifiers().filter_map(|modifier| modifier.kind()) {
-            match token.kind() {
-                SyntaxKind::RefKw => mode = ParamMode::Ref,
-                SyntaxKind::MoveKw => mode = ParamMode::Move,
-                SyntaxKind::ParamsKw => is_params = true,
-                _ => {}
-            }
-        }
         ParamRef {
             name: name_of(param.name()).unwrap_or_default(),
-            mode,
-            is_params,
+            mode: param_mode(param),
+            is_params: is_params(param),
             has_default: param.default().is_some(),
             ty: self.optional(param.ty().as_ref()),
         }
@@ -174,10 +206,13 @@ impl LowerTypes {
         let declarator = field.variable_declarator()?;
         let name = declarator.name()?.ident_token()?;
         self.source.fields.push(name.text_range());
+        let written = Written::of(field.modifiers());
         Some(FieldRef {
             name: token_name(name),
-            visibility: Written::of(field.modifiers()).visibility_or_folder(),
+            visibility: written.visibility_or_folder(),
             ty: self.optional(declarator.ty().as_ref()),
+            needs_init: declarator.eq_token().is_none() && !written.is_static,
+            writable: written.is_mut_anywhere,
         })
     }
 

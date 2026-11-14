@@ -30,6 +30,13 @@ pub trait Compiler: Sync {
     fn hir(&self, _path: &str, _text: &str) -> Result<String, Checked> {
         unimplemented!("this compiler cannot compile");
     }
+
+    /// Compiles `text` as the file `path` and returns the text form of its
+    /// MIR, or the diagnostics when it reports an error. A compiler that
+    /// cannot compile panics, which fails only the case.
+    fn mir(&self, _path: &str, _text: &str) -> Result<String, Checked> {
+        unimplemented!("this compiler cannot compile");
+    }
 }
 
 /// The compiler the suites and `cargo xtask spec-examples` use. It is
@@ -152,6 +159,25 @@ impl Compiler for FrontEnd {
     /// The HIR of each file of the case. A case of several files shows each
     /// under a `//@ file` line with its path.
     fn hir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        self.dump(path, text, mora_hir::hir_dump)
+    }
+
+    /// The MIR of each file of the case, shown as [`Compiler::hir`] shows
+    /// the HIR.
+    fn mir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        self.dump(path, text, mora_mir::mir_dump)
+    }
+}
+
+impl FrontEnd {
+    /// Analyzes the case and, when it reports no error, joins what `dump`
+    /// writes for each of its files.
+    fn dump(
+        &self,
+        path: &str,
+        text: &str,
+        dump: fn(&dyn mora_span::Db, Project, SourceFile) -> String,
+    ) -> Result<String, Checked> {
         let analysis = self.analyze(path, text);
         let failed = analysis
             .checked
@@ -168,7 +194,7 @@ impl Compiler for FrontEnd {
                 // Writing to a `String` cannot fail.
                 let _ = writeln!(out, "//@ file {shown}");
             }
-            out.push_str(&mora_hir::hir_dump(&analysis.db, analysis.project, *file));
+            out.push_str(&dump(&analysis.db, analysis.project, *file));
         }
         Ok(out)
     }
@@ -232,6 +258,29 @@ mod tests {
     fn the_hir_of_one_file_has_no_header() {
         let hir = FrontEnd.hir("a.mr", "let x = 1;\n").unwrap();
         assert_eq!(hir, "top-level {\n    let x#0: int = 1;\n}\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot compile")]
+    fn the_unbuilt_compiler_has_no_mir() {
+        let _ = Unbuilt.mir("a.mr", "let x = 1;\n");
+    }
+
+    #[test]
+    fn a_program_with_an_error_has_no_mir() {
+        let checked = FrontEnd.mir("a.mr", "let x = y;\n").unwrap_err();
+        assert_eq!(checked.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn the_mir_of_several_files_names_each() {
+        let text = "//@ file src/Program.mr\nlet x = 1;\n//@ file src/Util.mr\nF() {}\n";
+        let mir = FrontEnd.mir("a.mr", text).unwrap();
+        assert!(mir.starts_with("//@ file src/Program.mr\n"), "{mir}");
+        assert!(
+            mir.contains("//@ file src/Util.mr\nfn App.F() -> () {"),
+            "{mir}"
+        );
     }
 
     #[test]

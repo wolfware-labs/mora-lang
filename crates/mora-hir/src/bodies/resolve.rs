@@ -72,11 +72,46 @@ impl BodyResolution {
     pub fn return_type(&self, ret: Option<TypeId>) -> Ty {
         ret.map_or(Ty::UNIT, |ty| self.written(ty))
     }
+
+    /// Whether the path `path` names something of the standard library
+    /// while the library is not loaded ([`Resolved::External`]).
+    pub fn is_external(&self, path: ExprId) -> bool {
+        self.paths
+            .get(&path)
+            .is_some_and(|resolution| matches!(resolution.target, Target::Item(Resolved::External)))
+    }
+
+    /// The value member the path `path` names, when it names one.
+    pub fn value_member<'db>(&self, db: &'db dyn Db, path: ExprId) -> Option<&'db ValueMember> {
+        self.paths.get(&path)?.member(db)
+    }
+
+    /// The value member the path `path` names, with the type that declares
+    /// it, when it names one.
+    pub(crate) fn value_ref(&self, path: ExprId) -> Option<ValueRef> {
+        self.paths.get(&path)?.value_ref()
+    }
+}
+
+impl PathResolution {
+    /// The value member the path names, when it names one.
+    pub fn member<'db>(&self, db: &'db dyn Db) -> Option<&'db ValueMember> {
+        self.value_ref()?.member(db)
+    }
+
+    /// The value member the path names, with the type that declares it,
+    /// when it names one.
+    pub(crate) fn value_ref(&self) -> Option<ValueRef> {
+        match self.target {
+            Target::Value(value) => Some(value),
+            Target::Item(_) | Target::Error => None,
+        }
+    }
 }
 
 impl ValueRef {
     /// The value member it refers to.
-    pub(crate) fn member(self, db: &dyn Db) -> Option<&ValueMember> {
+    pub fn member(self, db: &dyn Db) -> Option<&ValueMember> {
         item_data(db, self.ty).values.get(self.index)
     }
 }

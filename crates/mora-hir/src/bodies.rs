@@ -26,9 +26,10 @@ use mora_span::{Db, SourceFile, TextRange};
 
 use crate::arena::arena_index;
 use crate::items::{ItemIdx, Visibility, item_tree, parse};
+use crate::ty::ParamMode;
 use crate::type_ref::TypeRef;
 
-pub use dump::hir_dump;
+pub use dump::{escape_char, hir_dump, item_text, owner_name};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -142,6 +143,11 @@ pub struct Body {
     /// Whether that declaration is `async`; `false` when the item tree
     /// holds its signature, which says it ([`crate::FnSignature::is_async`]).
     pub is_async: bool,
+    /// Whether that declaration is `static`, for a member that is not an
+    /// item: an operator, which always is, a getter, or an implementation
+    /// of an interface member. `false` for an item, whose
+    /// [`crate::Item::is_static`] says it.
+    pub is_static: bool,
     /// A constructor's `: this(...)`, as a call of `this`.
     pub this_call: Option<ExprId>,
     /// The body itself: a block, or the expression of `=> e`. `None` for a
@@ -150,6 +156,9 @@ pub struct Body {
     /// The locals that take the name of a local in scope (`MR0180`), each
     /// with the one it would shadow.
     pub shadows: Vec<(LocalId, LocalId)>,
+    /// The `ref` parameters that have a default value (`MR0209`), in the
+    /// order of the text.
+    pub ref_defaults: Vec<LocalId>,
 }
 
 /// A local, a parameter or a pattern binding.
@@ -343,9 +352,11 @@ pub enum Literal {
 /// A part of an interpolated string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InterpPart {
-    /// Text as written.
-    Text(String),
-    /// `{value,alignment:format}`.
+    /// Text: as written, and its value, `None` when the lexer reported
+    /// that it has none.
+    Text { text: String, value: Option<String> },
+    /// `{value,alignment:format}`; the format as written after the
+    /// colon.
     Hole {
         value: ExprId,
         alignment: Option<ExprId>,
@@ -524,6 +535,21 @@ impl BinaryOp {
             B::Coalesce => "??",
         }
     }
+
+    /// Whether it compares its operands for a `bool`: `==`, `!=`, `<`,
+    /// `>`, `<=` or `>=`.
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            Self::Eq | Self::Ne | Self::Lt | Self::Gt | Self::Le | Self::Ge
+        )
+    }
+
+    /// Whether it shifts its left operand by the count on its right: `<<`,
+    /// `>>` or `>>>`.
+    pub fn is_shift(self) -> bool {
+        matches!(self, Self::Shl | Self::Shr | Self::UShr)
+    }
 }
 
 /// A statement of a body (§7.10).
@@ -590,12 +616,25 @@ pub struct LocalFunction {
     pub local: LocalId,
     /// The parameters.
     pub params: Vec<LocalId>,
+    /// The mode of each parameter, in the order of [`LocalFunction::params`]
+    /// (§10.3).
+    pub modes: Vec<ParamMode>,
     /// The default value of each parameter that has one.
     pub defaults: Vec<(LocalId, ExprId)>,
     /// The return type as written.
     pub ret: Option<TypeId>,
     /// Whether it is `async`.
     pub is_async: bool,
+    /// Whether one of its parameters is `params`, which takes the rest of
+    /// the arguments.
+    pub has_params: bool,
+    /// Whether it declares type parameters, or a local function around it
+    /// does, or the member whose body holds it does when that body
+    /// declares its own signature: an explicit interface implementation or
+    /// an extension member, with the extension's. The type parameters of a
+    /// function item or of a type around the body are not counted: the
+    /// item's own signature says whether it is generic.
+    pub is_generic: bool,
     /// The block or the expression of `=> e`.
     pub body: Option<ExprId>,
 }
@@ -654,19 +693,48 @@ pub struct BodySourceMap {
     /// The marker of each argument written with one, by the argument's
     /// expression.
     pub markers: HashMap<ExprId, TextRange>,
-    /// Each `break`, `continue` and `return` statement.
-    pub jumps: HashMap<StmtId, TextRange>,
+    /// Each statement but a local declaration, as written.
+    pub stmts: HashMap<StmtId, TextRange>,
     /// The `let` written right before the name of a local, which the fix
     /// of `MR0182` turns into `var`.
     pub lets: HashMap<LocalId, TextRange>,
     /// The closing brace of each function and local function body written
     /// as a block, by the block's expression.
     pub ends: HashMap<ExprId, TextRange>,
+    /// The closing brace of each block statement.
+    pub block_ends: HashMap<StmtId, TextRange>,
     /// The name of each capture, or its `this`, by its lambda and position.
     pub captures: HashMap<(ExprId, usize), TextRange>,
     /// The segments of each path inside the body's types, indexed by
     /// [`crate::type_ref::PathRef::index`].
     pub type_paths: Vec<Vec<TextRange>>,
+    /// Where the `ref` and the default of each of [`Body::ref_defaults`] are.
+    pub ref_defaults: HashMap<LocalId, RefDefaultRanges>,
+    /// Where each member initializer `F = v` of a `new` or `with`
+    /// expression is written, by the expression of its value, when it has
+    /// a name.
+    pub inits: HashMap<ExprId, InitRanges>,
+}
+
+/// Where a member initializer `F = v` is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitRanges {
+    /// The name of the member.
+    pub name: TextRange,
+    /// The whole initializer, from the name to the end of the value.
+    pub init: TextRange,
+}
+
+/// Where a parameter with `ref` and a default value is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefDefaultRanges {
+    /// The `ref` keyword.
+    pub keyword: TextRange,
+    /// The default value.
+    pub value: TextRange,
+    /// From the end of the parameter's type to the end of its default: the
+    /// `=` and the value.
+    pub default: TextRange,
 }
 
 impl BodySourceMap {
@@ -732,8 +800,123 @@ pub fn body_owners(db: &dyn Db, file: SourceFile) -> Vec<BodyOwner> {
 mod tests {
     use salsa::Setter;
 
-    use crate::test_db::{TestDb, app, codes, file_named, messages};
+    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
     use crate::*;
+
+    #[test]
+    fn a_local_function_records_the_modes_of_its_parameters() {
+        let db = TestDb::new();
+        let text = "F() {\n    G(ref a: int, b: int, move c: int, in d: int) {}\n}\n";
+        let (_, functions) = local_functions_of_f(&db, text);
+        let modes: Vec<_> = functions
+            .iter()
+            .map(|function| function.modes.clone())
+            .collect();
+        assert_eq!(
+            modes,
+            [vec![
+                ParamMode::Ref,
+                ParamMode::In,
+                ParamMode::Move,
+                ParamMode::In
+            ]]
+        );
+    }
+
+    #[test]
+    fn the_modes_of_a_local_function_line_up_with_its_parameters() {
+        // The parser recovers from the parameter without a name, which
+        // declares no local and has no mode.
+        let db = TestDb::new();
+        let text = "F() {\n    G(ref a: int, move : int, move c: int) {}\n}\n";
+        let (body, functions) = local_functions_of_f(&db, text);
+        let found: Vec<_> = functions
+            .iter()
+            .map(|function| {
+                function
+                    .params
+                    .iter()
+                    .zip(&function.modes)
+                    .map(|(&param, &mode)| (body.locals[param].name.clone(), mode))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [vec![
+                ("a".to_owned(), ParamMode::Ref),
+                ("c".to_owned(), ParamMode::Move)
+            ]]
+        );
+        assert_eq!(functions[0].params.len(), functions[0].modes.len());
+    }
+
+    #[test]
+    fn a_local_function_is_generic_where_type_parameters_are_in_scope() {
+        let db = TestDb::new();
+        let text = "F() {\n    A() {}\n    B<T>() {}\n    C() {\n        D() {}\n    }\n    \
+                    E<T>() {\n        G() {}\n    }\n}\n";
+        assert_eq!(
+            generic_local_functions(&db, text),
+            [
+                ("A", false),
+                ("B", true),
+                ("C", false),
+                ("D", false),
+                ("E", true),
+                ("G", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_function_is_not_generic_for_the_item_around_it() {
+        let db = TestDb::new();
+        let text = "F<T>() {\n    G() {}\n    H<U>() {}\n}\n";
+        assert_eq!(
+            generic_local_functions(&db, text),
+            [("G", false), ("H", true)]
+        );
+    }
+
+    /// The name of each local function in the body of `F`, in name order,
+    /// and whether it is generic.
+    fn generic_local_functions<'db>(db: &'db TestDb, text: &str) -> Vec<(&'db str, bool)> {
+        let (body, functions) = local_functions_of_f(db, text);
+        let mut generic: Vec<(&str, bool)> = functions
+            .iter()
+            .map(|function| {
+                (
+                    body.locals[function.local].name.as_str(),
+                    function.is_generic,
+                )
+            })
+            .collect();
+        generic.sort_unstable();
+        generic
+    }
+
+    /// The body of `F` in `src/Program.mr` alone in an app, and every local
+    /// function declared in it.
+    fn local_functions_of_f<'db>(
+        db: &'db TestDb,
+        text: &str,
+    ) -> (&'db Body, Vec<&'db LocalFunction>) {
+        let project = app(db, &[("src/Program.mr", text)]);
+        let file = file_named(db, project, "src/Program.mr");
+        let tree = item_tree(db, file);
+        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let body = body(db, file, BodyOwner::Item(f));
+        let functions = body
+            .stmts
+            .iter()
+            .filter_map(|(_, stmt)| match stmt {
+                Stmt::Function(function) => Some(function),
+                _ => None,
+            })
+            .collect();
+        (body, functions)
+    }
 
     /// The HIR of `src/Program.mr` alone in an app.
     fn dump(text: &str) -> String {
@@ -744,9 +927,7 @@ mod tests {
 
     /// The codes `src/Program.mr` alone in an app reports.
     fn reported(text: &str) -> Vec<String> {
-        let db = TestDb::new();
-        let project = app(&db, &[("src/Program.mr", text)]);
-        codes(diagnostics(&db, project))
+        codes(&diagnostics_of(text))
     }
 
     #[test]
@@ -757,7 +938,7 @@ mod tests {
                     let p = new Point { X = 3 };\nConsole.WriteLine(p.Length());\n";
         assert_eq!(
             dump(text),
-            "top-level {\n    let p#0 = new Point { X = 3 };\n    \
+            "top-level {\n    let p#0: Point = new Point { X = 3 };\n    \
              Console{external}.WriteLine{external}(p#0.Length());\n}\n\n\
              fn UsersApi.Point.Length() {\n    let d#0: int = X{field UsersApi.Point.X} * X{field UsersApi.Point.X};\n    \
              return d#0 + Twice{fn UsersApi.Twice}(X{field UsersApi.Point.X});\n}\n\n\
@@ -825,6 +1006,121 @@ mod tests {
             "{dumped}"
         );
         assert_eq!(reported(text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_block_statement_records_its_closing_brace() {
+        let db = TestDb::new();
+        let text = "{\n    let x = 1;\n}\nlet y = 2;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let ends: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(id, _)| map.block_ends.get(&id))
+            .map(|range| &text[std::ops::Range::<usize>::from(*range)])
+            .collect();
+        assert_eq!(ends, ["}"]);
+        let block = body
+            .stmts
+            .iter()
+            .find(|(_, stmt)| matches!(stmt, Stmt::Block(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert_eq!(u32::from(map.block_ends[&block].start()), 17);
+    }
+
+    #[test]
+    fn an_unsafe_block_records_its_closing_brace() {
+        let db = TestDb::new();
+        let text = "unsafe {\n    let x = 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let block = body
+            .stmts
+            .iter()
+            .find(|(_, stmt)| matches!(stmt, Stmt::Block(_)))
+            .map(|(id, _)| id)
+            .unwrap();
+        assert_eq!(
+            map.block_ends
+                .get(&block)
+                .map(|range| u32::from(range.start())),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn the_dump_shows_the_never_type_as_an_exclamation_mark() {
+        assert_eq!(
+            dump("let x = Todo();\n"),
+            "top-level {\n    let x#0: ! = Todo{external}();\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_statement_records_its_range() {
+        let db = TestDb::new();
+        let text = "var i = 0;\nwhile (i < 3) i++;\nif (i > 1) { i--; }\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let ranges: Vec<_> = body
+            .stmts
+            .iter()
+            .filter_map(|(id, _)| map.stmts.get(&id))
+            .map(|range| &text[std::ops::Range::<usize>::from(*range)])
+            .collect();
+        // Every statement but a local declaration, inner ones first.
+        assert_eq!(
+            ranges,
+            [
+                "i++;",
+                "while (i < 3) i++;",
+                "i--;",
+                "{ i--; }",
+                "if (i > 1) { i--; }"
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_text_keeps_its_value() {
+        let db = TestDb::new();
+        let text = "let n = 1;\nlet a = $\"x\\t{{{n}}}\";\nlet b = $`\\q {n}`;\nlet c = $`\n    a {n}\n      b\n    `;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let values: Vec<Vec<(String, Option<String>)>> = body
+            .exprs
+            .iter()
+            .filter_map(|(_, expr)| match expr {
+                Expr::Interpolated(parts) => Some(
+                    parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            InterpPart::Text { text, value } => Some((text.clone(), value.clone())),
+                            InterpPart::Hole { .. } => None,
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .collect();
+        let part = |text: &str, value: &str| (text.to_owned(), Some(value.to_owned()));
+        assert_eq!(
+            values,
+            [
+                vec![part("x\\t{{", "x\t{"), part("}}", "}")],
+                vec![part("\\q ", "\\q ")],
+                vec![part("\n    a ", "a "), part("\n      b\n    ", "\n  b")],
+            ]
+        );
     }
 
     #[test]
@@ -1223,7 +1519,7 @@ fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
     let f#20 = [weak this, move p#1] async (u#18, v#19) => u#18 + v#19;
     let st#21 = static () => 1;
     let all#22 = [1, ..xs#2];
-    let q#23 = new P { X = 1, Y = 2 };
+    let q#23: P = new P { X = 1, Y = 2 };
     let k#25 = match (o#0) {
         Shape.Circle{case UsersApi.Shape.Circle}(let r#24) => 1,
         Shape.Rect{case UsersApi.Shape.Rect}((> 0.0 and < 1.0), (not 2.0 or 3.0)) => 2,
@@ -1231,7 +1527,7 @@ fn UsersApi.G(o#0, p#1, xs#2, n#3, s#4, flag#5) {
     };
     let lp#28: bool = (xs#2 is [1, .. var rest#26]) && (p#1 is P {X: 1, Y: _} let pq#27);
     let e#29 = xs#2?[0];
-    let w#30 = q#23 with { X = 3, Y = 4 };
+    let w#30: P = q#23 with { X = 3, Y = 4 };
     let c#31 = ((long)n#3) as long;
     let arr#32 = new int[n#3];
     let sa#33 = stackalloc int[2];
@@ -1421,10 +1717,13 @@ get extension#0.Empty(items#0) => items#0[0];
         let file = file_named(&db, project, "src/Program.mr");
         let text = file.text(&db);
         let map = body_source_map(&db, file, BodyOwner::TopLevel);
-        let mut jumps: Vec<_> = map.jumps.values().map(|&range| &text[range]).collect();
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let mut jumps: Vec<_> = jump_ranges(body, map)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
         jumps.sort_unstable();
         assert_eq!(jumps, ["break;", "continue;"]);
-        let body = body(&db, file, BodyOwner::TopLevel);
         let mut lets: Vec<_> = map
             .lets
             .iter()
@@ -1442,8 +1741,20 @@ get extension#0.Empty(items#0) => items#0[0];
         let end = mora_span::TextSize::of(text.trim_end()) - mora_span::TextSize::of('}');
         let ends: Vec<_> = function.ends.values().map(|range| range.start()).collect();
         assert_eq!(ends, [end]);
-        let jumps: Vec<_> = function.jumps.values().map(|&range| &text[range]).collect();
+        let jumps: Vec<_> = jump_ranges(crate::body(&db, file, owner), function)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
         assert_eq!(jumps, ["return 1;"]);
+    }
+
+    /// The ranges of the `break`, `continue` and `return` statements.
+    fn jump_ranges(body: &Body, map: &BodySourceMap) -> Vec<mora_span::TextRange> {
+        body.stmts
+            .iter()
+            .filter(|(_, stmt)| matches!(stmt, Stmt::Break | Stmt::Continue | Stmt::Return(_)))
+            .map(|(id, _)| map.stmts[&id])
+            .collect()
     }
 
     #[test]
@@ -1473,6 +1784,37 @@ get extension#0.Empty(items#0) => items#0[0];
                 ("M".to_owned(), None),
                 ("I.M".to_owned(), Some(Ty::Primitive(Primitive::Int))),
                 ("F".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_member_body_says_whether_it_is_async() {
+        // The item tree holds neither an interface implementation nor an
+        // extension function, so their bodies say it.
+        let db = TestDb::new();
+        let text = "interface I {\n    M(): int;\n    N(): int;\n}\nclass C : I {\n    \
+                    async I.M(): int => 1;\n    I.N(): int => 1;\n}\n\
+                    struct S {\n    X: int;\n}\nextension (s: S) {\n    \
+                    async F(): int => 1;\n    G(): int => 1;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let found: Vec<_> = body_owners(&db, file)
+            .into_iter()
+            .filter(|owner| matches!(owner, BodyOwner::Member(..) | BodyOwner::Extension(..)))
+            .map(|owner| {
+                let body = body(&db, file, owner);
+                (body.name.clone(), body.is_async)
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("I.M".to_owned(), true),
+                ("I.N".to_owned(), false),
+                ("extension".to_owned(), false),
+                ("F".to_owned(), true),
+                ("G".to_owned(), false),
             ]
         );
     }
@@ -1567,6 +1909,83 @@ get extension#0.Empty(items#0) => items#0[0];
             dump("F() {\n    G(x: int = 1): int => x;\n    let h = (y: int = 2) => y;\n}\n");
         assert!(dumped.contains("G#0(x#1 = 1): int => x#1;"), "{dumped}");
         assert!(dumped.contains("let h#3 = (y#2 = 2) => y#2;"), "{dumped}");
+    }
+
+    #[test]
+    fn item_text_names_an_item_and_its_kind() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[(
+                "src/Program.mr",
+                "struct P {\n    public X: int;\n}\n\nFib(n: int): int => n;\n",
+            )],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let tree = item_tree(&db, file);
+        let texts: Vec<String> = tree
+            .items()
+            .map(|(item, _)| {
+                item_text(
+                    &db,
+                    ItemId {
+                        project,
+                        file,
+                        item,
+                    },
+                )
+            })
+            .collect();
+        assert!(
+            texts.contains(&"UsersApi.P{struct UsersApi.P}".to_owned()),
+            "{texts:?}"
+        );
+        assert!(
+            texts.contains(&"UsersApi.Fib{fn UsersApi.Fib}".to_owned()),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn escape_char_escapes_quotes_controls_and_invisible_characters() {
+        let escaped = |ch: char, quote: char| {
+            let mut out = String::new();
+            escape_char(ch, quote, &mut out);
+            out
+        };
+        assert_eq!(escaped('a', '"'), "a");
+        assert_eq!(escaped('é', '"'), "é");
+        assert_eq!(escaped('"', '"'), "\\\"");
+        assert_eq!(escaped('"', '\''), "\"");
+        assert_eq!(escaped('\'', '\''), "\\'");
+        assert_eq!(escaped('\\', '"'), "\\\\");
+        assert_eq!(escaped('\n', '"'), "\\n");
+        assert_eq!(escaped('\r', '"'), "\\r");
+        assert_eq!(escaped('\t', '"'), "\\t");
+        assert_eq!(escaped('\0', '"'), "\\0");
+        assert_eq!(escaped('\u{1}', '"'), "\\u{1}");
+        for ch in [
+            '\u{a0}', '\u{ad}', '\u{34f}', '\u{61c}', '\u{115f}', '\u{1160}', '\u{17b4}',
+            '\u{17b5}', '\u{180b}', '\u{180f}', '\u{2000}', '\u{200b}', '\u{200f}', '\u{2028}',
+            '\u{202e}', '\u{202f}', '\u{205f}', '\u{2060}', '\u{206f}', '\u{3000}', '\u{3164}',
+            '\u{fe00}', '\u{fe0f}', '\u{feff}', '\u{ffa0}', '\u{fff9}', '\u{fffb}',
+        ] {
+            assert_eq!(escaped(ch, '"'), format!("\\u{{{:x}}}", u32::from(ch)));
+        }
+        // The neighbours of the ranges stay.
+        for ch in [
+            '\u{a1}',
+            '\u{1161}',
+            '\u{1ffff}',
+            '\u{2010}',
+            '\u{2027}',
+            '\u{2070}',
+            '\u{3001}',
+            '\u{fe10}',
+            '\u{fffc}',
+        ] {
+            assert_eq!(escaped(ch, '"'), ch.to_string());
+        }
     }
 
     /// Every prefix of `text`, cut at each character, lowers and reports
@@ -1684,8 +2103,8 @@ get extension#0.Empty(items#0) => items#0[0];
                     match (p) {\n        p.Q(_) => {}\n    }\n}\n";
         let dumped = dump(text);
         for expected in [
-            "let made#2 = new P(1);",
-            "let empty#3 = new P {};",
+            "let made#2: P = new P(1);",
+            "let empty#3: P = new P {};",
             "let isInt#4: bool = n#1 is int;",
             "let f#5 = [move nope{error}] () => 1;",
             "p#0.Q(_) => {},",

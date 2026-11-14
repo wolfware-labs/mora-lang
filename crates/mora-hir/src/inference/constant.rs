@@ -40,7 +40,7 @@ impl Value {
         };
         match self {
             Value::Int(value) if numeric::holds(target, value) => {
-                if numeric::is_floating_point(target) {
+                if target.is_floating_point() {
                     // `holds` says the value is exact in `target`.
                     Some(real(value as f64))
                 } else {
@@ -67,6 +67,25 @@ impl Value {
             Value::Overflow | Value::Infinity | Value::OverflowReal => None,
         }
     }
+}
+
+/// The value of the numeric literal `literal` as the numeric type `ty`,
+/// which inference gave it, holds it (§3.5): what the literal stands for.
+/// `negated` is set for the operand of unary `-`, which belongs to the
+/// literal. `None` for a literal that is not numeric, or whose value `ty`
+/// does not hold.
+pub fn literal_constant(literal: &Literal, negated: bool, ty: Primitive) -> Option<Constant> {
+    let value = match literal {
+        Literal::Int(text) => Value::Int(int_value(text)?.0.into()),
+        Literal::Real(text) => Value::Real(real_value(text)?.0),
+        _ => return None,
+    };
+    let value = match (negated, value) {
+        (true, Value::Int(value)) => Value::Int(-value),
+        (true, Value::Real(value)) => Value::Real(-value),
+        _ => value,
+    };
+    value.of_type(ty)
 }
 
 /// The value of `expr` when every leaf of it is an unsuffixed literal
@@ -313,5 +332,43 @@ mod tests {
         let mut seen = Vec::new();
         parts(&exprs, neg, &mut |part| seen.push(part));
         assert_eq!(seen, [neg, real]);
+    }
+
+    #[test]
+    fn a_literal_has_the_value_its_type_holds() {
+        let int = |text: &str| Literal::Int(text.to_owned());
+        let real = |text: &str| Literal::Real(text.to_owned());
+        assert_eq!(
+            literal_constant(&int("200"), false, Primitive::Byte),
+            Some(Constant::Int(200))
+        );
+        assert_eq!(
+            literal_constant(&int("128"), true, Primitive::SByte),
+            Some(Constant::Int(-128))
+        );
+        assert_eq!(
+            literal_constant(&int("2"), false, Primitive::Double),
+            Some(Constant::Real(2.0f64.to_bits()))
+        );
+        assert_eq!(
+            literal_constant(&int("7L"), false, Primitive::Long),
+            Some(Constant::Int(7))
+        );
+        assert_eq!(
+            literal_constant(&real("0.1"), false, Primitive::Float),
+            Some(Constant::Real(f64::from(0.1f32).to_bits()))
+        );
+        assert_eq!(
+            literal_constant(&real("1.5"), true, Primitive::Double),
+            Some(Constant::Real((-1.5f64).to_bits()))
+        );
+        assert_eq!(literal_constant(&int("256"), false, Primitive::Byte), None);
+        assert_eq!(literal_constant(&real("1.5"), false, Primitive::Int), None);
+        assert_eq!(
+            literal_constant(&Literal::Bool(true), false, Primitive::Bool),
+            None
+        );
+        assert_eq!(literal_constant(&int("1.5"), false, Primitive::Int), None);
+        assert_eq!(literal_constant(&real("1"), false, Primitive::Double), None);
     }
 }

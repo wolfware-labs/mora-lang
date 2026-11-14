@@ -142,8 +142,9 @@ fn snapshot(file: &Path, actual: &str, bless: bool) -> Vec<String> {
 }
 
 /// Runs the run cases in `root/dir`: every `.mr` file below it, with the
-/// snapshot of its HIR in the `.hir` file beside it. With `--bless` the
-/// snapshots are written (and removed for an empty HIR) instead of compared.
+/// snapshots of its HIR and MIR in the `.hir` and `.mir` files beside it.
+/// With `--bless` the snapshots are written (and removed when empty) instead
+/// of compared.
 pub fn run_suite(
     compiler: &dyn Compiler,
     root: &Path,
@@ -153,12 +154,15 @@ pub fn run_suite(
     suite(root, dir, options, |path, file, text| {
         let outcome = run::check_case(compiler, path, text);
         let mut problems = outcome.problems;
-        // A program that does not compile has no HIR to compare.
-        let Some(hir) = outcome.hir else {
-            return problems;
-        };
-        let snapshot_file = file.with_extension("hir");
-        problems.extend(snapshot(&snapshot_file, &hir, options.bless));
+        // A program that does not compile has no HIR or MIR to compare.
+        if let Some(hir) = outcome.hir {
+            let snapshot_file = file.with_extension("hir");
+            problems.extend(snapshot(&snapshot_file, &hir, options.bless));
+        }
+        if let Some(mir) = outcome.mir {
+            let snapshot_file = file.with_extension("mir");
+            problems.extend(snapshot(&snapshot_file, &mir, options.bless));
+        }
         problems
     })
 }

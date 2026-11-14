@@ -1,13 +1,25 @@
-//! The diagnostics for type errors: `MR0010`, `MR0203` and `MR0204`, and
-//! those of calls, `MR0205` to `MR0208`, in [`call`].
+//! The diagnostics for type errors: `MR0010`, `MR0127` for a type, a type
+//! keyword or a namespace used as a value, `MR0185`, `MR0186`, `MR0203` and
+//! `MR0204`, those of calls, `MR0205` to `MR0208`, in [`call`], and those of
+//! memberwise creation, `MR0143`, `MR0144`, `MR0147` and `MR0148`, with
+//! `MR0129` for a field it cannot see, in [`struct_new`]. A static member
+//! that uses `this` is `MR0149`, and so is a member of a nested type that
+//! uses an instance member of a type around it; an instance field's
+//! initializer that uses `this` is `MR0152`.
 
 mod call;
+mod struct_new;
 
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
-use super::{Context, TypeError, constant, numeric, ty_name};
+use super::{
+    Context, InstanceMember, InstanceUse, NotAPlace, TypeError, constant, numeric, ty_name,
+};
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
+use crate::items::ItemKind;
+use crate::report::{Declared, full_name, kind_name};
+use crate::resolve::{Resolved, item_data};
 use crate::ty::{Primitive, Ty};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
@@ -180,10 +192,235 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
         } => call::ambiguous(source, *expr, name, candidates),
         TypeError::NamedArgument { arg, problem } => call::named(source, *arg, problem),
         TypeError::NotCallable { expr, ty } => call::not_callable(source, *expr, ty),
+        TypeError::MissingField { expr, ty, field } => {
+            struct_new::missing_field(source, *expr, ty, field)
+        }
+        TypeError::NoMemberwise {
+            expr,
+            ty,
+            field,
+            visibility,
+        } => struct_new::no_memberwise(source, *expr, ty, field, *visibility),
+        TypeError::MemberwiseOff {
+            expr,
+            item,
+            written,
+            from,
+            writable,
+        } => struct_new::memberwise_off(source, *expr, *item, *written, *from, *writable),
+        TypeError::HiddenField {
+            value,
+            item,
+            index,
+            name,
+            from,
+            fixable,
+        } => struct_new::hidden_field(
+            source,
+            *value,
+            Declared::Value(*item, *index),
+            name,
+            *from,
+            *fixable,
+        ),
+        TypeError::NotAField {
+            value,
+            ty,
+            name,
+            member,
+            suggestion,
+            memberwise,
+        } => struct_new::not_a_field(
+            source,
+            *value,
+            ty,
+            name,
+            *member,
+            suggestion.as_deref(),
+            *memberwise,
+        ),
+        TypeError::NoConstructor { expr, ty } => struct_new::no_constructor(source, *expr, ty),
+        TypeError::NewTarget { expr, problem } => struct_new::new_target(source, *expr, problem),
+        TypeError::RepeatedField {
+            value,
+            first,
+            previous,
+            ty,
+            name,
+        } => struct_new::repeated_field(source, [*first, *previous, *value], ty, name),
+        TypeError::StaticThis { expr, used } => static_this(source, *expr, used),
+        TypeError::NestedThis {
+            expr,
+            kind,
+            name,
+            outer,
+            nested,
+        } => nested_this(source, *expr, *kind, name, outer, nested),
+        TypeError::InitializerThis { expr, used, field } => {
+            initializer_this(source, *expr, used, field)
+        }
+        TypeError::AssignmentValue { expr, split } => assignment_value(source, *expr, *split),
+        TypeError::TypeAsValue { expr, named } => type_as_value(source, *expr, named),
+        TypeError::TypeKeywordAsValue { expr } => type_keyword_as_value(source, *expr),
+        TypeError::NotAPlace { expr, problem } => not_a_place(source, *expr, *problem),
         TypeError::NotVisible { expr, item, from } => {
             call::not_visible(source, *expr, *item, *from)
         }
     }
+}
+
+/// `MR0149`: the body of a static member uses `this`, or an instance member
+/// that it reaches through `this`, at `expr`.
+fn static_this(source: &Source<'_>, expr: ExprId, used: &InstanceUse) -> Diagnostic {
+    let (message, label) = match used {
+        InstanceUse::This => (
+            "a static member has no `this`".to_owned(),
+            "there is no value of the type here",
+        ),
+        InstanceUse::Member { kind, name } => (
+            format!(
+                "a static member has no `this`, so it cannot use the instance {} `{name}`",
+                kind.word()
+            ),
+            "needs a value of the type",
+        ),
+    };
+    Diagnostic::error(codes::MR0149, message, Label::new(source.span(expr), label))
+        .with_note("a `static` member belongs to the type, not to a value of it")
+}
+
+/// `MR0149`: a member of the type `nested` uses, at `expr`, the instance
+/// `kind` `name` of `outer`, a type it is nested in.
+fn nested_this(
+    source: &Source<'_>,
+    expr: ExprId,
+    kind: InstanceMember,
+    name: &str,
+    outer: &str,
+    nested: &str,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0149,
+        format!(
+            "a member of `{nested}` has no value of `{outer}`, so it cannot use the instance {} \
+             `{name}`",
+            kind.word()
+        ),
+        Label::new(source.span(expr), format!("needs a value of `{outer}`")),
+    )
+    .with_note(
+        "a nested type is a type of its own: its members have no value of the type it is \
+         nested in",
+    )
+}
+
+/// `MR0152`: the initializer of the instance field `field` uses `this`, or
+/// an instance member that it reaches through `this`, at `expr`.
+fn initializer_this(
+    source: &Source<'_>,
+    expr: ExprId,
+    used: &InstanceUse,
+    field: &str,
+) -> Diagnostic {
+    let (message, label) = match used {
+        InstanceUse::This => (
+            format!(
+                "the initializer of `{field}` cannot use `this`: \
+                 initializers run before the value exists"
+            ),
+            "there is no value of the type yet",
+        ),
+        InstanceUse::Member { name, .. } => (
+            format!(
+                "the initializer of `{field}` cannot use the instance member `{name}`: \
+                 initializers run before the value exists"
+            ),
+            "the value does not exist yet",
+        ),
+    };
+    Diagnostic::error(codes::MR0152, message, Label::new(source.span(expr), label)).with_note(
+        "an initializer runs for each field that `new T { ... }` leaves out, with no `this`; \
+         it may use constants and `static` members",
+    )
+}
+
+/// `MR0127`: `expr` names `named`, a type or a namespace, where a value is
+/// expected; for a struct the note says how to create one.
+fn type_as_value(source: &Source<'_>, expr: ExprId, named: &Resolved) -> Diagnostic {
+    let text = source.text(expr);
+    let full = full_name(source.db, named).unwrap_or_default();
+    let what = kind_name(source.db, named);
+    let diagnostic = Diagnostic::error(
+        codes::MR0127,
+        format!("`{text}` is not a value"),
+        Label::new(source.span(expr), format!("this is {what} `{full}`")),
+    );
+    // A path names the type as written; a member of a value is not a
+    // way to write a type, so the note uses the type's full name.
+    let written = match source.body.exprs[expr] {
+        Expr::Path(_) => text.to_owned(),
+        _ => full.clone(),
+    };
+    match named {
+        Resolved::Item(item) if item_data(source.db, *item).kind == ItemKind::Struct => diagnostic
+            .with_note(format!(
+                "a type names no value; `new {written} {{ ... }}` creates one"
+            )),
+        _ => diagnostic.with_note("a type or a namespace names no value"),
+    }
+}
+
+/// `MR0127`: `expr`, a type keyword, stands where a value is expected.
+fn type_keyword_as_value(source: &Source<'_>, expr: ExprId) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0127,
+        format!("`{}` is not a value", source.text(expr)),
+        Label::new(source.span(expr), "this is a built-in type"),
+    )
+    .with_note("a type names no value")
+}
+
+/// `MR0186`: `expr`, the left side of an assignment or the operand of `++`
+/// or `--`, is not a place.
+fn not_a_place(source: &Source<'_>, expr: ExprId, problem: NotAPlace) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0186,
+        format!("cannot assign to `{}`", source.text(expr)),
+        Label::new(source.span(expr), format!("this is {}", problem.what())),
+    )
+    .with_note(
+        "an assignment, `++` or `--` changes a place: a local, a parameter, a field of a place or an element",
+    )
+}
+
+/// `MR0185`: an assignment whose value is used. When `split` is the
+/// statement of a block that `assignment` is the value of, the fix writes it
+/// as a statement before that one.
+fn assignment_value(source: &Source<'_>, assignment: ExprId, split: Option<ExprId>) -> Diagnostic {
+    let Expr::Assign { lhs, .. } = &source.body.exprs[assignment] else {
+        unreachable!("MR0185 is reported on an assignment");
+    };
+    let diagnostic = Diagnostic::error(
+        codes::MR0185,
+        "an assignment gives no value to use here",
+        Label::new(
+            source.span(assignment),
+            "this assignment must stand as a statement of its own",
+        ),
+    )
+    .with_note("assign first, then read the variable: an assignment is only a statement");
+    let Some(statement) = split else {
+        return diagnostic;
+    };
+    let file = source.file.id(source.db);
+    let before = source.map.expr(statement).start();
+    diagnostic.with_fix(Fix::new(
+        "assign first, then use the variable",
+        vec![
+            TextEdit::insert(file, before, format!("{}; ", source.text(assignment))),
+            TextEdit::replace(source.span(assignment), source.text(*lhs)),
+        ],
+    ))
 }
 
 /// `MR0204`: an operand of `&&` or `||` that is not a `bool`.
@@ -278,7 +515,7 @@ fn mismatch(
 fn cast(source: &Source<'_>, expr: ExprId, operand: ExprId, from: &Ty, to: &Ty) -> Diagnostic {
     let char_and_integer = |a: &Ty, b: &Ty| {
         *a == Ty::Primitive(Primitive::Char)
-            && numeric::as_numeric(b).is_some_and(numeric::is_integer)
+            && numeric::as_numeric(b).is_some_and(Primitive::is_integer)
     };
     let note = if char_and_integer(from, to) || char_and_integer(to, from) {
         "a cast `(T)x` converts only from one numeric type to another, and a `char` is not a number; convert between `char` and integers with a named conversion function"
@@ -351,7 +588,7 @@ fn literal(source: &Source<'_>, expr: ExprId, ty: Option<Primitive>) -> Diagnost
         )
         .with_note(note);
     }
-    match numeric::integer_range(ty) {
+    match ty.integer_range() {
         Some((min, max)) => Diagnostic::error(
             codes::MR0010,
             format!("{what} `{text}` does not fit in `{keyword}`"),
@@ -410,7 +647,7 @@ fn binary(
         op.text().to_owned()
     };
     let (l, r) = (source.name(lhs), source.name(rhs));
-    if matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr) {
+    if op.is_shift() {
         return Diagnostic::error(
             codes::MR0204,
             format!("`{sym}` cannot shift a `{l}`"),
@@ -429,9 +666,7 @@ fn binary(
     if let (Some(a), Some(b)) = (numeric::as_numeric(lhs), numeric::as_numeric(rhs)) {
         // A cast cannot make an operator defined only on integers work on a
         // `float` or a `double`, so that is what is wrong, with no fix.
-        if numeric::is_integer_only(op)
-            && (numeric::is_floating_point(a) || numeric::is_floating_point(b))
-        {
+        if numeric::is_integer_only(op) && (a.is_floating_point() || b.is_floating_point()) {
             return diagnostic.with_note(format!("`{sym}` is defined only on integer types"));
         }
         // Any other operator on two numbers fails only when they have no
@@ -468,8 +703,8 @@ fn binary(
 /// when one is a floating-point type, else the wider type, or the signed
 /// one of two as wide, or the left one's.
 fn cast_side(a: Primitive, b: Primitive) -> (bool, Primitive) {
-    if numeric::is_floating_point(a) || numeric::is_floating_point(b) {
-        return (numeric::is_floating_point(a), Primitive::Double);
+    if a.is_floating_point() || b.is_floating_point() {
+        return (a.is_floating_point(), Primitive::Double);
     }
     let a_first =
         (numeric::bits(a), numeric::is_signed(a)) >= (numeric::bits(b), numeric::is_signed(b));

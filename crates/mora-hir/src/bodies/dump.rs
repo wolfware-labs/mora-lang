@@ -22,6 +22,7 @@ use super::{
     body, body_owners, body_resolution,
 };
 use crate::arena::arena_index;
+use crate::defs::ItemId;
 use crate::inference::{Inference, infer, is_known, ty_name};
 use crate::items::{ItemKind, ValueKind, item_tree};
 use crate::report::{full_name, item_full_name};
@@ -56,6 +57,35 @@ pub fn hir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     out
 }
 
+/// The name the dumps give the body of `owner` in `file`: `top-level` for
+/// the top-level statements, the full name of a function, `Type.Member`
+/// for a value member, a getter, an operator or an accessor, the type's
+/// name for a constructor or a destructor, and `extension#n` for an
+/// extension block and `extension#n.Member` for its members.
+pub fn owner_name(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> String {
+    let scope = Scope::file(project, file);
+    let item = |item| item_full_name(db, scope.item(item));
+    match owner {
+        BodyOwner::TopLevel => "top-level".to_owned(),
+        BodyOwner::Item(idx) => item(idx),
+        BodyOwner::Value(ty, index) => {
+            let values = &item_tree(db, file).item(ty).values;
+            format!("{}.{}", item(ty), values[index as usize].name)
+        }
+        BodyOwner::Member(ty, _) => {
+            let body = body(db, file, owner);
+            match body.kind {
+                BodyKind::Constructor | BodyKind::Destructor => item(ty),
+                _ => format!("{}.{}", item(ty), body.name),
+            }
+        }
+        BodyOwner::Extension(index, 0) => format!("extension#{index}"),
+        BodyOwner::Extension(index, _) => {
+            format!("extension#{index}.{}", body(db, file, owner).name)
+        }
+    }
+}
+
 struct Printer<'a> {
     db: &'a dyn Db,
     body: &'a Body,
@@ -70,27 +100,13 @@ impl Printer<'_> {
         let Some(root) = self.body.root else {
             return;
         };
-        let scope = Scope::file(project, file);
-        let item = |item| item_full_name(self.db, scope.item(item));
-        let name = match owner {
-            BodyOwner::TopLevel => {
-                self.out.push_str("top-level ");
-                self.statement_body(root);
-                self.out.push('\n');
-                return;
-            }
-            BodyOwner::Item(idx) => item(idx),
-            BodyOwner::Value(ty, index) => {
-                let values = &item_tree(self.db, file).item(ty).values;
-                format!("{}.{}", item(ty), values[index as usize].name)
-            }
-            BodyOwner::Member(ty, _) => match self.body.kind {
-                BodyKind::Constructor | BodyKind::Destructor => item(ty),
-                _ => format!("{}.{}", item(ty), self.body.name),
-            },
-            BodyOwner::Extension(index, 0) => format!("extension#{index}"),
-            BodyOwner::Extension(index, _) => format!("extension#{index}.{}", self.body.name),
-        };
+        if owner == BodyOwner::TopLevel {
+            self.out.push_str("top-level ");
+            self.statement_body(root);
+            self.out.push('\n');
+            return;
+        }
+        let name = owner_name(self.db, project, file, owner);
         let keyword = match self.body.kind {
             BodyKind::TopLevel | BodyKind::Function => "fn",
             BodyKind::Initializer => "init",
@@ -393,7 +409,7 @@ impl Printer<'_> {
                 self.out.push_str("$\"");
                 for part in parts {
                     match part {
-                        InterpPart::Text(text) => self.out.push_str(text),
+                        InterpPart::Text { text, .. } => self.out.push_str(text),
                         InterpPart::Hole {
                             value,
                             alignment,
@@ -406,6 +422,7 @@ impl Printer<'_> {
                                 self.expr(*alignment);
                             }
                             if let Some(format) = format {
+                                self.out.push(':');
                                 self.out.push_str(format);
                             }
                             self.out.push('}');
@@ -792,16 +809,7 @@ impl Printer<'_> {
                     Resolved::Namespace(_) => "namespace",
                     Resolved::Functions(items) if items.len() > 1 => "overloads",
                     Resolved::Functions(_) => "fn",
-                    Resolved::Item(item) => match item_data(self.db, *item).kind {
-                        ItemKind::Struct => "struct",
-                        ItemKind::Class => "class",
-                        ItemKind::Union => "union",
-                        ItemKind::Enum => "enum",
-                        ItemKind::Interface => "interface",
-                        ItemKind::Function => "fn",
-                        ItemKind::Macro => "macro",
-                        ItemKind::Field => "value",
-                    },
+                    Resolved::Item(item) => item_kind_word(item_data(self.db, *item).kind),
                     Resolved::External => "external",
                 };
                 let name = full_name(self.db, resolved).unwrap_or_default();
@@ -823,6 +831,77 @@ impl Printer<'_> {
             }
         }
     }
+}
+
+/// Appends `ch` as it is written inside a literal quoted with `quote`:
+/// the quote and the backslash escaped, `\n`, `\r`, `\t` and `\0` by
+/// name, and a control or invisible character (a no-break space, a zero
+/// width or bidirectional mark, a line separator) as `\u{n}`, so a snapshot
+/// shows it. Any other character stays as it is.
+pub fn escape_char(ch: char, quote: char, out: &mut String) {
+    match ch {
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        _ if ch == quote => {
+            out.push('\\');
+            out.push(ch);
+        }
+        _ if ch.is_control() || is_invisible(ch) => {
+            let _ = write!(out, "\\u{{{:x}}}", u32::from(ch));
+        }
+        _ => out.push(ch),
+    }
+}
+
+/// Whether `ch` is a space or format character that shows as nothing or as
+/// a space.
+fn is_invisible(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{a0}'
+            | '\u{ad}'
+            | '\u{34f}'
+            | '\u{61c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
+            | '\u{2000}'..='\u{200f}'
+            | '\u{2028}'..='\u{202f}'
+            | '\u{205f}'..='\u{206f}'
+            | '\u{3000}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{feff}'
+            | '\u{ffa0}'
+            | '\u{fff9}'..='\u{fffb}'
+    )
+}
+
+/// The word the dump uses for an item of the kind.
+fn item_kind_word(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::Struct => "struct",
+        ItemKind::Class => "class",
+        ItemKind::Union => "union",
+        ItemKind::Enum => "enum",
+        ItemKind::Interface => "interface",
+        ItemKind::Function => "fn",
+        ItemKind::Macro => "macro",
+        ItemKind::Field => "value",
+    }
+}
+
+/// An item as the dumps print it: its full name, then its kind and full
+/// name in braces, as `App.Fib{fn App.Fib}`.
+pub fn item_text(db: &dyn Db, item: ItemId) -> String {
+    let name = item_full_name(db, item);
+    format!(
+        "{name}{{{} {name}}}",
+        item_kind_word(item_data(db, item).kind)
+    )
 }
 
 /// A type as written.

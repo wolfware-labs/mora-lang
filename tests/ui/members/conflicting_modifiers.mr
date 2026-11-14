@@ -1,0 +1,12 @@
+// A declaration has one visibility, a parameter one mode, and a method
+// takes `this` one way.
+public struct Counter {
+    public private Count: int; //~ ERROR MR0112
+    internal file Limit: int; //~ ERROR MR0112
+
+    public Add(ref move n: int) {} //~ ERROR MR0112
+
+    public mut move Reset() {} //~ ERROR MR0112
+}
+
+let f = (in ref x: int) => 1; //~ ERROR MR0112

@@ -231,8 +231,13 @@ pub(crate) fn resolve_static_member(
 
 /// Whether code in `from` can see the value member `value` of `ty`.
 pub(crate) fn value_visible(db: &dyn Db, ty: ItemId, value: &ValueMember, from: Scope) -> bool {
-    // A `private` value member is visible inside its type.
-    is_visible(db, ty, from) && reaches(db, value.visibility, ty, from, || Some(ty.item))
+    member_visible(db, ty, value.visibility, from)
+}
+
+/// Whether code in `from` can see a member of `ty` written with
+/// `visibility`; a `private` member is visible inside its type.
+pub(crate) fn member_visible(db: &dyn Db, ty: ItemId, visibility: Visibility, from: Scope) -> bool {
+    is_visible(db, ty, from) && reaches(db, visibility, ty, from, || Some(ty.item))
 }
 
 /// The first segment, through the levels of the lookup in order.
@@ -451,28 +456,34 @@ fn namespace_members(
 /// The nested types and functions named `name` in a type; none for an
 /// item that is not a type.
 fn type_members(db: &dyn Db, ty: ItemId, name: &str) -> Vec<Resolved> {
-    let tree = item_tree(db, ty.file);
-    tree.item(ty.item)
-        .members
-        .iter()
-        .filter(|&&member| tree.item(member).name == name)
-        .map(|&member| Resolved::Item(ItemId { item: member, ..ty }))
+    members_named(db, ty, name)
+        .map(|(member, _)| Resolved::Item(member))
         .collect()
 }
 
 /// What `using static` opens of a type (§4.3): its nested types and its
 /// `static` functions, never its instance methods.
 fn static_members(db: &dyn Db, ty: ItemId, name: &str) -> Vec<Resolved> {
+    members_named(db, ty, name)
+        .filter(|(_, data)| data.kind != ItemKind::Function || data.is_static)
+        .map(|(member, _)| Resolved::Item(member))
+        .collect()
+}
+
+/// The nested types and functions of the type `ty` named `name`, each
+/// with what the item tree says about it; none for an item that is not a
+/// type.
+pub(crate) fn members_named<'a>(
+    db: &'a dyn Db,
+    ty: ItemId,
+    name: &'a str,
+) -> impl Iterator<Item = (ItemId, &'a Item)> + 'a {
     let tree = item_tree(db, ty.file);
     tree.item(ty.item)
         .members
         .iter()
-        .filter(|&&member| {
-            let data = tree.item(member);
-            data.name == name && (data.kind != ItemKind::Function || data.is_static)
-        })
-        .map(|&member| Resolved::Item(ItemId { item: member, ..ty }))
-        .collect()
+        .map(move |&member| (ItemId { item: member, ..ty }, tree.item(member)))
+        .filter(move |(_, data)| data.name == name)
 }
 
 /// The global names that match: the first segment of the project's root
@@ -557,6 +568,15 @@ pub(crate) fn item_data(db: &dyn Db, item: ItemId) -> &Item {
     item_tree(db, item.file).item(item.item)
 }
 
+/// The type that declares `item`, if a type does.
+pub(crate) fn declaring_type(db: &dyn Db, item: ItemId) -> Option<ItemId> {
+    let parent = item_data(db, item).parent?;
+    Some(ItemId {
+        item: parent,
+        ..item
+    })
+}
+
 /// The visibility of an item after its enclosing types narrow it (§4.5).
 /// `private` at namespace level, where no type encloses the item, means
 /// the declaring file.
@@ -622,7 +642,7 @@ fn reaches(
 }
 
 /// `start` and the types around it, from the innermost out.
-pub(crate) fn enclosing_types(
+pub fn enclosing_types(
     tree: &ItemTree,
     start: Option<ItemIdx>,
 ) -> impl Iterator<Item = ItemIdx> + '_ {

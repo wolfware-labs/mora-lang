@@ -85,9 +85,13 @@ impl Compiler for Fake {
         };
         for (_, word, rest) in statements(text) {
             match word {
-                "print" => output.stdout.push_str(&format!("{rest}\n")),
+                "print" => {
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
+                }
                 "jit-print" if backend == Backend::Jit => {
-                    output.stdout.push_str(&format!("{rest}\n"));
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
                 }
                 "exit" => output.exit = rest.parse().unwrap(),
                 _ => {}
@@ -107,6 +111,21 @@ impl Compiler for Fake {
         }
         Ok(statements(text)
             .filter(|&(_, word, _)| word == "hir")
+            .map(|(_, _, rest)| format!("{rest}\n"))
+            .collect())
+    }
+
+    fn mir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        let checked = self.check(path, text);
+        if checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == mora_diag::Severity::Error)
+        {
+            return Err(checked);
+        }
+        Ok(statements(text)
+            .filter(|&(_, word, _)| word == "mir")
             .map(|(_, _, rest)| format!("{rest}\n"))
             .collect())
     }
@@ -434,4 +453,45 @@ fn a_snapshot_that_cannot_be_written_fails_its_case() {
         "{:?}",
         report.failures
     );
+}
+
+#[test]
+fn run_suite_reports_a_stale_mir_snapshot() {
+    let text = "// expect: a\nprint a\nhir one\nmir body\n";
+    let root = suite_dir("run-stale-mir", "run", &[("a.mr", text)]);
+    let none = Fake { backends: &[] };
+    fs::write(root.join("tests/run/a.hir"), "one\n").unwrap();
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(
+        problems.contains("no snapshot; run with --bless"),
+        "{problems}"
+    );
+    fs::write(root.join("tests/run/a.mir"), "old\n").unwrap();
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(problems.contains("- old\n+ body"), "{problems}");
+    fs::write(root.join("tests/run/a.mir"), "body\n").unwrap();
+    assert_eq!(run(&none, &root).failures.len(), 0);
+}
+
+#[test]
+fn bless_writes_the_mir_snapshot() {
+    let text = "// expect: a\nprint a\nhir one\nmir body\n";
+    let root = suite_dir("run-bless-mir", "run", &[("a.mr", text)]);
+    let none = Fake { backends: &[] };
+    let report = run_with(&none, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert_eq!(
+        fs::read_to_string(root.join("tests/run/a.mir")).unwrap(),
+        "body\n"
+    );
+    assert_eq!(run(&none, &root).failures.len(), 0);
+}
+
+#[test]
+fn blessing_an_empty_mir_removes_the_snapshot() {
+    let root = suite_dir("run-bless-empty-mir", "run", &[("a.mr", "print a\n")]);
+    fs::write(root.join("tests/run/a.mir"), "old\n").unwrap();
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert!(!root.join("tests/run/a.mir").exists());
 }

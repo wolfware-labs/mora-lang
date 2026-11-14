@@ -118,6 +118,8 @@ pub struct Item {
     pub values: Vec<ValueMember>,
     /// Whether it is a positional struct, `struct User(Id: int);` (§6.5).
     pub is_positional: bool,
+    /// Whether it declares a constructor, `T(...) { ... }` (§6.9).
+    pub has_constructor: bool,
 }
 
 /// A member of a type that an expression reads as a value (§14.5).
@@ -133,6 +135,14 @@ pub struct ValueMember {
     /// Whether it belongs to the type rather than to a value of it: a
     /// `static` field or getter, a constant, an enum member or a union case.
     pub is_static: bool,
+}
+
+impl ValueMember {
+    /// Whether it is a field stored in each value of its type: a field
+    /// that is neither `static` nor a constant.
+    pub fn is_instance_field(&self) -> bool {
+        self.kind == ValueKind::Field && !self.is_static
+    }
 }
 
 /// What a [`ValueMember`] declares.
@@ -157,6 +167,21 @@ pub enum ItemKind {
     Function,
     Macro,
     Field,
+}
+
+impl ItemKind {
+    /// Whether an item of this kind is a type: neither a function, a macro
+    /// nor a value.
+    pub(crate) fn is_type(self) -> bool {
+        match self {
+            ItemKind::Struct
+            | ItemKind::Class
+            | ItemKind::Union
+            | ItemKind::Enum
+            | ItemKind::Interface => true,
+            ItemKind::Function | ItemKind::Macro | ItemKind::Field => false,
+        }
+    }
 }
 
 /// Who can see a declaration (§4.5), narrowest first, so the effective
@@ -224,8 +249,19 @@ pub struct ItemSource {
     pub modifiers_start: TextSize,
     /// The visibility modifier, when there is one.
     pub visibility: Option<TextRange>,
-    /// The name of each of [`Item::values`], in the same order.
-    pub values: Vec<TextRange>,
+    /// Each of [`Item::values`], in the same order.
+    pub values: Vec<ValueSource>,
+}
+
+/// Where a value member is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValueSource {
+    /// The declared name.
+    pub name: TextRange,
+    /// Where a modifier goes, as for [`ItemSource::modifiers_start`].
+    pub modifiers_start: TextSize,
+    /// The visibility modifier, when there is one.
+    pub visibility: Option<TextRange>,
 }
 
 /// Where a `using` directive is.
@@ -267,7 +303,7 @@ struct Decl<'a> {
     name: Option<ast::Name<'a>>,
     modifiers: Vec<ast::Modifier<'a>>,
     members: Vec<ast::Member<'a>>,
-    values: Vec<(ValueMember, TextRange)>,
+    values: Vec<(ValueMember, ValueSource)>,
     is_positional: bool,
 }
 
@@ -326,7 +362,11 @@ impl Lowered {
         let mut decl = decl(node, parent.is_some())?;
         let name = decl.name?.ident_token()?;
         let written = Written::of(decl.modifiers.iter().copied());
-        let (values, value_ranges) = std::mem::take(&mut decl.values).into_iter().unzip();
+        let (values, value_sources) = std::mem::take(&mut decl.values).into_iter().unzip();
+        let has_constructor = decl
+            .members
+            .iter()
+            .any(|member| matches!(member, ast::Member::ConstructorDecl(_)));
         let idx = self.tree.items.alloc(Item {
             name: token_name(name),
             kind: decl.kind,
@@ -336,12 +376,13 @@ impl Lowered {
             members: Vec::new(),
             values,
             is_positional: decl.is_positional,
+            has_constructor,
         });
         self.map.items.push(ItemSource {
             name: name.text_range(),
             modifiers_start: modifiers_start(node),
             visibility: written.visibility.map(|(_, token)| token.text_range()),
-            values: value_ranges,
+            values: value_sources,
         });
         let (signature, source) = type_ref::signature(node);
         self.signatures.push(signature);
@@ -434,7 +475,7 @@ fn decl<'a>(node: &SyntaxNode<'a>, member: bool) -> Option<Decl<'a>> {
 }
 
 /// The fields, getters and constants among `members`.
-fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
+fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, ValueSource)> {
     members
         .iter()
         .filter_map(|member| {
@@ -463,13 +504,18 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, TextRange)> {
                 // A constant belongs to its type.
                 is_static: written.is_const || written.is_static,
             };
-            Some((value, token.text_range()))
+            let source = ValueSource {
+                name: token.text_range(),
+                modifiers_start: modifiers_start(member.syntax()),
+                visibility: written.visibility.map(|(_, token)| token.text_range()),
+            };
+            Some((value, source))
         })
         .collect()
 }
 
 /// An enum member or a union case, which is as visible as its type.
-fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, TextRange)> {
+fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, ValueSource)> {
     let token = name?.ident_token()?;
     let value = ValueMember {
         name: token_name(token),
@@ -477,7 +523,13 @@ fn case_value(name: Option<ast::Name>, kind: ValueKind) -> Option<(ValueMember, 
         visibility: Visibility::Public,
         is_static: true,
     };
-    Some((value, token.text_range()))
+    let range = token.text_range();
+    let source = ValueSource {
+        name: range,
+        modifiers_start: range.start(),
+        visibility: None,
+    };
+    Some((value, source))
 }
 
 /// The visibility a modifier keyword writes, if it writes one.
@@ -504,13 +556,27 @@ pub(crate) struct Written<'a> {
     pub(crate) is_const: bool,
     /// Whether `async` is among them.
     pub(crate) is_async: bool,
+    /// Whether `mut` is among them and none of them has a write scope, so
+    /// any code that sees the declaration may write it (§6.9). A `mut`
+    /// written twice is `MR0111`; until it is fixed, a write scope on any
+    /// of them narrows the writes, whatever their order, so the error
+    /// opens no more writes than either spelling.
+    pub(crate) is_mut_anywhere: bool,
 }
 
 impl<'a> Written<'a> {
     pub(crate) fn of(modifiers: impl IntoIterator<Item = ast::Modifier<'a>>) -> Self {
         let mut written = Self::default();
-        for token in modifiers.into_iter().filter_map(|modifier| modifier.kind()) {
+        let mut scoped = false;
+        for modifier in modifiers {
+            let Some(token) = modifier.kind() else {
+                continue;
+            };
             match token.kind() {
+                SyntaxKind::MutKw => {
+                    scoped |= modifier.write_scope().is_some();
+                    written.is_mut_anywhere = !scoped;
+                }
                 SyntaxKind::StaticKw => written.is_static = true,
                 SyntaxKind::ConstKw => written.is_const = true,
                 SyntaxKind::AsyncKw => written.is_async = true,

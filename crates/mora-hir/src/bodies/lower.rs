@@ -4,16 +4,19 @@ use std::sync::Arc;
 
 use mora_span::TextRange;
 use mora_syntax::ast::{self, AstNode};
+use mora_syntax::lexer::literal::{interp_text_value, raw_interp_text_values};
 use mora_syntax::{SyntaxKind, SyntaxToken};
 
 use super::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodySourceMap, Capture, CaptureTarget, Expr, ExprId,
-    InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered, MatchArm, Pat,
-    PatId, Path, ScopeData, ScopeId, Stmt, StmtId, TypeId, UnaryOp,
+    InitRanges, InterpPart, Lambda, Literal, Local, LocalFunction, LocalId, LocalKind, Lowered,
+    MatchArm, Pat, PatId, Path, RefDefaultRanges, ScopeData, ScopeId, Stmt, StmtId, TypeId,
+    UnaryOp,
 };
 use crate::items::Written;
 use crate::name::{name_ref_of, token_name};
-use crate::type_ref::{LowerTypes, TypeRef, predefined, type_param_names};
+use crate::ty::ParamMode;
+use crate::type_ref::{LowerTypes, TypeRef, is_params, param_mode, predefined, type_param_names};
 
 /// Lowers one body.
 pub(super) struct Lower {
@@ -168,39 +171,56 @@ impl Lower {
                 self.body.params.push(local);
                 if let Some(default) = default {
                     self.body.defaults.push((local, default));
+                    if let Some(written) = ref_default_of(param) {
+                        self.record_ref_default(local, written);
+                    }
                 }
             }
         }
     }
 
+    /// Records that the parameter `local` is `ref` and has a default.
+    fn record_ref_default(&mut self, local: LocalId, written: RefDefaultRanges) {
+        self.body.ref_defaults.push(local);
+        self.map.ref_defaults.insert(local, written);
+    }
+
     /// Declares the parameters of a lambda or a local function, with their
     /// written types; defaults are lowered first, as [`Lower::params`] does.
-    fn local_params(
-        &mut self,
-        params: Vec<(Option<ast::Name>, Option<ast::Type>, Option<ast::Expr>)>,
-    ) -> (Vec<LocalId>, Vec<(LocalId, ExprId)>) {
+    fn local_params(&mut self, params: Vec<WrittenParam<'_>>) -> LocalParams {
         let mut declared = Vec::new();
+        let mut modes = Vec::new();
         let mut defaults = Vec::new();
         let lowered: Vec<_> = params
             .into_iter()
-            .map(|(name, ty, default)| {
+            .map(|(name, ty, default, mode, written)| {
                 let default = default.map(|default| {
                     let range = default.syntax().text_range();
                     self.scoped(|this| this.expr(Some(default), range))
                 });
-                (name, ty, default)
+                (name, ty, default, mode, written)
             })
             .collect();
-        for (name, ty, default) in lowered {
+        // A parameter whose name the parser recovered from declares no
+        // local, and has no mode either.
+        for (name, ty, default, mode, written) in lowered {
             let ty = self.opt_ty(ty);
             if let Some(local) = self.declare(name, LocalKind::Param, ty) {
                 declared.push(local);
+                modes.push(mode);
                 if let Some(default) = default {
                     defaults.push((local, default));
+                    if let Some(written) = written {
+                        self.record_ref_default(local, written);
+                    }
                 }
             }
         }
-        (declared, defaults)
+        LocalParams {
+            params: declared,
+            modes,
+            defaults,
+        }
     }
 
     /// Runs `f` and then leaves the scopes it opened.
@@ -264,10 +284,12 @@ impl Lower {
             ast::Stmt::AttributedStmt(it) => return self.opt_stmt(it.stmt()),
             _ => self.scoped(|this| this.scoped_stmt(stmt)),
         };
-        let jump = matches!(lowered, Stmt::Break | Stmt::Continue | Stmt::Return(_));
         let id = self.alloc_stmt(lowered);
-        if jump {
-            self.map.jumps.insert(id, stmt.syntax().text_range());
+        self.map.stmts.insert(id, stmt.syntax().text_range());
+        if let ast::Stmt::Block(block) = stmt
+            && let Some(brace) = block.r_brace_token()
+        {
+            self.map.block_ends.insert(id, brace.text_range());
         }
         id
     }
@@ -358,7 +380,11 @@ impl Lower {
                 let block = match it.block() {
                     Some(block) => {
                         let stmts = self.block_stmts(&block);
-                        self.alloc_stmt(Stmt::Block(stmts))
+                        let id = self.alloc_stmt(Stmt::Block(stmts));
+                        if let Some(brace) = block.r_brace_token() {
+                            self.map.block_ends.insert(id, brace.text_range());
+                        }
+                        id
                     }
                     None => self.alloc_stmt(Stmt::Missing),
                 };
@@ -422,21 +448,38 @@ impl Lower {
             })
         });
         let is_async = Written::of(function.modifiers()).is_async;
+        let is_generic = !self.type_params.is_empty();
+        let has_params = function
+            .param_list()
+            .iter()
+            .flat_map(|list| list.params())
+            .any(|param| is_params(&param));
         self.scoped(|this| {
             let params: Vec<_> = function
                 .param_list()
                 .iter()
                 .flat_map(|list| list.params())
-                .map(|param| (param.name(), param.ty(), param.default()))
+                .map(|param| {
+                    let mode = param_mode(&param);
+                    let written = ref_default_of(&param);
+                    (param.name(), param.ty(), param.default(), mode, written)
+                })
                 .collect();
-            let (params, defaults) = this.local_params(params);
+            let LocalParams {
+                params,
+                modes,
+                defaults,
+            } = this.local_params(params);
             let body = this.function_body(function.block(), function.expr_body());
             LocalFunction {
                 local,
                 params,
+                modes,
                 defaults,
                 ret,
                 is_async,
+                has_params,
+                is_generic,
                 body,
             }
         })
@@ -504,24 +547,31 @@ impl Lower {
                 .value()
                 .map_or(Expr::Missing, |token| Expr::Literal(literal(token))),
             ast::Expr::InterpString(it) => {
-                let parts = it
+                let mut parts: Vec<InterpPart> = it
                     .interp_parts()
                     .map(|part| match part {
-                        ast::InterpPart::InterpTextPart(text) => {
-                            InterpPart::Text(text.syntax().text())
-                        }
+                        ast::InterpPart::InterpTextPart(text) => InterpPart::Text {
+                            text: text.syntax().text(),
+                            value: None,
+                        },
                         ast::InterpPart::InterpHole(hole) => {
                             let at = hole.syntax().text_range();
                             InterpPart::Hole {
                                 value: self.expr(hole.value(), at),
                                 alignment: hole.alignment().map(|e| self.expr(Some(e), at)),
-                                format: hole
-                                    .hole_format_token()
-                                    .map(|token| token.text().to_owned()),
+                                // The token holds the colon before the format.
+                                format: hole.hole_format_token().map(|token| {
+                                    let text = token.text();
+                                    text.strip_prefix(':').unwrap_or(text).to_owned()
+                                }),
                             }
                         }
                     })
                     .collect();
+                let raw = it
+                    .interp_start_token()
+                    .is_some_and(|start| start.text().contains('`'));
+                interp_values(&mut parts, raw);
                 Expr::Interpolated(parts)
             }
             ast::Expr::PathExpr(it) => return self.path_expr(it.path(), range),
@@ -602,13 +652,18 @@ impl Lower {
             }
             ast::Expr::PostfixExpr(it) => Expr::Postfix {
                 increment: it.op().is_some_and(|op| op.kind() == SyntaxKind::PlusPlus),
-                expr: self.expr(it.expr(), range),
+                expr: self.single_place(it.expr(), range),
             },
             ast::Expr::PropagateExpr(it) => Expr::Propagate(self.expr(it.expr(), range)),
             ast::Expr::PrefixExpr(it) => {
-                let expr = self.expr(it.expr(), range);
                 // The operator is what makes the node a prefix expression.
                 let op = it.op().and_then(|op| unary_op(op.kind()));
+                let expr = match op {
+                    Some(UnaryOp::PreIncrement | UnaryOp::PreDecrement) => {
+                        self.single_place(it.expr(), range)
+                    }
+                    _ => self.expr(it.expr(), range),
+                };
                 op.map_or(Expr::Missing, |op| Expr::Unary { op, expr })
             }
             ast::Expr::CastExpr(it) => Expr::Cast {
@@ -656,10 +711,7 @@ impl Lower {
             },
             ast::Expr::AssignExpr(it) => {
                 let op = it.op().and_then(|op| assign_op(op.kind()));
-                let lhs = match op {
-                    None => self.place(it.lhs(), range),
-                    Some(_) => self.expr(it.lhs(), range),
-                };
+                let lhs = self.place(it.lhs(), range);
                 let rhs = self.expr(it.rhs(), range);
                 Expr::Assign { op, lhs, rhs }
             }
@@ -684,9 +736,20 @@ impl Lower {
                                 .into_iter()
                                 .flat_map(|list| list.lambda_params()),
                         )
-                        .map(|param| (param.name(), param.ty(), param.default()))
+                        .map(|param| {
+                            (
+                                param.name(),
+                                param.ty(),
+                                param.default(),
+                                ParamMode::In,
+                                None,
+                            )
+                        })
                         .collect();
-                    let params = this.local_params(params);
+                    let LocalParams {
+                        params, defaults, ..
+                    } = this.local_params(params);
+                    let params = (params, defaults);
                     let body = match it.block() {
                         Some(block) => this.block_expr(&block),
                         None => this.expr(it.expr(), range),
@@ -732,24 +795,31 @@ impl Lower {
         self.alloc_expr(lowered, range)
     }
 
-    /// The place `=` assigns: a tuple of places deconstructs the value, and
-    /// `_` among them discards its element (§5.5); parentheses around a
-    /// place only group it.
+    /// A place that is not a tuple of places, as the operand of `++` and
+    /// `--`: `_` alone is a discard, and parentheses around the place only
+    /// group it. Type checking reports `_` anywhere but on the left of `=`
+    /// (§7.11).
+    fn single_place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
+        match unparen(place) {
+            Some(expr) if is_discard(&expr) => {
+                self.alloc_expr(Expr::Discard, expr.syntax().text_range())
+            }
+            place => self.expr(place, range),
+        }
+    }
+
+    /// The place an assignment assigns: `_` alone discards the value of `=`
+    /// (§5.7), a tuple of places deconstructs it, and `_` among them
+    /// discards its element (§5.5); parentheses around a place only group
+    /// it. Type checking reports `_` on the left of anything but `=`.
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
-        let Some(ast::Expr::TupleExpr(tuple)) = unparen(place) else {
-            return self.expr(place, range);
+        let place = unparen(place);
+        let Some(ast::Expr::TupleExpr(tuple)) = place else {
+            return self.single_place(place, range);
         };
         let elems = tuple
             .tuple_elems()
-            .map(|elem| {
-                let place = match unparen(elem.expr()) {
-                    Some(expr) if is_discard(&expr) => {
-                        self.alloc_expr(Expr::Discard, expr.syntax().text_range())
-                    }
-                    expr => self.place(expr, range),
-                };
-                (name_ref_of(elem.name_ref()), place)
-            })
+            .map(|elem| (name_ref_of(elem.name_ref()), self.place(elem.expr(), range)))
             .collect();
         self.alloc_expr(Expr::Tuple(elems), tuple.syntax().text_range())
     }
@@ -833,8 +903,17 @@ impl Lower {
             list.member_inits()
                 .map(|init| {
                     let range = init.syntax().text_range();
-                    let name = name_ref_of(init.name_ref()).unwrap_or_default();
-                    (name, self.expr(init.expr(), range))
+                    let name_ref = init.name_ref();
+                    let written = name_ref.as_ref().map(|name| InitRanges {
+                        name: name.syntax().text_range(),
+                        init: range,
+                    });
+                    let name = name_ref_of(name_ref).unwrap_or_default();
+                    let value = self.expr(init.expr(), range);
+                    if let Some(written) = written {
+                        self.map.inits.insert(value, written);
+                    }
+                    (name, value)
                 })
                 .collect(),
         )
@@ -1109,4 +1188,83 @@ fn assign_op(kind: SyntaxKind) -> Option<BinaryOp> {
         K::StarPercentEq => B::WrappingMul,
         _ => return None,
     })
+}
+
+/// Sets the value of each text of an interpolated string, raw or not,
+/// from the text as written (§3.5); a text whose value cannot be read,
+/// which the lexer reports, keeps none.
+fn interp_values(parts: &mut [InterpPart], raw: bool) {
+    let values: Vec<Option<String>> = if raw {
+        let texts: Vec<Option<&str>> = parts
+            .iter()
+            .map(|part| match part {
+                InterpPart::Text { text, .. } => Some(text.as_str()),
+                InterpPart::Hole { .. } => None,
+            })
+            .collect();
+        match raw_interp_text_values(&texts) {
+            Some(values) => values.into_iter().map(Some).collect(),
+            None => return,
+        }
+    } else {
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                InterpPart::Text { text, .. } => Some(interp_text_value(text)),
+                InterpPart::Hole { .. } => None,
+            })
+            .collect()
+    };
+    let texts = parts.iter_mut().filter_map(|part| match part {
+        InterpPart::Text { value, .. } => Some(value),
+        InterpPart::Hole { .. } => None,
+    });
+    for (slot, value) in texts.zip(values) {
+        *slot = value;
+    }
+}
+
+/// A parameter of a lambda or a local function as written: its name, its
+/// type, its default value, its mode, and where a `ref` and a default are
+/// written when it has both.
+type WrittenParam<'a> = (
+    Option<ast::Name<'a>>,
+    Option<ast::Type<'a>>,
+    Option<ast::Expr<'a>>,
+    ParamMode,
+    Option<RefDefaultRanges>,
+);
+
+/// Where the `ref` and the default of `param` are written, when it has both
+/// and a type.
+fn ref_default_of(param: &ast::Param) -> Option<RefDefaultRanges> {
+    if param_mode(param) != ParamMode::Ref {
+        return None;
+    }
+    let default = param.default()?;
+    let ty = param.ty()?;
+    let keyword = param
+        .modifiers()
+        .filter_map(|modifier| modifier.kind())
+        .filter(|token| token.kind() == SyntaxKind::RefKw)
+        .last()?;
+    Some(RefDefaultRanges {
+        keyword: keyword.text_range(),
+        value: default.syntax().text_range(),
+        default: TextRange::new(
+            ty.syntax().text_range().end(),
+            default.syntax().text_range().end(),
+        ),
+    })
+}
+
+/// The parameters of a lambda or a local function, as
+/// `Lower::local_params` declares them.
+struct LocalParams {
+    /// The local of each parameter that has a name.
+    params: Vec<LocalId>,
+    /// The mode of each of those parameters, as written.
+    modes: Vec<ParamMode>,
+    /// The default value of each parameter that has one.
+    defaults: Vec<(LocalId, ExprId)>,
 }

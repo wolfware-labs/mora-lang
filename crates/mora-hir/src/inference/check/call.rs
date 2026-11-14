@@ -5,17 +5,22 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use super::Check;
+use la_arena::Arena;
+
+use super::{Check, Expect};
 use crate::arena::arena_index;
-use crate::bodies::{Arg, ArgMode, Expr, ExprId, LocalId, LocalKind, Stmt, Target};
+use crate::bodies::{
+    Arg, ArgMode, BodyOwner, Expr, ExprId, LocalId, LocalKind, Stmt, Target, body, body_resolution,
+};
 use crate::defs::ItemId;
+use crate::diverging::calls_diverging;
 use crate::inference::constant::{self, Value};
 use crate::inference::{
-    Callee, Context, NamedProblem, TypeError, converts, is_known, numeric, same, ty_name,
+    Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
-use crate::items::{ItemKind, ValueKind, item_tree};
-use crate::resolve::{Resolved, is_visible, item_data};
-use crate::signature::signature;
+use crate::items::{ItemKind, ValueKind};
+use crate::resolve::{Resolved, is_visible, item_data, members_named};
+use crate::signature::{instance_methods, signature};
 use crate::ty::{ParamMode, Signature, Ty};
 
 /// A function a call may call, borrowed from its signature.
@@ -39,8 +44,8 @@ struct Candidate<'a> {
 struct Parameter<'a> {
     /// Its name.
     name: &'a str,
-    /// Its mode, `None` when it is not known, as for a local function.
-    mode: Option<ParamMode>,
+    /// Its mode.
+    mode: ParamMode,
     /// Whether it has a default value.
     has_default: bool,
     /// Its type.
@@ -52,8 +57,8 @@ impl Parameter<'_> {
     /// parameter's type (§10.3), any other converts to it.
     fn context(&self) -> Context {
         match self.mode {
-            Some(ParamMode::Ref) => Context::Ref,
-            Some(ParamMode::In | ParamMode::Move) | None => Context::Value,
+            ParamMode::Ref => Context::Ref,
+            ParamMode::In | ParamMode::Move => Context::Value,
         }
     }
 }
@@ -119,6 +124,21 @@ impl<'a> Check<'a> {
         // calling only what can be called.
         let ordered = self.named_arguments_in_order(args);
         let candidates = match self.callees(callee) {
+            // A function of the standard library that never returns has the
+            // never type (§11.4); nothing else is known of the library.
+            Callees::Unknown if calls_diverging(self.body, self.resolution, callee) => {
+                self.external_call(args);
+                return Some(Ty::Never);
+            }
+            // A method of a value that never exists, as `Todo().M()`, is
+            // never called either.
+            Callees::Unknown if self.exprs[arena_index(callee)] == Some(Ty::Never) => {
+                self.unchecked_call(args);
+                return Some(Ty::Never);
+            }
+            // Nothing gives an argument of a function of the standard
+            // library a target type while the library is not loaded.
+            Callees::Unknown if self.is_external(callee) => return self.external_call(args),
             Callees::Unknown => return self.unchecked_call(args),
             Callees::NotCallable(ty) => {
                 self.errors
@@ -150,17 +170,131 @@ impl<'a> Check<'a> {
             self.args(args);
             return common_return(candidates.iter());
         }
-        let arguments: Vec<Argument> = args
+        // The arguments that take no type from their parameter come first,
+        // so that the overloads they cannot go to are ruled out before a
+        // lambda or a `new` without a type takes its target type.
+        let mut typed: Vec<Option<Argument>> = args
             .iter()
-            .map(|arg| match constant::value(&self.body.exprs, arg.expr) {
-                Some(value) => Argument::Literal(value),
-                None => Argument::Typed(self.infer(arg.expr)),
+            .map(|arg| {
+                if takes_target(&self.body.exprs, arg.expr) {
+                    return None;
+                }
+                Some(match constant::value(&self.body.exprs, arg.expr) {
+                    Some(value) => Argument::Literal(value),
+                    None => Argument::Typed(self.infer(arg.expr)),
+                })
             })
             .collect();
-        if let [candidate] = candidates.as_slice() {
-            return self.call_one(expr, candidate, args, &arguments);
+        // The parameter of each argument in each overload those arguments
+        // can go to, by count, by name, by mode and, for those typed
+        // already, by type.
+        let bindings: Vec<_> = if candidates.len() > 1 && typed.iter().any(Option::is_none) {
+            candidates
+                .iter()
+                .map(|candidate| {
+                    let params = bind(candidate, args).ok()?;
+                    takes_arguments(candidate, args, typed.iter().map(Option::as_ref), &params)
+                        .then_some(params)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // An argument or a parameter of a type not known yet leaves a call
+        // that the overloads do not agree on unresolved (D-137): a `new`
+        // without a type there is not reported.
+        let unresolved = typed.iter().flatten().any(Argument::is_unknown)
+            || candidates.iter().zip(&bindings).any(|(candidate, params)| {
+                params
+                    .iter()
+                    .flatten()
+                    .any(|&param| !is_known(&candidate.params[param].ty))
+            });
+        // A static overload called through a value leaves the call to
+        // statics (D-152), so its target types come then too.
+        let static_overload = self.has_static_overload(callee);
+        // Each `new` without a type that the overloads give no target type.
+        let mut untargeted = Vec::new();
+        for (position, (arg, argument)) in args.iter().zip(&mut typed).enumerate() {
+            if argument.is_some() {
+                continue;
+            }
+            let expect = match arg_target(&candidates, &bindings, arg, position) {
+                _ if static_overload => Expect::Later,
+                ArgTarget::Type(ty) => Expect::Target(ty),
+                // A `new` is reported once the overloads are compared, and
+                // any other argument is checked without a target type.
+                ArgTarget::Differs if !unresolved => match self.body.exprs[arg.expr] {
+                    Expr::New { .. } => {
+                        untargeted.push(arg.expr);
+                        Expect::Later
+                    }
+                    _ => Expect::None,
+                },
+                // A call left unresolved, or one that is an error because
+                // the argument has no parameter, which says so itself.
+                ArgTarget::Differs | ArgTarget::None => Expect::Later,
+            };
+            *argument = Some(Argument::Typed(self.expr(arg.expr, expect)));
         }
-        self.call_overloads(expr, &candidates, args, &arguments)
+        let arguments: Vec<Argument> = typed.into_iter().flatten().collect();
+        if let [candidate] = candidates.as_slice() {
+            let reported = self.errors.len();
+            let ty = self.call_one(expr, candidate, args, &arguments);
+            return self.unless_static_overload(expr, callee, reported, ty);
+        }
+        let reported = self.errors.len();
+        let ty = self.call_overloads(expr, &candidates, args, &arguments);
+        // A call that is an error already says what is wrong with it.
+        let call_error = self.errors[reported..].iter().any(|error| {
+            matches!(
+                error,
+                TypeError::NoOverload { .. }
+                    | TypeError::Ambiguous { .. }
+                    | TypeError::NamedArgument { .. }
+            )
+        });
+        if !call_error {
+            for expr in untargeted {
+                self.errors.push(TypeError::NewTarget {
+                    expr,
+                    problem: NewTarget::Overloads {
+                        name: candidates[0].name.to_owned(),
+                    },
+                });
+            }
+        }
+        self.unless_static_overload(expr, callee, reported, ty)
+    }
+
+    /// The type `ty` of the call `expr`, unless the instance methods it
+    /// called through a value do not take it and a static method of the
+    /// name may: that is a static member named through a value, which is
+    /// not checked before statics (D-152), so what the call reported since
+    /// `reported` is dropped and the call has no callee.
+    fn unless_static_overload(
+        &mut self,
+        expr: ExprId,
+        callee: ExprId,
+        reported: usize,
+        ty: Option<Ty>,
+    ) -> Option<Ty> {
+        if self.errors.len() == reported || !self.has_static_overload(callee) {
+            return ty;
+        }
+        self.errors.truncate(reported);
+        self.calls.remove(&expr);
+        self.arguments.remove(&expr);
+        None
+    }
+
+    /// Whether `callee` names a method of a struct value that has a static
+    /// overload.
+    fn has_static_overload(&self, callee: ExprId) -> bool {
+        self.struct_member(callee).is_some_and(|(ty, name)| {
+            members_named(self.db, ty, name)
+                .any(|(_, data)| data.kind == ItemKind::Function && data.is_static)
+        })
     }
 
     /// The arguments of a call this milestone does not check, inferred so
@@ -168,6 +302,27 @@ impl<'a> Check<'a> {
     fn unchecked_call(&mut self, args: &[Arg]) -> Option<Ty> {
         self.args(args);
         None
+    }
+
+    /// The arguments of a call of a function of the standard library,
+    /// which has no parameter types while the library is not loaded: each
+    /// one is inferred without a target, so a `new` without a type among
+    /// them is `MR0154`.
+    fn external_call(&mut self, args: &[Arg]) -> Option<Ty> {
+        for arg in args {
+            self.infer(arg.expr);
+        }
+        None
+    }
+
+    /// Whether `callee` names a function of the standard library, by a
+    /// path such as `Console.WriteLine`.
+    fn is_external(&self, callee: ExprId) -> bool {
+        match &self.body.exprs[callee] {
+            Expr::Path(_) => self.resolution.is_external(callee),
+            Expr::Member { receiver, .. } => self.is_external(*receiver),
+            _ => false,
+        }
     }
 
     /// The literal arguments, which [`Check::call`] leaves to be checked
@@ -283,23 +438,19 @@ impl<'a> Check<'a> {
         let Some(Ty::Struct(ty)) = receiver else {
             return Callees::Unknown;
         };
-        let tree = item_tree(self.db, ty.file);
-        let named: Vec<_> = item_data(self.db, *ty)
-            .members
-            .iter()
-            .filter(|&&member| {
-                let data = tree.item(member);
-                data.kind == ItemKind::Function && data.name == name && !data.is_static
-            })
-            .map(|&member| ItemId {
-                project: ty.project,
-                file: ty.file,
-                item: member,
-            })
-            .collect();
+        let named: Vec<_> = instance_methods(self.db, *ty, name).collect();
+        // A field or a getter of a type that is not a function type is not
+        // callable (`MR0208`). A static field, a static getter or a constant
+        // named through a value is `MR0155`, which statics check (D-152):
+        // nothing is reported before them.
         let Some(&first) = named.first() else {
-            let field = self.field(receiver, name);
-            return self.not_callable(field);
+            if self.is_static_value(*ty, name) {
+                return Callees::Unknown;
+            }
+            let value = self
+                .field(receiver, name)
+                .or_else(|| self.getter_type(*ty, name));
+            return self.not_callable(value);
         };
         // Only the methods visible from the call are candidates, as name
         // resolution sees only visible declarations (§4.5).
@@ -312,6 +463,28 @@ impl<'a> Check<'a> {
             return Callees::Hidden(first);
         }
         Callees::Functions(methods)
+    }
+
+    /// Whether the struct `item` declares a static field, a static getter
+    /// or a constant named `name`.
+    fn is_static_value(&self, item: ItemId, name: &str) -> bool {
+        item_data(self.db, item)
+            .values
+            .iter()
+            .any(|value| value.name == name && value.is_static)
+    }
+
+    /// The type of the getter `name` of the struct `item`, which its body
+    /// declares.
+    pub(super) fn getter_type(&self, item: ItemId, name: &str) -> Option<Ty> {
+        let (_, index) = item_data(self.db, item)
+            .values
+            .iter()
+            .zip(0u32..)
+            .find(|(value, _)| value.name == name && value.kind == ValueKind::Getter)?;
+        let owner = BodyOwner::Value(item.item, index);
+        let getter = body(self.db, item.file, owner);
+        Some(body_resolution(self.db, item.project, item.file, owner).return_type(getter.ret))
     }
 
     /// A function or method as a candidate.
@@ -328,15 +501,13 @@ impl<'a> Check<'a> {
                 .iter()
                 .map(|param| Parameter {
                     name: &param.name,
-                    mode: Some(param.mode),
+                    mode: param.mode,
                     has_default: param.has_default,
                     ty: Cow::Borrowed(&param.ty),
                 })
                 .collect(),
             ret: Cow::Borrowed(&function.ret),
-            unchecked: function.is_generic
-                || function.is_async
-                || function.params.iter().any(|param| param.is_params),
+            unchecked: function.is_generic || function.is_async || function.has_params(),
         })
     }
 
@@ -370,16 +541,16 @@ impl<'a> Check<'a> {
             params: function
                 .params
                 .iter()
-                .map(|&param| Parameter {
+                .zip(&function.modes)
+                .map(|(&param, &mode)| Parameter {
                     name: &body.locals[param].name,
-                    // Local functions do not record their parameters' modes.
-                    mode: None,
+                    mode,
                     has_default: function.defaults.iter().any(|&(at, _)| at == param),
                     ty: Cow::Owned(self.locals[arena_index(param)].clone().unwrap_or(Ty::Error)),
                 })
                 .collect(),
             ret: Cow::Owned(ret),
-            unchecked: generic || function.is_async,
+            unchecked: generic || function.is_async || function.has_params,
         })
     }
 
@@ -431,14 +602,14 @@ impl<'a> Check<'a> {
                     arg: arg.expr,
                     signature: self.signature_text(candidate),
                     param: parameter.name.to_owned(),
-                    needs: parameter.mode.unwrap_or(ParamMode::In),
+                    needs: parameter.mode,
                     given: arg.mode,
                     fixable,
                 });
             }
             self.argument(arg.expr, argument, parameter);
         }
-        self.calls.insert(expr, candidate.origin);
+        self.record_call(expr, candidate.origin, params);
         Some(Ty::clone(&candidate.ret))
     }
 
@@ -461,13 +632,7 @@ impl<'a> Check<'a> {
             .enumerate()
             .filter_map(|(index, (candidate, binding))| {
                 let params = binding.as_ref().ok()?;
-                args.iter()
-                    .zip(arguments)
-                    .zip(params)
-                    .all(|((arg, argument), &param)| {
-                        let parameter = &candidate.params[param];
-                        mode_fits(parameter.mode, arg.mode) && fits(argument, parameter)
-                    })
+                takes_arguments(candidate, args, arguments.iter().map(Some), params)
                     .then_some((index, params.as_slice()))
             })
             .collect();
@@ -540,8 +705,15 @@ impl<'a> Check<'a> {
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {
             self.argument(arg.expr, argument, &candidate.params[param]);
         }
-        self.calls.insert(expr, candidate.origin);
+        self.record_call(expr, candidate.origin, params.to_vec());
         Some(Ty::clone(&candidate.ret))
+    }
+
+    /// Records that the call `expr` calls `callee`, each argument going to
+    /// the parameter at its position in `params`.
+    fn record_call(&mut self, expr: ExprId, callee: Callee, params: Vec<usize>) {
+        self.calls.insert(expr, callee);
+        self.arguments.insert(expr, params);
     }
 
     /// Checks an argument against its parameter's type: a literal takes the
@@ -567,10 +739,10 @@ impl<'a> Check<'a> {
             | Expr::Index {
                 optional: false, ..
             } => true,
-            Expr::Path(_) => self.resolution.paths.get(&expr).is_some_and(|resolution| {
-                matches!(&resolution.target, Target::Value(value)
-                    if value.member(self.db).is_some_and(|member| member.kind == ValueKind::Field))
-            }),
+            Expr::Path(_) => self
+                .resolution
+                .value_member(self.db, expr)
+                .is_some_and(|member| member.kind == ValueKind::Field),
             _ => false,
         }
     }
@@ -582,9 +754,9 @@ impl<'a> Check<'a> {
             .iter()
             .map(|param| {
                 let mode = match param.mode {
-                    Some(ParamMode::Ref) => "ref ",
-                    Some(ParamMode::Move) => "move ",
-                    _ => "",
+                    ParamMode::Ref => "ref ",
+                    ParamMode::Move => "move ",
+                    ParamMode::In => "",
                 };
                 let default = if param.has_default { " = ..." } else { "" };
                 let ty = ty_name(self.db, &param.ty);
@@ -655,16 +827,95 @@ fn bind(candidate: &Candidate<'_>, args: &[Arg]) -> Result<Vec<usize>, Unbound> 
     }
 }
 
+/// Whether an argument takes its type from its parameter: a lambda, a
+/// `new` without a type, or a value with one of those where its own target
+/// type goes, a branch of a conditional, an arm of a `match` or an element
+/// of a tuple or a collection.
+fn takes_target(exprs: &Arena<Expr>, expr: ExprId) -> bool {
+    match &exprs[expr] {
+        Expr::Lambda(_) | Expr::New { ty: None, .. } => true,
+        Expr::Conditional { then, r#else, .. } => {
+            takes_target(exprs, *then) || takes_target(exprs, *r#else)
+        }
+        Expr::Match { arms, .. } => arms.iter().any(|arm| takes_target(exprs, arm.body)),
+        Expr::Tuple(elems) => elems.iter().any(|&(_, elem)| takes_target(exprs, elem)),
+        Expr::Collection(elems) => elems.iter().any(|&(_, elem)| takes_target(exprs, elem)),
+        _ => false,
+    }
+}
+
+/// What the candidates of a call give an argument that takes its type
+/// from its parameter.
+enum ArgTarget<'a> {
+    /// The type of the parameter it goes to.
+    Type(&'a Ty),
+    /// Overloads that can take the arguments have parameters of different
+    /// types there.
+    Differs,
+    /// No parameter takes it.
+    None,
+}
+
+/// The target type of the argument `arg` at `position`: with one function
+/// to call, the type of its parameter of that name or at that position;
+/// with overloads, the type that every one of them that can take the
+/// arguments has there, as `bindings` give them, `None` for one that
+/// cannot (§6.9).
+fn arg_target<'a>(
+    candidates: &'a [Candidate<'_>],
+    bindings: &[Option<Vec<usize>>],
+    arg: &Arg,
+    position: usize,
+) -> ArgTarget<'a> {
+    if let [only] = candidates {
+        let param = match &arg.name {
+            Some(name) => only.params.iter().find(|p| p.name == name),
+            None => only.params.get(position),
+        };
+        return param.map_or(ArgTarget::None, |param| ArgTarget::Type(&param.ty));
+    }
+    let mut types = candidates
+        .iter()
+        .zip(bindings)
+        .filter_map(|(candidate, params)| {
+            Some(&*candidate.params[*params.as_ref()?.get(position)?].ty)
+        });
+    match types.next() {
+        Some(first) if types.all(|ty| same(ty, first)) => ArgTarget::Type(first),
+        Some(_) => ArgTarget::Differs,
+        None => ArgTarget::None,
+    }
+}
+
+/// Whether `candidate` can take the arguments `args`, which `params` binds
+/// to its parameters: each one fits its parameter's mode, and each one
+/// whose type is known (`Some` in `arguments`) its type too. An argument
+/// that takes its type from its parameter, not typed yet, fits any type.
+fn takes_arguments<'b>(
+    candidate: &Candidate<'_>,
+    args: &[Arg],
+    arguments: impl IntoIterator<Item = Option<&'b Argument>>,
+    params: &[usize],
+) -> bool {
+    args.iter()
+        .zip(arguments)
+        .zip(params)
+        .all(|((arg, argument), &param)| {
+            let parameter = &candidate.params[param];
+            mode_fits(parameter.mode, arg.mode)
+                && argument.is_none_or(|argument| fits(argument, parameter))
+        })
+}
+
 /// Whether an argument written with `given` before it suits a parameter of
 /// mode `needs` (§10.3): `ref` exactly for a `ref` parameter, and `in` or
-/// `move` only for a parameter of that mode. An unknown mode suits any.
-fn mode_fits(needs: Option<ParamMode>, given: Option<ArgMode>) -> bool {
+/// `move` only for a parameter of that mode.
+fn mode_fits(needs: ParamMode, given: Option<ArgMode>) -> bool {
     match (needs, given) {
-        (None, _) => true,
-        (Some(ParamMode::Ref), given) => given == Some(ArgMode::Ref),
-        (Some(_), None) => true,
-        (Some(ParamMode::In), Some(given)) => given == ArgMode::In,
-        (Some(ParamMode::Move), Some(given)) => given == ArgMode::Move,
+        (ParamMode::Ref, given) => given == Some(ArgMode::Ref),
+        (_, None) => true,
+        (ParamMode::In, Some(given)) => given == ArgMode::In,
+        (ParamMode::Move, Some(given)) => given == ArgMode::Move,
     }
 }
 
@@ -756,17 +1007,16 @@ mod tests {
 
     #[test]
     fn markers_suit_their_modes() {
-        assert!(mode_fits(Some(ParamMode::Ref), Some(ArgMode::Ref)));
-        assert!(!mode_fits(Some(ParamMode::Ref), None));
-        assert!(!mode_fits(Some(ParamMode::Ref), Some(ArgMode::In)));
-        assert!(mode_fits(Some(ParamMode::In), None));
-        assert!(mode_fits(Some(ParamMode::In), Some(ArgMode::In)));
-        assert!(!mode_fits(Some(ParamMode::In), Some(ArgMode::Ref)));
-        assert!(!mode_fits(Some(ParamMode::In), Some(ArgMode::Move)));
-        assert!(mode_fits(Some(ParamMode::Move), Some(ArgMode::Move)));
-        assert!(mode_fits(Some(ParamMode::Move), None));
-        assert!(!mode_fits(Some(ParamMode::Move), Some(ArgMode::In)));
-        assert!(mode_fits(None, Some(ArgMode::Ref)));
+        assert!(mode_fits(ParamMode::Ref, Some(ArgMode::Ref)));
+        assert!(!mode_fits(ParamMode::Ref, None));
+        assert!(!mode_fits(ParamMode::Ref, Some(ArgMode::In)));
+        assert!(mode_fits(ParamMode::In, None));
+        assert!(mode_fits(ParamMode::In, Some(ArgMode::In)));
+        assert!(!mode_fits(ParamMode::In, Some(ArgMode::Ref)));
+        assert!(!mode_fits(ParamMode::In, Some(ArgMode::Move)));
+        assert!(mode_fits(ParamMode::Move, Some(ArgMode::Move)));
+        assert!(mode_fits(ParamMode::Move, None));
+        assert!(!mode_fits(ParamMode::Move, Some(ArgMode::In)));
     }
 
     #[test]

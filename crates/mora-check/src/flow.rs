@@ -9,16 +9,11 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
-    ExprId, InterpPart, ItemId, Literal, LocalId, LocalKind, MatchArm, Pat, PatId, Resolved, STD,
-    Signature, Stmt, StmtId, Target, Ty, UnaryOp, arena_index, body_resolution, item_tree,
+    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Signature, Stmt, StmtId,
+    Ty, UnaryOp, arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree,
     signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
-
-/// The names of the standard library's functions of the never type (§11.4),
-/// which a path ends at. Until the standard library is loaded they are
-/// recognised by name (D-138).
-const DIVERGING: [&str; 3] = ["panic", "Unreachable", "Todo"];
 
 /// A set of locals, by their index.
 #[derive(Clone, PartialEq, Eq)]
@@ -384,9 +379,9 @@ impl Flow<'_> {
                 flow.state = end;
                 let (when_true, when_false) = flow.condition(*condition);
                 let body = flow.body;
-                let exit = (!is_bool(body, *condition, true)).then_some(when_false);
+                let exit = (!is_literal_bool(body, *condition, true)).then_some(when_false);
                 // `do { } while (false);` runs its body once.
-                let back = if is_bool(body, *condition, false) {
+                let back = if is_literal_bool(body, *condition, false) {
                     flow.unreachable()
                 } else {
                     when_true
@@ -512,7 +507,7 @@ impl Flow<'_> {
         let condition = condition?;
         let (when_true, when_false) = self.condition(condition);
         self.state = when_true;
-        (!is_bool(self.body, condition, true)).then_some(when_false)
+        (!is_literal_bool(self.body, condition, true)).then_some(when_false)
     }
 
     /// Where the end of an iteration and the paths that `continue` it meet.
@@ -857,28 +852,9 @@ impl Flow<'_> {
         }
     }
 
-    /// Whether a call of `callee` never returns: a call of `panic`,
-    /// `Unreachable` or `Todo` of the standard library, by its name or as
-    /// `Std.panic` (§11.4, D-138).
+    /// Whether a call of `callee` never returns (D-138).
     fn diverges(&self, callee: ExprId) -> bool {
-        let body = self.body;
-        // The path that has to name the standard library: the function's own
-        // name, or `Std` before it.
-        let (name, path) = match &body.exprs[callee] {
-            Expr::Path(path) => match path.segments.as_slice() {
-                [name] => (name, callee),
-                _ => return false,
-            },
-            Expr::Member { receiver, name, .. } => match &body.exprs[*receiver] {
-                Expr::Path(path) if path.segments == [STD] => (name, *receiver),
-                _ => return false,
-            },
-            _ => return false,
-        };
-        DIVERGING.contains(&name.as_str())
-            && self.resolution.paths.get(&path).is_some_and(|resolution| {
-                matches!(resolution.target, Target::Item(Resolved::External))
-            })
+        calls_diverging(self.body, self.resolution, callee)
     }
 
     /// A read of `local` at `expr`: `MR0181` when it may not be assigned.
@@ -1006,9 +982,16 @@ impl Flow<'_> {
     }
 
     /// Where the `break`, `continue` or `return` statement `stmt` is.
+    ///
+    /// # Panics
+    ///
+    /// When the source map has no range for it: HIR lowering records the
+    /// range of every statement but a declaration.
     fn jump_span(&self, stmt: StmtId) -> Span {
-        // Lowering records the range of every jump.
-        self.span(self.map.jumps.get(&stmt).copied().unwrap_or_default())
+        let Some(&range) = self.map.stmts.get(&stmt) else {
+            panic!("internal error: a jump without its range");
+        };
+        self.span(range)
     }
 
     /// `MR0183` for `break` or `continue` outside a loop.
@@ -1049,11 +1032,4 @@ fn note_mr0184(name: &str) -> String {
         "`{name}` returns a value, so every path through it ends in `return` with a value, \
          a call of `panic`, `Unreachable` or `Todo`, or a loop that never ends"
     )
-}
-
-/// Whether `condition` is the literal `value`: a loop whose condition is
-/// `true` ends only by `break`, and one whose condition is `false` after its
-/// body does not go back (D-138).
-fn is_bool(body: &Body, condition: ExprId, value: bool) -> bool {
-    matches!(body.exprs[condition], Expr::Literal(Literal::Bool(literal)) if literal == value)
 }
