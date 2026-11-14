@@ -4130,3 +4130,33 @@ fn a_field_of_a_field_of_this_is_one_place() {
     );
     assert_eq!(lowered.code("M"), ["_0 = copy (*this).Q.V;", "return;"]);
 }
+
+#[test]
+fn getters_and_type_members_between_fields_take_no_place() {
+    // A getter first, one between two fields, a `static` field, a `static`
+    // and a `const` getter and a constant mixed in: only `X`, `Y` and `Z`
+    // are stored, in that order.
+    let lowered = lowered(
+        "struct P {\n    public Get: int => 0;\n    public X: int;\n    public Two: int => X * 2;\n    \
+         public static S: int = 4;\n    public static T: int => 6;\n    public Y: int = 5;\n    \
+         public const C: int = 1;\n    public const K: int => 7;\n    public Z: int;\n}\n\
+         F(): P => new P { Z = 3, X = 1 };\nR(p: P): int => p.X + p.Z + p.Y;\n",
+    );
+    assert_eq!(
+        lowered.code("F"),
+        [
+            "storage_live(_1);",
+            "_1 = call UsersApi.P{struct UsersApi.P}.Y{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(1, copy _1, 3);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+    assert_in_order(
+        &lowered.code("R"),
+        &[
+            "_2 = copy (*p#0).X + copy (*p#0).Z;",
+            "_0 = copy _2 + copy (*p#0).Y;",
+        ],
+    );
+}

@@ -559,6 +559,27 @@ mod tests {
     }
 
     #[test]
+    fn a_const_or_static_getter_declares_no_field() {
+        // A getter is no field, whatever its modifiers: `Z` stays paired
+        // with the second field of the signature.
+        let db = TestDb::new();
+        let text = "struct P {\n    const K: int => 1;\n    X: int;\n    static S: int => 2;\n    \
+                    Z: int;\n}\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let p = item_named(&db, project, file, "P");
+        let fields: Vec<(u32, String)> = instance_fields(&db, p)
+            .map(|(index, field)| (index, field.name.clone()))
+            .collect();
+        assert_eq!(fields, [(1, "X".to_owned()), (3, "Z".to_owned())]);
+        assert_eq!(struct_field(&db, p, 0), None);
+        assert_eq!(
+            struct_field(&db, p, 3).map(|(n, field)| (n, field.name.clone())),
+            Some((1, "Z".to_owned()))
+        );
+    }
+
+    #[test]
     fn this_has_the_type_of_the_struct_of_its_method() {
         let db = TestDb::new();
         let text = "struct P {\n    M() {}\n    static S() {}\n}\nclass C {\n    M() {}\n}\n\

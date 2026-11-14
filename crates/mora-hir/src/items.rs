@@ -495,7 +495,10 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, ValueSource)> {
             let written = Written::of(modifiers);
             let value = ValueMember {
                 name: token_name(token),
-                kind: if written.is_const {
+                // Only a field declares a constant: a getter written
+                // `const` stays a getter, which no value of a struct
+                // stores (`Signature::Struct` lists fields alone).
+                kind: if written.is_const && kind == ValueKind::Field {
                     ValueKind::Const
                 } else {
                     kind
