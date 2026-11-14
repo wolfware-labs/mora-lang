@@ -1218,8 +1218,8 @@ mod tests {
             codes(&diagnostics_of("F() {\n    _ += 1;\n}\n")),
             ["MR0186"]
         );
-        // No operator is defined for a tuple: a tuple on the left of `op=`
-        // is one `MR0204`, whatever its elements are.
+        // No operator takes these tuples: a tuple on the left of `op=` is
+        // one `MR0204`, whatever its elements are.
         for text in [
             "F() {\n    (_, _) += (1, 2);\n}\n",
             "F(i: int) {\n    var j = i;\n    (j, _) += (1, 2);\n}\n",
@@ -1227,6 +1227,31 @@ mod tests {
             "F() {\n    (One(), 1) += (1, 2);\n}\nOne(): int => 1;\n",
         ] {
             assert_eq!(codes(&diagnostics_of(text)), ["MR0204"], "{text}");
+        }
+        // The operation is checked as any operator is: a struct on the right
+        // waits for its operators (M3.6), and an error in the operands is the
+        // one mistake.
+        let q = "public struct Q {\n    public mut Y: int;\n    \
+                 public static operator +(a: (int, int), b: Q): (int, int) => a;\n}\n\
+                 public struct V {\n    public Y: int;\n}\n";
+        for (line, expected) in [
+            ("(x, y) += q;", vec![]),
+            ("(x, y) <<= q;", vec![]),
+            ("(x, y) += v;", vec![]),
+            ("(x, y) += Nope;", vec!["MR0127"]),
+            ("(x, y) += new { Y = 1 };", vec!["MR0154"]),
+            ("(x, x) += (_, 1);", vec!["MR0127"]),
+            ("(x, y) += (q, 1);", vec!["MR0204"]),
+            // `??=` waits for options (M3.5), and checks no element as a
+            // place before then.
+            ("(x, _) ??= (1, 2);", vec![]),
+            ("(x, One()) ??= (1, 2);", vec![]),
+            ("(Console.ReadLine(), x) ??= (1, 2);", vec![]),
+        ] {
+            let text = format!(
+                "{q}One(): int => 1;\nF(q: Q, v: V) {{\n    var x = 1;\n    var y = 2;\n    {line}\n}}\n"
+            );
+            assert_eq!(codes(&diagnostics_of(&text)), expected, "{line}");
         }
         // `??=` waits for options (M3.5), with a tuple on the left as well.
         assert_eq!(

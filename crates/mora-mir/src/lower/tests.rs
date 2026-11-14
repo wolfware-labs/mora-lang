@@ -708,11 +708,33 @@ fn a_value_of_the_library_comes_with_the_library() {
         "let line = Console.ReadLine();\n",
         "let line: string = Console.ReadLine();\n",
         "let f = Console.WriteLine;\n",
+        // A library value as a receiver or a callee is used, even in a
+        // statement whose own value nothing uses.
+        "Console.ReadLine().Trim();\n",
+        "Console.ReadLine().Inst();\n",
+        "Console.ReadLine()();\n",
+        "Console.ReadLine()(1);\n",
     ] {
         assert_eq!(
             later_error(text, |l| l.owner("top-level")),
             "internal error lowering top-level: a value of the standard library is not lowered until M1.15",
             "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_tuple_operation_with_a_struct_waits_for_operators() {
+    let text = "public struct Q {\n    public mut Y: int;\n    \
+                public static operator +(a: (int, int), b: Q): (int, int) => a;\n}\n\
+                A(q: Q) {\n    var x = 1;\n    var y = 2;\n    (x, y) += q;\n}\n\
+                B(q: Q) {\n    var x = 1;\n    var y = 2;\n    (x, y) <<= q;\n}\n";
+    for name in ["A", "B"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!(
+                "internal error lowering UsersApi.{name}: an operator on a struct is not lowered until M3.6"
+            )
         );
     }
 }

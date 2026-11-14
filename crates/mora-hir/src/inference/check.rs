@@ -1302,7 +1302,11 @@ impl Check<'_> {
             }
             Some(op) => {
                 let result = self.binary(expr, op, lhs, rhs);
-                self.require_place(lhs, false);
+                // A tuple of places is for `=` only; `??=` on one, the only
+                // tuple that gets here, waits for options (M3.5).
+                if !matches!(self.body.exprs[lhs], Expr::Tuple(_)) {
+                    self.require_place(lhs, false);
+                }
                 // The result converts back to the type of the place as a
                 // cast would (§7.12).
                 let place = self.exprs[arena_index(lhs)].clone();
@@ -1317,27 +1321,32 @@ impl Check<'_> {
         }
     }
 
-    /// A compound `op=` with a tuple on the left. No operator is defined for
-    /// a tuple, so that is the one mistake, `MR0204`, whatever the elements
-    /// are, and they are not checked as places (§7.11, D-155); it is
-    /// reported here when an element of a type not known yet, as `_`, kept
-    /// the operation silent.
+    /// A compound `op=` with a tuple on the left, whose elements are not
+    /// checked as places (§7.11, D-155): the operation is checked as
+    /// [`Check::binary`] checks it. When an element of a type not known yet,
+    /// as `_`, kept that silent, no operator takes the tuple, `MR0204`,
+    /// unless the right side is a struct, whose operators come with M3.6, its
+    /// type is not known, or the operands reported an error already.
     fn tuple_operation(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) {
         let reported = self.errors.len();
         self.binary(expr, op, lhs, rhs);
-        let binary = self.errors[reported..]
-            .iter()
-            .any(|error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr));
-        if !binary {
-            self.errors.push(TypeError::Binary {
-                expr,
-                op,
-                lhs,
-                rhs,
-                lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
-                rhs_ty: self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error),
-            });
+        if self.errors.len() > reported {
+            return;
         }
+        let Some(rhs_ty) = self.exprs[arena_index(rhs)].clone().filter(is_known) else {
+            return;
+        };
+        if is_struct(&rhs_ty) {
+            return;
+        }
+        self.errors.push(TypeError::Binary {
+            expr,
+            op,
+            lhs,
+            rhs,
+            lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
+            rhs_ty,
+        });
     }
 
     /// The type of the place `place` of `=`: a tuple for a tuple of places

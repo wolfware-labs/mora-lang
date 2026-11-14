@@ -475,7 +475,10 @@ impl Uses {
     /// Whether `expr` is a value of the standard library that the body
     /// uses: a path into it, or a member of one, that is neither called
     /// nor the receiver of a member, and a call of one of its functions
-    /// whose value is used. A call that never returns has no value.
+    /// whose value is used, a receiver or a callee included: in
+    /// `Console.ReadLine().Trim();` the inner call is a receiver, so the
+    /// body uses a value of the library, while `Console.WriteLine(..);`, a
+    /// statement, uses none. A call that never returns has no value.
     fn library_value(
         &self,
         hir: &Body,
@@ -483,17 +486,18 @@ impl Uses {
         resolution: &BodyResolution,
         expr: ExprId,
     ) -> bool {
-        if self.callees.contains_key(&expr)
-            || self.receivers.contains(&expr)
-            || !from_library(hir, resolution, expr)
-        {
+        if !from_library(hir, resolution, expr) {
             return false;
         }
         // A value that never exists is never used.
         if inference.expr(expr) == Some(&Ty::Never) {
             return false;
         }
-        !matches!(hir.exprs[expr], Expr::Call { .. }) || !self.statements.contains(&expr)
+        let part_of_more = self.callees.contains_key(&expr) || self.receivers.contains(&expr);
+        match hir.exprs[expr] {
+            Expr::Call { .. } => part_of_more || !self.statements.contains(&expr),
+            _ => !part_of_more,
+        }
     }
 }
 
