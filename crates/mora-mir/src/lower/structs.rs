@@ -1,9 +1,7 @@
 //! Structs: memberwise creation, fields and the initializers of fields
 //! (§6.2, §6.9).
 
-use mora_hir::{
-    Arg, BodyOwner, Creation, ExprId, Field, ItemId, Path, body, creation, instance_fields,
-};
+use mora_hir::{Arg, BodyOwner, Creation, ExprId, Field, ItemId, body, creation, instance_fields};
 use mora_span::Db;
 
 use super::expr::Dest;
@@ -94,23 +92,14 @@ impl Lowerer<'_> {
         base
     }
 
-    /// The place `path` names: a field of `this`, then the fields its
-    /// other segments name.
-    pub(super) fn path_place(&self, expr: ExprId, path: &Path) -> Place {
+    /// The place the path `expr` names: a field of `this`. A path in an
+    /// expression is one name, as later dots are member accesses.
+    pub(super) fn path_place(&self, expr: ExprId) -> Place {
         let resolution = self.owner.resolution.paths.get(&expr);
-        let field = resolution.and_then(|resolution| {
-            Some((
-                resolution.member(self.owner.db)?,
-                resolution.segments.max(1),
-            ))
-        });
+        let member = resolution.and_then(|resolution| resolution.member(self.owner.db));
         let what = "a name that is not a field of `this` is not lowered";
-        let (member, named) = self.expect(field, expr, what);
-        let mut place = self.field_place(expr, self.this_place(expr), &member.name);
-        for segment in path.segments.iter().skip(named) {
-            place = self.field_place(expr, place, segment);
-        }
-        place
+        let member = self.expect(member, expr, what);
+        self.field_place(expr, self.this_place(expr), &member.name)
     }
 }
 

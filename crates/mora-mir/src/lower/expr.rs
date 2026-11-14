@@ -238,7 +238,7 @@ impl Lowerer<'_> {
         Ok(match &hir.exprs[expr] {
             Expr::Local(local) => self.local_place(*local),
             Expr::This => self.this_place(expr),
-            Expr::Path(path) => self.path_place(expr, path),
+            Expr::Path(_) => self.path_place(expr),
             Expr::Member { receiver, name, .. } => {
                 // A receiver that is not a place is stored in a temporary.
                 let value = self.operand(*receiver)?;
