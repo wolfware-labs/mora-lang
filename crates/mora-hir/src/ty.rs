@@ -24,6 +24,14 @@ pub enum Ty {
 impl Ty {
     /// The unit type `()`, the empty tuple.
     pub const UNIT: Ty = Ty::Tuple(Vec::new());
+
+    /// The struct this type is; `None` for another type.
+    pub fn as_struct(&self) -> Option<ItemId> {
+        match self {
+            Ty::Struct(item) => Some(*item),
+            _ => None,
+        }
+    }
 }
 
 /// The primitive types of §5.2, by keyword.
@@ -192,6 +200,17 @@ pub enum Signature {
     Value(Ty),
     /// An item whose signature a later part of the compiler lowers.
     None,
+}
+
+impl Signature {
+    /// The function this signature describes; `None` for another kind of
+    /// item.
+    pub fn as_function(&self) -> Option<&FnSignature> {
+        match self {
+            Signature::Function(function) => Some(function),
+            _ => None,
+        }
+    }
 }
 
 /// The signature of a function (§6.9).

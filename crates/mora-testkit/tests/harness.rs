@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use mora_diag::{Code, Diagnostic, Files, Label};
-use mora_span::{Span, TextRange, TextSize};
+use mora_span::{FileId, Span, TextRange, TextSize};
 use mora_testkit::harness::{Options, Report, run_suite, ui_suite};
 use mora_testkit::{Backend, Checked, Compiler, Output};
 
@@ -38,16 +38,21 @@ fn statements(text: &str) -> impl Iterator<Item = (usize, &str, &str)> {
     })
 }
 
+/// The span of `word`, written at the offset `at` of `file`.
+fn word_span(file: FileId, at: usize, word: &str) -> Span {
+    Span::new(
+        file,
+        TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
+    )
+}
+
 impl Compiler for Fake {
     fn check(&self, path: &str, text: &str) -> Checked {
         let mut files = Files::new();
         let file = files.add(path, text);
         let mut diagnostics = Vec::new();
         for (at, word, rest) in statements(text) {
-            let span = Span::new(
-                file,
-                TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
-            );
+            let span = word_span(file, at, word);
             let code = || rest.parse::<Code>().unwrap();
             match word {
                 "fail" => diagnostics.push(Diagnostic::error(
@@ -120,10 +125,7 @@ impl Compiler for Fake {
         let mut checked = self.check(path, text);
         for (at, word, rest) in statements(text) {
             if word == "unlowered" {
-                let span = Span::new(
-                    checked.sources[0],
-                    TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
-                );
+                let span = word_span(checked.sources[0], at, word);
                 checked.diagnostics.push(Diagnostic::error(
                     rest.parse::<Code>().unwrap(),
                     "fake lowering failure",

@@ -910,19 +910,14 @@ impl Check<'_> {
         let Expr::Member { receiver, name, .. } = &self.body.exprs[expr] else {
             return None;
         };
-        match &self.exprs[arena_index(*receiver)] {
-            Some(Ty::Struct(ty)) => Some((*ty, name.as_str())),
-            _ => None,
-        }
+        let ty = self.exprs[arena_index(*receiver)].as_ref()?.as_struct()?;
+        Some((ty, name.as_str()))
     }
 
     /// The type of the field `name` of a value of type `receiver`, when it
     /// is a struct with that field.
     fn field(&self, receiver: Option<&Ty>, name: &str) -> Option<Ty> {
-        match receiver {
-            Some(Ty::Struct(item)) => self.struct_field(*item, name),
-            _ => None,
-        }
+        self.struct_field(receiver?.as_struct()?, name)
     }
 
     fn struct_field(&self, item: ItemId, name: &str) -> Option<Ty> {
@@ -1767,7 +1762,12 @@ impl Check<'_> {
                     fixable: true,
                 });
             }
-            if let Some(error) = self.init_name(item, ty, inits, position, field.is_some()) {
+            // A name that is a field is wrong only when assigned before.
+            let error = match field {
+                Some(_) => repeated_field(ty, inits, position),
+                None => self.not_a_field(item, ty, inits, position, true),
+            };
+            if let Some(error) = error {
                 self.errors.push(error);
             }
         }
@@ -1804,31 +1804,6 @@ impl Check<'_> {
     fn field_visible(&self, item: ItemId, index: u32) -> bool {
         let member = &self.item_data(item).values[index as usize];
         value_visible(self.db, item, member, self.scope)
-    }
-
-    /// What is wrong with the name of the initializer at `position` of
-    /// `inits`, the memberwise creation of the struct `item` of type `ty`:
-    /// one assigned before, or a name that is not an instance field
-    /// ([`Self::not_a_field`]). `is_field` says whether the name is one.
-    fn init_name(
-        &self,
-        item: ItemId,
-        ty: &Ty,
-        inits: &[(String, ExprId)],
-        position: usize,
-        is_field: bool,
-    ) -> Option<TypeError> {
-        let (name, value) = &inits[position];
-        if is_field {
-            return Some(TypeError::RepeatedField {
-                value: *value,
-                first: assigned_before(inits, position)?,
-                previous: inits[position - 1].1,
-                ty: ty.clone(),
-                name: name.clone(),
-            });
-        }
-        self.not_a_field(item, ty, inits, position, true)
     }
 
     /// `MR0147` for the initializer at `position` of `inits`, the creation
@@ -1964,6 +1939,20 @@ fn same_shape(a: &Ty, b: &Ty) -> bool {
         (Ty::Tuple(_), _) | (_, Ty::Tuple(_)) => false,
         _ => true,
     }
+}
+
+/// `MR0148` for the initializer at `position` of `inits`, in the memberwise
+/// creation of a struct of type `ty`, when it assigns a field that one
+/// before it assigns too.
+fn repeated_field(ty: &Ty, inits: &[(String, ExprId)], position: usize) -> Option<TypeError> {
+    let (name, value) = &inits[position];
+    Some(TypeError::RepeatedField {
+        value: *value,
+        first: assigned_before(inits, position)?,
+        previous: inits[position - 1].1,
+        ty: ty.clone(),
+        name: name.clone(),
+    })
 }
 
 /// The value of the first initializer of `inits` that assigns the name of

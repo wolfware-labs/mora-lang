@@ -9,9 +9,8 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
-    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Signature, Stmt, StmtId,
-    Ty, UnaryOp, arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree,
-    signature,
+    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Ty,
+    UnaryOp, arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree, signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
@@ -213,10 +212,9 @@ fn function(
                 file,
                 item,
             };
-            let returns_value = match signature(db, id) {
-                Signature::Function(function) => !function.is_async && returns_value(&function.ret),
-                _ => false,
-            };
+            let returns_value = signature(db, id)
+                .as_function()
+                .is_some_and(|function| !function.is_async && returns_value(&function.ret));
             Function {
                 name: item_tree(db, file).item(item).name.clone(),
                 returns_value,

@@ -35,9 +35,9 @@ use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, FnSignature, Inference, ItemId, ItemIdx, STD,
-    Signature, Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer,
-    is_known, owner_name, signature, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Stmt,
+    StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known, owner_name,
+    signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
@@ -72,11 +72,9 @@ const LOCAL_WITHOUT_TYPE: &str = "the local has no type";
 #[salsa::tracked(returns(ref))]
 pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Mir {
     if let Some(later) = later::lowered_later(db, project, file, owner) {
-        panic!(
-            "internal error lowering {}: {} is not lowered until {}",
-            owner_name(db, project, file, owner),
-            later.what,
-            later.milestone
+        fail_in(
+            &owner_name(db, project, file, owner),
+            &format!("{} is not lowered until {}", later.what, later.milestone),
         );
     }
     let shared = Owner::new(db, project, file, owner);
@@ -475,22 +473,6 @@ fn index_u32(index: usize) -> u32 {
         .unwrap_or_else(|_| panic!("a body with more than u32::MAX locals or blocks"))
 }
 
-/// The function `signature` describes; `None` for another kind of item.
-pub(crate) fn as_function(signature: &Signature) -> Option<&FnSignature> {
-    match signature {
-        Signature::Function(function) => Some(function),
-        _ => None,
-    }
-}
-
-/// The struct `ty` is; `None` for another type.
-pub(crate) fn as_struct(ty: &Ty) -> Option<ItemId> {
-    match ty {
-        Ty::Struct(item) => Some(*item),
-        _ => None,
-    }
-}
-
 /// What lowering an expression gives when the expression calls a function
 /// that does not return: nothing more of the expression is lowered, and
 /// lowering goes on in a block that control never gets to.
@@ -593,7 +575,7 @@ impl<'a> Owner<'a> {
     /// parameters of the function or method `item`.
     fn function_signature(&self, item: ItemId) -> (Ty, Option<LocalTy>, Vec<LocalTy>) {
         let function = self.expect(
-            as_function(signature(self.db, item)),
+            signature(self.db, item).as_function(),
             "the owner is not a function",
         );
         if function.params.len() != self.hir.params.len() {

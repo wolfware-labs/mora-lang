@@ -35,8 +35,6 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile};
 
-use super::{as_function, as_struct};
-
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -493,10 +491,16 @@ impl Uses {
             }
         }
         let returns_unit = match owner {
-            BodyOwner::Item(item) => matches!(
-                signature(db, ItemId { project, file, item }),
-                Signature::Function(function) if function.ret == Ty::UNIT
-            ),
+            BodyOwner::Item(item) => {
+                let item = ItemId {
+                    project,
+                    file,
+                    item,
+                };
+                signature(db, item)
+                    .as_function()
+                    .is_some_and(|function| function.ret == Ty::UNIT)
+            }
             // The top-level statements are a block, and every other body
             // with an expression of its own comes later for what it is.
             _ => false,
@@ -701,7 +705,7 @@ fn unresolved_later(
     functions: &[ItemId],
 ) -> Option<Later> {
     let params = functions.iter().map(|&item| {
-        let function = as_function(signature(db, item))?;
+        let function = signature(db, item).as_function()?;
         types_later(db, function.params.iter().map(|param| &param.ty))?
             .later(|what| format!("a call of an overload with {what}"))
     });
@@ -773,7 +777,7 @@ fn struct_member<'a>(
     let Expr::Member { receiver, name, .. } = &hir.exprs[callee] else {
         return None;
     };
-    let item = as_struct(inference.expr(*receiver)?)?;
+    let item = inference.expr(*receiver)?.as_struct()?;
     Some((item, name.as_str()))
 }
 
@@ -784,7 +788,7 @@ fn struct_member<'a>(
 /// them names it on a tie; `None` when none of them comes later.
 fn call_later(db: &dyn Db, functions: impl IntoIterator<Item = ItemId>) -> Option<Later> {
     latest(functions.into_iter().map(|item| {
-        let function = as_function(signature(db, item))?;
+        let function = signature(db, item).as_function()?;
         let later = function_later(function)?;
         Some(Later::new(
             format!("a call of {}", later.what),
@@ -847,10 +851,8 @@ fn creations_later(
         let Expr::New { args, .. } = expr else {
             return None;
         };
-        let Some(Ty::Struct(item)) = inference.expr(id) else {
-            return None;
-        };
-        match creation(db, *item, args.as_deref()) {
+        let item = inference.expr(id)?.as_struct()?;
+        match creation(db, item, args.as_deref()) {
             Creation::Constructor => later("a constructor call", CLASSES),
             Creation::Positional => {
                 later("the creation of a positional struct", POSITIONAL_STRUCTS)
@@ -878,10 +880,7 @@ fn this_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner)
     };
     let (ty, what) = match owner {
         BodyOwner::Item(item) => {
-            let Signature::Function(function) = signature(db, id(item)) else {
-                return None;
-            };
-            function.receiver?;
+            signature(db, id(item)).as_function()?.receiver?;
             (tree.item(item).parent?, "a method")
         }
         BodyOwner::Value(ty, index) => {

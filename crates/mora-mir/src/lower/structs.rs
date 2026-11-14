@@ -5,7 +5,7 @@ use mora_hir::{Arg, BodyOwner, Creation, ExprId, Field, ItemId, body, creation, 
 use mora_span::Db;
 
 use super::expr::Dest;
-use super::{Lowered, Lowerer, as_struct};
+use super::{Lowered, Lowerer};
 use crate::{AggregateKind, Callee, Operand, Place, Projection, Rvalue};
 
 impl Lowerer<'_> {
@@ -21,7 +21,7 @@ impl Lowerer<'_> {
         inits: Option<&[(String, ExprId)]>,
     ) -> Lowered<Rvalue> {
         let what = "the creation of a value that is not a struct is not lowered";
-        let item = self.expect(as_struct(&self.ty(expr)), expr, what);
+        let item = self.expect(self.ty(expr).as_struct(), expr, what);
         let memberwise = creation(self.owner.db, item, args) == Creation::Memberwise;
         self.check(memberwise, expr, "a constructor call is not lowered");
         let inits = inits.unwrap_or_default();
@@ -80,7 +80,7 @@ impl Lowerer<'_> {
         let db = self.owner.db;
         let what = "a member that is not a field of a struct is not lowered";
         let item = self.expect(
-            as_struct(&self.builder.body().place_ty(&base, db)),
+            self.builder.body().place_ty(&base, db).as_struct(),
             expr,
             what,
         );

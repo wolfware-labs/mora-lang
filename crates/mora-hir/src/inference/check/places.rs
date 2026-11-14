@@ -20,11 +20,11 @@ impl Check<'_> {
     pub(super) fn types_as_values(&mut self) {
         let body = self.body;
         // Whether each expression, by its index, stands where a type may.
-        let mut allowed = vec![false; body.exprs.len()];
+        let mut type_allowed = vec![false; body.exprs.len()];
         for (_, node) in body.exprs.iter() {
             match node {
-                Expr::Member { receiver, .. } => allowed[arena_index(*receiver)] = true,
-                Expr::Nameof(inner) => allowed[arena_index(*inner)] = true,
+                Expr::Member { receiver, .. } => type_allowed[arena_index(*receiver)] = true,
+                Expr::Nameof(inner) => type_allowed[arena_index(*inner)] = true,
                 _ => {}
             }
         }
@@ -32,13 +32,13 @@ impl Check<'_> {
         for (_, pat) in body.pats.iter() {
             match pat {
                 Pat::Constant(expr) | Pat::Case { path: expr, .. } => {
-                    allowed[arena_index(*expr)] = true;
+                    type_allowed[arena_index(*expr)] = true;
                 }
                 _ => {}
             }
         }
         for (expr, node) in body.exprs.iter() {
-            let allowed = allowed[arena_index(expr)];
+            let allowed = type_allowed[arena_index(expr)];
             match node {
                 Expr::Type(_) => {
                     if !allowed {

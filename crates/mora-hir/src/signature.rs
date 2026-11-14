@@ -123,10 +123,7 @@ fn declares_field(member: &ValueMember) -> bool {
 /// of any other type, or of a generic struct, whose type is not a
 /// [`Ty::Struct`].
 pub fn this_type(db: &dyn Db, item: ItemId) -> Option<Ty> {
-    let Signature::Function(function) = signature(db, item) else {
-        return None;
-    };
-    function.receiver?;
+    signature(db, item).as_function()?.receiver?;
     let parent = declaring_type(db, item)?;
     (item_data(db, parent).kind == ItemKind::Struct && !is_generic_type(db, parent))
         .then_some(Ty::Struct(parent))

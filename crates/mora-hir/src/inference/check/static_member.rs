@@ -13,7 +13,6 @@ use crate::inference::{Callee, InstanceMember, InstanceUse, TypeError};
 use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, declaring_type, item_data};
 use crate::signature::signature;
-use crate::ty::Signature;
 
 /// The type a body is a member of, and what of a value of it the body has.
 struct Member {
@@ -208,7 +207,9 @@ impl Check<'_> {
 /// Whether `item` is a method that takes a receiver.
 fn has_receiver(db: &dyn Db, item: ItemId) -> bool {
     item_data(db, item).kind == ItemKind::Function
-        && matches!(signature(db, item), Signature::Function(function) if function.receiver.is_some())
+        && signature(db, item)
+            .as_function()
+            .is_some_and(|function| function.receiver.is_some())
 }
 
 /// The use of the instance method `item`, with the type that declares it.

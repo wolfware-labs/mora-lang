@@ -20,7 +20,7 @@ use crate::bodies::{
 use crate::inference::{Callee, Inference, infer};
 use crate::items::ValueMember;
 use crate::signature::signature;
-use crate::ty::{ParamMode, Signature};
+use crate::ty::ParamMode;
 
 /// A local function of a body and what it takes from the bodies around it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -452,10 +452,10 @@ impl Walk<'_> {
         let Some(Callee::Item(item)) = self.inference.callee(call) else {
             return;
         };
-        let Signature::Function(function) = signature(self.db, item) else {
-            return;
-        };
-        let Some(mode) = function.receiver else {
+        let Some(mode) = signature(self.db, item)
+            .as_function()
+            .and_then(|function| function.receiver)
+        else {
             return;
         };
         match &self.hir.exprs[callee] {
@@ -477,28 +477,41 @@ fn capture(captures: &mut BTreeMap<Captured, ParamMode>, captured: Captured, mod
 
 #[cfg(test)]
 mod tests {
+    use mora_span::Project;
+
     use crate::test_db::{TestDb, app, codes, file_named};
     use crate::*;
 
-    /// Each local function of the owner `owner` of `text`, by name, with
-    /// its enclosing local function and its captures as `name:mode`.
+    /// Each local function of the owner `owner` of `text`, which the front
+    /// end accepts, by name, with its enclosing local function and its
+    /// captures as `name:mode`.
     fn summary(text: &str, owner: &str) -> Vec<(String, Option<usize>, Vec<String>)> {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
         assert_eq!(
             codes(diagnostics(&db, project)),
             Vec::<String>::new(),
             "{text}"
         );
-        let tree = item_tree(&db, file);
+        summary_in(&db, project, owner)
+    }
+
+    /// [`summary`] of the owner `owner` of `src/Program.mr` in `project`,
+    /// whatever the front end reports.
+    fn summary_in(
+        db: &TestDb,
+        project: Project,
+        owner: &str,
+    ) -> Vec<(String, Option<usize>, Vec<String>)> {
+        let file = file_named(db, project, "src/Program.mr");
+        let tree = item_tree(db, file);
         let (item, _) = tree
             .items()
             .find(|(_, item)| item.name == owner)
             .expect("the owner");
         let owner = BodyOwner::Item(item);
-        let body = body(&db, file, owner);
-        local_functions(&db, project, file, owner)
+        let body = body(db, file, owner);
+        local_functions(db, project, file, owner)
             .iter()
             .map(|function| {
                 let captures = function
@@ -708,21 +721,7 @@ mod tests {
         let db = TestDb::new();
         let text = "F(a: int) {\n    G() {\n        let f = [move missing] () => a;\n    }\n}\n";
         let project = app(&db, &[("src/Program.mr", text)]);
-        let file = file_named(&db, project, "src/Program.mr");
         assert_ne!(codes(diagnostics(&db, project)), Vec::<String>::new());
-        let tree = item_tree(&db, file);
-        let (item, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
-        let owner = BodyOwner::Item(item);
-        let body = body(&db, file, owner);
-        let found = local_functions(&db, project, file, owner);
-        let captured: Vec<_> = found[0]
-            .captures
-            .iter()
-            .map(|(captured, _)| match captured {
-                Captured::This => "this",
-                Captured::Local(local) => body.locals[*local].name.as_str(),
-            })
-            .collect();
-        assert_eq!(captured, ["a"]);
+        assert_eq!(summary_in(&db, project, "F"), [entry("G", None, &["a:in"])]);
     }
 }

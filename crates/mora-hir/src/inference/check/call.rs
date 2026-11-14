@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 use super::{Check, Expect};
 use crate::arena::arena_index;
 use crate::bodies::{
-    Arg, ArgMode, BodyOwner, Expr, ExprId, LocalId, LocalKind, Stmt, Target, body, body_resolution,
+    Arg, ArgMode, BodyOwner, Expr, ExprId, LocalId, LocalKind, Target, body, body_resolution,
 };
 use crate::defs::ItemId;
 use crate::diverging::calls_diverging;
@@ -19,9 +19,9 @@ use crate::inference::{
     Callee, Context, NamedProblem, NewTarget, TypeError, converts, is_known, numeric, same, ty_name,
 };
 use crate::items::{ItemKind, ValueKind};
-use crate::resolve::{Resolved, is_visible, item_data, members_named};
-use crate::signature::{instance_methods, signature};
-use crate::ty::{ParamMode, Signature, Ty};
+use crate::resolve::{Resolved, is_visible, members_named};
+use crate::signature::instance_methods;
+use crate::ty::{ParamMode, Ty};
 
 /// A function a call may call, borrowed from its signature.
 struct Candidate<'a> {
@@ -435,21 +435,21 @@ impl<'a> Check<'a> {
     /// call through a value of any other type, or of a static method, is
     /// not checked yet (D-137).
     fn methods(&self, receiver: Option<&Ty>, name: &str) -> Callees<'a> {
-        let Some(Ty::Struct(ty)) = receiver else {
+        let Some(ty) = receiver.and_then(Ty::as_struct) else {
             return Callees::Unknown;
         };
-        let named: Vec<_> = instance_methods(self.db, *ty, name).collect();
+        let named: Vec<_> = instance_methods(self.db, ty, name).collect();
         // A field or a getter of a type that is not a function type is not
         // callable (`MR0208`). A static field, a static getter or a constant
         // named through a value is `MR0155`, which statics check (D-152):
         // nothing is reported before them.
         let Some(&first) = named.first() else {
-            if self.is_static_value(*ty, name) {
+            if self.is_static_value(ty, name) {
                 return Callees::Unknown;
             }
             let value = self
                 .field(receiver, name)
-                .or_else(|| self.getter_type(*ty, name));
+                .or_else(|| self.getter_type(ty, name));
             return self.not_callable(value);
         };
         // Only the methods visible from the call are candidates, as name
@@ -490,13 +490,10 @@ impl<'a> Check<'a> {
 
     /// A function or method as a candidate.
     fn item_candidate(&self, item: ItemId) -> Option<Candidate<'a>> {
-        let db = self.db;
-        let Signature::Function(function) = signature(db, item) else {
-            return None;
-        };
+        let function = self.signature(item).as_function()?;
         Some(Candidate {
             origin: Callee::Item(item),
-            name: &item_data(db, item).name,
+            name: &self.item_data(item).name,
             params: function
                 .params
                 .iter()
@@ -518,15 +515,10 @@ impl<'a> Check<'a> {
         let functions = self.local_functions.get_or_insert_with(|| {
             body.stmts
                 .iter()
-                .filter_map(|(id, stmt)| match stmt {
-                    Stmt::Function(function) => Some((function.local, id)),
-                    _ => None,
-                })
+                .filter_map(|(id, _)| Some((body.local_function(id)?.local, id)))
                 .collect::<FxHashMap<_, _>>()
         });
-        let Stmt::Function(function) = &body.stmts[*functions.get(&local)?] else {
-            return None;
-        };
+        let function = body.local_function(*functions.get(&local)?)?;
         // A local function inside a generic one, or generic itself, has
         // type parameters among its types.
         let generic = function

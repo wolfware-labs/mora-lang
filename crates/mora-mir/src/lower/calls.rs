@@ -12,7 +12,7 @@ use mora_hir::{
 use mora_span::Span;
 
 use super::expr::{Dest, constant};
-use super::{Diverged, Lowered, Lowerer, as_function};
+use super::{Diverged, Lowered, Lowerer};
 use crate::{BorrowMode, Callee, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
 impl Lowerer<'_> {
@@ -104,7 +104,7 @@ impl Lowerer<'_> {
         args: &[Arg],
         dest: Dest,
     ) -> Lowered<Option<Place>> {
-        let function = as_function(signature(self.owner.db, item));
+        let function = signature(self.owner.db, item).as_function();
         let function = self.expect(function, expr, "the callee is not a function");
         let values = arg_values(args);
         // The receiver is evaluated first. One taken by `in`, `ref` or `mut`
@@ -353,12 +353,8 @@ impl Lowerer<'_> {
         });
         let what = "an argument without a default value is left out";
         let default = self.expect(default, call, what);
-        let Some(value) = constant(callee, inference, default) else {
-            self.ice(
-                call,
-                "a default value that is not a literal needs constant evaluation (M1.11)",
-            )
-        };
+        let what = "a default value that is not a literal needs constant evaluation (M1.11)";
+        let value = self.expect(constant(callee, inference, default), call, what);
         let span = self.span(call);
         let operand = self.converted(inference.conversion(default), Operand::Const(value), span);
         self.pass(operand, mode, span)
