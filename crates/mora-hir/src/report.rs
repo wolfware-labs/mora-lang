@@ -28,7 +28,8 @@ use crate::type_ref::type_keywords;
 /// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
 /// `MR0113`), its constants without a value (`MR0114`), the locals of its
 /// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
-/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax errors come from [`crate::parse`].
+/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax
+/// errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     let map = def_map(db, project);

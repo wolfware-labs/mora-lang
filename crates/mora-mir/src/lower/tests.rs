@@ -4123,6 +4123,14 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.F: a `ref` argument or a `mut` receiver that is an element is not lowered \
              until M3.6",
         ),
+        // With a `ref` argument that is not a place too, the element
+        // still decides: indexers come after parameter modes.
+        (
+            "Two(ref x: int, ref y: int) {}\nF(xs: int[]) {\n    Two(ref xs[0], ref 1);\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `ref` argument or a `mut` receiver that is an element is not lowered \
+             until M3.6",
+        ),
         // Read, not borrowed, an element waits for the arrays alone.
         (
             "struct P {\n    public X: int;\n    public Show(): int => X;\n}\n\

@@ -393,6 +393,16 @@ fn expressions_later(
                     SMALLER_EXPRESSIONS,
                 )
             }
+            // Before the parameter modes, which come earlier: a call that
+            // also borrows a value that is not a place waits for this one.
+            Expr::Call { callee, args }
+                if borrows_element(db, hir, inference, id, *callee, args) =>
+            {
+                (
+                    "a `ref` argument or a `mut` receiver that is an element",
+                    OPERATORS,
+                )
+            }
             Expr::Call { args, .. }
                 if args
                     .iter()
@@ -401,19 +411,12 @@ fn expressions_later(
                 ("a `ref` argument that is not a place", PARAMETER_MODES)
             }
             Expr::Call { callee, .. }
-                if mut_receiver_off_place(db, hir, inference, id, *callee) =>
+                if mut_receiver(db, hir, inference, id, *callee)
+                    .is_some_and(|receiver| !is_place(hir, receiver)) =>
             {
                 (
                     "a `mut` method called on a value that is not a place",
                     PARAMETER_MODES,
-                )
-            }
-            Expr::Call { callee, args }
-                if borrows_element(db, hir, inference, id, *callee, args) =>
-            {
-                (
-                    "a `ref` argument or a `mut` receiver that is an element",
-                    OPERATORS,
                 )
             }
             Expr::Await(_) => ("`await`", ASYNC),
@@ -450,53 +453,46 @@ fn expressions_later(
 /// what it is. Lowering has no place for an element yet, so a borrow of
 /// one comes later too ([`borrows_element`]).
 fn is_place(hir: &Body, expr: ExprId) -> bool {
-    match &hir.exprs[expr] {
-        Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. } => true,
-        Expr::Member { receiver, .. } => is_place(hir, *receiver),
-        _ => false,
-    }
+    matches!(
+        member_root(hir, expr),
+        Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. }
+    )
 }
 
 /// Whether `expr` is an element or a field of one, by its shape.
 fn is_element(hir: &Body, expr: ExprId) -> bool {
-    match &hir.exprs[expr] {
-        Expr::Index { .. } => true,
-        Expr::Member { receiver, .. } => is_element(hir, *receiver),
-        _ => false,
+    matches!(member_root(hir, expr), Expr::Index { .. })
+}
+
+/// The expression a chain of members starts from, as `xs[0]` in
+/// `xs[0].P.X`, or `expr` itself when it is not a member.
+fn member_root(hir: &Body, mut expr: ExprId) -> &Expr {
+    while let Expr::Member { receiver, .. } = hir.exprs[expr] {
+        expr = receiver;
     }
+    &hir.exprs[expr]
 }
 
-/// Whether the call `call` calls a `mut` method, which takes its receiver
-/// by `ref`.
-fn calls_mut_method(db: &dyn Db, inference: &Inference, call: ExprId) -> bool {
-    let Some(Callee::Item(item)) = inference.callee(call) else {
-        return false;
-    };
-    signature(db, item)
-        .as_function()
-        .is_some_and(|function| function.receiver == Some(ParamMode::Ref))
-}
-
-/// The receiver of the method that `callee` names through a member, as
-/// `p` in `p.Inc()`.
-fn member_receiver(hir: &Body, callee: ExprId) -> Option<ExprId> {
-    match hir.exprs[callee] {
-        Expr::Member { receiver, .. } => Some(receiver),
-        _ => None,
-    }
-}
-
-/// Whether the call `call` of `callee` calls a `mut` method, which takes
-/// its receiver by `ref`, on a value that is not a place.
-fn mut_receiver_off_place(
+/// The receiver, as `p` in `p.Inc()`, when the call `call` of `callee`
+/// calls a `mut` method through a member: such a method takes its
+/// receiver by `ref`.
+fn mut_receiver(
     db: &dyn Db,
     hir: &Body,
     inference: &Inference,
     call: ExprId,
     callee: ExprId,
-) -> bool {
-    calls_mut_method(db, inference, call)
-        && member_receiver(hir, callee).is_some_and(|receiver| !is_place(hir, receiver))
+) -> Option<ExprId> {
+    let Expr::Member { receiver, .. } = hir.exprs[callee] else {
+        return None;
+    };
+    let Some(Callee::Item(item)) = inference.callee(call) else {
+        return None;
+    };
+    signature(db, item)
+        .as_function()
+        .is_some_and(|function| function.receiver == Some(ParamMode::Ref))
+        .then_some(receiver)
 }
 
 /// Whether the call `call` of `callee` with `args` borrows an element or
@@ -513,8 +509,8 @@ fn borrows_element(
 ) -> bool {
     args.iter()
         .any(|arg| arg.mode == Some(ArgMode::Ref) && is_element(hir, arg.expr))
-        || calls_mut_method(db, inference, call)
-            && member_receiver(hir, callee).is_some_and(|receiver| is_element(hir, receiver))
+        || mut_receiver(db, hir, inference, call, callee)
+            .is_some_and(|receiver| is_element(hir, receiver))
 }
 
 /// What the path `expr` names, as `a union case`, and the milestone that
