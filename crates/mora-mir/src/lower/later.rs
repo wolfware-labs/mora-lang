@@ -493,10 +493,11 @@ impl Uses {
         if inference.expr(expr) == Some(&Ty::Never) {
             return false;
         }
-        let part_of_more = self.callees.contains_key(&expr) || self.receivers.contains(&expr);
         match hir.exprs[expr] {
-            Expr::Call { .. } => part_of_more || !self.statements.contains(&expr),
-            _ => !part_of_more,
+            // A callee or a receiver is part of a larger expression, never a
+            // statement itself.
+            Expr::Call { .. } => !self.statements.contains(&expr),
+            _ => !self.callees.contains_key(&expr) && !self.receivers.contains(&expr),
         }
     }
 }

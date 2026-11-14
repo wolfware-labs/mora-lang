@@ -724,22 +724,6 @@ fn a_value_of_the_library_comes_with_the_library() {
 }
 
 #[test]
-fn a_tuple_operation_with_a_struct_waits_for_operators() {
-    let text = "public struct Q {\n    public mut Y: int;\n    \
-                public static operator +(a: (int, int), b: Q): (int, int) => a;\n}\n\
-                A(q: Q) {\n    var x = 1;\n    var y = 2;\n    (x, y) += q;\n}\n\
-                B(q: Q) {\n    var x = 1;\n    var y = 2;\n    (x, y) <<= q;\n}\n";
-    for name in ["A", "B"] {
-        assert_eq!(
-            later_error(text, |l| l.owner(name)),
-            format!(
-                "internal error lowering UsersApi.{name}: an operator on a struct is not lowered until M3.6"
-            )
-        );
-    }
-}
-
-#[test]
 fn a_lambda_stored_in_a_local_comes_with_closures() {
     assert_eq!(
         later_error("let f = (x: int) => x;\n", |l| l.owner("top-level")),
@@ -2508,8 +2492,10 @@ fn an_operator_on_a_struct_comes_with_operators() {
                 B(p: P) {\n    let b = 1 + p;\n}\n\
                 C(p: P) {\n    let c = -p;\n}\n\
                 D(p: P) {\n    var d = p;\n    d++;\n}\n\
-                E(p: P, q: P): bool => p == q;\n";
-    for name in ["A", "B", "C", "D"] {
+                E(p: P, q: P): bool => p == q;\n\
+                F(p: P) {\n    var x = 1;\n    var y = 2;\n    (x, y) += p;\n}\n\
+                G(p: P) {\n    var x = 1;\n    var y = 2;\n    (x, y) <<= p;\n}\n";
+    for name in ["A", "B", "C", "D", "F", "G"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!(

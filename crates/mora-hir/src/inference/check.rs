@@ -1288,6 +1288,7 @@ impl Check<'_> {
     /// compound assignments, whose result converts back to the type of the
     /// place as a cast would (§7.12): only the operation itself is checked.
     fn assign(&mut self, expr: ExprId, op: Option<BinaryOp>, lhs: ExprId, rhs: ExprId) {
+        let tuple = matches!(self.body.exprs[lhs], Expr::Tuple(_));
         match op {
             None => {
                 let places = self.place_type(lhs);
@@ -1295,16 +1296,14 @@ impl Check<'_> {
                 self.deconstruct(lhs, &places, rhs);
             }
             // `??=` waits for options (M3.5) whatever its left side is.
-            Some(op)
-                if op != BinaryOp::Coalesce && matches!(self.body.exprs[lhs], Expr::Tuple(_)) =>
-            {
+            Some(op) if tuple && op != BinaryOp::Coalesce => {
                 self.tuple_operation(expr, op, lhs, rhs);
             }
             Some(op) => {
                 let result = self.binary(expr, op, lhs, rhs);
                 // A tuple of places is for `=` only; `??=` on one, the only
                 // tuple that gets here, waits for options (M3.5).
-                if !matches!(self.body.exprs[lhs], Expr::Tuple(_)) {
+                if !tuple {
                     self.require_place(lhs, false);
                 }
                 // The result converts back to the type of the place as a
