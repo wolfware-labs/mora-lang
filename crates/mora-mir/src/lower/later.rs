@@ -27,11 +27,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use mora_hir::{
-    Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Callee, Construct, Creation, Expr,
-    ExprId, FnSignature, Inference, Item, ItemId, ItemKind, Literal, LocalKind, Resolved,
-    Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body, body_resolution, creation,
-    enclosing_types, infer, instance_fields, instance_methods, is_generic_type, item_tree,
-    local_functions, signature, struct_field,
+    Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Callee, Construct, Creation,
+    Expr, ExprId, FnSignature, Inference, Item, ItemId, ItemKind, Literal, LocalKind, ParamMode,
+    Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body, body_resolution,
+    creation, enclosing_types, infer, instance_fields, instance_methods, is_generic_type,
+    item_tree, local_functions, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -70,6 +70,12 @@ const CLASSES: Milestone = Milestone {
 const POSITIONAL_STRUCTS: Milestone = Milestone {
     phase: 2,
     number: 2,
+};
+/// M2.4, parameter modes and `this`, which checks that what a `ref`
+/// argument or a `mut` method's receiver names is a mutable place.
+const PARAMETER_MODES: Milestone = Milestone {
+    phase: 2,
+    number: 4,
 };
 /// M2.6, destructors and drop order.
 const DESTRUCTORS: Milestone = Milestone {
@@ -275,9 +281,14 @@ pub(crate) fn lowered_later(
 /// tuple, dynamic interface values `as`, and constant evaluation an array
 /// creation and a constant declared in a namespace. Positional structs
 /// bring `with`, patterns `match` and `is`, results `?`, strings an index
-/// of a string (`MR0130`), enumeration `foreach`, expansion a quote, a
-/// splice or a macro call, and async lowering `await`. The smaller
-/// expressions bring the rest: an element of a tuple read by name, a
+/// of a string (`MR0130`) and the ordering of strings, interfaces the
+/// ordering of structs, both through `IComparable<T>` (§8.5), enumeration
+/// `foreach`, expansion a quote, a splice or a macro call, and async
+/// lowering `await`. Parameter modes bring a `ref` argument, and the
+/// receiver of a `mut` method, that is not a place, which they report
+/// (§10.3). The smaller expressions bring the rest: an element of a tuple
+/// read by name, a comparison of two tuples of one shape whose element
+/// types differ, which inference leaves to the rules of tuples (§5.5), a
 /// collection expression, a range, an index from the end, `nameof`,
 /// `sizeof`, `default` and a deconstruction, declared or assigned. On a tie
 /// the expressions name it before the statements, each in the order of the
@@ -354,6 +365,49 @@ fn expressions_later(
             Expr::Assign { op: None, lhs, .. } if matches!(hir.exprs[*lhs], Expr::Tuple(_)) => {
                 ("a deconstruction", SMALLER_EXPRESSIONS)
             }
+            Expr::Binary { op, lhs, rhs } if is_ordering(*op) => {
+                let operand = |ty: fn(&Ty) -> bool| {
+                    [lhs, rhs]
+                        .iter()
+                        .any(|operand| inference.expr(**operand).is_some_and(ty))
+                };
+                if operand(|ty| *ty == Ty::String) {
+                    ("an ordering of strings", STRINGS)
+                } else if operand(|ty| matches!(ty, Ty::Struct(_))) {
+                    ("an ordering of structs", INTERFACES)
+                } else {
+                    return None;
+                }
+            }
+            Expr::Binary {
+                op: BinaryOp::Eq | BinaryOp::Ne,
+                lhs,
+                rhs,
+            } if inference.expr(id).is_none()
+                && [lhs, rhs]
+                    .iter()
+                    .all(|operand| matches!(inference.expr(**operand), Some(Ty::Tuple(_)))) =>
+            {
+                (
+                    "a comparison of tuples of different types",
+                    SMALLER_EXPRESSIONS,
+                )
+            }
+            Expr::Call { args, .. }
+                if args
+                    .iter()
+                    .any(|arg| arg.mode == Some(ArgMode::Ref) && !is_place(hir, arg.expr)) =>
+            {
+                ("a `ref` argument that is not a place", PARAMETER_MODES)
+            }
+            Expr::Call { callee, .. }
+                if mut_receiver_off_place(db, hir, inference, id, *callee) =>
+            {
+                (
+                    "a `mut` method called on a value that is not a place",
+                    PARAMETER_MODES,
+                )
+            }
             Expr::Await(_) => ("`await`", ASYNC),
             Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
             Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
@@ -380,6 +434,42 @@ fn expressions_later(
         _ => None,
     });
     latest(exprs.chain(stmts))
+}
+
+/// Whether `op` orders its operands: `<`, `>`, `<=` or `>=`.
+fn is_ordering(op: BinaryOp) -> bool {
+    op.is_comparison() && !matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+}
+
+/// Whether `expr` names a place, by its shape: a local, `this`, a path,
+/// an element, or a field of a place (§7.11). What a path or a member
+/// names that is not a place, as a getter or a constant, comes later for
+/// what it is.
+fn is_place(hir: &Body, expr: ExprId) -> bool {
+    match &hir.exprs[expr] {
+        Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. } => true,
+        Expr::Member { receiver, .. } => is_place(hir, *receiver),
+        _ => false,
+    }
+}
+
+/// Whether the call `call` of `callee` calls a `mut` method, which takes
+/// its receiver by `ref`, on a value that is not a place.
+fn mut_receiver_off_place(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    call: ExprId,
+    callee: ExprId,
+) -> bool {
+    let Some(Callee::Item(item)) = inference.callee(call) else {
+        return false;
+    };
+    let takes_ref = signature(db, item)
+        .as_function()
+        .is_some_and(|function| function.receiver == Some(ParamMode::Ref));
+    takes_ref
+        && matches!(hir.exprs[callee], Expr::Member { receiver, .. } if !is_place(hir, receiver))
 }
 
 /// What the path `expr` names, as `a union case`, and the milestone that

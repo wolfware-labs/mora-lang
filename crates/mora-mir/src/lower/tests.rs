@@ -4059,6 +4059,53 @@ fn every_owner_lowered_later_names_its_milestone() {
             |l| l.owner("K"),
             "UsersApi.K: the initializer of a static with a spliced type is not lowered until M4.4",
         ),
+        (
+            "let d = \"a\" < \"b\";\n",
+            |l| l.owner("top-level"),
+            "top-level: an ordering of strings is not lowered until M5.2",
+        ),
+        (
+            "F(a: string): bool => Todo() >= a;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: an ordering of strings is not lowered until M5.2",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nF(p: P, q: P): bool => p < q;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: an ordering of structs is not lowered until M3.10",
+        ),
+        (
+            "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\n",
+            |l| l.owner("top-level"),
+            "top-level: a comparison of tuples of different types is not lowered until M3.12",
+        ),
+        (
+            "F(t: (byte, byte)): bool => (1L, 2) != t;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a comparison of tuples of different types is not lowered until M3.12",
+        ),
+        (
+            "Bump(ref x: int) {}\nBump(ref 1);\n",
+            |l| l.owner("top-level"),
+            "top-level: a `ref` argument that is not a place is not lowered until M2.4",
+        ),
+        (
+            "Bump(ref x: int) {}\nF(n: int) {\n    L(): int => n;\n    Bump(ref L());\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `ref` argument that is not a place is not lowered until M2.4",
+        ),
+        (
+            "struct P {\n    public mut X: int;\n}\nBump(ref x: int) {}\nMk(): P => Todo();\n\
+             F() {\n    Bump(ref Mk().X);\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `ref` argument that is not a place is not lowered until M2.4",
+        ),
+        (
+            "struct P {\n    public mut X: int;\n    public mut Inc() { X += 1; }\n}\n\
+             Mk(): P => Todo();\nF() {\n    Mk().Inc();\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `mut` method called on a value that is not a place is not lowered until M2.4",
+        ),
     ];
     for &(text, owner, message) in cases {
         assert_eq!(
@@ -4067,6 +4114,35 @@ fn every_owner_lowered_later_names_its_milestone() {
             "{text}"
         );
     }
+}
+
+#[test]
+fn a_ref_argument_or_a_mut_receiver_that_is_a_place_is_lowered() {
+    // A local, a field of one, and a parenthesized local are places; so is
+    // `this` and a field of it, in a `mut` method.
+    let lowered = lowered(
+        "struct P {\n    public mut X: int;\n    public mut Inc() { X += 1; }\n    \
+         public mut Twice() {\n        Bump(ref X);\n        Inc();\n    }\n}\n\
+         Bump(ref x: int) {}\nF() {\n    var n = 1;\n    var p = new P { X = 1 };\n    \
+         Bump(ref n);\n    Bump(ref (n));\n    Bump(ref p.X);\n    p.Inc();\n}\n",
+    );
+    assert_eq!(lowered.bodies("F"), ["UsersApi.F"]);
+    assert_eq!(lowered.bodies("Twice"), ["UsersApi.P.Twice"]);
+}
+
+#[test]
+fn tuples_whose_element_names_differ_are_one_type() {
+    // The names label the elements and leave the type as it is, wherever
+    // a value goes: a local, a parameter, a return value, a field and an
+    // operand of `==`.
+    let lowered = lowered(
+        "struct P {\n    public T: (A: int, B: int);\n}\n\
+         Take(t: (Left: int, Right: int)) {}\n\
+         F(): (Left: int, Right: int) {\n    let t = (1, 2);\n    \
+         let d: (Left: int, Right: int) = t;\n    Take(t);\n    let p = new P { T = t };\n    \
+         let same = t == d;\n    return t;\n}\n",
+    );
+    assert_eq!(lowered.bodies("F"), ["UsersApi.F"]);
 }
 
 #[test]

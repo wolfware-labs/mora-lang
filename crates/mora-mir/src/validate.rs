@@ -409,7 +409,7 @@ impl Checker<'_> {
         }
         let value_ty = self.rvalue(at, rvalue, dest_value);
         if let (Some(dest_ty), Some(value_ty)) = (dest_ty, value_ty)
-            && dest_ty != value_ty
+            && !same_local(&dest_ty, &value_ty)
         {
             self.error(
                 at,
@@ -473,7 +473,7 @@ impl Checker<'_> {
                 }
                 let mut fine = true;
                 for (n, (field, ty)) in fields.iter().zip(&tys).enumerate() {
-                    if field.ty != *ty {
+                    if !same(&field.ty, ty) {
                         self.error(
                             at,
                             format!(
@@ -530,7 +530,7 @@ impl Checker<'_> {
                 }
                 return Some(left);
             }
-            _ if left != right => {
+            _ if !same(&left, &right) => {
                 self.error(
                     at,
                     format!("operands of {op:?} have types {left:?} and {right:?}"),
@@ -674,7 +674,7 @@ impl Checker<'_> {
         }
         for (index, (arg, param)) in args.iter().zip(&params).enumerate() {
             if let Some(arg) = arg
-                && arg != param
+                && !same_local(arg, param)
             {
                 self.error(
                     at,
@@ -683,7 +683,7 @@ impl Checker<'_> {
             }
         }
         if let Some(dest_ty) = dest_ty
-            && dest_ty != ret
+            && !same(&dest_ty, &ret)
         {
             self.error(
                 at,
@@ -796,6 +796,28 @@ struct Ended {
     locals: Vec<LocalId>,
     /// What the blocks before it end.
     earlier: Option<Rc<Ended>>,
+}
+
+/// Whether `a` and `b` are one type. The names of a tuple's elements only
+/// label them, so two tuples are one type when their elements are, as
+/// inference has it: `(Left: int, Right: int)` holds `(1, 2)`.
+fn same(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Tuple(a), Ty::Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(&a.ty, &b.ty))
+        }
+        _ => a == b,
+    }
+}
+
+/// Whether `a` and `b` are one type of local: both values, or both
+/// borrows in one mode, of one type ([`same`]).
+fn same_local(a: &LocalTy, b: &LocalTy) -> bool {
+    match (a, b) {
+        (LocalTy::Value(a), LocalTy::Value(b)) => same(a, b),
+        (LocalTy::Borrow(m, a), LocalTy::Borrow(n, b)) => m == n && same(a, b),
+        _ => false,
+    }
 }
 
 /// How the live locals `here`, on the path being walked, differ from

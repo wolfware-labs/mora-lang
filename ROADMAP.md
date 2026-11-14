@@ -513,6 +513,7 @@ Done when:
 
 - UI tests for each mode's errors.
 - Run tests passing a large struct by `in` and by `ref`.
+- A `ref` argument or the receiver of a `mut` method that is not a mutable place, as in `Bump(ref 1)` or `Make().Inc()`, is reported (§10.3), and lowering no longer stops on it.
 
 ### M2.5 Move checking and drop elaboration
 
@@ -776,6 +777,7 @@ Done when:
 
 - Run tests for default methods and static abstract members in generic code.
 - A generic `Max<T>` over `IComparable<T>` compiles to a direct call (MIR snapshot).
+- `<`, `>`, `<=` and `>=` on two structs call the struct's `IComparable<T>` and are `MR0204` for a struct that does not implement it (§8.5).
 
 ### M3.11 Dynamic interface values
 
@@ -799,6 +801,7 @@ Tuples and deconstruction, collection expressions with spreads and target types 
 Done when:
 
 - Run tests for each form; `[1, 2, 3]` with no target type is a `List<int>`.
+- Two tuples of one shape whose element types differ, as `t == (1, 2)` with `t: (byte, byte)`, compare element by element (§5.5).
 
 ### M3.13 Statics
 
@@ -1035,6 +1038,7 @@ The `string`, `StringBuilder`, `Formatter` and `char` members of §15.2, byte-of
 Done when:
 
 - Run tests for every member, including non-ASCII and astral-plane text.
+- Run tests order strings with `<`, `>`, `<=` and `>=` (§7.12).
 - Format specifier tests match the culture-independent output of §15.2 for a table of values.
 
 ### M5.3 Number parsing and formatting

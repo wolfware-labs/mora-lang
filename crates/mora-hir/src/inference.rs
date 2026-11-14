@@ -1355,6 +1355,66 @@ mod tests {
         assert_eq!(rebuilt, 1);
     }
 
+    #[test]
+    fn structs_at_one_index_of_two_files_keep_their_members_apart() {
+        // `P` and `Q` are each the first item of their file, so their ids
+        // differ only in the file: a body that reads members of both, in
+        // turn, gets each one's own fields and diagnostics.
+        let program = "struct P {\n    public X: int;\n}\n\
+                       F(p: P, q: Q) {\n    let a = p.X;\n    let b = q.X;\n    let c = p.X;\n    \
+                       let d = new P { X = 1, Y = true };\n    let e = new Q { X = \"q\", Y = true };\n}\n";
+        let other =
+            "struct Q {\n    public X: string;\n    public Y: bool;\n    private H: int;\n}\n";
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", program), ("src/Other.mr", other)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let other_file = file_named(&db, project, "src/Other.mr");
+        let first = |file| {
+            item_tree(&db, file)
+                .items()
+                .next()
+                .map(|(_, item)| item.name.clone())
+        };
+        assert_eq!(first(file).as_deref(), Some("P"));
+        assert_eq!(first(other_file).as_deref(), Some("Q"));
+        let tree = item_tree(&db, file);
+        let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
+        let owner = BodyOwner::Item(f);
+        let body = body(&db, file, owner);
+        let inference = infer(&db, project, file, owner);
+        let types: Vec<String> = body
+            .locals
+            .iter()
+            .map(|(local, data)| {
+                let ty = inference
+                    .local(local)
+                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
+                format!("{}: {ty}", data.name)
+            })
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "p: P",
+                "q: Q",
+                "a: int",
+                "b: string",
+                "c: int",
+                "d: P",
+                "e: Q"
+            ]
+        );
+        let found = diagnostics(&db, project);
+        assert_eq!(codes(found), ["MR0147", "MR0144"]);
+        assert_eq!(found[0].message, "`P` has no field named `Y`");
+        assert_eq!(&program[found[0].primary.span.range], "Y");
+        assert_eq!(found[1].message, "`Q` cannot be created memberwise here");
+        assert_eq!(
+            found[1].primary.message.as_deref(),
+            Some("`H` has no initializer and is private to `Q`")
+        );
+    }
+
     /// The one diagnostic `text` reports.
     fn only_diagnostic(text: &str) -> mora_diag::Diagnostic {
         let mut reported = diagnostics_of(text);
