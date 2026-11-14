@@ -1,0 +1,38 @@
+error[MR0113]: `const` does not apply to a getter
+ --> tests/ui/members/misplaced_modifiers.mr:8:12
+  |
+8 |     public const Twice: int => Count * 2; //~ ERROR MR0113
+  |            ^^^^^ a getter computes its value on each read
+  |
+  = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+  |
+8 -     public const Twice: int => Count * 2; //~ ERROR MR0113
+8 +     public Twice: int => Count * 2; //~ ERROR MR0113
+  |
+
+error[MR0113]: `const` does not apply to a getter
+ --> tests/ui/members/misplaced_modifiers.mr:9:12
+  |
+9 |     public const static Zero: int => 0; //~ ERROR MR0113
+  |            ^^^^^ a getter computes its value on each read
+  |
+  = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+  |
+9 -     public const static Zero: int => 0; //~ ERROR MR0113
+9 +     public static Zero: int => 0; //~ ERROR MR0113
+  |
+
+error[MR0113]: `const` does not apply to a getter
+  --> tests/ui/members/misplaced_modifiers.mr:14:5
+   |
+14 |     const Name: string => "shape"; //~ ERROR MR0113
+   |     ^^^^^ a getter computes its value on each read
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+14 -     const Name: string => "shape"; //~ ERROR MR0113
+14 +     Name: string => "shape"; //~ ERROR MR0113
+   |

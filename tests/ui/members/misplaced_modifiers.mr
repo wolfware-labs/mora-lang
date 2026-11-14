@@ -1,0 +1,15 @@
+// A modifier applies to the declaration it is on: `const` declares a
+// constant, a value fixed at compile time, and a getter computes its value
+// on each read.
+public struct Counter {
+    public const Limit: int = 10;
+    public mut Count: int;
+
+    public const Twice: int => Count * 2; //~ ERROR MR0113
+    public const static Zero: int => 0; //~ ERROR MR0113
+    public static One: int => 1;
+}
+
+public interface IShape {
+    const Name: string => "shape"; //~ ERROR MR0113
+}

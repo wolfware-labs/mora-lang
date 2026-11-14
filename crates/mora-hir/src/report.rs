@@ -25,10 +25,10 @@ use crate::type_ref::type_keywords;
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
-/// written twice or that conflict (`MR0111`, `MR0112`), the locals of its
-/// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
-/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and
-/// syntax errors come from [`crate::parse`].
+/// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
+/// `MR0113`), the locals of its bodies (`MR0180`), the types in its bodies
+/// (`MR0010`, `MR0203`, `MR0204`) and its entry point (`MR0124`,
+/// `MR0125`). Lexical and syntax errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     let map = def_map(db, project);
@@ -315,13 +315,15 @@ enum Lookup {
     Expr(Vec<String>),
 }
 
-/// `MR0111` and `MR0112`: a modifier written again in the modifiers of
-/// one declaration, parameter or lambda, or one that conflicts with an
-/// earlier one (§6.1). The grammar takes any number of them, so the parser
-/// lets both through. The fix for a repetition removes it when it is
-/// written as the first one; a `mut` whose write scope differs from the
-/// first one's leaves the choice to the author. The fix for a conflict
-/// removes the later modifier. A file whose text did not change keeps its
+/// `MR0111`, `MR0112` and `MR0113`: a modifier written again in the
+/// modifiers of one declaration, parameter or lambda, one that conflicts
+/// with an earlier one, or one that does not apply to the declaration
+/// (§6.1). The grammar takes any number of them, so the parser lets all
+/// three through. The fix for a repetition removes it when it is written
+/// as the first one; a `mut` whose write scope differs from the first
+/// one's leaves the choice to the author. The fix for a conflict removes
+/// the later modifier, and the one for a modifier that does not apply
+/// removes it. A file whose text did not change keeps its
 /// result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
@@ -396,7 +398,8 @@ fn written_modifier(modifier: ast::Modifier<'_>) -> Option<(SyntaxKind, TextRang
 }
 
 /// Reports, through `report`, each of the modifiers `written` of one node
-/// of the kind `node` that repeats an earlier one or conflicts with one.
+/// of the kind `node` that repeats an earlier one, does not apply to the
+/// node or conflicts with an earlier one.
 fn check_modifiers(
     id: FileId,
     text: &str,
@@ -409,6 +412,10 @@ fn check_modifiers(
         let name = keyword.text().unwrap_or_default();
         if let Some(&(_, first)) = earlier.iter().find(|(kind, _)| *kind == keyword) {
             report(repeated_modifier(id, text, name, range, first));
+            continue;
+        }
+        if let Some(misplaced) = misplaced(node, keyword) {
+            report(misplaced_modifier(id, text, name, range, misplaced));
             continue;
         }
         let Some(exclusive) = exclusive(node, keyword) else {
@@ -479,6 +486,58 @@ fn conflicting_modifier(
     )
     .with_secondary(Label::new(Span::new(file, first), "written first here"))
     .with_note("keep the one that is meant; the fix keeps the first")
+    .with_fix(Fix::new(
+        format!("remove `{name}`"),
+        vec![TextEdit::replace(
+            Span::new(file, with_space_after(text, range)),
+            "",
+        )],
+    ))
+}
+
+/// A modifier on a declaration it does not apply to, for the message.
+struct Misplaced {
+    /// The kind of declaration, with its article.
+    declaration: &'static str,
+    /// Why the modifier does not apply to it.
+    reason: &'static str,
+    /// What to write when the modifier was meant.
+    instead: &'static str,
+}
+
+/// `const` on a getter (§6.9, D-156): a constant is a value fixed at
+/// compile time, and a getter computes its value on each read.
+const CONST_GETTER: Misplaced = Misplaced {
+    declaration: "a getter",
+    reason: "a getter computes its value on each read",
+    instead: "a constant is a value fixed at compile time; for one, write a field with an \
+              initializer, as `const K: int = 1;`",
+};
+
+/// Why the modifier `keyword` does not apply to a node of the kind `node`,
+/// if it does not. Only `const` on a getter is checked so far.
+fn misplaced(node: SyntaxKind, keyword: SyntaxKind) -> Option<&'static Misplaced> {
+    match (node, keyword) {
+        (SyntaxKind::GetterDecl, SyntaxKind::ConstKw) => Some(&CONST_GETTER),
+        _ => None,
+    }
+}
+
+/// `MR0113`: the modifier `name` at `range` does not apply to the
+/// declaration it is on, for the reason in `misplaced`. The fix removes it.
+fn misplaced_modifier(
+    file: FileId,
+    text: &str,
+    name: &str,
+    range: TextRange,
+    misplaced: &Misplaced,
+) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0113,
+        format!("`{name}` does not apply to {}", misplaced.declaration),
+        Label::new(Span::new(file, range), misplaced.reason),
+    )
+    .with_note(misplaced.instead)
     .with_fix(Fix::new(
         format!("remove `{name}`"),
         vec![TextEdit::replace(
@@ -1568,6 +1627,40 @@ mod tests {
         assert_eq!(
             messages(&found),
             ["`static` is written twice", "`ref` is written twice"]
+        );
+    }
+
+    #[test]
+    fn const_on_a_getter_is_mr0113_with_a_fix_that_removes_it() {
+        let text = "struct Q {\n    public const K: int => 1;\n    const static S: int => 2;\n    \
+                    X: int;\n}\ninterface I {\n    const Name: string => \"i\";\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(codes(&found), ["MR0113"; 3]);
+        assert_eq!(found[0].message, "`const` does not apply to a getter");
+        assert_eq!(&text[found[0].primary.span.range], "const");
+        assert_eq!(
+            found[0].primary.message.as_deref(),
+            Some("a getter computes its value on each read")
+        );
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.remaining, Vec::<String>::new());
+        assert_eq!(
+            fixed.text,
+            "struct Q {\n    public K: int => 1;\n    static S: int => 2;\n    \
+             X: int;\n}\ninterface I {\n    Name: string => \"i\";\n}\n"
+        );
+        // Written twice, the first does not apply and the second repeats it.
+        let text = "struct Q {\n    const const K: int => 1;\n}\n";
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0113", "MR0111"]);
+        let fixed = crate::test_support::apply_fixes(text, diagnostics_of);
+        assert_eq!(fixed.text, "struct Q {\n    K: int => 1;\n}\n");
+        // A constant is a field with `const`, in a type or a namespace.
+        assert_eq!(
+            codes(&diagnostics_of(
+                "struct S {\n    public const C: int = 1;\n    static T: int => 2;\n}\n\
+                 const N: int = 3;\n"
+            )),
+            Vec::<String>::new()
         );
     }
 

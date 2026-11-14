@@ -558,7 +558,8 @@ mod tests {
     #[test]
     fn a_const_or_static_getter_declares_no_field() {
         // A getter is no field, whatever its modifiers: `Z` stays paired
-        // with the second field of the signature.
+        // with the second field of the signature. `const` on a getter is
+        // `MR0113`, and the getter stays a getter until it is fixed.
         let db = TestDb::new();
         let text = "struct P {\n    const K: int => 1;\n    X: int;\n    static S: int => 2;\n    \
                     Z: int;\n}\n";

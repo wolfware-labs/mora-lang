@@ -493,19 +493,18 @@ fn member_values(members: &[ast::Member]) -> Vec<(ValueMember, ValueSource)> {
             };
             let token = name?.ident_token()?;
             let written = Written::of(modifiers);
+            // Only a field declares a constant. `const` on a getter is
+            // `MR0113` and is read as its fix leaves it: the getter stays
+            // a getter, which no value of a struct stores
+            // (`Signature::Struct` lists fields alone), and stays an
+            // instance member unless it is `static` too.
+            let is_const = written.is_const && kind == ValueKind::Field;
             let value = ValueMember {
                 name: token_name(token),
-                // Only a field declares a constant: a getter written
-                // `const` stays a getter, which no value of a struct
-                // stores (`Signature::Struct` lists fields alone).
-                kind: if written.is_const && kind == ValueKind::Field {
-                    ValueKind::Const
-                } else {
-                    kind
-                },
+                kind: if is_const { ValueKind::Const } else { kind },
                 visibility: written.visibility_or_folder(),
                 // A constant belongs to its type.
-                is_static: written.is_const || written.is_static,
+                is_static: is_const || written.is_static,
             };
             let source = ValueSource {
                 name: token.text_range(),

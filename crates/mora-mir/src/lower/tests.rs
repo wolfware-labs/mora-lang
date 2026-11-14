@@ -4134,12 +4134,12 @@ fn a_field_of_a_field_of_this_is_one_place() {
 #[test]
 fn getters_and_type_members_between_fields_take_no_place() {
     // A getter first, one between two fields, a `static` field, a `static`
-    // and a `const` getter and a constant mixed in: only `X`, `Y` and `Z`
-    // are stored, in that order.
+    // getter and a constant mixed in: only `X`, `Y` and `Z` are stored, in
+    // that order.
     let lowered = lowered(
         "struct P {\n    public Get: int => 0;\n    public X: int;\n    public Two: int => X * 2;\n    \
          public static S: int = 4;\n    public static T: int => 6;\n    public Y: int = 5;\n    \
-         public const C: int = 1;\n    public const K: int => 7;\n    public Z: int;\n}\n\
+         public const C: int = 1;\n    public Z: int;\n}\n\
          F(): P => new P { Z = 3, X = 1 };\nR(p: P): int => p.X + p.Z + p.Y;\n",
     );
     assert_eq!(
