@@ -102,8 +102,10 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// The local functions, each with what the ones it calls take too. A
-    /// local function is declared before the code that calls it, so it
-    /// comes first in the text, and one pass in that order is enough.
+    /// local function is in scope only from its declaration on (§7.10), so
+    /// every function a caller's code calls, from the functions nested in
+    /// it too, comes before the caller in the text or is the caller itself,
+    /// and one pass in that order sees each callee finished.
     fn finish(mut self) -> Vec<LocalFunctionCaptures> {
         for caller in 0..self.functions.len() {
             for callee in self.functions[caller].calls.clone() {
@@ -651,6 +653,52 @@ mod tests {
             "a:in", "b:in", "c:in", "d:in", "e:in", "g:in", "p:in", "s:in", "xs:in",
         ];
         assert_eq!(summary(text, "F"), [entry("G", None, &all)]);
+    }
+
+    #[test]
+    fn a_capture_reaches_every_caller_through_nesting_and_recursion() {
+        // `C` reads `x`; `D`, inside `B` inside `A`, calls `C` and `A`, so
+        // `A` and `B` take `x` to pass it on, and so does `E`, which calls
+        // `A`. `H` calls itself from inside `K`, which reads `x`.
+        let text = "F(x: int) {\n    C(): int => x;\n    \
+                    A(): int {\n        B(): int {\n            D(): int => C() + A();\n            \
+                    return D();\n        }\n        return B();\n    }\n    \
+                    E(): int => A();\n    \
+                    H(n: int): int {\n        K(k: int): int => k == 0 ? x : H(k - 1);\n        \
+                    return K(n);\n    }\n}\n";
+        assert_eq!(
+            summary(text, "F"),
+            [
+                entry("C", None, &["x:in"]),
+                entry("A", None, &["x:in"]),
+                entry("B", Some(1), &["x:in"]),
+                entry("D", Some(2), &["x:in"]),
+                entry("E", None, &["x:in"]),
+                entry("H", None, &["x:in"]),
+                entry("K", Some(5), &["x:in"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_function_is_called_only_after_its_declaration() {
+        // What a call reaches is declared before it, so one pass in the
+        // order of the text sees every callee finished: a call of a local
+        // function declared later, a chain written backwards or two
+        // functions that call each other, is not resolved.
+        let db = TestDb::new();
+        for text in [
+            "F(x: int) {\n    A(): int => B();\n    B(): int => C();\n    C(): int => x;\n}\n",
+            "F(x: int) {\n    A(n: int): int => n == 0 ? x : B(n - 1);\n    B(n: int): int => A(n);\n}\n",
+            "F(x: int) {\n    A(): int {\n        B(): int => C();\n        return B();\n    }\n    \
+             C(): int => x;\n}\n",
+        ] {
+            let project = app(&db, &[("src/Program.mr", text)]);
+            assert!(
+                codes(diagnostics(&db, project)).contains(&"MR0127".to_owned()),
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -4160,3 +4160,29 @@ fn getters_and_type_members_between_fields_take_no_place() {
         ],
     );
 }
+
+#[test]
+fn a_call_from_deep_inside_a_local_function_passes_what_the_callee_takes() {
+    // `D`, inside `B` inside `A`, calls `C`, which reads `x`: `A` and `B`
+    // take `x` to pass it on, and so does `E`, which calls `A`.
+    let lowered = lowered(
+        "F(x: int): int {\n    C(): int => x;\n    \
+         A(): int {\n        B(): int {\n            D(): int => C() + A();\n            \
+         return D();\n        }\n        return B();\n    }\n    \
+         E(): int => A();\n    return E();\n}\n",
+    );
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), lowered.mir("F"));
+    let headers: Vec<&str> = out.lines().filter(|line| line.starts_with("fn ")).collect();
+    assert_eq!(
+        headers,
+        [
+            "fn UsersApi.F(x#0: in int) -> int {",
+            "fn UsersApi.F.C(x#0: in int) -> int {",
+            "fn UsersApi.F.A(x#0: in int) -> int {",
+            "fn UsersApi.F.A.B(x#0: in int) -> int {",
+            "fn UsersApi.F.A.B.D(x#0: in int) -> int {",
+            "fn UsersApi.F.E(x#0: in int) -> int {",
+        ]
+    );
+}
