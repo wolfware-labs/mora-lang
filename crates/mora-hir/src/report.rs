@@ -3,7 +3,7 @@ use mora_span::{
     Db, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize, to_text_size,
 };
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::{SyntaxKind, SyntaxNode, SyntaxNodeChildren};
+use mora_syntax::{SyntaxError, SyntaxKind, SyntaxNode, SyntaxNodeChildren};
 
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -27,7 +27,7 @@ use crate::type_ref::type_keywords;
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
 /// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
 /// `MR0113`), its constants without a value (`MR0114`), the members its
-/// interfaces, extensions and unions cannot have (`MR0115`), the locals
+/// declarations cannot have (`MR0115`), the locals
 /// of its bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
 /// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax
 /// errors come from [`crate::parse`].
@@ -328,8 +328,8 @@ enum Lookup {
 /// removes it, unless it is a `const` member of an interface or an
 /// extension, where only the author knows what is meant. With them comes
 /// `MR0114`, a `const` field without a value where a constant may be
-/// declared, and `MR0115`, a member that an interface, an extension or a
-/// union cannot have, neither of which has a fix. A file whose text did not
+/// declared, and `MR0115`, a member that its declaration cannot have,
+/// neither of which has a fix. A file whose text did not
 /// change keeps its result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
@@ -341,7 +341,8 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     // diagnostic carries its node's place in preorder, so they come out in
     // the order of the nodes.
     let mut found: Vec<(usize, Diagnostic)> = Vec::new();
-    let root = parse(db, file).syntax();
+    let parsed = parse(db, file);
+    let root = parsed.syntax();
     let mut stack = vec![ModifierFrame::new(root, root.kind(), 0)];
     let mut visited = 0;
     while let Some(frame) = stack.last_mut() {
@@ -350,7 +351,7 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
                 let order = frame.order;
                 let mut report = |diagnostic| found.push((order, diagnostic));
                 check_modifiers(id, text, &frame, &mut report);
-                if let Some(diagnostic) = constant_without_value(id, &frame) {
+                if let Some(diagnostic) = constant_without_value(id, &frame, parsed.errors()) {
                     report(diagnostic);
                 }
                 if let Some(diagnostic) = misplaced_member(id, &frame) {
@@ -369,7 +370,17 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             SyntaxKind::MemberList | SyntaxKind::UnionBody => frame.container,
             kind => kind,
         };
-        stack.push(ModifierFrame::new(child, container, visited));
+        // An accessor's verdict depends on the indexer it belongs to.
+        let owner = match frame.node.kind() {
+            SyntaxKind::IndexerDecl if child.kind() == SyntaxKind::AccessorList => {
+                Some((frame.container, frame.node))
+            }
+            SyntaxKind::AccessorList => frame.owner,
+            _ => None,
+        };
+        let mut next = ModifierFrame::new(child, container, visited);
+        next.owner = owner;
+        stack.push(next);
     }
     // A stable sort keeps the diagnostics of one node in their order.
     found.sort_by_key(|&(order, _)| order);
@@ -394,6 +405,9 @@ struct ModifierFrame<'a> {
     order: usize,
     /// The keyword and the range of each modifier among the children seen.
     written: Vec<(SyntaxKind, TextRange)>,
+    /// For an accessor list and its accessors, the indexer they belong to
+    /// and the kind of node it is in.
+    owner: Option<(SyntaxKind, SyntaxNode<'a>)>,
 }
 
 impl<'a> ModifierFrame<'a> {
@@ -404,6 +418,7 @@ impl<'a> ModifierFrame<'a> {
             container,
             order,
             written: Vec::new(),
+            owner: None,
         }
     }
 
@@ -420,7 +435,7 @@ impl<'a> ModifierFrame<'a> {
     /// has one error.
     fn misplaced_const(&self) -> bool {
         self.modifier(SyntaxKind::ConstKw).is_some()
-            && misplaced(self.container, self.node, SyntaxKind::ConstKw).is_some()
+            && misplaced(self, SyntaxKind::ConstKw).is_some()
     }
 }
 
@@ -455,7 +470,7 @@ fn check_modifiers(
             report(repeated_modifier(id, text, name, range, first));
             continue;
         }
-        if let Some(misplaced) = misplaced(frame.container, frame.node, keyword) {
+        if let Some(misplaced) = misplaced(frame, keyword) {
             report(misplaced_modifier(id, text, name, range, &misplaced));
             continue;
         }
@@ -542,31 +557,31 @@ struct Misplaced {
     reason: &'static str,
     /// What to write instead, when removing the modifier would not give
     /// what is meant. The diagnostic then has no fix.
-    instead: Option<&'static str>,
+    instead: Option<String>,
 }
 
-/// Why the modifier `keyword` does not apply to `node`, which is in a node
-/// of the kind `container` ([`ModifierFrame::container`]), if it does not.
+/// Why the modifier `keyword` does not apply to the node of `frame`, if it
+/// does not.
 /// `const` declares a constant, a value fixed at compile time, so of the
 /// declarations, parameters and accessors the parser takes it on, it
 /// applies to a field alone, of a struct, a class or a union or in a
 /// namespace (§6.1, D-156). An interface and an extension have no fields:
 /// there `const` on a field, or on a getter without a body, which is how
 /// an interface reads `const K: int;`, gets no fix, since the author may
-/// mean a constant in the namespace or a member without `const`. An error
+/// mean a constant in the namespace or a member without `const`. Nor does
+/// one where, without `const`, the member would be one that its interface,
+/// extension or type cannot have ([`member_rule`]), or an accessor of such
+/// an indexer: the note then says why it cannot be there. An error
 /// node, where the parser found no declaration after the modifiers, is
 /// reported already. A function in the file is declared in a namespace;
 /// any other is a method of a type, an interface or an extension, since a
 /// local function never starts with `const`.
-fn misplaced(
-    container: SyntaxKind,
-    node: SyntaxNode<'_>,
-    keyword: SyntaxKind,
-) -> Option<Misplaced> {
+fn misplaced(frame: &ModifierFrame<'_>, keyword: SyntaxKind) -> Option<Misplaced> {
     use SyntaxKind as K;
     if keyword != K::ConstKw {
         return None;
     }
+    let (container, node) = (frame.container, frame.node);
     let field = node.kind() == K::FieldDecl
         || ast::GetterDecl::cast(node).is_some_and(|getter| getter.expr_body().is_none());
     let (declaration, reason, instead) = match container {
@@ -583,12 +598,20 @@ fn misplaced(
             "a constant goes in the namespace, next to the extension, or in the type \
              itself, as `const K: int = 1;`",
         ),
-        _ => return misplaced_anywhere(container, node.kind()),
+        _ => {
+            let mut misplaced = misplaced_anywhere(container, node.kind())?;
+            let rule = match frame.owner {
+                Some((container, indexer)) => member_rule(container, indexer),
+                None => member_rule(container, node),
+            };
+            misplaced.instead = rule.map(|rule| format!("{}; {}", rule.message, rule.note));
+            return Some(misplaced);
+        }
     };
     Some(Misplaced {
         declaration,
         reason,
-        instead: Some(instead),
+        instead: Some(instead.to_owned()),
     })
 }
 
@@ -638,8 +661,8 @@ fn misplaced_modifier(
         format!("`{name}` does not apply to {}", misplaced.declaration),
         Label::new(Span::new(file, range), misplaced.reason),
     );
-    if let Some(instead) = misplaced.instead {
-        return diagnostic.with_note(instead);
+    if let Some(instead) = &misplaced.instead {
+        return diagnostic.with_note(instead.as_str());
     }
     diagnostic
         .with_note(
@@ -658,12 +681,23 @@ fn misplaced_modifier(
 /// a constant may be declared (§6.1, D-156): in an interface or an
 /// extension, `const` is `MR0113` whatever the value. A constant is a value
 /// fixed at compile time, so it is declared with it. No fix: only the
-/// author knows the value. A field with `=` and no expression after it is
-/// a syntax error already.
-fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
+/// author knows the value. A field with a syntax error in it or at its
+/// end, as `const K: int => 1;` or `const K;`, is reported by the parser
+/// alone.
+fn constant_without_value(
+    file: FileId,
+    frame: &ModifierFrame<'_>,
+    syntax_errors: &[SyntaxError],
+) -> Option<Diagnostic> {
     frame.modifier(SyntaxKind::ConstKw)?;
     let declarator = ast::FieldDecl::cast(frame.node)?.variable_declarator()?;
-    if declarator.eq_token().is_some() || frame.misplaced_const() {
+    // After a syntax error in or at the end of the field, the value may be
+    // what the parser could not take, as in `const K: int => 1;`.
+    let at = frame.node.text_range();
+    let recovered = syntax_errors
+        .iter()
+        .any(|error| error.range.start() <= at.end() && at.start() <= error.range.end());
+    if declarator.eq_token().is_some() || recovered || frame.misplaced_const() {
         return None;
     }
     let name = declarator.name()?.ident_token()?;
@@ -683,24 +717,59 @@ fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Dia
     )
 }
 
-/// `MR0115`: the node of `frame` is a member that the interface, the
-/// extension or the union it is in cannot have (§6.6, §6.8, §6.9, D-157).
-/// An interface has no fields, destructors or nested types, and its
-/// static members are `static abstract`; an extension adds only methods
-/// and getters, so no fields, destructors, static members, indexers,
-/// nested or associated types, and an operator is a static method; a
-/// union's data is in its cases, so it has no instance fields. Where
+/// `MR0115`: the node of `frame` is a member that the declaration it is in
+/// cannot have (§6.6, §6.8, §6.9, §9.2, D-157). An interface has no
+/// fields, destructors or nested types, and its static members are
+/// `static abstract`; an extension adds only methods and getters, so no
+/// fields, destructors, static members, indexers, nested or associated
+/// types, and an operator is a static method; a union's data is in its
+/// cases, so it has no instance fields; and a macro is declared in a
+/// namespace, never among the members of a type. Where
 /// `const` on the node is `MR0113`, that is the one error reported. No
 /// fix: only the author knows where the member belongs. A constructor
 /// cannot be written in an interface or an extension: there, `P() {}` is
 /// a method.
 fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
-    use SyntaxKind as K;
     if frame.misplaced_const() {
         return None;
     }
-    let node = frame.node;
-    let static_kw = frame.modifier(K::StaticKw);
+    let rule = member_rule(frame.container, frame.node)?;
+    Some(
+        Diagnostic::error(
+            codes::MR0115,
+            rule.message,
+            Label::new(Span::new(file, rule.range), rule.label),
+        )
+        .with_note(rule.note),
+    )
+}
+
+/// What `MR0115` says about a member.
+struct MemberRule {
+    /// The rule the member breaks, the diagnostic's message.
+    message: &'static str,
+    /// Where the diagnostic points.
+    range: TextRange,
+    /// What the member is, the label.
+    label: &'static str,
+    /// Where the member goes instead.
+    note: &'static str,
+}
+
+/// Where the modifier `keyword` is first written on `node`, if it is.
+fn modifier_of(node: SyntaxNode<'_>, keyword: SyntaxKind) -> Option<TextRange> {
+    node.children()
+        .filter_map(ast::Modifier::cast)
+        .filter_map(written_modifier)
+        .find(|&(kind, _)| kind == keyword)
+        .map(|(_, range)| range)
+}
+
+/// The rule of `MR0115` that `node`, in a node of the kind `container`,
+/// breaks, whatever `const` written on it, if it breaks one.
+fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule> {
+    use SyntaxKind as K;
+    let static_kw = modifier_of(node, K::StaticKw);
     let field = || {
         let name = ast::FieldDecl::cast(node)?.variable_declarator()?.name()?;
         Some(name.syntax().text_range())
@@ -725,8 +794,8 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
                 .text_range(),
         )
     };
-    let abstract_kw = frame.modifier(K::AbstractKw);
-    let (message, range, label, note) = match (frame.container, node.kind()) {
+    let abstract_kw = modifier_of(node, K::AbstractKw);
+    let (message, range, label, note) = match (container, node.kind()) {
         (K::InterfaceDecl, K::FieldDecl) if static_kw.is_some() => (
             "an interface has no fields",
             field()?,
@@ -743,9 +812,16 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
              default, as `K: int => 1;`; a value every implementation shares is a constant in \
              the namespace, next to the interface, as `const K: int = 1;`",
         ),
+        (container, K::MacroDecl) if let Some(message) = macro_container(container) => (
+            message,
+            name()?,
+            "a macro",
+            "a macro is declared in a namespace, like a function, and found by name through \
+             `using` directives",
+        ),
         // A union's constants and static fields are its own (§6.10).
         (K::UnionDecl, K::FieldDecl)
-            if static_kw.is_none() && frame.modifier(K::ConstKw).is_none() =>
+            if static_kw.is_none() && modifier_of(node, K::ConstKw).is_none() =>
         {
             (
                 "a union has no instance fields",
@@ -762,17 +838,17 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
             "a destructor is declared in each type that needs one, which may implement the \
              interface",
         ),
-        (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl))
+        (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl | K::IndexerDecl))
             if abstract_kw.is_none()
                 && let Some(range) = static_kw =>
         {
             (
                 "a static member of an interface is `static abstract`",
                 range,
-                if kind == K::FunctionDecl {
-                    "a static method without `abstract`"
-                } else {
-                    "a static getter without `abstract`"
+                match kind {
+                    K::FunctionDecl => "a static method without `abstract`",
+                    K::GetterDecl => "a static getter without `abstract`",
+                    _ => "a static indexer without `abstract`",
                 },
                 "a member each implementing type gives is `static abstract`, as \
                  `static abstract M(): int;`, with a body for a default, as \
@@ -845,14 +921,27 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
         }
         _ => return None,
     };
-    Some(
-        Diagnostic::error(
-            codes::MR0115,
-            message,
-            Label::new(Span::new(file, range), label),
-        )
-        .with_note(note),
-    )
+    Some(MemberRule {
+        message,
+        range,
+        label,
+        note,
+    })
+}
+
+/// The rule that a declaration of the kind `container` breaks by holding a
+/// macro, if it is a type, an interface or an extension: macros are
+/// declared in a namespace (§9.2).
+fn macro_container(container: SyntaxKind) -> Option<&'static str> {
+    use SyntaxKind as K;
+    Some(match container {
+        K::StructDecl => "a struct has no macros",
+        K::ClassDecl => "a class has no macros",
+        K::UnionDecl => "a union has no macros",
+        K::InterfaceDecl => "an interface has no macros",
+        K::ExtensionDecl => "an extension adds no macros",
+        _ => return None,
+    })
 }
 
 /// What a declaration of the kind `kind` that declares a type (a struct, a
@@ -1366,6 +1455,8 @@ fn entry_point(db: &dyn Db, project: Project, map: &DefMap, out: &mut Vec<Diagno
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use mora_diag::Diagnostic;
     use mora_span::{Dependency, Project, ProjectKind};
 
@@ -2174,6 +2265,8 @@ mod tests {
              `static abstract`, as `static abstract M(): int;`, with a body for a default, as \
              `static abstract M(): int => 1;`; a function every implementation shares goes in \
              the namespace, next to the interface";
+        const MACRO_NOTE: &str = "a macro is declared in a namespace, like a function, and \
+                                  found by name through `using` directives";
         const UNION: &str = "a union has no instance fields";
         const UNION_LABEL: &str = "a union has no fields besides its cases";
         const UNION_NOTE: &str = "put the value in each case, or wrap the union in a struct, \
@@ -2354,6 +2447,48 @@ mod tests {
                 UNION_LABEL,
                 UNION_NOTE,
             ),
+            (
+                "interface I {\n    static this[i: int]: int { get => i; }\n}\n",
+                "static",
+                "a static member of an interface is `static abstract`",
+                "a static indexer without `abstract`",
+                INTERFACE_STATIC_NOTE,
+            ),
+            (
+                "struct S {\n    macro M(t: Type) {}\n}\n",
+                "M",
+                "a struct has no macros",
+                "a macro",
+                MACRO_NOTE,
+            ),
+            (
+                "class C {\n    macro M(t: Type) {}\n}\n",
+                "M",
+                "a class has no macros",
+                "a macro",
+                MACRO_NOTE,
+            ),
+            (
+                "union U { A;\n    macro M(t: Type) {}\n}\n",
+                "M",
+                "a union has no macros",
+                "a macro",
+                MACRO_NOTE,
+            ),
+            (
+                "interface I {\n    macro M(t: Type) {}\n}\n",
+                "M",
+                "an interface has no macros",
+                "a macro",
+                MACRO_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    public macro M(t: Type) {}\n}\n",
+                "M",
+                "an extension adds no macros",
+                "a macro",
+                MACRO_NOTE,
+            ),
         ];
         for (text, at, message, label, note) in cases {
             let found = diagnostics_of(text);
@@ -2370,7 +2505,8 @@ mod tests {
         let text = "interface I {\n    K: int;\n    static abstract S: int;\n    \
                     M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n    \
                     abstract static D(): int => 1;\n    static abstract E: int => 1;\n    \
-                    type T : I;\n    this[i: int]: int;\n}\n\
+                    type T : I;\n    this[i: int]: int;\n    \
+                    static abstract this[i: int]: int;\n}\nmacro N(t: Type) {}\n\
                     struct P {\n    K: int = 1;\n    static S: int = 1;\n    ~P() {}\n    \
                     static M(): int => 1;\n    struct In {}\n    this[i: int]: int => i;\n}\n\
                     extension(p: P) {\n    G: int => 1;\n    public M(): int => 1;\n    \
@@ -2385,6 +2521,216 @@ mod tests {
             ["MR0113", "MR0113", "MR0113", "MR0114"],
             "{found:#?}"
         );
+    }
+
+    #[test]
+    fn const_on_a_member_that_cannot_be_there_without_it_is_mr0113_without_a_fix() {
+        // Each member, without `const`, is `MR0115`, so removing `const`
+        // would not give valid code: the note says why.
+        let cases = [
+            (
+                "interface I {\n    const ~I() {}\n}\n",
+                "a destructor",
+                "an interface has no destructors; a destructor is declared in each type that \
+                 needs one, which may implement the interface",
+            ),
+            (
+                "interface I {\n    const struct N {}\n}\n",
+                "a struct",
+                "an interface has no nested types; a type is declared in the namespace, next to \
+                 the interface",
+            ),
+            (
+                "interface I {\n    const static M(): int => 1;\n}\n",
+                "a method",
+                "a static member of an interface is `static abstract`; a member each \
+                 implementing type gives is `static abstract`, as `static abstract M(): int;`, \
+                 with a body for a default, as `static abstract M(): int => 1;`; a function \
+                 every implementation shares goes in the namespace, next to the interface",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    const this[i: int]: int { get => i; }\n}\n",
+                "an indexer",
+                "an extension adds no indexers; an indexer is declared in the type itself; an \
+                 extension may add a method that takes the index, as `At(i: int): int`",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    const operator +(a: P, b: P): P => a;\n}\n",
+                "an operator",
+                "an extension adds no static members; a static member is declared in the type \
+                 itself, or as a function in the namespace, next to the extension",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    const type E = int;\n}\n",
+                "an associated type",
+                "an extension adds no associated types; an associated type is declared in an \
+                 interface and bound by each type that implements it",
+            ),
+            (
+                "struct S {\n    const macro M(t: Type) {}\n}\n",
+                "a macro",
+                "a struct has no macros; a macro is declared in a namespace, like a function, \
+                 and found by name through `using` directives",
+            ),
+            // An accessor of an indexer that cannot be there: the indexer
+            // keeps its `MR0115`.
+            (
+                "struct P {}\nextension(p: P) {\n    this[i: int]: int { const get => i; }\n}\n",
+                "an accessor",
+                "an extension adds no indexers; an indexer is declared in the type itself; an \
+                 extension may add a method that takes the index, as `At(i: int): int`",
+            ),
+        ];
+        for (text, declaration, note) in cases {
+            let found = diagnostics_of(text);
+            let mr0113: Vec<_> = found
+                .iter()
+                .filter(|d| d.code == mora_diag::codes::MR0113)
+                .collect();
+            assert_eq!(mr0113.len(), 1, "{text}: {found:#?}");
+            assert_eq!(
+                mr0113[0].message,
+                format!("`const` does not apply to {declaration}"),
+                "{text}"
+            );
+            assert_eq!(mr0113[0].note.as_deref(), Some(note), "{text}");
+            assert!(mr0113[0].fixes.is_empty(), "{text}: {found:#?}");
+        }
+        let accessor = diagnostics_of(cases[7].0);
+        assert_eq!(codes(&accessor), ["MR0115", "MR0113"]);
+        // An accessor of an indexer that can be there keeps its fix.
+        let found = diagnostics_of("struct S {\n    this[i: int]: int { const get => i; }\n}\n");
+        assert_eq!(codes(&found), ["MR0113"]);
+        assert_eq!(found[0].fixes.len(), 1);
+        // A parameter of such an indexer is not one of its accessors: its
+        // fix removes a mistake of its own, and the indexer keeps `MR0115`.
+        let found = diagnostics_of(
+            "struct P {}\nextension(p: P) {\n    this[const i: int]: int => i;\n}\n",
+        );
+        assert_eq!(codes(&found), ["MR0115", "MR0113"]);
+        assert_eq!(found[1].message, "`const` does not apply to a parameter");
+        assert_eq!(found[1].fixes.len(), 1);
+    }
+
+    /// Whether `diagnostic` comes from the modifier and member checks.
+    fn in_member_family(diagnostic: &Diagnostic) -> bool {
+        [
+            mora_diag::codes::MR0111,
+            mora_diag::codes::MR0112,
+            mora_diag::codes::MR0113,
+            mora_diag::codes::MR0114,
+            mora_diag::codes::MR0115,
+        ]
+        .contains(&diagnostic.code)
+    }
+
+    /// The diagnostics of the modifier and member checks of `text`, each as
+    /// its code, its message and the text it points at.
+    fn member_family(text: &str) -> BTreeSet<(String, String, String)> {
+        diagnostics_of(text)
+            .iter()
+            .filter(|d| in_member_family(d))
+            .map(|d| {
+                (
+                    d.code.to_string(),
+                    d.message.clone(),
+                    text[d.primary.span.range].to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether applying every fix of the modifier and member checks of
+    /// `text` leaves one of their diagnostics that `text` did not report: a
+    /// fix must not trade one of them for another.
+    fn fixes_add_no_member_error(text: &str) -> Result<(), String> {
+        let before = member_family(text);
+        let family = |text: &str| -> Vec<Diagnostic> {
+            diagnostics_of(text)
+                .into_iter()
+                .filter(in_member_family)
+                .collect()
+        };
+        let fixed = crate::test_support::apply_fixes(text, family).text;
+        let after = member_family(&fixed);
+        let new: Vec<_> = after.difference(&before).collect();
+        if new.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("{text}\n=> {fixed}\n{new:#?}"))
+        }
+    }
+
+    #[test]
+    fn no_fix_of_a_modifier_leaves_a_member_error() {
+        // Each member form with `const`, alone and with `static`, in each
+        // declaration that holds members.
+        let members = [
+            "K: int = 1;",
+            "K: int;",
+            "G: int => 1;",
+            "M(): int => 1;",
+            "M(): int;",
+            "C() {}",
+            "~C() {}",
+            "operator +(a: int, b: int): int => a;",
+            "this[i: int]: int => i;",
+            "this[i: int]: int { get => i; }",
+            "this[i: int]: int { const get => i; }",
+            "type E = int;",
+            "type E;",
+            "struct N {}",
+            "class N {}",
+            "union N { A }",
+            "enum N { A }",
+            "interface N {}",
+            "macro Mac(t: Type) {}",
+            "F(const x: int) {}",
+        ];
+        let containers = [
+            "struct C {\n    {}\n}\n",
+            "class C {\n    {}\n}\n",
+            "union C { A;\n    {}\n}\n",
+            "interface C {\n    {}\n}\n",
+            "struct C {}\nextension(p: C) {\n    {}\n}\n",
+            "{}\n",
+        ];
+        let mut failures = Vec::new();
+        for container in containers {
+            for member in members {
+                for modifiers in ["const ", "const static ", "static const ", "public const "] {
+                    let text = container.replace("{}", &format!("{modifiers}{member}"));
+                    if let Err(failure) = fixes_add_no_member_error(&text) {
+                        failures.push(failure);
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    }
+
+    #[test]
+    fn no_fix_in_the_ui_tests_leaves_a_member_error() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/ui");
+        let mut stack = vec![root];
+        let mut failures = Vec::new();
+        let mut cases = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the UI tests") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "mr") {
+                    let text = std::fs::read_to_string(&path).expect("a case");
+                    cases += 1;
+                    if let Err(failure) = fixes_add_no_member_error(&text) {
+                        failures.push(format!("{}: {failure}", path.display()));
+                    }
+                }
+            }
+        }
+        assert!(cases > 50, "{cases}");
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 
     #[test]
@@ -2407,6 +2753,21 @@ mod tests {
         // Written twice, `const` repeats and the constant still has no value.
         let found = diagnostics_of("struct S {\n    const const K: int;\n}\n");
         assert_eq!(codes(&found), ["MR0111", "MR0114"]);
+        // A field the parser recovered is a syntax error alone, whatever it
+        // holds after the error.
+        for text in [
+            "const G: int => 1;\n",
+            "struct C {\n    const K: int { get => 1; }\n}\n",
+            "struct C {\n    const K;\n}\n",
+            "struct C {\n    const K: int, L: int;\n}\n",
+        ] {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            let file = crate::test_support::file_named(&db, project, "src/Program.mr");
+            assert!(!parse(&db, file).errors().is_empty(), "{text}");
+            let found = diagnostics_of(text);
+            assert_eq!(codes(&found), Vec::<String>::new(), "{text}: {found:#?}");
+        }
     }
 
     #[test]

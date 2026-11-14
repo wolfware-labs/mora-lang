@@ -1,0 +1,8 @@
+// A field the parser recovered gets its syntax error alone: the value the
+// author wrote may be what the parser could not take.
+const G: int => 1; //~ ERROR MR0110 //~ ERROR MR0110
+
+public struct Limits {
+    const K: int { get => 1; } //~ ERROR MR0110
+    const L; //~ ERROR MR0110
+}

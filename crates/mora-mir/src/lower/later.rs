@@ -455,6 +455,8 @@ fn expressions_later(
 fn is_place(hir: &Body, expr: ExprId) -> bool {
     matches!(
         member_root(hir, expr),
+        // `borrows_element` holds every element back until M3.6, so `Index`
+        // decides nothing yet.
         Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. }
     )
 }

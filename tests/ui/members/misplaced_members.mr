@@ -56,3 +56,35 @@ public union Shape {
     Color: string = "black"; //~ ERROR MR0115
     public mut Seen: int; //~ ERROR MR0115
 }
+
+// A non-abstract static indexer is a static member like any other, and a
+// macro is declared in a namespace.
+public interface IGrid {
+    static abstract this[i: int]: int { get; }
+    static this[i: int]: int { get => i; } //~ ERROR MR0115
+    macro Grid(t: Type) {} //~ ERROR MR0115
+}
+
+public struct Cell {
+    macro Wrap(t: Type) {} //~ ERROR MR0115
+}
+
+extension(c: Cell) {
+    macro Each(t: Type) {} //~ ERROR MR0115
+}
+
+macro Mark(t: Type) {}
+
+// Without `const`, each member would still be one that cannot be there,
+// so `MR0113` gets no fix and says why.
+public interface IKeyed {
+    const ~IKeyed() {} //~ ERROR MR0113
+    const struct Key {} //~ ERROR MR0113
+    const static Make(): int => 0; //~ ERROR MR0113
+}
+
+extension(c: Cell) {
+    const this[i: int]: int { get => i; } //~ ERROR MR0113
+    const type Item = int; //~ ERROR MR0113
+    this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
+}
