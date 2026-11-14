@@ -553,6 +553,11 @@ impl BinaryOp {
         )
     }
 
+    /// Whether it orders its operands: `<`, `>`, `<=` or `>=`.
+    pub fn is_ordering(self) -> bool {
+        matches!(self, Self::Lt | Self::Gt | Self::Le | Self::Ge)
+    }
+
     /// Whether it shifts its left operand by the count on its right: `<<`,
     /// `>>` or `>>>`.
     pub fn is_shift(self) -> bool {

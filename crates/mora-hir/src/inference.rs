@@ -580,8 +580,10 @@ pub fn is_known(ty: &Ty) -> bool {
     }
 }
 
-/// Whether two types are the same, the names of tuple elements aside.
-fn same(a: &Ty, b: &Ty) -> bool {
+/// Whether two types are the same, the names of tuple elements aside: the
+/// names only label the elements, so `(Left: int, Right: int)` holds
+/// `(1, 2)` (§5.5).
+pub fn same(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
         (Ty::Tuple(a), Ty::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(&a.ty, &b.ty))
@@ -638,6 +640,7 @@ pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
 mod tests {
     use std::fmt::Write;
 
+    use mora_span::{Project, SourceFile};
     use salsa::Setter;
 
     use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
@@ -654,14 +657,25 @@ mod tests {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
-        let body = body(&db, file, BodyOwner::TopLevel);
-        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        types_of_locals(&db, project, file, BodyOwner::TopLevel)
+    }
+
+    /// Each local of the body of `owner` in `file`, as `name: type`, `?`
+    /// for a type that is unknown.
+    fn types_of_locals(
+        db: &TestDb,
+        project: Project,
+        file: SourceFile,
+        owner: BodyOwner,
+    ) -> Vec<String> {
+        let body = body(db, file, owner);
+        let inference = infer(db, project, file, owner);
         body.locals
             .iter()
             .map(|(local, data)| {
                 let ty = inference
                     .local(local)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
+                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(db, ty));
                 format!("{}: {ty}", data.name)
             })
             .collect()
@@ -1379,21 +1393,8 @@ mod tests {
         assert_eq!(first(other_file).as_deref(), Some("Q"));
         let tree = item_tree(&db, file);
         let (f, _) = tree.items().find(|(_, item)| item.name == "F").expect("F");
-        let owner = BodyOwner::Item(f);
-        let body = body(&db, file, owner);
-        let inference = infer(&db, project, file, owner);
-        let types: Vec<String> = body
-            .locals
-            .iter()
-            .map(|(local, data)| {
-                let ty = inference
-                    .local(local)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
-                format!("{}: {ty}", data.name)
-            })
-            .collect();
         assert_eq!(
-            types,
+            types_of_locals(&db, project, file, BodyOwner::Item(f)),
             [
                 "p: P",
                 "q: Q",

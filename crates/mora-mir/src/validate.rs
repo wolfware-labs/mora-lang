@@ -7,8 +7,8 @@
 use std::rc::Rc;
 
 use mora_hir::{
-    Primitive, Signature, Ty, converts_implicitly, instance_fields, is_known, item_tree, signature,
-    this_type,
+    Primitive, Signature, Ty, converts_implicitly, instance_fields, is_known, item_tree, same,
+    signature, this_type,
 };
 use mora_span::Db;
 
@@ -796,18 +796,6 @@ struct Ended {
     locals: Vec<LocalId>,
     /// What the blocks before it end.
     earlier: Option<Rc<Ended>>,
-}
-
-/// Whether `a` and `b` are one type. The names of a tuple's elements only
-/// label them, so two tuples are one type when their elements are, as
-/// inference has it: `(Left: int, Right: int)` holds `(1, 2)`.
-fn same(a: &Ty, b: &Ty) -> bool {
-    match (a, b) {
-        (Ty::Tuple(a), Ty::Tuple(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(&a.ty, &b.ty))
-        }
-        _ => a == b,
-    }
 }
 
 /// Whether `a` and `b` are one type of local: both values, or both

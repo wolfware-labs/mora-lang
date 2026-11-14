@@ -7,7 +7,7 @@ use super::Source;
 use crate::bodies::{ArgMode, ExprId};
 use crate::defs::ItemId;
 use crate::inference::NamedProblem;
-use crate::report::{Declared, item_name_span, with_space_after};
+use crate::report::{Declared, item_name_span, remove_keyword};
 use crate::resolve::{Scope, item_data};
 use crate::ty::{ParamMode, Ty};
 
@@ -90,10 +90,11 @@ pub(super) fn mode(
                 format!("remove `{word}`"),
                 // The marker and the space after it; a comment after it stays.
                 marker.map(|marker| {
-                    let range = with_space_after(source.file.text(source.db), marker);
-                    Fix::new(
+                    remove_keyword(
+                        file,
+                        source.file.text(source.db),
+                        marker,
                         format!("remove `{word}`"),
-                        vec![TextEdit::replace(Span::new(file, range), "")],
                     )
                 }),
             )

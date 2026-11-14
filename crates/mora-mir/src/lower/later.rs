@@ -365,7 +365,7 @@ fn expressions_later(
             Expr::Assign { op: None, lhs, .. } if matches!(hir.exprs[*lhs], Expr::Tuple(_)) => {
                 ("a deconstruction", SMALLER_EXPRESSIONS)
             }
-            Expr::Binary { op, lhs, rhs } if is_ordering(*op) => {
+            Expr::Binary { op, lhs, rhs } if op.is_ordering() => {
                 let operand = |ty: fn(&Ty) -> bool| {
                     [lhs, rhs]
                         .iter()
@@ -434,11 +434,6 @@ fn expressions_later(
         _ => None,
     });
     latest(exprs.chain(stmts))
-}
-
-/// Whether `op` orders its operands: `<`, `>`, `<=` or `>=`.
-fn is_ordering(op: BinaryOp) -> bool {
-    op.is_comparison() && !matches!(op, BinaryOp::Eq | BinaryOp::Ne)
 }
 
 /// Whether `expr` names a place, by its shape: a local, `this`, a path,

@@ -161,8 +161,6 @@ fn not_a_type(db: &dyn Db, name: &str, span: Span, resolved: &Resolved) -> Diagn
 /// that remove the default or the `ref`.
 fn ref_default(db: &dyn Db, file: SourceFile, name: &str, written: RefDefaultRanges) -> Diagnostic {
     let id = file.id(db);
-    // The `ref` goes with the space after it, so the name stays.
-    let keyword = with_space_after(file.text(db), written.keyword);
     Diagnostic::error(
         codes::MR0209,
         format!(
@@ -178,9 +176,11 @@ fn ref_default(db: &dyn Db, file: SourceFile, name: &str, written: RefDefaultRan
         "remove the default value",
         vec![TextEdit::replace(Span::new(id, written.default), "")],
     ))
-    .with_fix(Fix::new(
+    .with_fix(remove_keyword(
+        id,
+        file.text(db),
+        written.keyword,
         "remove `ref`",
-        vec![TextEdit::replace(Span::new(id, keyword), "")],
     ))
 }
 
@@ -455,12 +455,11 @@ fn repeated_modifier(
     }
     diagnostic
         .with_note("a modifier says the same thing however often it is written")
-        .with_fix(Fix::new(
+        .with_fix(remove_keyword(
+            file,
+            text,
+            range,
             format!("remove the repeated `{name}`"),
-            vec![TextEdit::replace(
-                Span::new(file, with_space_after(text, range)),
-                "",
-            )],
         ))
 }
 
@@ -486,12 +485,11 @@ fn conflicting_modifier(
     )
     .with_secondary(Label::new(Span::new(file, first), "written first here"))
     .with_note("keep the one that is meant; the fix keeps the first")
-    .with_fix(Fix::new(
+    .with_fix(remove_keyword(
+        file,
+        text,
+        range,
         format!("remove `{name}`"),
-        vec![TextEdit::replace(
-            Span::new(file, with_space_after(text, range)),
-            "",
-        )],
     ))
 }
 
@@ -538,19 +536,36 @@ fn misplaced_modifier(
         Label::new(Span::new(file, range), misplaced.reason),
     )
     .with_note(misplaced.instead)
-    .with_fix(Fix::new(
+    .with_fix(remove_keyword(
+        file,
+        text,
+        range,
         format!("remove `{name}`"),
+    ))
+}
+
+/// The fix, described by `message`, that removes the keyword at `range` in
+/// the text `text` of `file`, with the white space after it
+/// ([`with_space_after`]).
+pub(crate) fn remove_keyword(
+    file: FileId,
+    text: &str,
+    range: TextRange,
+    message: impl Into<String>,
+) -> Fix {
+    Fix::new(
+        message,
         vec![TextEdit::replace(
             Span::new(file, with_space_after(text, range)),
             "",
         )],
-    ))
+    )
 }
 
 /// `range` with the white space after it in `text`: what a fix removes so
 /// that a keyword goes without leaving its space behind. A comment after
 /// it stays.
-pub(crate) fn with_space_after(text: &str, range: TextRange) -> TextRange {
+fn with_space_after(text: &str, range: TextRange) -> TextRange {
     let space = text
         .get(usize::from(range.end())..)
         .map_or(0, |rest| rest.len() - rest.trim_start().len());
