@@ -621,7 +621,7 @@ Done when:
 
 - One MIR snapshot test per guarantee of §10.13 with zero `Retain`/`Release` statements.
 - The M2 run tests still pass and stay leak-free.
-- A MIR snapshot of a recursive function that passes a list it no longer needs shows the release before the recursive call, and a 100,000-deep run test stays leak-free with peak memory independent of the depth.
+- A MIR snapshot of a recursive function that passes a list it no longer needs shows the release before the recursive call, and a 100,000-deep run test stays leak-free, with the peak live heap held by the list and the objects it reaches independent of the depth (stack frames are not counted).
 
 ### M2.14 Debug runtime: poisoning and leak report
 
@@ -1569,7 +1569,7 @@ Done when:
 
 - §14.13 says that bodies are generated independently and in what order their code, data and debug sections are written.
 - `mora build --jobs <n>` sets the number of threads, defaulting to the available cores.
-- `users-api` built with `--jobs 1` and `--jobs 8` gives byte-identical object files and executables in `dev` and `release`.
+- `users-api` built with `--jobs 1` and `--jobs 8` gives byte-identical object files in `dev` and `release`; executables are compared in M7.15, once paths, clocks and timestamps are normalized.
 - The `bench` workflow of M7.12 records the `users-api` build time with one job and with all cores.
 
 ### M7.15 Reproducible builds checked in CI
@@ -1591,7 +1591,7 @@ Done when:
 |---|---|---|
 | M8: WebAssembly and libraries | Wasm targets, the `.wasm` library format with `mora.meta`, `mora.ir`, `mora.deps`, `mora.caps` and `mora.abi`, linking modes and ABI checks (OQ-15), and a stable plugin ABI at an opt-in boundary: `[abi] stable` interface packages, `@Frozen` types, and native and Wasm plugins loaded from one interface; WASI 0.3 with async in the Component Model for `wasm32-wasi`, and `mora bindgen wit` to import a WIT interface as Mora declarations. | [§18.1](docs/design/mora.md#181-webassembly-target), [§18.2](docs/design/mora.md#182-the-library-format), [§18.3](docs/design/mora.md#183-linking-libraries), [§18.4](docs/design/mora.md#184-abi-stability), [§24](docs/design/mora.md#24-open-questions) |
 | M9: Packages and capabilities | URL and git dependency sources, inline imports in scripts, lockfile hashes, `mora fetch`, and capability grants enforced on wasm and native targets, narrowed per dependency, with sandboxed runs. | [§18.5](docs/design/mora.md#185-imports-manifest-and-lockfile), [§18.6](docs/design/mora.md#186-capabilities) |
-| M10: Threads | `shared` classes with atomic counts, sendable checks, `Thread`, `Task.Run`, `Mutex`, `Atomic`, `Channel`, a multi-threaded executor (OQ-6, OQ-7, OQ-1), supervised worker processes as a framework option, sending a freshly built object graph to another thread as one region, and `Parallel.For` and `Parallel.Map` whose bodies effects keep deterministic. | [§12.6](docs/design/mora.md#126-threads-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
+| M10: Threads | `shared` classes with atomic counts, sendable checks, `Thread`, `Task.Run`, `Mutex`, `Atomic`, `Channel`, a multi-threaded executor (OQ-6, OQ-7, OQ-1), supervised worker processes as a framework option, sending a freshly built object graph to another thread as one region, and `Parallel.For` and `Parallel.Map`, whose bodies the compiler checks for effects so that their results are deterministic. | [§12.6](docs/design/mora.md#126-threads-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
 | M11: Language growth | Class inheritance, variance, `yield return`, retroactive implementations, arenas, allocators, user `unsafe`, `decimal`, conditionally async higher-order functions (`async?`), more macro kinds (OQ-3, 4, 5, 9, 10, 11, 12, 13), value parameters for generics (integers, `bool` and enums), and must-consume unique classes. | [§9.10](docs/design/mora.md#910-not-in-the-mvp), [§10.12](docs/design/mora.md#1012-arenas-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
 | M12: Registry and signing | The package registry and registry dependency sources, Sigstore-signed publishing, the transparency log and mirrors (OQ-16), and rebuild verification of published releases. | [§18.7](docs/design/mora.md#187-registry), [§24](docs/design/mora.md#24-open-questions) |
 | M13: Backends and targets | LLVM release backend, Component Model export, Windows debug information, embedded targets (OQ-2), and an aliasing model that lets the LLVM backend emit `noalias` facts. | [§18.3](docs/design/mora.md#183-linking-libraries), [§19.1](docs/design/mora.md#191-targets), [§24](docs/design/mora.md#24-open-questions) |
