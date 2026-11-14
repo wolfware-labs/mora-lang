@@ -27,10 +27,10 @@ use crate::type_ref::type_keywords;
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
 /// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
 /// `MR0113`), its constants without a value (`MR0114`), the members its
-/// declarations cannot have (`MR0115`), the locals
-/// of its bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
-/// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax
-/// errors come from [`crate::parse`].
+/// declarations cannot have (`MR0115`), the locals of its bodies
+/// (`MR0180`), the types in its bodies (`MR0010`, `MR0203`, `MR0204`) and
+/// its entry point (`MR0124`, `MR0125`). Lexical and syntax errors come
+/// from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     let map = def_map(db, project);
@@ -326,11 +326,11 @@ enum Lookup {
 /// one's leaves the choice to the author. The fix for a conflict removes
 /// the later modifier, and the one for a modifier that does not apply
 /// removes it, unless it is a `const` member of an interface or an
-/// extension, where only the author knows what is meant. With them comes
-/// `MR0114`, a `const` field without a value where a constant may be
-/// declared, and `MR0115`, a member that its declaration cannot have,
-/// neither of which has a fix. A file whose text did not
-/// change keeps its result.
+/// extension, where only the author knows what is meant, or a member that
+/// would be `MR0115` without it. With them comes `MR0114`, a `const` field
+/// without a value where a constant may be declared, and `MR0115`, a
+/// member that its declaration cannot have, neither of which has a fix. A
+/// file whose text did not change keeps its result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
@@ -696,7 +696,7 @@ fn constant_without_value(
     let at = frame.node.text_range();
     let recovered = syntax_errors
         .iter()
-        .any(|error| error.range.start() <= at.end() && at.start() <= error.range.end());
+        .any(|error| at.intersect(error.range).is_some());
     if declarator.eq_token().is_some() || recovered || frame.misplaced_const() {
         return None;
     }
@@ -756,7 +756,9 @@ struct MemberRule {
     note: &'static str,
 }
 
-/// Where the modifier `keyword` is first written on `node`, if it is.
+/// Where the modifier `keyword` is first written on `node`, if it is: the
+/// lookup for a node without its frame at hand, as the indexer of an
+/// accessor, where [`ModifierFrame::modifier`] reads the walk's own.
 fn modifier_of(node: SyntaxNode<'_>, keyword: SyntaxKind) -> Option<TextRange> {
     node.children()
         .filter_map(ast::Modifier::cast)
@@ -2499,9 +2501,10 @@ mod tests {
             assert_eq!(found[0].note.as_deref(), Some(note), "{text}");
             assert!(found[0].fixes.is_empty(), "{text}: {found:#?}");
         }
-        // What an interface, an extension or a union may have, and the same
-        // members in a struct, are not reported; nor is `MR0115` on top of
-        // `MR0113`, and a union constant without a value is `MR0114`.
+        // What an interface, an extension or a union may have, the same
+        // members in a struct and a macro in the namespace are not
+        // reported; nor is `MR0115` on top of `MR0113`, and a union
+        // constant without a value is `MR0114`.
         let text = "interface I {\n    K: int;\n    static abstract S: int;\n    \
                     M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n    \
                     abstract static D(): int => 1;\n    static abstract E: int => 1;\n    \
@@ -2612,47 +2615,42 @@ mod tests {
         assert_eq!(found[1].fixes.len(), 1);
     }
 
-    /// Whether `diagnostic` comes from the modifier and member checks.
-    fn in_member_family(diagnostic: &Diagnostic) -> bool {
-        [
-            mora_diag::codes::MR0111,
-            mora_diag::codes::MR0112,
-            mora_diag::codes::MR0113,
-            mora_diag::codes::MR0114,
-            mora_diag::codes::MR0115,
-        ]
-        .contains(&diagnostic.code)
-    }
-
-    /// The diagnostics of the modifier and member checks of `text`, each as
-    /// its code, its message and the text it points at.
-    fn member_family(text: &str) -> BTreeSet<(String, String, String)> {
+    /// The diagnostics of the modifier and member checks of `text`.
+    fn member_family(text: &str) -> Vec<Diagnostic> {
+        use mora_diag::codes;
+        let family = [
+            codes::MR0111,
+            codes::MR0112,
+            codes::MR0113,
+            codes::MR0114,
+            codes::MR0115,
+        ];
         diagnostics_of(text)
-            .iter()
-            .filter(|d| in_member_family(d))
-            .map(|d| {
-                (
-                    d.code.to_string(),
-                    d.message.clone(),
-                    text[d.primary.span.range].to_owned(),
-                )
-            })
+            .into_iter()
+            .filter(|d| family.contains(&d.code))
             .collect()
     }
 
     /// Whether applying every fix of the modifier and member checks of
     /// `text` leaves one of their diagnostics that `text` did not report: a
-    /// fix must not trade one of them for another.
+    /// fix must not trade one of them for another. A diagnostic is told
+    /// apart by its code, its message and the text it points at.
     fn fixes_add_no_member_error(text: &str) -> Result<(), String> {
-        let before = member_family(text);
-        let family = |text: &str| -> Vec<Diagnostic> {
-            diagnostics_of(text)
-                .into_iter()
-                .filter(in_member_family)
+        let reported = |text: &str| -> BTreeSet<(String, String, String)> {
+            member_family(text)
+                .iter()
+                .map(|d| {
+                    (
+                        d.code.to_string(),
+                        d.message.clone(),
+                        text[d.primary.span.range].to_owned(),
+                    )
+                })
                 .collect()
         };
-        let fixed = crate::test_support::apply_fixes(text, family).text;
-        let after = member_family(&fixed);
+        let before = reported(text);
+        let fixed = crate::test_support::apply_fixes(text, member_family).text;
+        let after = reported(&fixed);
         let new: Vec<_> = after.difference(&before).collect();
         if new.is_empty() {
             Ok(())
@@ -2761,10 +2759,7 @@ mod tests {
             "struct C {\n    const K;\n}\n",
             "struct C {\n    const K: int, L: int;\n}\n",
         ] {
-            let db = TestDb::new();
-            let project = app(&db, &[("src/Program.mr", text)]);
-            let file = crate::test_support::file_named(&db, project, "src/Program.mr");
-            assert!(!parse(&db, file).errors().is_empty(), "{text}");
+            assert!(!mora_syntax::parse(text).errors().is_empty(), "{text}");
             let found = diagnostics_of(text);
             assert_eq!(codes(&found), Vec::<String>::new(), "{text}: {found:#?}");
         }
