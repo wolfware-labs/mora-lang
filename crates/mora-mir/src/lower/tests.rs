@@ -4106,6 +4106,31 @@ fn every_owner_lowered_later_names_its_milestone() {
             |l| l.owner("F"),
             "UsersApi.F: a `mut` method called on a value that is not a place is not lowered until M2.4",
         ),
+        // An element is a place, but MIR has none for it until indexers
+        // come: borrowing one or a field of one by `ref` waits for them,
+        // after the arrays of the signature. Inference resolves no method
+        // on an element yet, so no `mut` receiver here is one.
+        (
+            "Bump(ref x: int) {}\nF(xs: int[]) {\n    Bump(ref xs[0]);\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `ref` argument or a `mut` receiver that is an element is not lowered \
+             until M3.6",
+        ),
+        (
+            "struct P {\n    public mut X: int;\n}\nBump(ref x: int) {}\n\
+             F(ps: P[]) {\n    Bump(ref ps[0].X);\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a `ref` argument or a `mut` receiver that is an element is not lowered \
+             until M3.6",
+        ),
+        // Read, not borrowed, an element waits for the arrays alone.
+        (
+            "struct P {\n    public X: int;\n    public Show(): int => X;\n}\n\
+             Look(in x: int) {}\nF(ps: P[], xs: int[]) {\n    ps[0].Show();\n    \
+             Look(in xs[0]);\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+        ),
     ];
     for &(text, owner, message) in cases {
         assert_eq!(
@@ -4118,12 +4143,18 @@ fn every_owner_lowered_later_names_its_milestone() {
 
 #[test]
 fn a_ref_argument_or_a_mut_receiver_that_is_a_place_is_lowered() {
-    // A local, a field of one, and a parenthesized local are places; so is
-    // `this` and a field of it, in a `mut` method.
+    // A local, a field of one, and a parenthesized local are places. In a
+    // `mut` method, so are a field named alone, `this`, a field of `this`
+    // and a field of that: `Bump(ref X)`, `Inc()`, `Bump(ref this.X)`,
+    // `this.Inc()` and `this.In.Inc()`.
     let lowered = lowered(
-        "struct P {\n    public mut X: int;\n    public mut Inc() { X += 1; }\n    \
-         public mut Twice() {\n        Bump(ref X);\n        Inc();\n    }\n}\n\
-         Bump(ref x: int) {}\nF() {\n    var n = 1;\n    var p = new P { X = 1 };\n    \
+        "struct I {\n    public mut N: int;\n    public mut Inc() { N += 1; }\n}\n\
+         struct P {\n    public mut X: int;\n    public mut In: I;\n    \
+         public mut Inc() { X += 1; }\n    \
+         public mut Twice() {\n        Bump(ref X);\n        Inc();\n        \
+         Bump(ref this.X);\n        this.Inc();\n        this.In.Inc();\n    }\n}\n\
+         Bump(ref x: int) {}\nF() {\n    var n = 1;\n    \
+         var p = new P { X = 1, In = new I { N = 0 } };\n    \
          Bump(ref n);\n    Bump(ref (n));\n    Bump(ref p.X);\n    p.Inc();\n}\n",
     );
     assert_eq!(lowered.bodies("F"), ["UsersApi.F"]);

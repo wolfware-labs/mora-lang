@@ -408,6 +408,14 @@ fn expressions_later(
                     PARAMETER_MODES,
                 )
             }
+            Expr::Call { callee, args }
+                if borrows_element(db, hir, inference, id, *callee, args) =>
+            {
+                (
+                    "a `ref` argument or a `mut` receiver that is an element",
+                    OPERATORS,
+                )
+            }
             Expr::Await(_) => ("`await`", ASYNC),
             Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
             Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
@@ -439,12 +447,42 @@ fn expressions_later(
 /// Whether `expr` names a place, by its shape: a local, `this`, a path,
 /// an element, or a field of a place (§7.11). What a path or a member
 /// names that is not a place, as a getter or a constant, comes later for
-/// what it is.
+/// what it is. Lowering has no place for an element yet, so a borrow of
+/// one comes later too ([`borrows_element`]).
 fn is_place(hir: &Body, expr: ExprId) -> bool {
     match &hir.exprs[expr] {
         Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. } => true,
         Expr::Member { receiver, .. } => is_place(hir, *receiver),
         _ => false,
+    }
+}
+
+/// Whether `expr` is an element or a field of one, by its shape.
+fn is_element(hir: &Body, expr: ExprId) -> bool {
+    match &hir.exprs[expr] {
+        Expr::Index { .. } => true,
+        Expr::Member { receiver, .. } => is_element(hir, *receiver),
+        _ => false,
+    }
+}
+
+/// Whether the call `call` calls a `mut` method, which takes its receiver
+/// by `ref`.
+fn calls_mut_method(db: &dyn Db, inference: &Inference, call: ExprId) -> bool {
+    let Some(Callee::Item(item)) = inference.callee(call) else {
+        return false;
+    };
+    signature(db, item)
+        .as_function()
+        .is_some_and(|function| function.receiver == Some(ParamMode::Ref))
+}
+
+/// The receiver of the method that `callee` names through a member, as
+/// `p` in `p.Inc()`.
+fn member_receiver(hir: &Body, callee: ExprId) -> Option<ExprId> {
+    match hir.exprs[callee] {
+        Expr::Member { receiver, .. } => Some(receiver),
+        _ => None,
     }
 }
 
@@ -457,14 +495,26 @@ fn mut_receiver_off_place(
     call: ExprId,
     callee: ExprId,
 ) -> bool {
-    let Some(Callee::Item(item)) = inference.callee(call) else {
-        return false;
-    };
-    let takes_ref = signature(db, item)
-        .as_function()
-        .is_some_and(|function| function.receiver == Some(ParamMode::Ref));
-    takes_ref
-        && matches!(hir.exprs[callee], Expr::Member { receiver, .. } if !is_place(hir, receiver))
+    calls_mut_method(db, inference, call)
+        && member_receiver(hir, callee).is_some_and(|receiver| !is_place(hir, receiver))
+}
+
+/// Whether the call `call` of `callee` with `args` borrows an element or
+/// a field of one by `ref`, as an argument or as the receiver of a `mut`
+/// method. An element is a place (§7.11), but MIR has no place for one
+/// until indexers and their elements are lowered, with operators.
+fn borrows_element(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    call: ExprId,
+    callee: ExprId,
+    args: &[Arg],
+) -> bool {
+    args.iter()
+        .any(|arg| arg.mode == Some(ArgMode::Ref) && is_element(hir, arg.expr))
+        || calls_mut_method(db, inference, call)
+            && member_receiver(hir, callee).is_some_and(|receiver| is_element(hir, receiver))
 }
 
 /// What the path `expr` names, as `a union case`, and the milestone that

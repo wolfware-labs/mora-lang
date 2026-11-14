@@ -732,6 +732,7 @@ Done when:
 - Run tests for a vector type with operators and an indexer.
 - UI test for an unpaired `==`.
 - UI tests for the newtype-to-underlying-type row of §5.10, and for a conversion through a user type's `IFrom<S>`.
+- A `ref` argument that is an element or a field of one, as in `Bump(ref xs[0])`, and the receiver of a `mut` method that is one, as in `xs[0].Inc()`, are lowered; until then such a call reports that it is not lowered until M3.6.
 
 ### M3.7 Results and `?` propagation
 
