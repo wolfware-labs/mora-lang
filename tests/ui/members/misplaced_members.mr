@@ -1,0 +1,49 @@
+// An interface has no fields and no destructors, and an extension adds no
+// fields, destructors or static members. In an interface, a member with a
+// value is a field; without one, it is a getter.
+public interface IShape {
+    Sides: int;
+    Name: string => "shape";
+    static abstract Unit: IShape;
+
+    Corners: int = 4; //~ ERROR MR0115
+    static Count: int = 0; //~ ERROR MR0115
+    ~IShape() {} //~ ERROR MR0115
+}
+
+public struct Point {
+    public X: int;
+}
+
+extension(p: Point) {
+    public Twice: int => p.X * 2;
+    public Shifted(by: int): int => p.X + by;
+
+    Limit: int = 10; //~ ERROR MR0115
+    mut Seen: int; //~ ERROR MR0115
+    static Made: int = 0; //~ ERROR MR0115
+    ~Point() {} //~ ERROR MR0115
+    public static Origin(): Point => new Point { X = 0 }; //~ ERROR MR0115
+    public static Zero: int => 0; //~ ERROR MR0115
+    public static operator +(a: Point, b: Point): Point => a; //~ ERROR MR0115
+}
+
+// `const` on a field there is `MR0113` alone.
+extension(p: Point) {
+    const Max: int = 10; //~ ERROR MR0113
+    const static Min: int = 0; //~ ERROR MR0113
+}
+
+// A union's data lives in its cases; its constants and static fields are
+// its own.
+public union Shape {
+    Circle(Radius: double),
+    Square(Side: double);
+
+    public const Sides: int = 4;
+    public static Made: int = 0;
+    public Name: string => "shape";
+
+    Color: string = "black"; //~ ERROR MR0115
+    public mut Seen: int; //~ ERROR MR0115
+}

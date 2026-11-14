@@ -26,8 +26,9 @@ use crate::type_ref::type_keywords;
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
 /// `MR0123`), the member names of its types (`MR0146`), the modifiers
 /// written twice, that conflict or that do not apply (`MR0111`, `MR0112`,
-/// `MR0113`), its constants without a value (`MR0114`), the locals of its
-/// bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
+/// `MR0113`), its constants without a value (`MR0114`), the members its
+/// interfaces, extensions and unions cannot have (`MR0115`), the locals
+/// of its bodies (`MR0180`), the types in its bodies (`MR0010`, `MR0203`,
 /// `MR0204`) and its entry point (`MR0124`, `MR0125`). Lexical and syntax
 /// errors come from [`crate::parse`].
 #[salsa::tracked(returns(ref))]
@@ -327,8 +328,9 @@ enum Lookup {
 /// removes it, unless it is a `const` member of an interface or an
 /// extension, where only the author knows what is meant. With them comes
 /// `MR0114`, a `const` field without a value where a constant may be
-/// declared, which has no fix. A file whose text did not change keeps its
-/// result.
+/// declared, and `MR0115`, a member that an interface, an extension or a
+/// union cannot have, neither of which has a fix. A file whose text did not
+/// change keeps its result.
 #[salsa::tracked(returns(ref))]
 fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
@@ -349,6 +351,9 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
                 let mut report = |diagnostic| found.push((order, diagnostic));
                 check_modifiers(id, text, &frame, &mut report);
                 if let Some(diagnostic) = constant_without_value(id, &frame) {
+                    report(diagnostic);
+                }
+                if let Some(diagnostic) = misplaced_member(id, &frame) {
                     report(diagnostic);
                 }
             }
@@ -671,6 +676,128 @@ fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Dia
             "a constant is a value fixed at compile time; write that value after the type, \
              as `const K: int = 1;`",
         ),
+    )
+}
+
+/// `MR0115`: the node of `frame` is a member that the interface, the
+/// extension or the union it is in cannot have (§6.6, §6.8, §6.9, D-157).
+/// An interface has no fields and no destructors; an extension adds no
+/// fields, destructors or static members, and an operator is a static
+/// method; a union's data is in its cases, so it has no instance fields.
+/// Where `const` on the node is `MR0113`, that is the one error reported.
+/// No fix: only the author knows where the member belongs. A constructor
+/// cannot be written in an interface or an extension: there, `P() {}` is
+/// a method.
+fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
+    use SyntaxKind as K;
+    let written = |keyword| {
+        frame
+            .written
+            .iter()
+            .find(|&&(kind, _)| kind == keyword)
+            .map(|&(_, range)| range)
+    };
+    if written(K::ConstKw).is_some() && misplaced(frame.container, frame.node, K::ConstKw).is_some()
+    {
+        return None;
+    }
+    let node = frame.node;
+    let static_kw = written(K::StaticKw);
+    let field = || {
+        let name = ast::FieldDecl::cast(node)?.variable_declarator()?.name()?;
+        Some(name.syntax().text_range())
+    };
+    let destructor = || {
+        let destructor = ast::DestructorDecl::cast(node)?;
+        let tilde = destructor.tilde_token()?.text_range();
+        Some(tilde.cover(destructor.name()?.syntax().text_range()))
+    };
+    let operator = || {
+        Some(
+            ast::OperatorDecl::cast(node)?
+                .operator_token()?
+                .text_range(),
+        )
+    };
+    let (message, range, label, note) = match (frame.container, node.kind()) {
+        (K::InterfaceDecl, K::FieldDecl) if static_kw.is_some() => (
+            "an interface has no fields",
+            field()?,
+            "a static field",
+            "a value each implementing type gives is a static abstract getter, as \
+             `static abstract K: int;`; a value every implementation shares is a constant in \
+             the namespace, next to the interface, as `const K: int = 1;`",
+        ),
+        (K::InterfaceDecl, K::FieldDecl) => (
+            "an interface has no fields",
+            field()?,
+            "a field, since it has a value",
+            "a value each implementing type gives is a getter, as `K: int;`, which may have a \
+             default, as `K: int => 1;`; a value every implementation shares is a constant in \
+             the namespace, next to the interface, as `const K: int = 1;`",
+        ),
+        // A union's constants and static fields are its own (§6.10).
+        (K::UnionBody, K::FieldDecl) if static_kw.is_none() && written(K::ConstKw).is_none() => (
+            "a union has no instance fields",
+            field()?,
+            "a union has no fields besides its cases",
+            "put the value in each case, or wrap the union in a struct, as \
+             `struct Drawn { Shape: Shape; Color: string; }`",
+        ),
+        (K::InterfaceDecl, K::DestructorDecl) => (
+            "an interface has no destructors",
+            destructor()?,
+            "a destructor",
+            "a destructor is declared in each type that needs one, which may implement the \
+             interface",
+        ),
+        (K::ExtensionDecl, K::FieldDecl) if static_kw.is_some() => (
+            "an extension adds no fields",
+            field()?,
+            "a static field",
+            "a static field is declared in the type itself, or in the namespace, next to the \
+             extension, as `static mut K: int = 1;`",
+        ),
+        (K::ExtensionDecl, K::FieldDecl) => (
+            "an extension adds no fields",
+            field()?,
+            "a field",
+            "a field is declared in the type itself; an extension may add a getter, as \
+             `K: int => 1;`, which computes its value on each read",
+        ),
+        (K::ExtensionDecl, K::DestructorDecl) => (
+            "an extension adds no destructors",
+            destructor()?,
+            "a destructor",
+            "a destructor is declared in the type itself",
+        ),
+        (K::ExtensionDecl, kind) => {
+            let (range, label) = match (kind, static_kw) {
+                (K::OperatorDecl, range) => {
+                    (range.or_else(operator)?, "an operator is a static method")
+                }
+                (K::FunctionDecl, Some(range)) => (range, "a static method"),
+                (K::GetterDecl, Some(range)) => (range, "a static getter"),
+                (K::IndexerDecl, Some(range)) => (range, "a static indexer"),
+                _ => return None,
+            };
+            (
+                "an extension adds no static members",
+                range,
+                label,
+                "a static member is declared in the type itself, or as a function in the \
+                 namespace, next to the extension",
+            )
+        }
+        _ => return None,
+    };
+    Some(
+        Diagnostic::error(
+            codes::MR0115,
+            message,
+            Label::new(Span::new(file, range), label),
+        )
+        .with_note(note),
     )
 }
 
@@ -1963,6 +2090,157 @@ mod tests {
         let found = diagnostics_of(text);
         assert_eq!(messages(&found), ["`const` does not apply to a getter"]);
         assert_eq!(found[0].fixes.len(), 1);
+    }
+
+    #[test]
+    fn a_member_an_interface_an_extension_or_a_union_cannot_have_is_mr0115_without_a_fix() {
+        const INTERFACE: &str = "an interface has no fields";
+        const FIELDS: &str = "an extension adds no fields";
+        const STATICS: &str = "an extension adds no static members";
+        const STATIC_NOTE: &str = "a static member is declared in the type itself, or as a \
+                                   function in the namespace, next to the extension";
+        const UNION: &str = "a union has no instance fields";
+        const UNION_LABEL: &str = "a union has no fields besides its cases";
+        const UNION_NOTE: &str = "put the value in each case, or wrap the union in a struct, \
+                                  as `struct Drawn { Shape: Shape; Color: string; }`";
+        let field_note = "a field is declared in the type itself; an extension may add a \
+                          getter, as `K: int => 1;`, which computes its value on each read";
+        let static_field_note = "a static field is declared in the type itself, or in the \
+                                 namespace, next to the extension, as `static mut K: int = 1;`";
+        let cases = [
+            (
+                "interface I {\n    K: int = 1;\n}\n",
+                "K",
+                INTERFACE,
+                "a field, since it has a value",
+                "a value each implementing type gives is a getter, as `K: int;`, which may \
+                 have a default, as `K: int => 1;`; a value every implementation shares is a \
+                 constant in the namespace, next to the interface, as `const K: int = 1;`",
+            ),
+            (
+                "interface I {\n    public static mut K: int = 1;\n}\n",
+                "K",
+                INTERFACE,
+                "a static field",
+                "a value each implementing type gives is a static abstract getter, as \
+                 `static abstract K: int;`; a value every implementation shares is a constant \
+                 in the namespace, next to the interface, as `const K: int = 1;`",
+            ),
+            (
+                "interface I {\n    ~I() {}\n}\n",
+                "~I",
+                "an interface has no destructors",
+                "a destructor",
+                "a destructor is declared in each type that needs one, which may implement \
+                 the interface",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    K: int = 1;\n}\n",
+                "K",
+                FIELDS,
+                "a field",
+                field_note,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    mut K: int;\n}\n",
+                "K",
+                FIELDS,
+                "a field",
+                field_note,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    static K: int = 1;\n}\n",
+                "K",
+                FIELDS,
+                "a static field",
+                static_field_note,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    ~ P() {}\n}\n",
+                "~ P",
+                "an extension adds no destructors",
+                "a destructor",
+                "a destructor is declared in the type itself",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    public static Make(): int => 1;\n}\n",
+                "static",
+                STATICS,
+                "a static method",
+                STATIC_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    static Z: int => 1;\n}\n",
+                "static",
+                STATICS,
+                "a static getter",
+                STATIC_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    static this[i: int]: int => i;\n}\n",
+                "static",
+                STATICS,
+                "a static indexer",
+                STATIC_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    \
+                 public static operator +(a: P, b: P): P => a;\n}\n",
+                "static",
+                STATICS,
+                "an operator is a static method",
+                STATIC_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    operator +(a: P, b: P): P => a;\n}\n",
+                "operator",
+                STATICS,
+                "an operator is a static method",
+                STATIC_NOTE,
+            ),
+            (
+                "union U { A, B(X: int);\n    Color: string = \"black\";\n}\n",
+                "Color",
+                UNION,
+                UNION_LABEL,
+                UNION_NOTE,
+            ),
+            (
+                "union U { A;\n    public mut Color: string;\n}\n",
+                "Color",
+                UNION,
+                UNION_LABEL,
+                UNION_NOTE,
+            ),
+        ];
+        for (text, at, message, label, note) in cases {
+            let found = diagnostics_of(text);
+            assert_eq!(codes(&found), ["MR0115"], "{text}: {found:#?}");
+            assert_eq!(found[0].message, message, "{text}");
+            assert_eq!(&text[found[0].primary.span.range], at, "{text}");
+            assert_eq!(found[0].primary.message.as_deref(), Some(label), "{text}");
+            assert_eq!(found[0].note.as_deref(), Some(note), "{text}");
+            assert!(found[0].fixes.is_empty(), "{text}: {found:#?}");
+        }
+        // What an interface, an extension or a union may have, and the same
+        // members in a struct, are not reported; nor is `MR0115` on top of
+        // `MR0113`, and a union constant without a value is `MR0114`.
+        let text = "interface I {\n    K: int;\n    static abstract S: int;\n    \
+                    M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n}\n\
+                    struct P {\n    K: int = 1;\n    static S: int = 1;\n    ~P() {}\n    \
+                    static M(): int => 1;\n}\n\
+                    extension(p: P) {\n    G: int => 1;\n    public M(): int => 1;\n    \
+                    this[i: int]: int => i;\n    const ~P() {}\n    const static K: int = 1;\n}\n\
+                    interface J {\n    const static K: int = 1;\n}\n\
+                    union U { A;\n    const C: int = 1;\n    static S: int = 1;\n    \
+                    static mut T: int;\n    G: int => 1;\n}\n\
+                    union V { A;\n    const N: int;\n}\n";
+        let found = diagnostics_of(text);
+        assert_eq!(
+            codes(&found),
+            ["MR0113", "MR0113", "MR0113", "MR0114"],
+            "{found:#?}"
+        );
     }
 
     #[test]

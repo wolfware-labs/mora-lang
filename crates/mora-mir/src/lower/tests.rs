@@ -3502,8 +3502,8 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
 
 /// A file with an owner of each kind whose body, signature or local
 /// function a later milestone lowers, and a function that this one lowers.
-const LATER_SIGNATURES: &str = "union U { A, B;\n    X: int = 1;\n    Get: int => 1;\n}\n\
-     interface I {\n    X: int = 1;\n    Get: int => 1;\n}\n\
+const LATER_SIGNATURES: &str = "union U { A, B;\n    Get: int => 1;\n}\n\
+     interface I {\n    Get: int => 1;\n}\n\
      class C {}\nstruct B<T> {}\nenum E { A, B }\n\
      struct S {\n    X: C = new C();\n}\n\
      ClassParam(c: C) {}\nClassReturn(): C => new C();\n\
@@ -3526,9 +3526,7 @@ fn mir_dump_writes_a_line_for_each_signature_lowered_later() {
     assert_eq!(
         dump,
         format!(
-            "// UsersApi.U.X: not lowered until M3.1\n\n\
-             // UsersApi.U.Get: not lowered until M3.1\n\n\
-             // UsersApi.I.X: not lowered until M3.10\n\n\
+            "// UsersApi.U.Get: not lowered until M3.1\n\n\
              // UsersApi.I.Get: not lowered until M3.10\n\n\
              // UsersApi.S.X: not lowered until M2.1\n\n\
              // UsersApi.ClassParam: not lowered until M2.1\n\n\
@@ -3729,16 +3727,6 @@ fn every_owner_lowered_later_names_its_milestone() {
             "enum Level { Low = 1, High = 2 }\n",
             |l| l.initializer("Level", "Low"),
             "UsersApi.Level.Low: the value of an enum member is not lowered until M3.2",
-        ),
-        (
-            "union U { A, B;\n    X: int = 1;\n}\n",
-            |l| l.initializer("U", "X"),
-            "UsersApi.U.X: the initializer of a field of a union is not lowered until M3.1",
-        ),
-        (
-            "interface I {\n    X: int = 1;\n}\n",
-            |l| l.initializer("I", "X"),
-            "UsersApi.I.X: the initializer of a field of an interface is not lowered until M3.10",
         ),
         (
             "class C {}\nstruct S {\n    X: C = new C();\n}\n",
