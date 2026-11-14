@@ -647,7 +647,7 @@ fn binary(
         op.text().to_owned()
     };
     let (l, r) = (source.name(lhs), source.name(rhs));
-    if matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr) {
+    if op.is_shift() {
         return Diagnostic::error(
             codes::MR0204,
             format!("`{sym}` cannot shift a `{l}`"),

@@ -1257,6 +1257,11 @@ mod tests {
             ("(x, _) <<= 1;", vec!["MR0204"]),
             ("(x, _) >>>= Nope;", vec!["MR0204", "MR0127"]),
             ("(x, Nope) <<= 1;", vec!["MR0127"]),
+            ("(x, Q) += (1, 2);", vec!["MR0127"]),
+            // An element whose type is not known yet is no mistake: no
+            // operator takes the tuple.
+            ("(x, [1, 2]) += (1, 2);", vec!["MR0204"]),
+            ("(x, Console.ReadLine()) += (1, 2);", vec!["MR0204"]),
             // `??=` waits for options (M3.5), and checks no element as a
             // place before then.
             ("(x, _) ??= (1, 2);", vec![]),

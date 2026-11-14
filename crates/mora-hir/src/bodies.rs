@@ -544,6 +544,12 @@ impl BinaryOp {
             Self::Eq | Self::Ne | Self::Lt | Self::Gt | Self::Le | Self::Ge
         )
     }
+
+    /// Whether it shifts its left operand by the count on its right: `<<`,
+    /// `>>` or `>>>`.
+    pub fn is_shift(self) -> bool {
+        matches!(self, Self::Shl | Self::Shr | Self::UShr)
+    }
 }
 
 /// A statement of a body (§7.10).

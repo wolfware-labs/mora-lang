@@ -66,7 +66,7 @@ impl Check<'_> {
 
     /// The type or namespace that `expr`, a path or a member, names as a
     /// whole: through a path, or as a nested type of a struct value.
-    fn named_type(&self, expr: ExprId) -> Option<Resolved> {
+    pub(super) fn named_type(&self, expr: ExprId) -> Option<Resolved> {
         if !matches!(self.body.exprs[expr], Expr::Path(_) | Expr::Member { .. }) {
             return None;
         }

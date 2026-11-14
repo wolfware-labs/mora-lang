@@ -1335,14 +1335,14 @@ impl Check<'_> {
         let operation = self.errors[reported..]
             .iter()
             .any(|error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr));
-        if operation || self.has_unknown_element(lhs) {
+        if operation || self.has_element_error(lhs) {
             return;
         }
         let rhs_ty = self.exprs[arena_index(rhs)].clone();
         if rhs_ty.as_ref().is_some_and(is_struct) {
             return;
         }
-        let shift = matches!(op, BinaryOp::Shl | BinaryOp::Shr | BinaryOp::UShr);
+        let shift = op.is_shift();
         if !shift && (self.errors.len() > reported || !rhs_ty.as_ref().is_some_and(is_known)) {
             return;
         }
@@ -1356,19 +1356,23 @@ impl Check<'_> {
         });
     }
 
-    /// Whether an element of the tuple `tuple`, at any depth, has no type or
-    /// is an error, as a name that did not resolve or a type keyword: a
-    /// mistake reported on its own. A discarded element `_` is not one.
-    fn has_unknown_element(&self, tuple: ExprId) -> bool {
+    /// Whether an element of the tuple `tuple`, at any depth, is a mistake
+    /// reported on its own: a name that did not resolve, of the error type,
+    /// or a type, a type keyword or a namespace (`MR0127`, D-154). A
+    /// discarded element `_` is not one, nor is an element whose type is
+    /// not known yet, as a collection or a library call.
+    fn has_element_error(&self, tuple: ExprId) -> bool {
         let Expr::Tuple(elems) = &self.body.exprs[tuple] else {
             return false;
         };
         elems.iter().any(|&(_, elem)| match &self.body.exprs[elem] {
-            Expr::Tuple(_) => self.has_unknown_element(elem),
+            Expr::Tuple(_) => self.has_element_error(elem),
             Expr::Discard => false,
-            _ => !self.exprs[arena_index(elem)]
-                .as_ref()
-                .is_some_and(|ty| *ty != Ty::Error),
+            Expr::Type(_) => true,
+            _ => match &self.exprs[arena_index(elem)] {
+                Some(ty) => *ty == Ty::Error,
+                None => self.named_type(elem).is_some(),
+            },
         })
     }
 
