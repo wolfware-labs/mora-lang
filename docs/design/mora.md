@@ -3232,7 +3232,7 @@ Mora is built in thin vertical slices: each milestone runs real programs end to 
 | M14: Contracts and checked types | §6.13, `where` predicates, property tests, unit algebra, compile-time evaluation | post-MVP |
 | M15: Test and run tooling | Simulated World, test caching, record and replay, hot reload, mutation testing, coverage and coverage-guided fuzzing, PCT scheduling, error return traces | post-MVP |
 | M16: Agent tooling and API evolution | `mora query`, `mora context` and `mora mcp`, JSON Schema, semantic diff and semver (contract changes from M14), editions, typed holes, grammar export, `mora query complete` | post-MVP |
-| M17: Standard library growth | Time zones, `@Config`, retry policies, `Task.Shield`, `Task.Race` and `Task.Quorum` | post-MVP |
+| M17: Standard library growth | Time zones, `@Config`, retry policies, `Task.Shield`, `Task.Race`, `Task.Quorum` and collect-all completion | post-MVP |
 | M18: Optimizer | General reuse, MIR deduplication, vector types, devirtualization, `@NoAlloc`, acyclic types | post-MVP |
 
 ## 23. Decisions register
