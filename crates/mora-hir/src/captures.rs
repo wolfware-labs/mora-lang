@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn a_capture_is_found_in_every_kind_of_pattern() {
         let text = "struct P {\n    public X: int;\n    \
-                    Get(): int {\n        G(): int {\n            let f = [this] () => 1;\n            \
+                    Get(): int {\n        G(): int {\n            let f = [weak this] () => 1;\n            \
                     return 0;\n        }\n        return G();\n    }\n}\n\
                     union S {\n    C(R: int),\n    D(W: int),\n}\n\
                     F(a: int, b: bool, c: int, d: int, e: int, g: int, p: P, s: S, xs: int[]) {\n    \
@@ -643,7 +643,7 @@ mod tests {
                     let t4 = a is not 0 and (> d or < e);\n        \
                     let t5 = xs is [_, .. let rest];\n        \
                     let t6 = s is S ss;\n        \
-                    let t7 = s is S.C(g);\n    \
+                    let t7 = s is S.C(g);\n        let h = [move g] () => 1;\n    \
                     }\n}\n";
         assert_eq!(summary(text, "Get"), [entry("G", None, &["this:in"])]);
         let all = [
@@ -657,7 +657,7 @@ mod tests {
         // The front end reports the name that is not found; the walk still
         // finds what the rest of the local function uses.
         let db = TestDb::new();
-        let text = "F(a: int) {\n    G() {\n        let f = [missing] () => a;\n    }\n}\n";
+        let text = "F(a: int) {\n    G() {\n        let f = [move missing] () => a;\n    }\n}\n";
         let project = app(&db, &[("src/Program.mr", text)]);
         let file = file_named(&db, project, "src/Program.mr");
         assert_ne!(codes(diagnostics(&db, project)), Vec::<String>::new());
