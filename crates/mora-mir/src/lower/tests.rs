@@ -3217,7 +3217,8 @@ fn an_argument_left_without_a_type_leaves_the_call_to_statics() {
                 public static S7(x: int): int => 1;\n    public S7(a: int, q: Q): int => X;\n}\n\
                 One(): int => 1;\n";
     let calls = [
-        // The reviewer's programs.
+        // A `new` in a conditional, in an assignment, beside a typed
+        // argument and in a tuple.
         "p.S4(b ? new { Y = 1 } : q);",
         "p.S4(b ? new { Y = 1 } : new { Y = 2 });",
         "p.S3(b ? new { Y = 1 } : new { Y = 2 });",

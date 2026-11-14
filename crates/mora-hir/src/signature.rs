@@ -57,6 +57,16 @@ pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, 
         .map(|((_, index), field)| (index, field))
 }
 
+/// The first instance field named `name` of the struct `item`, with its
+/// position among the value members ([`instance_fields`]).
+pub(crate) fn instance_field_named<'a>(
+    db: &'a dyn Db,
+    item: ItemId,
+    name: &str,
+) -> Option<(u32, &'a Field)> {
+    instance_fields(db, item).find(|(_, field)| field.name == name)
+}
+
 /// The methods named `name` that a value of the struct `item` calls: its
 /// member functions of that name that are not `static`, visible or not.
 pub fn instance_methods<'a>(

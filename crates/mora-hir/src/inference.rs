@@ -1228,6 +1228,13 @@ mod tests {
         ] {
             assert_eq!(codes(&diagnostics_of(text)), ["MR0204"], "{text}");
         }
+        // `??=` waits for options (M3.5), with a tuple on the left as well.
+        assert_eq!(
+            codes(&diagnostics_of(
+                "F(i: int) {\n    var j = i;\n    (j, j) ??= (1, 2);\n}\n"
+            )),
+            [] as [&str; 0]
+        );
         // `_` under `++` or `--` is no place either.
         for step in ["_++;", "++_;", "_--;", "--_;", "(_)++;"] {
             let text = format!("F() {{\n    {step}\n}}\n");

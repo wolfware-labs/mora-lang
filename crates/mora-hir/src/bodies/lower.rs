@@ -652,7 +652,7 @@ impl Lower {
             }
             ast::Expr::PostfixExpr(it) => Expr::Postfix {
                 increment: it.op().is_some_and(|op| op.kind() == SyntaxKind::PlusPlus),
-                expr: self.step_operand(it.expr(), range),
+                expr: self.single_place(it.expr(), range),
             },
             ast::Expr::PropagateExpr(it) => Expr::Propagate(self.expr(it.expr(), range)),
             ast::Expr::PrefixExpr(it) => {
@@ -660,7 +660,7 @@ impl Lower {
                 let op = it.op().and_then(|op| unary_op(op.kind()));
                 let expr = match op {
                     Some(UnaryOp::PreIncrement | UnaryOp::PreDecrement) => {
-                        self.step_operand(it.expr(), range)
+                        self.single_place(it.expr(), range)
                     }
                     _ => self.expr(it.expr(), range),
                 };
@@ -795,14 +795,16 @@ impl Lower {
         self.alloc_expr(lowered, range)
     }
 
-    /// The operand of `++` or `--`, which changes it: `_` there is a discard,
-    /// which type checking reports as no place (§7.11).
-    fn step_operand(&mut self, operand: Option<ast::Expr>, range: TextRange) -> ExprId {
-        match unparen(operand) {
+    /// A place that is not a tuple of places, as the operand of `++` and
+    /// `--`: `_` alone is a discard, and parentheses around the place only
+    /// group it. Type checking reports `_` anywhere but on the left of `=`
+    /// (§7.11).
+    fn single_place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
+        match unparen(place) {
             Some(expr) if is_discard(&expr) => {
                 self.alloc_expr(Expr::Discard, expr.syntax().text_range())
             }
-            operand => self.expr(operand, range),
+            place => self.expr(place, range),
         }
     }
 
@@ -812,13 +814,8 @@ impl Lower {
     /// it. Type checking reports `_` on the left of anything but `=`.
     fn place(&mut self, place: Option<ast::Expr>, range: TextRange) -> ExprId {
         let place = unparen(place);
-        if let Some(expr) = &place
-            && is_discard(expr)
-        {
-            return self.alloc_expr(Expr::Discard, expr.syntax().text_range());
-        }
         let Some(ast::Expr::TupleExpr(tuple)) = place else {
-            return self.expr(place, range);
+            return self.single_place(place, range);
         };
         let elems = tuple
             .tuple_elems()

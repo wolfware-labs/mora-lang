@@ -467,7 +467,7 @@ impl<'a> Check<'a> {
 
     /// Whether the struct `item` declares a static field, a static getter
     /// or a constant named `name`.
-    pub(super) fn is_static_value(&self, item: ItemId, name: &str) -> bool {
+    fn is_static_value(&self, item: ItemId, name: &str) -> bool {
         item_data(self.db, item)
             .values
             .iter()

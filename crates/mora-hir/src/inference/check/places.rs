@@ -9,7 +9,7 @@ use crate::bodies::{Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
 use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, item_data, members_named};
-use crate::signature::{instance_fields, instance_methods};
+use crate::signature::{instance_field_named, instance_methods};
 
 impl Check<'_> {
     /// Reports each expression that names a type or a namespace where a
@@ -111,8 +111,10 @@ impl Check<'_> {
     /// a place, a static field, or `_` where `discard` allows it. A field of
     /// a struct is part of the value that holds it, so it is a place only
     /// when that value is one; a member of a value whose type is not known
-    /// yet, as a class's, and a static member named through a value
-    /// (D-152) are not reported. A type or a namespace is `MR0127` already.
+    /// yet, as a class's, and any member of a struct value that is not a
+    /// declared instance field, as a static member named through a value
+    /// (D-152), are not reported. A type, a type keyword or a namespace is
+    /// `MR0127` already.
     fn place_problem(&self, expr: ExprId, discard: bool) -> Option<NotAPlace> {
         match &self.body.exprs[expr] {
             Expr::Local(local) => (self.body.locals[*local].kind == LocalKind::Function)
@@ -133,7 +135,7 @@ impl Check<'_> {
                 // Only a declared instance field is part of the value; any
                 // other name keeps the rule of its own milestone.
                 let (ty, name) = self.struct_member(expr)?;
-                let field = instance_fields(self.db, ty).any(|(_, field)| field.name == name);
+                let field = instance_field_named(self.db, ty, name).is_some();
                 (field && self.place_problem(*receiver, false).is_some())
                     .then_some(NotAPlace::FieldOfValue)
             }

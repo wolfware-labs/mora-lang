@@ -212,11 +212,12 @@ pub(crate) fn lowered_later(
 /// creation and a constant declared in a namespace. Positional structs
 /// bring `with`, patterns `match` and `is`, results `?`, strings an index
 /// of a string (`MR0130`), enumeration `foreach`, expansion a quote, a
-/// splice or a macro call, and async lowering `await`. The smaller expressions bring the rest: an element of
-/// a tuple read by name, a collection expression, a range, an index from
-/// the end, `nameof`, `sizeof`, `default` and a deconstruction, declared or
-/// assigned. On a tie the expressions name it before the statements, each
-/// in the order of the arena; `None` when there is none.
+/// splice or a macro call, and async lowering `await`. The smaller
+/// expressions bring the rest: an element of a tuple read by name, a
+/// collection expression, a range, an index from the end, `nameof`,
+/// `sizeof`, `default` and a deconstruction, declared or assigned. On a tie
+/// the expressions name it before the statements, each in the order of the
+/// arena; `None` when there is none.
 fn expressions_later(
     db: &dyn Db,
     project: Project,

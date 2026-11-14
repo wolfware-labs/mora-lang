@@ -25,7 +25,9 @@ use crate::bodies::{
 use crate::defs::ItemId;
 use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, Scope, item_data, value_visible};
-use crate::signature::{Creation, creation, instance_fields, signature, struct_field, this_type};
+use crate::signature::{
+    Creation, creation, instance_field_named, instance_fields, signature, struct_field, this_type,
+};
 use crate::suggest::closest;
 use crate::ty::{Construct, Primitive, Signature, TupleElem, Ty};
 
@@ -1292,29 +1294,14 @@ impl Check<'_> {
                 self.require_place(lhs, true);
                 self.deconstruct(lhs, &places, rhs);
             }
+            // `??=` waits for options (M3.5) whatever its left side is.
+            Some(op)
+                if op != BinaryOp::Coalesce && matches!(self.body.exprs[lhs], Expr::Tuple(_)) =>
+            {
+                self.tuple_operation(expr, op, lhs, rhs);
+            }
             Some(op) => {
-                let reported = self.errors.len();
                 let result = self.binary(expr, op, lhs, rhs);
-                // No operator is defined for a tuple, so a tuple on the left
-                // of `op=` is that one mistake, whatever its elements are
-                // (§7.11): `MR0204`, reported here when an element of a type
-                // not known yet, as `_`, kept the operation silent.
-                if matches!(self.body.exprs[lhs], Expr::Tuple(_)) {
-                    let binary = self.errors[reported..].iter().any(
-                        |error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr),
-                    );
-                    if !binary {
-                        self.errors.push(TypeError::Binary {
-                            expr,
-                            op,
-                            lhs,
-                            rhs,
-                            lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
-                            rhs_ty: self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error),
-                        });
-                    }
-                    return;
-                }
                 self.require_place(lhs, false);
                 // The result converts back to the type of the place as a
                 // cast would (§7.12).
@@ -1327,6 +1314,29 @@ impl Check<'_> {
                     self.convert(expr, place, ConversionKind::Numeric);
                 }
             }
+        }
+    }
+
+    /// A compound `op=` with a tuple on the left. No operator is defined for
+    /// a tuple, so that is the one mistake, `MR0204`, whatever the elements
+    /// are, and they are not checked as places (§7.11, D-155); it is
+    /// reported here when an element of a type not known yet, as `_`, kept
+    /// the operation silent.
+    fn tuple_operation(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) {
+        let reported = self.errors.len();
+        self.binary(expr, op, lhs, rhs);
+        let binary = self.errors[reported..]
+            .iter()
+            .any(|error| matches!(error, TypeError::Binary { expr: at, .. } if *at == expr));
+        if !binary {
+            self.errors.push(TypeError::Binary {
+                expr,
+                op,
+                lhs,
+                rhs,
+                lhs_ty: self.exprs[arena_index(lhs)].clone().unwrap_or(Ty::Error),
+                rhs_ty: self.exprs[arena_index(rhs)].clone().unwrap_or(Ty::Error),
+            });
         }
     }
 
@@ -1618,7 +1628,7 @@ impl Check<'_> {
     /// field's index among the value members; infers `value` and gives
     /// `None` when `name` is no instance field.
     fn assigned_field(&mut self, item: ItemId, name: &str, value: ExprId) -> Option<u32> {
-        match instance_fields(self.db, item).find(|(_, field)| field.name == name) {
+        match instance_field_named(self.db, item, name) {
             Some((index, field)) => {
                 self.check(value, &field.ty);
                 Some(index)
@@ -1706,7 +1716,7 @@ impl Check<'_> {
         position: usize,
     ) -> Option<TypeError> {
         let (name, value) = &inits[position];
-        if instance_fields(self.db, item).any(|(_, field)| field.name == *name) {
+        if instance_field_named(self.db, item, name).is_some() {
             return Some(TypeError::RepeatedField {
                 value: *value,
                 first: assigned_before(inits, position)?,
