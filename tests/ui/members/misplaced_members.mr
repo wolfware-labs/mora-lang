@@ -1,14 +1,20 @@
-// An interface has no fields and no destructors, and an extension adds no
-// fields, destructors or static members. In an interface, a member with a
-// value is a field; without one, it is a getter.
+// An interface has no fields, destructors or nested types, and its static
+// members are `static abstract`. An extension adds only methods and
+// getters. In an interface, a member with a value is a field; without one,
+// it is a getter.
 public interface IShape {
     Sides: int;
     Name: string => "shape";
     static abstract Unit: IShape;
+    static abstract Default: IShape => Unit;
+    type Part : IShape;
 
     Corners: int = 4; //~ ERROR MR0115
     static Count: int = 0; //~ ERROR MR0115
     ~IShape() {} //~ ERROR MR0115
+    static Make(): int => 0; //~ ERROR MR0115
+    static Zero: int => 0; //~ ERROR MR0115
+    struct Side {} //~ ERROR MR0115
 }
 
 public struct Point {
@@ -26,6 +32,9 @@ extension(p: Point) {
     public static Origin(): Point => new Point { X = 0 }; //~ ERROR MR0115
     public static Zero: int => 0; //~ ERROR MR0115
     public static operator +(a: Point, b: Point): Point => a; //~ ERROR MR0115
+    public this[i: int]: int => p.X + i; //~ ERROR MR0115
+    type Unit = int; //~ ERROR MR0115
+    enum Axis { X, Y } //~ ERROR MR0115
 }
 
 // `const` on a field there is `MR0113` alone.

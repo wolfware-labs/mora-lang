@@ -1,111 +1,159 @@
 error[MR0115]: an interface has no fields
- --> tests/ui/members/misplaced_members.mr:9:5
-  |
-9 |     Corners: int = 4; //~ ERROR MR0115
-  |     ^^^^^^^ a field, since it has a value
-  |
-  = note: a value each implementing type gives is a getter, as `K: int;`, which may have a default, as `K: int => 1;`; a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`
+  --> tests/ui/members/misplaced_members.mr:12:5
+   |
+12 |     Corners: int = 4; //~ ERROR MR0115
+   |     ^^^^^^^ a field, since it has a value
+   |
+   = note: a value each implementing type gives is a getter, as `K: int;`, which may have a default, as `K: int => 1;`; a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`
 
 error[MR0115]: an interface has no fields
-  --> tests/ui/members/misplaced_members.mr:10:12
+  --> tests/ui/members/misplaced_members.mr:13:12
    |
-10 |     static Count: int = 0; //~ ERROR MR0115
+13 |     static Count: int = 0; //~ ERROR MR0115
    |            ^^^^^ a static field
    |
    = note: a value each implementing type gives is a static abstract getter, as `static abstract K: int;`; a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`
 
 error[MR0115]: an interface has no destructors
-  --> tests/ui/members/misplaced_members.mr:11:5
+  --> tests/ui/members/misplaced_members.mr:14:5
    |
-11 |     ~IShape() {} //~ ERROR MR0115
+14 |     ~IShape() {} //~ ERROR MR0115
    |     ^^^^^^^ a destructor
    |
    = note: a destructor is declared in each type that needs one, which may implement the interface
 
-error[MR0115]: an extension adds no fields
-  --> tests/ui/members/misplaced_members.mr:22:5
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:15:5
    |
-22 |     Limit: int = 10; //~ ERROR MR0115
+15 |     static Make(): int => 0; //~ ERROR MR0115
+   |     ^^^^^^ a static method without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:16:5
+   |
+16 |     static Zero: int => 0; //~ ERROR MR0115
+   |     ^^^^^^ a static getter without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: an interface has no nested types
+  --> tests/ui/members/misplaced_members.mr:17:12
+   |
+17 |     struct Side {} //~ ERROR MR0115
+   |            ^^^^ a struct
+   |
+   = note: a type is declared in the namespace, next to the interface
+
+error[MR0115]: an extension adds no fields
+  --> tests/ui/members/misplaced_members.mr:28:5
+   |
+28 |     Limit: int = 10; //~ ERROR MR0115
    |     ^^^^^ a field
    |
    = note: a field is declared in the type itself; an extension may add a getter, as `K: int => 1;`, which computes its value on each read
 
 error[MR0115]: an extension adds no fields
-  --> tests/ui/members/misplaced_members.mr:23:9
+  --> tests/ui/members/misplaced_members.mr:29:9
    |
-23 |     mut Seen: int; //~ ERROR MR0115
+29 |     mut Seen: int; //~ ERROR MR0115
    |         ^^^^ a field
    |
    = note: a field is declared in the type itself; an extension may add a getter, as `K: int => 1;`, which computes its value on each read
 
 error[MR0115]: an extension adds no fields
-  --> tests/ui/members/misplaced_members.mr:24:12
+  --> tests/ui/members/misplaced_members.mr:30:12
    |
-24 |     static Made: int = 0; //~ ERROR MR0115
+30 |     static Made: int = 0; //~ ERROR MR0115
    |            ^^^^ a static field
    |
    = note: a static field is declared in the type itself, or in the namespace, next to the extension, as `static mut K: int = 1;`
 
 error[MR0115]: an extension adds no destructors
-  --> tests/ui/members/misplaced_members.mr:25:5
+  --> tests/ui/members/misplaced_members.mr:31:5
    |
-25 |     ~Point() {} //~ ERROR MR0115
+31 |     ~Point() {} //~ ERROR MR0115
    |     ^^^^^^ a destructor
    |
    = note: a destructor is declared in the type itself
 
 error[MR0115]: an extension adds no static members
-  --> tests/ui/members/misplaced_members.mr:26:12
+  --> tests/ui/members/misplaced_members.mr:32:12
    |
-26 |     public static Origin(): Point => new Point { X = 0 }; //~ ERROR MR0115
+32 |     public static Origin(): Point => new Point { X = 0 }; //~ ERROR MR0115
    |            ^^^^^^ a static method
    |
    = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
 
 error[MR0115]: an extension adds no static members
-  --> tests/ui/members/misplaced_members.mr:27:12
+  --> tests/ui/members/misplaced_members.mr:33:12
    |
-27 |     public static Zero: int => 0; //~ ERROR MR0115
+33 |     public static Zero: int => 0; //~ ERROR MR0115
    |            ^^^^^^ a static getter
    |
    = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
 
 error[MR0115]: an extension adds no static members
-  --> tests/ui/members/misplaced_members.mr:28:12
+  --> tests/ui/members/misplaced_members.mr:34:12
    |
-28 |     public static operator +(a: Point, b: Point): Point => a; //~ ERROR MR0115
+34 |     public static operator +(a: Point, b: Point): Point => a; //~ ERROR MR0115
    |            ^^^^^^ an operator is a static method
    |
    = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
 
-error[MR0113]: `const` does not apply to a member of an extension
-  --> tests/ui/members/misplaced_members.mr:33:5
+error[MR0115]: an extension adds no indexers
+  --> tests/ui/members/misplaced_members.mr:35:12
    |
-33 |     const Max: int = 10; //~ ERROR MR0113
+35 |     public this[i: int]: int => p.X + i; //~ ERROR MR0115
+   |            ^^^^ an indexer
+   |
+   = note: an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
+
+error[MR0115]: an extension adds no associated types
+  --> tests/ui/members/misplaced_members.mr:36:10
+   |
+36 |     type Unit = int; //~ ERROR MR0115
+   |          ^^^^ an associated type
+   |
+   = note: an associated type is declared in an interface and bound by each type that implements it
+
+error[MR0115]: an extension adds no nested types
+  --> tests/ui/members/misplaced_members.mr:37:10
+   |
+37 |     enum Axis { X, Y } //~ ERROR MR0115
+   |          ^^^^ an enum
+   |
+   = note: a type is declared in the namespace, next to the extension
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_members.mr:42:5
+   |
+42 |     const Max: int = 10; //~ ERROR MR0113
    |     ^^^^^ an extension adds no fields
    |
    = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
 
 error[MR0113]: `const` does not apply to a member of an extension
-  --> tests/ui/members/misplaced_members.mr:34:5
+  --> tests/ui/members/misplaced_members.mr:43:5
    |
-34 |     const static Min: int = 0; //~ ERROR MR0113
+43 |     const static Min: int = 0; //~ ERROR MR0113
    |     ^^^^^ an extension adds no fields
    |
    = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
 
 error[MR0115]: a union has no instance fields
-  --> tests/ui/members/misplaced_members.mr:47:5
+  --> tests/ui/members/misplaced_members.mr:56:5
    |
-47 |     Color: string = "black"; //~ ERROR MR0115
+56 |     Color: string = "black"; //~ ERROR MR0115
    |     ^^^^^ a union has no fields besides its cases
    |
    = note: put the value in each case, or wrap the union in a struct, as `struct Drawn { Shape: Shape; Color: string; }`
 
 error[MR0115]: a union has no instance fields
-  --> tests/ui/members/misplaced_members.mr:48:16
+  --> tests/ui/members/misplaced_members.mr:57:16
    |
-48 |     public mut Seen: int; //~ ERROR MR0115
+57 |     public mut Seen: int; //~ ERROR MR0115
    |                ^^^^ a union has no fields besides its cases
    |
    = note: put the value in each case, or wrap the union in a struct, as `struct Drawn { Shape: Shape; Color: string; }`

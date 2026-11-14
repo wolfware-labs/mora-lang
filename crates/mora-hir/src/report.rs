@@ -681,10 +681,11 @@ fn constant_without_value(file: FileId, frame: &ModifierFrame<'_>) -> Option<Dia
 
 /// `MR0115`: the node of `frame` is a member that the interface, the
 /// extension or the union it is in cannot have (§6.6, §6.8, §6.9, D-157).
-/// An interface has no fields and no destructors; an extension adds no
-/// fields, destructors or static members, and an operator is a static
-/// method; a union's data is in its cases, so it has no instance fields.
-/// Where `const` on the node is `MR0113`, that is the one error reported.
+/// An interface has no fields, destructors or nested types, and its
+/// static members are `static abstract`; an extension adds only methods
+/// and getters, so no fields, destructors, static members, indexers,
+/// nested or associated types, and an operator is a static method; a
+/// union's data is in its cases, so it has no instance fields. Where `const` on the node is `MR0113`, that is the one error reported.
 /// No fix: only the author knows where the member belongs. A constructor
 /// cannot be written in an interface or an extension: there, `P() {}` is
 /// a method.
@@ -719,6 +720,15 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
                 .text_range(),
         )
     };
+    let name = || {
+        Some(
+            node.children()
+                .find_map(ast::Name::cast)?
+                .syntax()
+                .text_range(),
+        )
+    };
+    let abstract_kw = written(K::AbstractKw);
     let (message, range, label, note) = match (frame.container, node.kind()) {
         (K::InterfaceDecl, K::FieldDecl) if static_kw.is_some() => (
             "an interface has no fields",
@@ -751,6 +761,25 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
             "a destructor is declared in each type that needs one, which may implement the \
              interface",
         ),
+        (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl)) if abstract_kw.is_none() => (
+            "a static member of an interface is `static abstract`",
+            static_kw?,
+            if kind == K::FunctionDecl {
+                "a static method without `abstract`"
+            } else {
+                "a static getter without `abstract`"
+            },
+            "a member each implementing type gives is `static abstract`, as \
+             `static abstract M(): int;`, with a body for a default, as \
+             `static abstract M(): int => 1;`; a function every implementation shares goes in \
+             the namespace, next to the interface",
+        ),
+        (K::InterfaceDecl, kind) => (
+            "an interface has no nested types",
+            name()?,
+            nested_type(kind)?,
+            "a type is declared in the namespace, next to the interface",
+        ),
         (K::ExtensionDecl, K::FieldDecl) if static_kw.is_some() => (
             "an extension adds no fields",
             field()?,
@@ -771,6 +800,26 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
             "a destructor",
             "a destructor is declared in the type itself",
         ),
+        (K::ExtensionDecl, K::IndexerDecl) => (
+            "an extension adds no indexers",
+            ast::IndexerDecl::cast(node)?.this_token()?.text_range(),
+            "an indexer",
+            "an indexer is declared in the type itself; an extension may add a method that \
+             takes the index, as `At(i: int): int`",
+        ),
+        (K::ExtensionDecl, K::AssocTypeDecl) => (
+            "an extension adds no associated types",
+            name()?,
+            "an associated type",
+            "an associated type is declared in an interface and bound by each type that \
+             implements it",
+        ),
+        (K::ExtensionDecl, kind) if nested_type(kind).is_some() => (
+            "an extension adds no nested types",
+            name()?,
+            nested_type(kind)?,
+            "a type is declared in the namespace, next to the extension",
+        ),
         (K::ExtensionDecl, kind) => {
             let (range, label) = match (kind, static_kw) {
                 (K::OperatorDecl, range) => {
@@ -778,7 +827,6 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
                 }
                 (K::FunctionDecl, Some(range)) => (range, "a static method"),
                 (K::GetterDecl, Some(range)) => (range, "a static getter"),
-                (K::IndexerDecl, Some(range)) => (range, "a static indexer"),
                 _ => return None,
             };
             (
@@ -799,6 +847,20 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
         )
         .with_note(note),
     )
+}
+
+/// What a type declared as a member of the kind `kind` is, with its
+/// article, if it is one.
+fn nested_type(kind: SyntaxKind) -> Option<&'static str> {
+    use SyntaxKind as K;
+    Some(match kind {
+        K::StructDecl => "a struct",
+        K::ClassDecl => "a class",
+        K::UnionDecl => "a union",
+        K::EnumDecl => "an enum",
+        K::InterfaceDecl => "an interface",
+        _ => return None,
+    })
 }
 
 /// The fix, described by `message`, that removes the keyword at `range` in
@@ -2099,6 +2161,12 @@ mod tests {
         const STATICS: &str = "an extension adds no static members";
         const STATIC_NOTE: &str = "a static member is declared in the type itself, or as a \
                                    function in the namespace, next to the extension";
+        const INDEXER_NOTE: &str = "an indexer is declared in the type itself; an extension \
+                                    may add a method that takes the index, as `At(i: int): int`";
+        const INTERFACE_STATIC_NOTE: &str = "a member each implementing type gives is \
+             `static abstract`, as `static abstract M(): int;`, with a body for a default, as \
+             `static abstract M(): int => 1;`; a function every implementation shares goes in \
+             the namespace, next to the interface";
         const UNION: &str = "a union has no instance fields";
         const UNION_LABEL: &str = "a union has no fields besides its cases";
         const UNION_NOTE: &str = "put the value in each case, or wrap the union in a struct, \
@@ -2177,11 +2245,76 @@ mod tests {
                 STATIC_NOTE,
             ),
             (
+                "struct P {}\nextension(p: P) {\n    this[i: int]: int => i;\n}\n",
+                "this",
+                "an extension adds no indexers",
+                "an indexer",
+                INDEXER_NOTE,
+            ),
+            // A static indexer is an indexer all the same.
+            (
                 "struct P {}\nextension(p: P) {\n    static this[i: int]: int => i;\n}\n",
+                "this",
+                "an extension adds no indexers",
+                "an indexer",
+                INDEXER_NOTE,
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    type T = int;\n}\n",
+                "T",
+                "an extension adds no associated types",
+                "an associated type",
+                "an associated type is declared in an interface and bound by each type that \
+                 implements it",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    struct In {}\n}\n",
+                "In",
+                "an extension adds no nested types",
+                "a struct",
+                "a type is declared in the namespace, next to the extension",
+            ),
+            (
+                "struct P {}\nextension(p: P) {\n    public enum E { A }\n}\n",
+                "E",
+                "an extension adds no nested types",
+                "an enum",
+                "a type is declared in the namespace, next to the extension",
+            ),
+            (
+                "interface I {\n    class C {}\n}\n",
+                "C",
+                "an interface has no nested types",
+                "a class",
+                "a type is declared in the namespace, next to the interface",
+            ),
+            (
+                "interface I {\n    union U { A }\n}\n",
+                "U",
+                "an interface has no nested types",
+                "a union",
+                "a type is declared in the namespace, next to the interface",
+            ),
+            (
+                "interface I {\n    interface J {}\n}\n",
+                "J",
+                "an interface has no nested types",
+                "an interface",
+                "a type is declared in the namespace, next to the interface",
+            ),
+            (
+                "interface I {\n    public static M(): int => 1;\n}\n",
                 "static",
-                STATICS,
-                "a static indexer",
-                STATIC_NOTE,
+                "a static member of an interface is `static abstract`",
+                "a static method without `abstract`",
+                INTERFACE_STATIC_NOTE,
+            ),
+            (
+                "interface I {\n    static G: int => 1;\n}\n",
+                "static",
+                "a static member of an interface is `static abstract`",
+                "a static getter without `abstract`",
+                INTERFACE_STATIC_NOTE,
             ),
             (
                 "struct P {}\nextension(p: P) {\n    \
@@ -2226,11 +2359,13 @@ mod tests {
         // members in a struct, are not reported; nor is `MR0115` on top of
         // `MR0113`, and a union constant without a value is `MR0114`.
         let text = "interface I {\n    K: int;\n    static abstract S: int;\n    \
-                    M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n}\n\
+                    M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n    \
+                    abstract static D(): int => 1;\n    static abstract E: int => 1;\n    \
+                    type T : I;\n    this[i: int]: int;\n}\n\
                     struct P {\n    K: int = 1;\n    static S: int = 1;\n    ~P() {}\n    \
-                    static M(): int => 1;\n}\n\
+                    static M(): int => 1;\n    struct In {}\n    this[i: int]: int => i;\n}\n\
                     extension(p: P) {\n    G: int => 1;\n    public M(): int => 1;\n    \
-                    this[i: int]: int => i;\n    const ~P() {}\n    const static K: int = 1;\n}\n\
+                    const ~P() {}\n    const static K: int = 1;\n}\n\
                     interface J {\n    const static K: int = 1;\n}\n\
                     union U { A;\n    const C: int = 1;\n    static S: int = 1;\n    \
                     static mut T: int;\n    G: int => 1;\n}\n\
