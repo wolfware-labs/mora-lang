@@ -690,6 +690,7 @@ Done when:
 
 - One run test per pattern kind.
 - Bindings in `is` are usable exactly where the `is` expression is known to be true (§7.8).
+- A benchmark rebuilds an `indirect` union tree with `match` and counts allocations per node, the baseline for deciding whether general reuse (D-71, v0.4) comes earlier.
 
 ### M3.4 Exhaustiveness and reachability
 
