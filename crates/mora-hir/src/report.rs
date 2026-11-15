@@ -350,18 +350,13 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     while let Some(frame) = stack.last_mut() {
         let Some(child) = frame.children.next() else {
             if let Some(frame) = stack.pop() {
-                let checked = ModifierFrame {
-                    node: frame.node,
-                    container: frame.container,
-                    written: &written[frame.written..],
-                    owner: frame.owner,
-                };
+                let kind = frame.node.kind();
                 // Most nodes have no modifiers and are in no declaration
                 // whose members have rules of their own (`MR0115`, which a
                 // macro has anywhere): nothing to check.
-                if !checked.written.is_empty()
+                if written.len() != frame.written
                     || matches!(
-                        (checked.container, checked.node.kind()),
+                        (frame.container, kind),
                         (
                             SyntaxKind::InterfaceDecl
                                 | SyntaxKind::ExtensionDecl
@@ -370,6 +365,12 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
                         ) | (_, SyntaxKind::MacroDecl)
                     )
                 {
+                    let checked = ModifierFrame {
+                        node: frame.node,
+                        container: frame.container,
+                        written: &written[frame.written..],
+                        owner: indexer_of(&stack, kind),
+                    };
                     check_node(id, text, errors, &checked, |diagnostic| {
                         found.push((frame.order, diagnostic));
                     });
@@ -388,17 +389,7 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             SyntaxKind::MemberList | SyntaxKind::UnionBody => frame.container,
             kind => kind,
         };
-        // An accessor's verdict depends on the indexer it belongs to.
-        let owner = match frame.node.kind() {
-            SyntaxKind::IndexerDecl if child.kind() == SyntaxKind::AccessorList => {
-                Some((frame.container, frame.node))
-            }
-            SyntaxKind::AccessorList => frame.owner,
-            _ => None,
-        };
-        let mut next = WalkFrame::new(child, container, visited, written.len());
-        next.owner = owner;
-        stack.push(next);
+        stack.push(WalkFrame::new(child, container, visited, written.len()));
     }
     // A stable sort keeps the diagnostics of one node in their order.
     found.sort_by_key(|&(order, _)| order);
@@ -422,8 +413,6 @@ struct WalkFrame<'a> {
     /// list: those of the node's own children follow, since the walk
     /// removes those of a child's children when it leaves the child.
     written: usize,
-    /// The indexer the node belongs to, as [`ModifierFrame::owner`].
-    owner: Option<(SyntaxKind, SyntaxNode<'a>)>,
 }
 
 impl<'a> WalkFrame<'a> {
@@ -434,9 +423,29 @@ impl<'a> WalkFrame<'a> {
             container,
             order,
             written,
-            owner: None,
         }
     }
+}
+
+/// The indexer that a node of the kind `kind` belongs to, with the kind of
+/// node the indexer is in, as [`ModifierFrame::owner`]: for an accessor
+/// list and its accessors. `stack` holds the nodes the node is in, its
+/// parent last. An accessor's verdict depends on its indexer.
+fn indexer_of<'a>(
+    stack: &[WalkFrame<'a>],
+    mut kind: SyntaxKind,
+) -> Option<(SyntaxKind, SyntaxNode<'a>)> {
+    for parent in stack.iter().rev() {
+        match parent.node.kind() {
+            SyntaxKind::IndexerDecl if kind == SyntaxKind::AccessorList => {
+                return Some((parent.container, parent.node));
+            }
+            // An accessor belongs to the indexer of its accessor list.
+            SyntaxKind::AccessorList => kind = SyntaxKind::AccessorList,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// A node of the walk of [`modifier_diagnostics`] whose children are all
