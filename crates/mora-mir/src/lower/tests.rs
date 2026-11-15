@@ -3334,6 +3334,48 @@ fn a_read_of_a_constant_without_a_value_is_an_internal_error() {
 }
 
 #[test]
+fn a_body_reading_a_constant_that_reads_itself_waits_with_it() {
+    let text = "const A: int = match (true) { _ => A };\nF(): int => A;\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a constant is not lowered until M3.3"
+    );
+    let lowered = lowered(text);
+    assert_eq!(
+        mir_dump(&lowered.db, lowered.project, lowered.file),
+        "// UsersApi.A: not lowered until M3.3\n\n// UsersApi.F: not lowered until M3.3\n"
+    );
+}
+
+#[test]
+fn nameof_never_waits_for_the_value_of_a_constant() {
+    // `K` waits for statics, later than `nameof`, which does not read it.
+    let text = "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
+                F(): string => nameof(K);\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: `nameof` is not lowered until M3.12"
+    );
+}
+
+#[test]
+fn a_constant_is_not_a_place_to_borrow_by_ref() {
+    let text = "struct P {\n    public X: int;\n    mut Bump() { X = X + 1; }\n}\n\
+                const K: int = 1;\nconst O: P = new P { X = 1 };\nG(ref x: int) {}\n\
+                A() {\n    G(ref K);\n}\nB() {\n    G(ref O.X);\n}\nC() {\n    O.Bump();\n}\n";
+    for (name, what) in [
+        ("A", "a `ref` argument that is not a place"),
+        ("B", "a `ref` argument that is not a place"),
+        ("C", "a `mut` method called on a value that is not a place"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what} is not lowered until M2.4")
+        );
+    }
+}
+
+#[test]
 fn member_constants_are_read_by_name_and_through_their_type() {
     let lowered = lowered(
         "struct P {\n    public const K: int = 4;\n    public X: int;\n    \

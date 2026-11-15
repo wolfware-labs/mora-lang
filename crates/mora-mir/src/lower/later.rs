@@ -37,7 +37,7 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::calls::default_of;
 use super::expr::constant;
-use crate::eval::{Evaluated, const_target, const_value};
+use crate::eval::{Evaluated, const_read, const_target, const_value};
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -257,6 +257,18 @@ fn latest<T: Due>(candidates: impl IntoIterator<Item = Option<T>>) -> Option<T> 
     })
 }
 
+/// How the rules treat a path that reads a constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstReads {
+    /// The body waits for what the constant's value waits for
+    /// ([`const_value`]).
+    Evaluated,
+    /// The read decides nothing: the caller is constant evaluation, which
+    /// follows each read its scan records itself, and asking for the value
+    /// of the constant being evaluated would ask for it again.
+    Skipped,
+}
+
 /// The milestone that lowers the body of `owner`, `None` when this one
 /// does.
 pub(crate) fn lowered_later(
@@ -264,6 +276,31 @@ pub(crate) fn lowered_later(
     project: Project,
     file: SourceFile,
     owner: BodyOwner,
+) -> Option<Later> {
+    later_with(db, project, file, owner, ConstReads::Evaluated)
+}
+
+/// The milestone that lowers the body of `owner` for constant evaluation,
+/// which runs it: as [`lowered_later`], except that a read of a constant
+/// decides nothing, since evaluation follows each read itself. `None` when
+/// this one lowers it.
+pub(crate) fn evaluation_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    later_with(db, project, file, owner, ConstReads::Skipped)
+}
+
+/// The milestone that lowers the body of `owner`, with constant reads
+/// treated as `reads` says.
+fn later_with(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    reads: ConstReads,
 ) -> Option<Later> {
     latest([
         owner_later(db, project, file, owner),
@@ -275,7 +312,7 @@ pub(crate) fn lowered_later(
         lambdas_later(db, file, owner),
         calls_later(db, project, file, owner),
         defaults_later(db, project, file, owner),
-        expressions_later(db, project, file, owner),
+        expressions_later(db, project, file, owner, reads),
     ])
 }
 
@@ -365,8 +402,9 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
 /// a time: those of [`expressions_later`], and the constructor calls, the
 /// operators on structs, the calls without a callee and the types of
 /// expressions that [`creations_later`], [`operators_later`],
-/// [`calls_later`] and [`body_types_later`] count. `None` when this one
-/// lowers them all.
+/// [`calls_later`] and [`body_types_later`] count. A read of a constant
+/// decides nothing, as for [`evaluation_later`]: its caller is constant
+/// evaluation. `None` when this one lowers them all.
 pub(crate) fn exprs_later(
     db: &dyn Db,
     project: Project,
@@ -386,7 +424,16 @@ pub(crate) fn exprs_later(
             .and_then(|ty| walk.later(ty))
             .and_then(|kind| kind.later(|what| format!("an expression with {what}")));
         latest([
-            expression_later(db, hir, inference, resolution, &uses, id, expr),
+            expression_later(
+                db,
+                hir,
+                inference,
+                resolution,
+                &uses,
+                ConstReads::Skipped,
+                id,
+                expr,
+            ),
             creation_later(db, inference, id, expr),
             operator_on_struct(inference, expr).then(operator_later),
             unresolved_call_later(db, hir, inference, resolution, id, expr),
@@ -424,6 +471,7 @@ fn expressions_later(
     project: Project,
     file: SourceFile,
     owner: BodyOwner,
+    reads: ConstReads,
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
@@ -432,7 +480,7 @@ fn expressions_later(
     let exprs = hir
         .exprs
         .iter()
-        .map(|(id, expr)| expression_later(db, hir, inference, resolution, &uses, id, expr));
+        .map(|(id, expr)| expression_later(db, hir, inference, resolution, &uses, reads, id, expr));
     let stmts = hir.stmts.iter().map(|(_, stmt)| match stmt {
         Stmt::Match { .. } => later("a `match`", PATTERNS),
         Stmt::Deconstruct { .. } => later("a deconstruction", SMALLER_EXPRESSIONS),
@@ -443,14 +491,19 @@ fn expressions_later(
 }
 
 /// What `expr`, the expression `id` of the body `hir`, is and the
-/// milestone that lowers it, by the rules [`expressions_later`] states;
-/// `None` when this one does.
+/// milestone that lowers it, by the rules [`expressions_later`] states,
+/// with constant reads treated as `reads` says; `None` when this one does.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the body's queries give, shared by every rule"
+)]
 fn expression_later(
     db: &dyn Db,
     hir: &Body,
     inference: &Inference,
     resolution: &BodyResolution,
     uses: &Uses,
+    reads: ConstReads,
     id: ExprId,
     expr: &Expr,
 ) -> Option<Later> {
@@ -459,7 +512,7 @@ fn expression_later(
         _ if static_through_value(db, hir, inference, uses, id) => {
             ("a static member named through a value", STATICS)
         }
-        _ if let Some(found) = named_value_later(db, resolution, id) => found,
+        _ if let Some(found) = named_value_later(db, resolution, reads, uses, id) => found,
         _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
         _ if uses.function_value(db, hir, inference, resolution, id) => {
             ("a function used as a value", CLOSURES)
@@ -550,15 +603,15 @@ fn expression_later(
             OPERATORS,
         ),
         Expr::Call { args, .. }
-            if args
-                .iter()
-                .any(|arg| arg.mode == Some(ArgMode::Ref) && !is_place(hir, arg.expr)) =>
+            if args.iter().any(|arg| {
+                arg.mode == Some(ArgMode::Ref) && !is_place(db, hir, resolution, arg.expr)
+            }) =>
         {
             ("a `ref` argument that is not a place", PARAMETER_MODES)
         }
         Expr::Call { callee, .. }
             if mut_receiver(db, hir, inference, id, *callee)
-                .is_some_and(|receiver| !is_place(hir, receiver)) =>
+                .is_some_and(|receiver| !is_place(db, hir, resolution, receiver)) =>
         {
             (
                 "a `mut` method called on a value that is not a place",
@@ -596,17 +649,24 @@ fn expression_later(
 }
 
 /// Whether `expr` names a place, by its shape: a local, `this`, a path,
-/// an element, or a field of a place (§7.11). What a path or a member
-/// names that is not a place, as a getter or a constant, comes later for
-/// what it is. Lowering has no place for an element yet, so a borrow of
-/// one comes later too ([`borrows_element`]).
-fn is_place(hir: &Body, expr: ExprId) -> bool {
-    matches!(
-        member_root(hir, expr),
-        // `borrows_element` holds every element back until M3.6, so `Index`
-        // decides nothing yet.
-        Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. }
-    )
+/// an element, or a field of a place (§7.11), but not a constant or a
+/// field of one, which is a value. What a path or a member names that is
+/// not a place otherwise, as a getter, comes later for what it is.
+/// Lowering has no place for an element yet, so a borrow of one comes
+/// later too ([`borrows_element`]).
+fn is_place(db: &dyn Db, hir: &Body, resolution: &BodyResolution, mut expr: ExprId) -> bool {
+    loop {
+        if const_read(db, resolution, expr).is_some() {
+            return false;
+        }
+        match hir.exprs[expr] {
+            Expr::Member { receiver, .. } => expr = receiver,
+            // `borrows_element` holds every element back until M3.6, so
+            // `Index` decides nothing yet.
+            Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. } => return true,
+            _ => return false,
+        }
+    }
 }
 
 /// Whether `expr` is an element or a field of one, by its shape.
@@ -666,17 +726,24 @@ fn borrows_element(
 /// What the path `expr` names, as `a union case`, and the milestone that
 /// lowers it, when it names a value that comes later: a constant, declared
 /// in a namespace or in a type, comes when its value does
-/// ([`const_value`]); through its type or by its bare name, a static field
+/// ([`const_value`]), unless `reads` skips constants or the constant is
+/// named by `nameof`, which never reads it; through its type or by its
+/// bare name, a static field
 /// or a static getter comes with statics, and so does a static declared in
 /// a namespace; an enum member and a union case come with their kinds of
 /// type.
 fn named_value_later(
     db: &dyn Db,
     resolution: &BodyResolution,
+    reads: ConstReads,
+    uses: &Uses,
     expr: ExprId,
 ) -> Option<(&'static str, Milestone)> {
     let target = &resolution.paths.get(&expr)?.target;
     if let Some((project, key)) = const_target(db, target) {
+        if reads == ConstReads::Skipped || uses.named.contains(&expr) {
+            return None;
+        }
         return match const_value(db, project, key) {
             Evaluated::Later(later) => Some(("a constant", later.milestone)),
             Evaluated::Value(_) | Evaluated::Failed(_) => None,
@@ -720,6 +787,9 @@ struct Uses {
     callees: HashMap<ExprId, Option<bool>>,
     /// The receivers of members.
     receivers: HashSet<ExprId>,
+    /// The operands of `nameof` and the receivers they are members of,
+    /// which are named, never evaluated.
+    named: HashSet<ExprId>,
     /// The expressions whose value nothing uses: expression statements,
     /// and the expression body of a function that returns `()`.
     statements: HashSet<ExprId>,
@@ -738,6 +808,7 @@ impl Uses {
     ) -> Self {
         let mut callees = HashMap::new();
         let mut receivers = HashSet::new();
+        let mut named = HashSet::new();
         for (id, expr) in hir.exprs.iter() {
             match expr {
                 Expr::Call { callee, args } => {
@@ -758,6 +829,14 @@ impl Uses {
                 }
                 Expr::Member { receiver, .. } => {
                     receivers.insert(*receiver);
+                }
+                Expr::Nameof(operand) => {
+                    let mut part = *operand;
+                    named.insert(part);
+                    while let Expr::Member { receiver, .. } = hir.exprs[part] {
+                        part = receiver;
+                        named.insert(part);
+                    }
                 }
                 _ => {}
             }
@@ -796,6 +875,7 @@ impl Uses {
         Self {
             callees,
             receivers,
+            named,
             statements,
         }
     }

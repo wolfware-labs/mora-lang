@@ -23,7 +23,7 @@ use self::interp::{Failure, Stop};
 use self::scan::const_scan;
 use crate::lower::consts::default_mir;
 use crate::lower::expr::constant;
-use crate::lower::later::{Later, exprs_later, lowered_later};
+use crate::lower::later::{Later, evaluation_later, exprs_later};
 use crate::{AggregateKind, Const, mir};
 
 /// A body that constant evaluation runs.
@@ -288,7 +288,9 @@ pub(crate) enum ErrorKind {
 /// without an error of its own, or waits for it; and any other key runs
 /// its MIR in the interpreter.
 ///
-/// No body that a later milestone lowers is ever lowered or run. What runs
+/// The milestones are those of [`evaluation_later`], which leaves the reads
+/// to this step, so a key never asks for its own value. No body that a
+/// later milestone lowers is ever lowered or run. What runs
 /// is one expression, without a block, a `match` or a lambda, so the
 /// interpreter never sees a loop.
 #[salsa::tracked(returns(ref))]
@@ -308,7 +310,7 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
     let owner = key.owner(db);
     let later = match key {
         ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
-            lowered_later(db, project, file, owner)
+            evaluation_later(db, project, file, owner)
         }
         ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),
     };
@@ -338,18 +340,23 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
             &default_mir(db, project, file, owner, default).bodies[0]
         }
     };
-    let mut initializer = |item: ItemId, field| match const_value(
-        db,
-        item.project,
-        ConstKey::Initializer { item, field },
-    ) {
-        Evaluated::Value(value) => Some(value.clone()),
-        Evaluated::Failed(_) | Evaluated::Later(_) => None,
+    // Every initializer the body calls is a read of its scan, which has a
+    // value by now.
+    let without_value = || -> ! {
+        let name = key.name(db, project);
+        panic!("internal error evaluating {name}: a field initializer without a value");
+    };
+    let mut initializer = |item: ItemId, field| {
+        let read = ConstKey::Initializer { item, field };
+        match const_value(db, item.project, read) {
+            Evaluated::Value(value) => Some(value.clone()),
+            Evaluated::Failed(_) | Evaluated::Later(_) => without_value(),
+        }
     };
     match interp::run(db, body, &mut initializer) {
         Ok(value) => Evaluated::Value(value),
         Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
-        Err(Stop::Dependency) => Evaluated::Failed(None),
+        Err(Stop::Dependency) => without_value(),
     }
 }
 

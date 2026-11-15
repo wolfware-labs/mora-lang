@@ -1529,11 +1529,11 @@ fn a_constant_whose_code_comes_later_waits() {
         outcome(source.evaluated(source.constant("K"))),
         "`default` M3.12"
     );
-    // A constant that reads it waits for it by name, and one that leaves
-    // out a field whose initializer waits, for what the initializer waits.
+    // A constant that reads it, by name or by leaving out a field whose
+    // initializer waits, waits for what it waits for.
     assert_eq!(
         outcome(source.evaluated(source.constant("J"))),
-        "a constant M3.12"
+        "`default` M3.12"
     );
     assert_eq!(
         outcome(source.evaluated(source.constant("C"))),
@@ -1660,6 +1660,17 @@ fn every_expression_kind_in_a_constant_evaluates_reports_or_waits() {
         (
             "const B: int = 1;\nconst A: string = nameof(B);",
             "`nameof` M3.12",
+        ),
+        // A read the scan does not follow, of the constant itself or of one
+        // that reads it, waits with what holds it.
+        ("const A: string = nameof(A);", "`nameof` M3.12"),
+        (
+            "const B: bool = true;\nconst A: int = match (B) { true => A, false => 2 };",
+            "a `match` M3.3",
+        ),
+        (
+            "const A: int = match (true) { _ => B };\nconst B: int = A;",
+            "a `match` M3.3",
         ),
         (
             "enum Color { Red }\nconst A: Color = Color.Red;",
