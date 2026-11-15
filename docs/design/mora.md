@@ -2165,7 +2165,7 @@ Before monomorphization, types may contain type parameters. `Retain` and `Releas
 
 **Callees.** A `Call` targets an `Item`, a function or method of the program; a `Local(n)`, a local function, by the position `n` of its body in its owner's MIR, which holds the owner's body first and then those of its local functions in the order of the text; an `Initializer(T, n)`, the initializer of the `n`-th instance field of the struct `T`, a body of its own that takes no argument and gives the field's value, called for a field that `new T { ... }` leaves out; or, as an M1 stand-in, an `External` function. **Call results.** The arguments are evaluated before the call, and the result is stored in `dest` after the callee returns. When `dest` overlaps a place that an argument borrows, as in `p = p.Scaled(2);` where the receiver borrows `p`, the callee reads the old value throughout, and code generation stores the result through a temporary.
 
-**Diverging calls.** A `Call` with no `next` does not return: it calls a function that never returns (D-138). The block after the call is unreachable, so lowering emits none for it.
+**Diverging calls.** A `Call` with no `next` does not return: it calls a function that never returns (D-138). It stores no result, so it has no `dest`, and the validator rejects one that does. The block after the call is unreachable, so lowering emits none for it.
 
 **M1 stand-ins.** Until the standard library is loaded (M1.15), a call whose target is a `Std` name the compiler cannot see has an `External` callee naming its path and no result, and an interpolated string is an `Interpolate` rvalue of text pieces and operands. The validator rejects both once `Std` is loaded.
 

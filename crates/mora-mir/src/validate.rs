@@ -628,8 +628,14 @@ impl Checker<'_> {
                 if dest_ty == Some(Ty::Never) {
                     self.error(at, "call result stored in a place of the never type");
                 }
-                if let Some(next) = next {
-                    self.target(at, "call", *next);
+                // The result is stored after the callee returns (§14.7), and
+                // a call without `next` does not.
+                match next {
+                    Some(next) => self.target(at, "call", *next),
+                    None if dest.is_some() => {
+                        self.error(at, "a call that does not return stores a result");
+                    }
+                    None => {}
                 }
                 self.call(at, callee, &args, dest.is_some(), dest_ty);
             }
@@ -1341,6 +1347,27 @@ mod tests {
         // A call that returns int may drop its result.
         let dropped = call(Callee::Item(fx.add), vec![copy(4), copy(4)], None);
         assert_eq!(validate(&fx.db, &dropped, true), Ok(()));
+    }
+
+    #[test]
+    fn a_call_that_does_not_return_stores_no_result() {
+        let fx = fx();
+        let diverging = |dest| {
+            simple(
+                vec![],
+                TerminatorKind::Call {
+                    callee: Callee::Item(fx.add),
+                    args: vec![copy(4), copy(4)],
+                    dest,
+                    next: None,
+                },
+            )
+        };
+        assert_eq!(validate(&fx.db, &diverging(None), true), Ok(()));
+        assert_eq!(
+            errors(&fx, &diverging(Some(place(2))), true),
+            ["fn F bb0[term]: a call that does not return stores a result"]
+        );
     }
 
     #[test]
