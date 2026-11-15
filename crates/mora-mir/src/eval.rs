@@ -7,12 +7,13 @@
 //! key before anything runs: the constants and initializers it reads, and
 //! the first operation that §14.6 never allows in it.
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the interpreter that calls it comes next")
-)]
 mod arith;
 pub(crate) mod graph;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the evaluation that runs it comes next")
+)]
+pub(crate) mod interp;
 pub(crate) mod scan;
 
 use mora_hir::{
@@ -43,7 +44,6 @@ pub(crate) enum ConstKey {
 }
 
 /// A value that constant evaluation computes.
-#[expect(dead_code, reason = "the interpreter that computes it comes next")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConstValue {
     /// A scalar.

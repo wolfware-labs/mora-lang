@@ -475,7 +475,7 @@ impl Printer<'_> {
 }
 
 /// A constant as written.
-fn constant(value: &Const) -> String {
+pub(crate) fn constant(value: &Const) -> String {
     match value {
         Const::Int(value, _) => Constant::Int(*value).to_string(),
         Const::Real(bits, ty) => real_text(*bits, *ty),

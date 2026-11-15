@@ -24,7 +24,7 @@
 //! a `return`, and no jump starts there: such code ends in `unreachable`.
 
 mod calls;
-mod consts;
+pub(crate) mod consts;
 mod control;
 pub(crate) mod expr;
 pub(crate) mod later;

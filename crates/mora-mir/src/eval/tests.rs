@@ -3,13 +3,22 @@
 
 use mora_hir::test_support::{TestDb, app, codes, file_named, item_named};
 use mora_hir::{
-    BodyOwner, Expr, ExprId, ItemId, body, body_resolution, body_source_map, diagnostics,
+    BodyOwner, Expr, ExprId, ItemId, Primitive, Ty, body, body_resolution, body_source_map,
+    diagnostics,
 };
-use mora_span::{Dependency, Project, ProjectKind, SourceFile, TextRange, TextSize};
+use mora_span::{Dependency, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
+use super::arith::ArithError;
 use super::graph::{ConstGraph, const_graph};
+use super::interp::{Failure, Stop, run};
 use super::scan::const_scan;
-use super::{ConstKey, const_read, constants, defaults};
+use super::{ConstKey, ConstValue, const_read, constants, defaults};
+use crate::lower::consts::default_mir;
+use crate::{
+    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
+    LocalDecl, LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement, StatementKind,
+    Terminator, TerminatorKind, UnOp,
+};
 
 /// A file of an app, read by the front end.
 struct Source {
@@ -167,6 +176,109 @@ impl Source {
         assert_eq!(found.len(), 1, "{found:?}");
         found[0]
     }
+
+    /// What a run of the initializer of the namespace-level constant
+    /// `name` gives, with field initializers from `initializer`.
+    fn run_with(
+        &self,
+        name: &str,
+        initializer: &mut dyn FnMut(ItemId, u32) -> Option<ConstValue>,
+    ) -> Result<ConstValue, Stop> {
+        let owner = BodyOwner::Item(self.item(name).item);
+        let mir = crate::mir(&self.db, self.project, self.file, owner);
+        run(&self.db, &mir.bodies[0], initializer)
+    }
+
+    /// What a run of the initializer of the namespace-level constant
+    /// `name` gives, when it calls no field initializer.
+    fn run(&self, name: &str) -> Result<ConstValue, Stop> {
+        self.run_with(name, &mut |item, field| {
+            panic!("no initializer is called: {item:?} {field}")
+        })
+    }
+
+    /// The failure that stops the run of the constant `name`.
+    fn failure(&self, name: &str) -> Failure {
+        match self.run(name) {
+            Err(Stop::Failed(failure)) => failure,
+            other => panic!("{name} runs to {other:?}"),
+        }
+    }
+
+    /// The range of the only occurrence of `text` in the file.
+    fn range_of(&self, text: &str) -> TextRange {
+        self.range_in(text, text)
+    }
+}
+
+/// A scalar integer of type `ty`.
+fn int(value: i128, ty: Primitive) -> ConstValue {
+    ConstValue::Scalar(Const::Int(value, ty))
+}
+
+/// A scalar `bool`.
+fn boolean(value: bool) -> ConstValue {
+    ConstValue::Scalar(Const::Bool(value))
+}
+
+/// A span that points nowhere in particular.
+fn nowhere() -> Span {
+    Span::new(FileId::new(900), TextRange::empty(TextSize::new(0)))
+}
+
+/// A body named `Hand` with `locals` locals of type `int`, `_0` among
+/// them, and `blocks`.
+fn hand_built(locals: usize, blocks: Vec<Block>) -> Body {
+    let decl = LocalDecl {
+        ty: LocalTy::Value(Ty::Primitive(Primitive::Int)),
+        mutable: true,
+        source: None,
+    };
+    Body {
+        name: "Hand".to_owned(),
+        params: 0,
+        locals: vec![decl; locals],
+        blocks,
+        span: nowhere(),
+    }
+}
+
+/// A block of `statements` that ends with `terminator`.
+fn block(statements: Vec<StatementKind>, terminator: TerminatorKind) -> Block {
+    Block {
+        statements: statements
+            .into_iter()
+            .map(|kind| Statement {
+                kind,
+                span: nowhere(),
+            })
+            .collect(),
+        terminator: Terminator {
+            kind: terminator,
+            span: nowhere(),
+        },
+    }
+}
+
+/// `place = rvalue`.
+fn assign(place: Place, rvalue: Rvalue) -> StatementKind {
+    StatementKind::Assign(place, rvalue)
+}
+
+/// The place of the local `_n`.
+fn local(n: u32) -> Place {
+    Place::local(LocalId(n))
+}
+
+/// The constant `int` `value` as an operand.
+fn int_operand(value: i128) -> Operand {
+    Operand::Const(Const::Int(value, Primitive::Int))
+}
+
+/// What a run of a hand-built body gives, with no field initializer.
+fn run_hand_built(body: &Body) -> Result<ConstValue, Stop> {
+    let db = mora_hir::test_support::TestDb::new();
+    run(&db, body, &mut |_, _| None)
 }
 
 #[test]
@@ -697,4 +809,461 @@ fn a_long_chain_builds_without_recursion() {
     assert_eq!(order.len(), LENGTH);
     assert_eq!(order[0], source.constant(&format!("C{}", LENGTH - 1)));
     assert_eq!(order[LENGTH - 1], source.constant("C0"));
+}
+
+#[test]
+fn run_computes_arithmetic_and_casts() {
+    let source = checked(
+        "const C: byte = (byte)(299L + 1L);\n\
+         const S: string = \"ab\" + \"cd\";\n\
+         const N: long = -(5L) * 2L;\n\
+         const R: double = 2.5 * (double)(3L);\n",
+    );
+    assert_eq!(source.run("C"), Ok(int(44, Primitive::Byte)));
+    assert_eq!(
+        source.run("S"),
+        Ok(ConstValue::Scalar(Const::String("abcd".to_owned())))
+    );
+    assert_eq!(source.run("N"), Ok(int(-10, Primitive::Long)));
+    assert_eq!(
+        source.run("R"),
+        Ok(ConstValue::Scalar(Const::Real(
+            7.5f64.to_bits(),
+            Primitive::Double
+        )))
+    );
+}
+
+#[test]
+fn run_runs_a_default_value_with_its_conversion() {
+    let source = checked("O(x: long = (int)((1L > 0L) ? 2 : 3)) {}\n");
+    let ConstKey::Default { owner, default, .. } = source.only_default() else {
+        panic!("a default value");
+    };
+    let mir = default_mir(&source.db, source.project, source.file, owner, default);
+    let mut initializer = |_: ItemId, _: u32| None;
+    assert_eq!(
+        run(&source.db, &mir.bodies[0], &mut initializer),
+        Ok(int(2, Primitive::Long))
+    );
+}
+
+#[test]
+fn run_follows_conditionals_and_short_circuits() {
+    let source = checked(
+        "const D: int = (1 < 2 && 3 > 4) ? 1 : 2;\n\
+         const T: int = (1L < 2L || 3L > 4L) ? 1 : 2;\n\
+         const E: bool = true || 1L / 0L > 0L;\n\
+         const F: bool = false && 1L / 0L > 0L;\n",
+    );
+    assert_eq!(source.run("D"), Ok(int(2, Primitive::Int)));
+    assert_eq!(source.run("T"), Ok(int(1, Primitive::Int)));
+    assert_eq!(source.run("E"), Ok(boolean(true)));
+    assert_eq!(source.run("F"), Ok(boolean(false)));
+}
+
+#[test]
+fn run_builds_structs_and_tuples() {
+    let source = checked(
+        "struct P {\n    public X: int = 1;\n    public Y: int;\n}\n\
+         const C: P = new P { Y = 2 };\n\
+         const T: (int, string) = (1, \"a\");\n\
+         struct Q {\n    public A: int;\n    public B: string;\n}\n\
+         const U: string = new Q { A = 1, B = \"b\" }.B;\n",
+    );
+    let p = source.item("P");
+    let mut calls = Vec::new();
+    let value = source.run_with("C", &mut |item, field| {
+        calls.push((item, field));
+        Some(int(7, Primitive::Int))
+    });
+    assert_eq!(calls, [(p, 0)]);
+    assert_eq!(
+        value,
+        Ok(ConstValue::Aggregate(
+            AggregateKind::Struct(p),
+            vec![int(7, Primitive::Int), int(2, Primitive::Int)]
+        ))
+    );
+    assert_eq!(
+        source.run("T"),
+        Ok(ConstValue::Aggregate(
+            AggregateKind::Tuple,
+            vec![
+                int(1, Primitive::Int),
+                ConstValue::Scalar(Const::String("a".to_owned()))
+            ]
+        ))
+    );
+    assert_eq!(
+        source.run("U"),
+        Ok(ConstValue::Scalar(Const::String("b".to_owned())))
+    );
+}
+
+#[test]
+fn run_stops_at_a_failed_operation() {
+    let source = checked(
+        "const F: long = 9223372036854775807L + 1L;\n\
+         const G: long = 1L % (2L - 2L);\n\
+         const H: int = -((int)(-2147483648L));\n\
+         const N: nint = (nint)1099511627776L;\n",
+    );
+    assert_eq!(
+        source.failure("F"),
+        Failure {
+            range: source.range_of("9223372036854775807L + 1L"),
+            error: ArithError::Overflow,
+            ty: Ty::Primitive(Primitive::Long),
+            operation: "9223372036854775807 + 1".to_owned(),
+        }
+    );
+    assert_eq!(
+        source.failure("G"),
+        Failure {
+            range: source.range_of("1L % (2L - 2L)"),
+            error: ArithError::RemainderByZero,
+            ty: Ty::Primitive(Primitive::Long),
+            operation: "1 % 0".to_owned(),
+        }
+    );
+    assert_eq!(
+        source.failure("H"),
+        Failure {
+            range: source.range_of("-((int)(-2147483648L))"),
+            error: ArithError::Overflow,
+            ty: Ty::Primitive(Primitive::Int),
+            operation: "-(-2147483648)".to_owned(),
+        }
+    );
+    assert_eq!(
+        source.failure("N"),
+        Failure {
+            range: source.range_of("(nint)1099511627776L"),
+            error: ArithError::TargetDependent,
+            ty: Ty::Primitive(Primitive::NInt),
+            operation: "(nint)1099511627776".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn run_stops_when_an_initializer_has_no_value() {
+    let source = checked(
+        "struct P {\n    public X: int = 1;\n    public Y: int;\n}\n\
+         const C: P = new P { Y = 2 };\n",
+    );
+    assert_eq!(
+        source.run_with("C", &mut |_, _| None),
+        Err(Stop::Dependency)
+    );
+}
+
+#[test]
+fn run_compares_tuples_field_by_field() {
+    let source = checked(
+        "const H: bool = (1, 2.0) == (1, -0.0 + 2.0);\n\
+         const I: bool = (1, 2.0) == (1, 3.0);\n\
+         const J: bool = (1, 2.0) != (1, 3.0);\n\
+         const K: bool = ((1L, \"a\"), 0.0) != ((1L, \"a\"), -0.0);\n",
+    );
+    assert_eq!(source.run("H"), Ok(boolean(true)));
+    assert_eq!(source.run("I"), Ok(boolean(false)));
+    assert_eq!(source.run("J"), Ok(boolean(true)));
+    assert_eq!(source.run("K"), Ok(boolean(false)));
+}
+
+#[test]
+fn run_writes_through_a_field_and_clears_a_dead_local() {
+    let tuple = Rvalue::Aggregate(AggregateKind::Tuple, vec![int_operand(1), int_operand(2)]);
+    let field = Place {
+        local: LocalId(1),
+        projections: vec![Projection::Field(1)],
+    };
+    let body = hand_built(
+        2,
+        vec![block(
+            vec![
+                StatementKind::StorageLive(LocalId(1)),
+                assign(local(1), tuple),
+                assign(field.clone(), Rvalue::Use(int_operand(5))),
+                StatementKind::Nop,
+                assign(local(0), Rvalue::Use(Operand::Move(local(1)))),
+            ],
+            TerminatorKind::Return,
+        )],
+    );
+    assert_eq!(
+        run_hand_built(&body),
+        Ok(ConstValue::Aggregate(
+            AggregateKind::Tuple,
+            vec![int(1, Primitive::Int), int(5, Primitive::Int)]
+        ))
+    );
+}
+
+#[test]
+#[should_panic(expected = "internal error evaluating Hand: _1 has no value")]
+fn run_panics_on_a_local_read_after_its_storage_ends() {
+    let body = hand_built(
+        2,
+        vec![block(
+            vec![
+                assign(local(1), Rvalue::Use(int_operand(1))),
+                StatementKind::StorageDead(LocalId(1)),
+                assign(local(0), Rvalue::Use(Operand::Copy(local(1)))),
+            ],
+            TerminatorKind::Return,
+        )],
+    );
+    let _ = run_hand_built(&body);
+}
+
+#[test]
+#[should_panic(expected = "internal error evaluating Hand: _0 has no value")]
+fn run_panics_on_a_return_without_a_value() {
+    let _ = run_hand_built(&hand_built(
+        1,
+        vec![block(Vec::new(), TerminatorKind::Return)],
+    ));
+}
+
+#[test]
+fn run_goes_to_the_next_block() {
+    let body = hand_built(
+        1,
+        vec![
+            block(Vec::new(), TerminatorKind::Goto(BlockId(2))),
+            block(Vec::new(), TerminatorKind::Unreachable),
+            block(
+                vec![assign(local(0), Rvalue::Use(int_operand(3)))],
+                TerminatorKind::Return,
+            ),
+        ],
+    );
+    assert_eq!(run_hand_built(&body), Ok(int(3, Primitive::Int)));
+}
+
+/// A body that calls the initializer of field 3 of `item` into `dest`,
+/// then continues at `next`, which returns `_1`.
+fn initializer_call(item: ItemId, dest: Option<Place>, next: Option<BlockId>) -> Body {
+    hand_built(
+        2,
+        vec![
+            block(
+                Vec::new(),
+                TerminatorKind::Call {
+                    callee: Callee::Initializer(item, 3),
+                    args: Vec::new(),
+                    dest,
+                    next,
+                },
+            ),
+            block(
+                vec![assign(local(0), Rvalue::Use(Operand::Copy(local(1))))],
+                TerminatorKind::Return,
+            ),
+        ],
+    )
+}
+
+#[test]
+fn run_writes_an_initializer_to_its_destination() {
+    let source = checked("struct P {}\n");
+    let p = source.item("P");
+    let body = initializer_call(p, Some(local(1)), Some(BlockId(1)));
+    let mut seen = Vec::new();
+    let value = run(&source.db, &body, &mut |item, field| {
+        seen.push((item, field));
+        Some(int(9, Primitive::Int))
+    });
+    assert_eq!(seen, [(p, 3)]);
+    assert_eq!(value, Ok(int(9, Primitive::Int)));
+}
+
+#[test]
+#[should_panic(expected = "internal error evaluating Hand: _1 has no value")]
+fn run_drops_an_initializer_without_a_destination() {
+    let source = checked("struct P {}\n");
+    let body = initializer_call(source.item("P"), None, Some(BlockId(1)));
+    let _ = run(&source.db, &body, &mut |_, _| Some(int(9, Primitive::Int)));
+}
+
+#[test]
+#[should_panic(expected = "internal error evaluating Hand: a call that does not return")]
+fn run_panics_on_an_initializer_that_does_not_return() {
+    let source = checked("struct P {}\n");
+    let body = initializer_call(source.item("P"), Some(local(1)), None);
+    let _ = run(&source.db, &body, &mut |_, _| Some(int(9, Primitive::Int)));
+}
+
+/// The place `_n` followed by `projections`.
+fn projected(n: u32, projections: &[Projection]) -> Place {
+    Place {
+        local: LocalId(n),
+        projections: projections.to_vec(),
+    }
+}
+
+/// `_0 = rvalue`.
+fn to_return(rvalue: Rvalue) -> StatementKind {
+    assign(local(0), rvalue)
+}
+
+/// `_0 = copy place`.
+fn copy_to_return(place: Place) -> StatementKind {
+    to_return(Rvalue::Use(Operand::Copy(place)))
+}
+
+/// Each form a body that constant evaluation runs never holds, after
+/// `_1 = (1,)`, and what the panic it gives says.
+fn unsupported_forms() -> Vec<(StatementKind, TerminatorKind, &'static str)> {
+    use Projection::{Deref, Field};
+    let ret = TerminatorKind::Return;
+    let one = || Rvalue::Use(int_operand(1));
+    let whole = || Operand::Copy(local(1));
+    let forms = vec![
+        (
+            to_return(Rvalue::Borrow(BorrowMode::In, local(1))),
+            "a borrow",
+        ),
+        (copy_to_return(projected(1, &[Deref])), "a dereference"),
+        (assign(projected(1, &[Deref]), one()), "a dereference"),
+        (
+            copy_to_return(projected(1, &[Field(0), Field(0)])),
+            "field 0 of a scalar",
+        ),
+        (
+            assign(projected(1, &[Field(0), Field(0)]), one()),
+            "field 0 of a scalar",
+        ),
+        (copy_to_return(projected(1, &[Field(3)])), "no field 3"),
+        (assign(projected(1, &[Field(3)]), one()), "no field 3"),
+        (copy_to_return(local(5)), "no local _5"),
+        (assign(local(5), one()), "no local _5"),
+        (StatementKind::StorageDead(LocalId(5)), "no local _5"),
+        (assign(projected(0, &[Field(0)]), one()), "_0 has no value"),
+        (
+            to_return(Rvalue::Interpolate(vec![InterpPiece::Text("a".to_owned())])),
+            "an interpolated string",
+        ),
+        (
+            to_return(Rvalue::Cast(CastKind::Implicit, int_operand(1), Ty::String)),
+            "a cast to string",
+        ),
+        (
+            to_return(Rvalue::Binary(BinOp::Lt, whole(), whole())),
+            "`<` on aggregates",
+        ),
+        (
+            to_return(Rvalue::Binary(BinOp::Eq, whole(), int_operand(1))),
+            "`==` on values of different shapes",
+        ),
+        (
+            to_return(Rvalue::Unary(UnOp::Neg, whole())),
+            "an aggregate where a scalar goes",
+        ),
+    ];
+    let mut forms: Vec<_> = forms
+        .into_iter()
+        .map(|(statement, what)| (statement, ret.clone(), what))
+        .collect();
+    forms.push((
+        StatementKind::Nop,
+        TerminatorKind::Unreachable,
+        "an unreachable block",
+    ));
+    forms.push((
+        StatementKind::Nop,
+        TerminatorKind::Call {
+            callee: Callee::External(vec!["F".to_owned()]),
+            args: Vec::new(),
+            dest: None,
+            next: Some(BlockId(0)),
+        },
+        "a call",
+    ));
+    forms
+}
+
+#[test]
+fn run_panics_on_what_constant_evaluation_never_runs() {
+    for (statement, terminator, what) in unsupported_forms() {
+        let tuple = Rvalue::Aggregate(AggregateKind::Tuple, vec![int_operand(1)]);
+        let body = hand_built(
+            2,
+            vec![block(vec![assign(local(1), tuple), statement], terminator)],
+        );
+        let panic = std::panic::catch_unwind(|| run_hand_built(&body)).expect_err(what);
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert_eq!(
+            message,
+            format!("internal error evaluating Hand: {what}"),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn run_switches_on_the_first_matching_target() {
+    let switch = |discr: i128| {
+        hand_built(
+            1,
+            vec![
+                block(
+                    Vec::new(),
+                    TerminatorKind::Switch {
+                        discr: int_operand(discr),
+                        targets: vec![
+                            (Const::Int(1, Primitive::Int), BlockId(1)),
+                            (Const::Int(2, Primitive::Int), BlockId(2)),
+                        ],
+                        otherwise: BlockId(3),
+                    },
+                ),
+                block(
+                    vec![assign(local(0), Rvalue::Use(int_operand(10)))],
+                    TerminatorKind::Return,
+                ),
+                block(
+                    vec![assign(local(0), Rvalue::Use(int_operand(20)))],
+                    TerminatorKind::Return,
+                ),
+                block(
+                    vec![assign(local(0), Rvalue::Use(int_operand(30)))],
+                    TerminatorKind::Return,
+                ),
+            ],
+        )
+    };
+    assert_eq!(run_hand_built(&switch(1)), Ok(int(10, Primitive::Int)));
+    assert_eq!(run_hand_built(&switch(2)), Ok(int(20, Primitive::Int)));
+    assert_eq!(run_hand_built(&switch(5)), Ok(int(30, Primitive::Int)));
+}
+
+#[test]
+fn run_compares_aggregates_with_eq_and_ne() {
+    let pair = |second: i128| Operand::Const(Const::Int(second, Primitive::Int));
+    let compare = |op: BinOp, second: i128| {
+        let tuple =
+            |n: i128| Rvalue::Aggregate(AggregateKind::Tuple, vec![int_operand(1), pair(n)]);
+        hand_built(
+            3,
+            vec![block(
+                vec![
+                    assign(local(1), tuple(2)),
+                    assign(local(2), tuple(second)),
+                    assign(
+                        local(0),
+                        Rvalue::Binary(op, Operand::Copy(local(1)), Operand::Copy(local(2))),
+                    ),
+                ],
+                TerminatorKind::Return,
+            )],
+        )
+    };
+    assert_eq!(run_hand_built(&compare(BinOp::Eq, 2)), Ok(boolean(true)));
+    assert_eq!(run_hand_built(&compare(BinOp::Eq, 3)), Ok(boolean(false)));
+    assert_eq!(run_hand_built(&compare(BinOp::Ne, 2)), Ok(boolean(false)));
+    assert_eq!(run_hand_built(&compare(BinOp::Ne, 3)), Ok(boolean(true)));
 }
