@@ -20,6 +20,7 @@ mod constant;
 mod diagnostic;
 mod numeric;
 
+use la_arena::ArenaMap;
 use mora_span::{Db, Project, SourceFile};
 use rustc_hash::FxHashMap;
 
@@ -50,7 +51,7 @@ pub struct Inference {
     /// type and fits it.
     constants: FxHashMap<ExprId, Constant>,
     /// The value of each number literal and negated number literal.
-    literals: FxHashMap<ExprId, Constant>,
+    literals: ArenaMap<ExprId, Constant>,
     /// The conversion applied to each expression that changes type.
     conversions: FxHashMap<ExprId, Conversion>,
     /// The conversion applied to an element of a value that an assignment
@@ -177,7 +178,7 @@ impl Inference {
     /// literals of an operation that has a [`Inference::constant`] have no
     /// value of their own.
     pub fn literal(&self, expr: ExprId) -> Option<Constant> {
-        self.literals.get(&expr).copied()
+        self.literals.get(expr).copied()
     }
 
     /// The type of `expr`: `None` while it is unknown, because a later

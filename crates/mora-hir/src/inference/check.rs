@@ -6,11 +6,12 @@ mod static_member;
 
 use std::cell::Cell;
 
+use la_arena::ArenaMap;
 use mora_span::{Db, Project, SourceFile};
 use mora_syntax::lexer::number::{
     IntSuffix, RealSuffix, int_value, real_value, too_large_for_float,
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use super::constant::Value;
 use super::{
@@ -143,11 +144,11 @@ pub(super) fn infer_body(
         arguments: FxHashMap::default(),
         local_functions: None,
         constants: FxHashMap::default(),
-        literals: FxHashMap::default(),
+        literals: ArenaMap::default(),
         conversions: FxHashMap::default(),
         element_conversions: FxHashMap::default(),
         errors: Vec::new(),
-        statements: FxHashSet::default(),
+        statement: None,
         splittable: FxHashMap::default(),
         block_stmt: None,
         ret: None,
@@ -266,16 +267,16 @@ struct Check<'a> {
     /// The value of each operation made only of literals so far.
     constants: FxHashMap<ExprId, Constant>,
     /// The value of each number literal and negated literal so far.
-    literals: FxHashMap<ExprId, Constant>,
+    literals: ArenaMap<ExprId, Constant>,
     /// The conversions applied so far.
     conversions: FxHashMap<ExprId, Conversion>,
     /// The conversions of deconstructed elements so far.
     element_conversions: FxHashMap<(ExprId, u32), Conversion>,
     /// The errors so far.
     errors: Vec<TypeError>,
-    /// The assignments written as statements of their own, whose value
-    /// nothing uses.
-    statements: FxHashSet<ExprId>,
+    /// The assignment written as a statement of its own whose turn it is,
+    /// whose value nothing uses: it is checked right after it is set.
+    statement: Option<ExprId>,
     /// The assignments that are the value of another one written as a
     /// statement in a block, each with that statement: a fix can split them.
     splittable: FxHashMap<ExprId, ExprId>,
@@ -446,6 +447,18 @@ impl Check<'_> {
         }
     }
 
+    /// Records that `expr`, of type `from`, converts to the numeric type
+    /// `to` where it is used, when the types differ: [`Check::widen`] to a
+    /// primitive type, without comparing two whole types.
+    fn widen_number(&mut self, expr: ExprId, from: &Ty, to: Primitive) {
+        match from {
+            Ty::Primitive(from) if *from == to => {}
+            // A value of the never type does not exist.
+            Ty::Never => {}
+            _ => self.convert(expr, Ty::Primitive(to), ConversionKind::Implicit),
+        }
+    }
+
     /// Records the conversion of `expr` to `to`.
     fn convert(&mut self, expr: ExprId, to: Ty, kind: ConversionKind) {
         let previous = self.conversions.insert(expr, Conversion { to, kind });
@@ -464,7 +477,7 @@ impl Check<'_> {
     fn statement(&mut self, expr: ExprId, in_block: bool) {
         let body = self.body;
         if let Expr::Assign { op, lhs, rhs } = &body.exprs[expr] {
-            self.statements.insert(expr);
+            self.statement = Some(expr);
             // `a ??= b` evaluates `b` only when it must, so it is not split.
             if in_block
                 && *op != Some(BinaryOp::Coalesce)
@@ -797,7 +810,7 @@ impl Check<'_> {
             }
             Expr::Binary { op, lhs, rhs } => self.binary(expr, *op, *lhs, *rhs),
             Expr::Assign { op, lhs, rhs } => {
-                if !self.statements.remove(&expr) {
+                if self.statement.take() != Some(expr) {
                     let split = self.splittable.get(&expr).copied();
                     self.errors.push(TypeError::AssignmentValue { expr, split });
                 }
@@ -1158,9 +1171,8 @@ impl Check<'_> {
     ) -> Option<Ty> {
         match result {
             Some(result) => {
-                let result = Ty::Primitive(result);
-                self.widen(operand, &ty, &result);
-                Some(result)
+                self.widen_number(operand, &ty, result);
+                Some(Ty::Primitive(result))
             }
             None => {
                 self.errors.push(TypeError::Unary {
@@ -1247,9 +1259,9 @@ impl Check<'_> {
                 }
                 return match numeric::as_numeric(&value).filter(|ty| ty.is_integer()) {
                     Some(ty) => {
-                        let widened = Ty::Primitive(numeric::widen_small(ty));
-                        self.widen(lhs, &value, &widened);
-                        Some(widened)
+                        let widened = numeric::widen_small(ty);
+                        self.widen_number(lhs, &value, widened);
+                        Some(Ty::Primitive(widened))
                     }
                     None if !is_known(&value) => None,
                     None => {
@@ -1278,37 +1290,30 @@ impl Check<'_> {
         }
         // An operand of the never type takes the other's type; with two, the
         // operation is of the never type too, a comparison aside (§11.4).
-        let (found_l, found_r) = (l.clone(), r.clone());
-        let (l, r) = match (l, r) {
+        let (found_l, found_r) = (l, r);
+        let (l, r) = match (&found_l, &found_r) {
             (Ty::Never, Ty::Never) if comparison => return Some(BOOL),
             (Ty::Never, Ty::Never) => return Some(Ty::Never),
-            (Ty::Never, r) => (r.clone(), r),
-            (l, Ty::Never) => (l.clone(), l),
+            (Ty::Never, r) => (r, r),
+            (l, Ty::Never) => (l, l),
             (l, r) => (l, r),
         };
         // A struct may declare its arithmetic, bitwise and shift operators
         // (§6.9), which this milestone does not look up.
-        if !comparison && (is_struct(&l) || is_struct(&r)) {
+        if !comparison && (is_struct(l) || is_struct(r)) {
             return None;
         }
         // Comparing two tuples of one shape but different element types is
         // for the rules of tuples to decide (§5.5).
-        let tuples = matches!((&l, &r), (Ty::Tuple(_), Ty::Tuple(_)));
-        if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-            && tuples
-            && same_shape(&l, &r)
-            && !same(&l, &r)
-        {
+        let tuples = matches!((l, r), (Ty::Tuple(_), Ty::Tuple(_)));
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && tuples && same_shape(l, r) && !same(l, r) {
             return None;
         }
-        match operator(op, &l, &r) {
-            Some(ty) => {
-                if let (Some(a), Some(b)) = (numeric::as_numeric(&l), numeric::as_numeric(&r))
-                    && let Some(promoted) = numeric::promote(a, b)
-                {
-                    let promoted = Ty::Primitive(promoted);
-                    self.widen(lhs, &found_l, &promoted);
-                    self.widen(rhs, &found_r, &promoted);
+        match operator(op, l, r) {
+            Some((ty, promoted)) => {
+                if let Some(promoted) = promoted {
+                    self.widen_number(lhs, &found_l, promoted);
+                    self.widen_number(rhs, &found_r, promoted);
                 }
                 Some(ty)
             }
@@ -1318,8 +1323,8 @@ impl Check<'_> {
                     op,
                     lhs,
                     rhs,
-                    lhs_ty: l,
-                    rhs_ty: r,
+                    lhs_ty: l.clone(),
+                    rhs_ty: r.clone(),
                 });
                 Some(if comparison { BOOL } else { Ty::Error })
             }
@@ -1980,17 +1985,19 @@ fn negatable(literal: &Literal) -> bool {
     }
 }
 
-/// The type `op` gives on operands of the known types `l` and `r`, or
-/// `None` when it is not defined on them (§5.3, §7.12).
-fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
+/// The type `op` gives on operands of the known types `l` and `r`, with
+/// the numeric type both operands are promoted to when they are numbers,
+/// or `None` when it is not defined on them (§5.3, §7.12).
+fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<(Ty, Option<Primitive>)> {
     use BinaryOp as B;
     if let (Some(a), Some(b)) = (numeric::as_numeric(l), numeric::as_numeric(r)) {
         let ty = numeric::promote(a, b)?;
-        return match op {
-            B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => Some(BOOL),
-            _ if numeric::is_integer_only(op) => ty.is_integer().then_some(Ty::Primitive(ty)),
-            _ => Some(Ty::Primitive(ty)),
+        let result = match op {
+            B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge => BOOL,
+            _ if numeric::is_integer_only(op) && !ty.is_integer() => return None,
+            _ => Ty::Primitive(ty),
         };
+        return Some((result, Some(ty)));
     }
     let defined = match op {
         // Equality on structs and tuples is generated (§6.2, §5.5); whether
@@ -2012,8 +2019,9 @@ fn operator(op: BinaryOp, l: &Ty, r: &Ty) -> Option<Ty> {
     if !defined {
         return None;
     }
-    Some(match op {
+    let result = match op {
         B::Add => Ty::String,
         _ => BOOL,
-    })
+    };
+    Some((result, None))
 }
