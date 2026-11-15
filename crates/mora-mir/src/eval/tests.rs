@@ -52,6 +52,25 @@ fn unchecked(text: &str) -> Source {
     Source { db, project, file }
 }
 
+/// `program` as `src/Program.mr` of an app that depends on a library
+/// `Util` of `lib` as `src/Lib.mr`, whatever the front end reports about
+/// them; and the library.
+fn using_util(lib: &str, program: &str) -> (Source, Project) {
+    let db = TestDb::new();
+    let util = db.project("util", ProjectKind::Lib, &[("src/Lib.mr", lib)], Vec::new());
+    let project = db.project(
+        "users-api",
+        ProjectKind::App,
+        &[("src/Program.mr", program)],
+        vec![Dependency {
+            name: "Util".to_owned(),
+            project: util,
+        }],
+    );
+    let file = file_named(&db, project, "src/Program.mr");
+    (Source { db, project, file }, util)
+}
+
 impl Source {
     /// The item `name` declared in the file.
     fn item(&self, name: &str) -> ItemId {
@@ -770,27 +789,13 @@ fn the_order_lists_constants_then_defaults_and_the_initializers_they_read() {
 
 #[test]
 fn the_order_leaves_out_constants_of_other_projects() {
-    let db = TestDb::new();
-    let util = db.project(
-        "util",
-        ProjectKind::Lib,
-        &[("src/Lib.mr", "public const K: int = 1;\n")],
-        Vec::new(),
+    let (source, util) = using_util("public const K: int = 1;\n", "const A: int = Util.K;\n");
+    assert_eq!(
+        codes(diagnostics(&source.db, source.project)),
+        Vec::<String>::new()
     );
-    let project = db.project(
-        "users-api",
-        ProjectKind::App,
-        &[("src/Program.mr", "const A: int = Util.K;\n")],
-        vec![Dependency {
-            name: "Util".to_owned(),
-            project: util,
-        }],
-    );
-    assert_eq!(codes(diagnostics(&db, project)), Vec::<String>::new());
-    let file = file_named(&db, project, "src/Program.mr");
-    let source = Source { db, project, file };
     let a = source.constant("A");
-    let reads = &const_scan(&source.db, project, a).reads;
+    let reads = &const_scan(&source.db, source.project, a).reads;
     assert_eq!(reads.len(), 1);
     assert_eq!(reads[0].0, util);
     assert_eq!(source.graph().order(), [a]);
@@ -798,21 +803,14 @@ fn the_order_leaves_out_constants_of_other_projects() {
 
 #[test]
 fn a_long_chain_builds_without_recursion() {
-    const LENGTH: usize = 2_000;
-    let text: String = (0..LENGTH)
-        .map(|i| {
-            if i + 1 == LENGTH {
-                format!("const C{i}: int = 1;\n")
-            } else {
-                format!("const C{i}: int = C{} + 1;\n", i + 1)
-            }
-        })
-        .collect();
-    let source = unchecked(&text);
+    let source = unchecked(&reversed_chain(""));
     let order = source.graph().order();
-    assert_eq!(order.len(), LENGTH);
-    assert_eq!(order[0], source.constant(&format!("C{}", LENGTH - 1)));
-    assert_eq!(order[LENGTH - 1], source.constant("C0"));
+    assert_eq!(order.len(), CHAIN);
+    assert_eq!(order[0], source.constant("C0"));
+    assert_eq!(
+        order[CHAIN - 1],
+        source.constant(&format!("C{}", CHAIN - 1))
+    );
 }
 
 #[test]
@@ -2030,26 +2028,10 @@ fn a_long_chain_lowers_without_overflowing_the_stack() {
 #[test]
 fn a_long_chain_in_another_project_lowers_without_overflowing_the_stack() {
     on_a_small_stack(|| {
-        let db = TestDb::new();
-        let util = db.project(
-            "util",
-            ProjectKind::Lib,
-            &[("src/Lib.mr", &reversed_chain("public "))],
-            Vec::new(),
-        );
-        let project = db.project(
-            "users-api",
-            ProjectKind::App,
-            &[("src/Program.mr", "const A: int = Util.C1999 + 1;\n")],
-            vec![Dependency {
-                name: "Util".to_owned(),
-                project: util,
-            }],
-        );
-        let file = file_named(&db, project, "src/Program.mr");
-        let source = Source { db, project, file };
+        let program = "const A: int = Util.C1999 + 1;\n";
+        let (source, _) = using_util(&reversed_chain("public "), program);
         // Lowering comes first: nothing has evaluated the chain in order.
-        let dump = crate::mir_dump(&source.db, project, file);
+        let dump = crate::mir_dump(&source.db, source.project, source.file);
         assert!(dump.contains("2001"), "{dump}");
         assert_eq!(
             source.evaluated(source.constant("A")),
@@ -2077,7 +2059,9 @@ fn a_long_chain_of_constants_does_not_overflow_the_stack() {
 }
 
 /// Checks that the walks of this thread reached `keys` keys, each key of
-/// the chain once, and that none is still going on.
+/// the chain once, and that none is still going on. The count starts with
+/// the thread, so the test runs on a thread of its own
+/// ([`on_a_small_stack`]).
 fn assert_walked(keys: usize) {
     assert_eq!(REACHED.get(), keys);
     assert!(!WALKING.get());
