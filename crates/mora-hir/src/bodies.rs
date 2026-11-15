@@ -2185,4 +2185,40 @@ get extension#0.Empty(items#0) => items#0[0];
         assert_eq!(reported(text), Vec::<String>::new());
         assert_eq!(reported(&format!("{text}Counter.Bump();\n")), ["MR0127"]);
     }
+
+    #[test]
+    fn only_the_four_orderings_order_their_operands() {
+        use BinaryOp as B;
+        let every = [
+            B::Mul,
+            B::Div,
+            B::Rem,
+            B::WrappingMul,
+            B::Add,
+            B::Sub,
+            B::WrappingAdd,
+            B::WrappingSub,
+            B::Shl,
+            B::Shr,
+            B::UShr,
+            B::Lt,
+            B::Gt,
+            B::Le,
+            B::Ge,
+            B::Eq,
+            B::Ne,
+            B::BitAnd,
+            B::BitXor,
+            B::BitOr,
+            B::And,
+            B::Or,
+            B::Coalesce,
+        ];
+        let ordering: Vec<&str> = every
+            .into_iter()
+            .filter(|op| op.is_ordering())
+            .map(BinaryOp::text)
+            .collect();
+        assert_eq!(ordering, ["<", ">", "<=", ">="]);
+    }
 }

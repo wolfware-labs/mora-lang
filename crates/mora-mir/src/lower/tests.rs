@@ -750,6 +750,18 @@ fn the_message_names_the_body_and_the_expression() {
 }
 
 #[test]
+fn a_broken_invariant_is_an_internal_error() {
+    // The end of a body that returns a value is reachable only in a body
+    // the control-flow checks report (MR0184), which the driver never
+    // lowers; lowering it anyway breaks the invariant.
+    let lowered = lowered("F(): int {\n}\n");
+    assert_eq!(
+        lowered.internal_error("F"),
+        "internal error lowering UsersApi.F: the end of a body that returns a value is reachable: `{\n}` at 1:10"
+    );
+}
+
+#[test]
 fn a_static_member_named_through_a_value_comes_with_statics() {
     // MR0155 from M3.13 on (D-152): a static method, a static getter, a
     // constant and a static field, each read or called through a value;
