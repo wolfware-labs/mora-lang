@@ -16,7 +16,7 @@ init App.Size => 4 * 2{= 8};
 
 init App.Hello => "Hello";
 
-init App.Name => "Mora";
+init App.Name => "Mora language";
 
 init App.Greeting => ((Hello{value App.Hello} + ", ") + Name{value App.Name}) + "!";
 

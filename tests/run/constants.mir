@@ -13,7 +13,7 @@ fn top-level() -> () {
     }
 
     bb1: {
-        call Console.WriteLine{external}("Hello, Mora!") -> bb2; // 40:1
+        call Console.WriteLine{external}("Hello, Mora language!") -> bb2; // 40:1
     }
 
     bb2: {
@@ -32,7 +32,7 @@ fn top-level() -> () {
     bb4: {
         storage_live(pair#2); // 44:5
         storage_live(_5); // 44:27
-        _5 = (8, "Hello, Mora!"); // 44:27
+        _5 = (8, "Hello, Mora language!"); // 44:27
         pair#2 = copy _5; // 44:27
         storage_dead(_5); // 44:27
         call Console.WriteLine{external}(44) -> bb5; // 45:1
@@ -63,9 +63,9 @@ const App.Size: int = 8;
 
 const App.Hello: string = "Hello";
 
-const App.Name: string = "Mora";
+const App.Name: string = "Mora language";
 
-const App.Greeting: string = "Hello, Mora!";
+const App.Greeting: string = "Hello, Mora language!";
 
 fn App.Point.X() -> int {
     let _0: int;
@@ -78,7 +78,7 @@ fn App.Point.X() -> int {
 
 const App.Origin: Point = App.Point{struct App.Point}(1, 0);
 
-const App.Pair: (int, string) = (8, "Hello, Mora!");
+const App.Pair: (int, string) = (8, "Hello, Mora language!");
 
 const App.Big: int = 300;
 

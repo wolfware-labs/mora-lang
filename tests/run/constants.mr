@@ -1,5 +1,5 @@
 // expect: 8
-// expect: Hello, Mora!
+// expect: Hello, Mora language!
 // expect: 1
 // expect: 0
 // expect: 44
@@ -8,7 +8,7 @@
 // expect: 1
 const Size: int = 4 * 2;
 const Hello: string = "Hello";
-const Name: string = "Mora";
+const Name: string = "Mora language";
 const Greeting: string = Hello + ", " + Name + "!";
 
 struct Point {
