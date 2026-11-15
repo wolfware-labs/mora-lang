@@ -3944,12 +3944,22 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
+            "class C {}\nF(c: C, a: int[]) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
+        ),
+        (
             "class C {}\nF(c: C, d: C) {\n    G(e: C) {}\n}\n",
             |l| l.owner("F"),
             "UsersApi.F: a signature with a class type is not lowered until M2.1",
         ),
         (
             "class C {}\nF(t: (int[], C)) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
+        ),
+        (
+            "class C {}\nF(t: (C, int[])) {}\n",
             |l| l.owner("F"),
             "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
@@ -3974,7 +3984,17 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.F: the async local function `G` is not lowered until M6.2",
         ),
         (
+            "class C {}\nF() {\n    H(c: C) {}\n    K(d: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `H` with a class type in its signature is not lowered until M2.1",
+        ),
+        (
             "class C {}\nF() {\n    G(a: int[]) {}\n    H(c: C) {}\n    K(d: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with an array type in its signature is not lowered until M2.3",
+        ),
+        (
+            "class C {}\nF() {\n    H(c: C) {}\n    G(a: int[]) {}\n    K(d: C) {}\n}\n",
             |l| l.owner("F"),
             "UsersApi.F: the local function `G` with an array type in its signature is not lowered until M2.3",
         ),
