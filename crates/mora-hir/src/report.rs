@@ -336,32 +336,50 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
     let id = file.id(db);
     let text = file.text(db);
     // One walk over the tree, with a frame for each node on the way down:
-    // the frame gathers the modifiers among the node's children as the walk
-    // passes them, and the node is checked once they are all seen. Each
-    // diagnostic carries its node's place in preorder, so they come out in
-    // the order of the nodes.
+    // the walk gathers the modifiers among the node's children as it passes
+    // them, on one list for the whole walk, and the node is checked once
+    // they are all seen. Each diagnostic carries its node's place in
+    // preorder, so they come out in the order of the nodes.
     let mut found: Vec<(usize, Diagnostic)> = Vec::new();
     let parsed = parse(db, file);
+    let errors = parsed.errors();
     let root = parsed.syntax();
-    let mut stack = vec![ModifierFrame::new(root, root.kind(), 0)];
+    let mut written = Vec::new();
+    let mut stack = vec![WalkFrame::new(root, root.kind(), 0, 0)];
     let mut visited = 0;
     while let Some(frame) = stack.last_mut() {
         let Some(child) = frame.children.next() else {
             if let Some(frame) = stack.pop() {
-                let order = frame.order;
-                let mut report = |diagnostic| found.push((order, diagnostic));
-                check_modifiers(id, text, &frame, &mut report);
-                if let Some(diagnostic) = constant_without_value(id, &frame, parsed.errors()) {
-                    report(diagnostic);
+                let checked = ModifierFrame {
+                    node: frame.node,
+                    container: frame.container,
+                    written: &written[frame.written..],
+                    owner: frame.owner,
+                };
+                // Most nodes have no modifiers and are in no declaration
+                // whose members have rules of their own (`MR0115`, which a
+                // macro has anywhere): nothing to check.
+                if !checked.written.is_empty()
+                    || matches!(
+                        (checked.container, checked.node.kind()),
+                        (
+                            SyntaxKind::InterfaceDecl
+                                | SyntaxKind::ExtensionDecl
+                                | SyntaxKind::UnionDecl,
+                            _
+                        ) | (_, SyntaxKind::MacroDecl)
+                    )
+                {
+                    check_node(id, text, errors, &checked, |diagnostic| {
+                        found.push((frame.order, diagnostic));
+                    });
                 }
-                if let Some(diagnostic) = misplaced_member(id, &frame, parsed.errors()) {
-                    report(diagnostic);
-                }
+                written.truncate(frame.written);
             }
             continue;
         };
-        if let Some(written) = ast::Modifier::cast(child).and_then(written_modifier) {
-            frame.written.push(written);
+        if let Some(modifier) = ast::Modifier::cast(child).and_then(written_modifier) {
+            written.push(modifier);
         }
         visited += 1;
         // A member list or a union body is part of the declaration that
@@ -378,7 +396,7 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
             SyntaxKind::AccessorList => frame.owner,
             _ => None,
         };
-        let mut next = ModifierFrame::new(child, container, visited);
+        let mut next = WalkFrame::new(child, container, visited, written.len());
         next.owner = owner;
         stack.push(next);
     }
@@ -391,37 +409,54 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
 }
 
 /// A node on the way down the walk of [`modifier_diagnostics`].
-struct ModifierFrame<'a> {
+struct WalkFrame<'a> {
     /// The node.
     node: SyntaxNode<'a>,
     /// The children not walked yet.
     children: SyntaxNodeChildren<'a>,
-    /// The kind of the node the node is in: its parent, or for a member
-    /// in a member list or a union body, the declaration that holds it. It
-    /// tells a method from a function, and a member of an interface, an
-    /// extension or a union from one of another type.
+    /// The kind of the node the node is in, as [`ModifierFrame::container`].
     container: SyntaxKind,
     /// The node's place in preorder.
     order: usize,
-    /// The keyword and the range of each modifier among the children seen.
-    written: Vec<(SyntaxKind, TextRange)>,
-    /// For an accessor list and its accessors, the indexer they belong to
-    /// and the kind of node it is in.
+    /// Where the modifiers among the node's children start on the walk's
+    /// list: those of the node's own children follow, since the walk
+    /// removes those of a child's children when it leaves the child.
+    written: usize,
+    /// The indexer the node belongs to, as [`ModifierFrame::owner`].
     owner: Option<(SyntaxKind, SyntaxNode<'a>)>,
 }
 
-impl<'a> ModifierFrame<'a> {
-    fn new(node: SyntaxNode<'a>, container: SyntaxKind, order: usize) -> Self {
+impl<'a> WalkFrame<'a> {
+    fn new(node: SyntaxNode<'a>, container: SyntaxKind, order: usize, written: usize) -> Self {
         Self {
             node,
             children: node.children(),
             container,
             order,
-            written: Vec::new(),
+            written,
             owner: None,
         }
     }
+}
 
+/// A node of the walk of [`modifier_diagnostics`] whose children are all
+/// seen, as the checks read it.
+struct ModifierFrame<'a, 'w> {
+    /// The node.
+    node: SyntaxNode<'a>,
+    /// The kind of the node the node is in: its parent, or for a member
+    /// in a member list or a union body, the declaration that holds it. It
+    /// tells a method from a function, and a member of an interface, an
+    /// extension or a union from one of another type.
+    container: SyntaxKind,
+    /// The keyword and the range of each modifier among the children.
+    written: &'w [(SyntaxKind, TextRange)],
+    /// For an accessor list and its accessors, the indexer they belong to
+    /// and the kind of node it is in.
+    owner: Option<(SyntaxKind, SyntaxNode<'a>)>,
+}
+
+impl ModifierFrame<'_, '_> {
     /// Where the modifier `keyword` is first written on the node, if it is.
     fn modifier(&self, keyword: SyntaxKind) -> Option<TextRange> {
         self.written
@@ -436,6 +471,24 @@ impl<'a> ModifierFrame<'a> {
     fn misplaced_const(&self) -> bool {
         self.modifier(SyntaxKind::ConstKw).is_some()
             && misplaced(self, SyntaxKind::ConstKw).is_some()
+    }
+}
+
+/// Reports, through `report`, what is wrong with the modifiers written on
+/// the node of `frame` and with the node as a member of its container.
+fn check_node(
+    id: FileId,
+    text: &str,
+    syntax_errors: &[SyntaxError],
+    frame: &ModifierFrame<'_, '_>,
+    mut report: impl FnMut(Diagnostic),
+) {
+    check_modifiers(id, text, frame, &mut report);
+    if let Some(diagnostic) = constant_without_value(id, frame, syntax_errors) {
+        report(diagnostic);
+    }
+    if let Some(diagnostic) = misplaced_member(id, frame, syntax_errors) {
+        report(diagnostic);
     }
 }
 
@@ -458,11 +511,11 @@ fn written_modifier(modifier: ast::Modifier<'_>) -> Option<(SyntaxKind, TextRang
 fn check_modifiers(
     id: FileId,
     text: &str,
-    frame: &ModifierFrame<'_>,
+    frame: &ModifierFrame<'_, '_>,
     mut report: impl FnMut(Diagnostic),
 ) {
     let node = frame.node.kind();
-    let written = &frame.written;
+    let written = frame.written;
     for (index, &(keyword, range)) in written.iter().enumerate() {
         let earlier = &written[..index];
         let name = keyword.text().unwrap_or_default();
@@ -576,7 +629,7 @@ struct Misplaced {
 /// reported already. A function in the file is declared in a namespace;
 /// any other is a method of a type, an interface or an extension, since a
 /// local function never starts with `const`.
-fn misplaced(frame: &ModifierFrame<'_>, keyword: SyntaxKind) -> Option<Misplaced> {
+fn misplaced(frame: &ModifierFrame<'_, '_>, keyword: SyntaxKind) -> Option<Misplaced> {
     use SyntaxKind as K;
     if keyword != K::ConstKw {
         return None;
@@ -601,8 +654,10 @@ fn misplaced(frame: &ModifierFrame<'_>, keyword: SyntaxKind) -> Option<Misplaced
         _ => {
             let mut misplaced = misplaced_anywhere(container, node.kind())?;
             let rule = match frame.owner {
-                Some((container, indexer)) => member_rule(container, indexer),
-                None => member_rule(container, node),
+                Some((container, indexer)) => {
+                    member_rule(container, indexer, |keyword| modifier_of(indexer, keyword))
+                }
+                None => member_rule(container, node, |keyword| frame.modifier(keyword)),
             };
             misplaced.instead = rule.map(|rule| format!("{}; {}", rule.message, rule.note));
             return Some(misplaced);
@@ -686,7 +741,7 @@ fn misplaced_modifier(
 /// reported by the parser alone ([`head_has_syntax_error`]).
 fn constant_without_value(
     file: FileId,
-    frame: &ModifierFrame<'_>,
+    frame: &ModifierFrame<'_, '_>,
     syntax_errors: &[SyntaxError],
 ) -> Option<Diagnostic> {
     frame.modifier(SyntaxKind::ConstKw)?;
@@ -731,13 +786,15 @@ fn constant_without_value(
 /// parser alone ([`head_has_syntax_error`]).
 fn misplaced_member(
     file: FileId,
-    frame: &ModifierFrame<'_>,
+    frame: &ModifierFrame<'_, '_>,
     syntax_errors: &[SyntaxError],
 ) -> Option<Diagnostic> {
     if frame.misplaced_const() {
         return None;
     }
-    let rule = member_rule(frame.container, frame.node)?;
+    let rule = member_rule(frame.container, frame.node, |keyword| {
+        frame.modifier(keyword)
+    })?;
     // A member the parser built around an error may be no member the
     // author wrote, as the fields it makes of a broken lambda. Asked only
     // of a misplaced member, so the walk does not search the errors at
@@ -810,10 +867,16 @@ fn modifier_of(node: SyntaxNode<'_>, keyword: SyntaxKind) -> Option<TextRange> {
 }
 
 /// The rule of `MR0115` that `node`, in a node of the kind `container`,
-/// breaks, whatever `const` written on it, if it breaks one.
-fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule> {
+/// breaks, whatever `const` written on it, if it breaks one. `modifier`
+/// says where a modifier is first written on `node`; it is asked only of
+/// the members a rule is about, so most nodes cost a match on two kinds.
+fn member_rule(
+    container: SyntaxKind,
+    node: SyntaxNode<'_>,
+    modifier: impl Fn(SyntaxKind) -> Option<TextRange>,
+) -> Option<MemberRule> {
     use SyntaxKind as K;
-    let static_kw = modifier_of(node, K::StaticKw);
+    let static_kw = || modifier(K::StaticKw);
     let field = || {
         let name = ast::FieldDecl::cast(node)?.variable_declarator()?.name()?;
         Some(name.syntax().text_range())
@@ -838,9 +901,8 @@ fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule
                 .text_range(),
         )
     };
-    let abstract_kw = modifier_of(node, K::AbstractKw);
     let (message, range, label, note) = match (container, node.kind()) {
-        (K::InterfaceDecl, K::FieldDecl) if static_kw.is_some() => (
+        (K::InterfaceDecl, K::FieldDecl) if static_kw().is_some() => (
             "an interface has no fields",
             field()?,
             "a static field",
@@ -864,9 +926,7 @@ fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule
              `using` directives",
         ),
         // A union's constants and static fields are its own (§6.10).
-        (K::UnionDecl, K::FieldDecl)
-            if static_kw.is_none() && modifier_of(node, K::ConstKw).is_none() =>
-        {
+        (K::UnionDecl, K::FieldDecl) if static_kw().is_none() && modifier(K::ConstKw).is_none() => {
             (
                 "a union has no instance fields",
                 field()?,
@@ -883,8 +943,8 @@ fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule
              interface",
         ),
         (K::InterfaceDecl, kind @ (K::FunctionDecl | K::GetterDecl | K::IndexerDecl))
-            if abstract_kw.is_none()
-                && let Some(range) = static_kw =>
+            if modifier(K::AbstractKw).is_none()
+                && let Some(range) = static_kw() =>
         {
             (
                 "a static member of an interface is `static abstract`",
@@ -906,7 +966,7 @@ fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule
             declaration,
             "a type is declared in the namespace, next to the interface",
         ),
-        (K::ExtensionDecl, K::FieldDecl) if static_kw.is_some() => (
+        (K::ExtensionDecl, K::FieldDecl) if static_kw().is_some() => (
             "an extension adds no fields",
             field()?,
             "a static field",
@@ -947,7 +1007,7 @@ fn member_rule(container: SyntaxKind, node: SyntaxNode<'_>) -> Option<MemberRule
             "a type is declared in the namespace, next to the extension",
         ),
         (K::ExtensionDecl, kind) => {
-            let (range, label) = match (kind, static_kw) {
+            let (range, label) = match (kind, static_kw()) {
                 (K::OperatorDecl, range) => {
                     (range.or_else(operator)?, "an operator is a static method")
                 }
