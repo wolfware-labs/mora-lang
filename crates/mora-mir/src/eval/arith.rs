@@ -645,4 +645,10 @@ mod tests {
     fn operands_of_different_types_are_a_compiler_bug() {
         let _ = binary(BinOp::Add, &i(1), &n(1, Long));
     }
+
+    #[test]
+    #[should_panic(expected = "internal error evaluating a constant")]
+    fn floating_operands_of_different_types_are_a_compiler_bug() {
+        let _ = binary(BinOp::Add, &f(1.0), &d(1.0));
+    }
 }
