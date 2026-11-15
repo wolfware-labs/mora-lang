@@ -12,7 +12,10 @@ use super::arith::{ArithError, MAX_STRING_BYTES};
 use super::graph::{ConstGraph, const_graph};
 use super::interp::{Failure, Stop, run};
 use super::scan::const_scan;
-use super::{ConstKey, ConstValue, const_read, constants, defaults};
+use super::{
+    ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, const_read, const_value, constants,
+    defaults,
+};
 use crate::lower::consts::default_mir;
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
@@ -1307,4 +1310,444 @@ fn run_gives_the_lengths_of_a_concatenation_too_long_to_keep() {
     };
     assert_eq!(failure.error, ArithError::TooLong(MAX_STRING_BYTES + 1));
     assert_eq!(failure.operation, "<16777215 bytes> + <2 bytes>");
+}
+
+impl Source {
+    /// What evaluating `key` gives.
+    fn evaluated(&self, key: ConstKey) -> &Evaluated {
+        const_value(&self.db, self.project, key)
+    }
+
+    /// The error evaluating `key` reports, at `range`, of `kind`.
+    fn error(&self, key: ConstKey, range: TextRange, kind: ErrorKind) -> Evaluated {
+        Evaluated::Failed(Some(ConstError { key, range, kind }))
+    }
+
+    /// The statements and terminators of the MIR of the function `name`,
+    /// one per line, without their spans.
+    fn code(&self, name: &str) -> Vec<String> {
+        let owner = BodyOwner::Item(self.item(name).item);
+        let mut out = String::new();
+        crate::write_mir(
+            &mut out,
+            &self.db,
+            Some(self.file),
+            crate::mir(&self.db, self.project, self.file, owner),
+        );
+        out.lines()
+            .filter_map(|line| line.split_once(" // "))
+            .map(|(code, _)| code.trim().to_owned())
+            .collect()
+    }
+
+    /// The message of the internal error that lowering the function `name`
+    /// panics with.
+    fn internal_error(&self, name: &str) -> String {
+        let owner = BodyOwner::Item(self.item(name).item);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::mir(&self.db, self.project, self.file, owner);
+        }))
+        .expect_err("an internal error");
+        panic
+            .downcast_ref::<String>()
+            .expect("a formatted message")
+            .clone()
+    }
+}
+
+/// What `evaluated` is: `value`, `unsupported` and what, or what waits and
+/// the milestone it waits for.
+fn outcome(evaluated: &Evaluated) -> String {
+    match evaluated {
+        Evaluated::Value(_) => "value".to_owned(),
+        Evaluated::Failed(Some(ConstError {
+            kind: ErrorKind::Unsupported(what),
+            ..
+        })) => format!("unsupported {what}"),
+        Evaluated::Later(later) => format!("{} {}", later.what, later.milestone),
+        Evaluated::Failed(_) => format!("{evaluated:?}"),
+    }
+}
+
+#[test]
+fn a_constant_reads_another() {
+    let source = checked("const A: int = 1_500_000;\nconst B: int = A * 2;\n");
+    assert_eq!(
+        source.evaluated(source.constant("B")),
+        &Evaluated::Value(int(3_000_000, Primitive::Int))
+    );
+}
+
+#[test]
+fn a_failed_operation_is_its_own_error() {
+    let source =
+        checked("const A: int = 2_000_000_000;\nconst B: int = A * 2;\nconst C: int = B + 1;\n");
+    let b = source.constant("B");
+    let at = source.range_of("A * 2");
+    let failure = Failure {
+        range: at,
+        error: ArithError::Overflow,
+        ty: Ty::Primitive(Primitive::Int),
+        operation: "2000000000 * 2".to_owned(),
+    };
+    assert_eq!(
+        source.evaluated(b),
+        &source.error(b, at, ErrorKind::Failed(failure))
+    );
+    // Its reader reports nothing more.
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Failed(None)
+    );
+}
+
+#[test]
+fn cycles_fail_once() {
+    let source = unchecked("const A: int = A + 1;\nconst C: int = A + 1;\n");
+    let a = source.constant("A");
+    assert_eq!(
+        source.evaluated(a),
+        &source.error(
+            a,
+            source.range_in("= A + 1;\nconst", "A"),
+            ErrorKind::Cycle(vec![a])
+        )
+    );
+    // A reader outside the cycle reports nothing more.
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Failed(None)
+    );
+
+    let source = unchecked("const B: int = A;\nconst A: int = B;\n");
+    let (a, b) = (source.constant("A"), source.constant("B"));
+    assert_eq!(
+        source.evaluated(b),
+        &source.error(
+            b,
+            source.range_in("B: int = A", "A"),
+            ErrorKind::Cycle(vec![b, a])
+        )
+    );
+    assert_eq!(source.evaluated(a), &Evaluated::Failed(None));
+
+    let source = unchecked("struct P {\n    public X: int = A.X;\n}\nconst A: P = new P {};\n");
+    let a = source.constant("A");
+    let x = ConstKey::Initializer {
+        item: source.item("P"),
+        field: 0,
+    };
+    assert_eq!(
+        source.evaluated(a),
+        &source.error(a, source.range_of("new P {}"), ErrorKind::Cycle(vec![a, x]))
+    );
+    assert_eq!(source.evaluated(x), &Evaluated::Failed(None));
+}
+
+#[test]
+fn a_member_of_a_component_outside_its_cycle_fails_without_an_error() {
+    let source = unchecked("const A: int = B + C;\nconst B: int = A;\nconst C: int = A;\n");
+    assert!(matches!(
+        source.evaluated(source.constant("A")),
+        Evaluated::Failed(Some(_))
+    ));
+    for name in ["B", "C"] {
+        assert_eq!(
+            source.evaluated(source.constant(name)),
+            &Evaluated::Failed(None),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn unsupported_code_fails() {
+    let source = checked("Zero(): int => 0;\nconst A: int = Zero();\nconst B: int = A;\n");
+    let a = source.constant("A");
+    assert_eq!(
+        source.evaluated(a),
+        &source.error(
+            a,
+            source.range_in("= Zero();", "Zero()"),
+            ErrorKind::Unsupported("a call")
+        )
+    );
+    assert_eq!(
+        source.evaluated(source.constant("B")),
+        &Evaluated::Failed(None)
+    );
+}
+
+#[test]
+fn a_struct_constant_takes_its_initializers() {
+    let source = checked(
+        "struct P {\n    public X: int = 1 + 2;\n    public Y: int;\n}\nconst C: P = new P { Y = 4 };\n",
+    );
+    let p = source.item("P");
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Value(ConstValue::Aggregate(
+            AggregateKind::Struct(p),
+            vec![int(3, Primitive::Int), int(4, Primitive::Int)]
+        ))
+    );
+    assert_eq!(
+        source.evaluated(ConstKey::Initializer { item: p, field: 0 }),
+        &Evaluated::Value(int(3, Primitive::Int))
+    );
+}
+
+#[test]
+fn a_failed_initializer_fails_its_creation_without_an_error() {
+    let source = checked(
+        "struct P {\n    public X: int = Big * 2;\n}\nconst Big: int = 2_000_000_000;\nconst C: P = new P {};\n",
+    );
+    let x = ConstKey::Initializer {
+        item: source.item("P"),
+        field: 0,
+    };
+    assert!(matches!(
+        source.evaluated(x),
+        Evaluated::Failed(Some(ConstError {
+            kind: ErrorKind::Failed(_),
+            ..
+        }))
+    ));
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Failed(None)
+    );
+}
+
+#[test]
+fn a_constant_whose_code_comes_later_waits() {
+    let source = checked(
+        "const K: int = default;\nconst J: int = K + 1;\nF(): int => K;\n\
+         struct P {\n    public X: int = default;\n}\nconst C: P = new P {};\n",
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("K"))),
+        "`default` M3.12"
+    );
+    // A constant that reads it waits for it by name, and one that leaves
+    // out a field whose initializer waits, for what the initializer waits.
+    assert_eq!(
+        outcome(source.evaluated(source.constant("J"))),
+        "a constant M3.12"
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("C"))),
+        "`default` M3.12"
+    );
+    assert_eq!(
+        source.internal_error("F"),
+        "internal error lowering UsersApi.F: a constant is not lowered until M3.12"
+    );
+}
+
+#[test]
+fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
+    let source = checked(
+        "const B: bool = true;\nstruct P {\n    public X: bool = B is true;\n}\n\
+         struct Q {\n    public Y: int = default;\n}\nstruct R {\n    public Z: int = sizeof(int);\n}\n\
+         const C: (P, Q) = (new P {}, new Q {});\nconst D: (Q, P) = (new Q {}, new P {});\n\
+         const E: (Q, R) = (new Q {}, new R {});\nconst G: (R, Q) = (new R {}, new Q {});\n",
+    );
+    for (name, expected) in [
+        ("C", "`default` M3.12"),
+        ("D", "`default` M3.12"),
+        ("E", "`default` M3.12"),
+        ("G", "`sizeof` M3.12"),
+    ] {
+        assert_eq!(
+            outcome(source.evaluated(source.constant(name))),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_read_that_fails_comes_before_one_that_waits() {
+    let source = checked(
+        "struct P {\n    public X: int = default;\n}\nZero(): int => 0;\n\
+         struct Q {\n    public Y: int = Zero();\n}\n\
+         const C: (P, Q) = (new P {}, new Q {});\n",
+    );
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Failed(None)
+    );
+}
+
+#[test]
+fn a_default_value_is_evaluated() {
+    let source = checked("const B: int = 2;\nF(x: long = B * 3) {}\n");
+    assert_eq!(
+        source.evaluated(source.only_default()),
+        &Evaluated::Value(int(6, Primitive::Long))
+    );
+}
+
+/// The constant `A` of `text`, or its only default value that needs
+/// evaluation when it declares no `A`.
+fn evaluated_key(source: &Source) -> ConstKey {
+    let tree = mora_hir::item_tree(&source.db, source.file);
+    if tree.items().any(|(_, item)| item.name == "A") {
+        source.constant("A")
+    } else {
+        source.only_default()
+    }
+}
+
+#[test]
+fn every_expression_kind_in_a_constant_evaluates_reports_or_waits() {
+    let cases = [
+        ("const A: int = 1;", "value"),
+        ("const A: long = 1L;", "value"),
+        ("const A: byte = 1;", "value"),
+        ("const A: sbyte = -1;", "value"),
+        ("const A: short = 1;", "value"),
+        ("const A: ushort = 1;", "value"),
+        ("const A: uint = 1;", "value"),
+        ("const A: ulong = 1;", "value"),
+        ("const A: nint = 1;", "value"),
+        ("const A: nuint = 1;", "value"),
+        ("const A: float = 1.5f;", "value"),
+        ("const A: double = 1.5;", "value"),
+        ("const A: bool = true;", "value"),
+        ("const A: char = 'a';", "value"),
+        ("const A: string = \"s\";", "value"),
+        ("const B: int = 2;\nconst A: int = -B;", "value"),
+        ("const B: bool = true;\nconst A: bool = !B;", "value"),
+        ("const B: int = 2;\nconst A: int = B * 3;", "value"),
+        (
+            "const B: string = \"a\";\nconst A: string = B + \"b\";",
+            "value",
+        ),
+        ("const B: int = 300;\nconst A: byte = (byte)B;", "value"),
+        ("const B: int = 2;\nconst A: int = B > 1 ? 1 : 2;", "value"),
+        ("const A: (int, string) = (1, \"a\");", "value"),
+        (
+            "struct P {\n    public X: int;\n}\nconst A: P = new P { X = 1 };",
+            "value",
+        ),
+        ("const B: int = 2;\nconst A: int = B;", "value"),
+        (
+            "struct P {\n    public const K: int = 4;\n}\nconst A: int = P.K;",
+            "value",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nconst O: P = new P { X = 1 };\nconst A: int = O.X;",
+            "value",
+        ),
+        (
+            "Zero(): int => 0;\nconst A: int = Zero();",
+            "unsupported a call",
+        ),
+        (
+            "const A: string = $\"{1}\";",
+            "unsupported an interpolated string",
+        ),
+        ("const A: (() => int) = () => 1;", "unsupported a lambda"),
+        // A loop can only come in a lambda, which never runs.
+        (
+            "const A: int = (() => { while (true) {} return 1; })();",
+            "unsupported a lambda",
+        ),
+        ("const A: int = default;", "`default` M3.12"),
+        ("const A: int = sizeof(int);", "`sizeof` M3.12"),
+        (
+            "const B: int = 1;\nconst A: string = nameof(B);",
+            "`nameof` M3.12",
+        ),
+        (
+            "enum Color { Red }\nconst A: Color = Color.Red;",
+            "the initializer of a constant with an enum type M3.2",
+        ),
+        (
+            "const A: int = int.MaxValue;",
+            "a member of a built-in type M1.15",
+        ),
+        ("const A: int[] = [1, 2];", "a collection expression M3.12"),
+        (
+            "const A: int[] = new int[2];",
+            "the initializer of a constant with an array type M2.3",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nconst O: P = new P { X = 1 };\nconst A: P = O with { X = 2 };",
+            "`with` M2.2",
+        ),
+        (
+            "const B: bool = true;\nconst A: int = match (B) { true => 1, false => 2 };",
+            "a `match` M3.3",
+        ),
+        (
+            "const B: bool = true;\nconst A: bool = B is true;",
+            "an `is` test M3.3",
+        ),
+        (
+            "struct P {\n    public X: int;\n}\nconst O: P? = none;\nconst A: int? = O?.X;",
+            // The type of the constant comes as late as `?.`, and first.
+            "the initializer of a constant with an option type M3.5",
+        ),
+        (
+            "const A: int? = none;",
+            "the initializer of a constant with an option type M3.5",
+        ),
+        (
+            "const A: bool = \"a\" < \"b\";",
+            "an ordering of strings M5.2",
+        ),
+        ("F(x: int? = none) {}", "`none` M3.5"),
+        // A default value waits for each expression in it, by the rules
+        // that look at one expression at a time.
+        (
+            "G<T>(x: T): T => x;\nF(x: int = G(1)) {}",
+            "a call of a generic function M3.9",
+        ),
+        (
+            "struct P {\n    public X: int;\n    public P(x: int) { X = x; }\n}\nF(p: P = new P(1)) {}",
+            "a constructor call M2.1",
+        ),
+        (
+            "struct P {\n    public X: int;\n    public static operator -(p: P): P => p;\n}\n\
+             const O: P = new P { X = 1 };\nF(p: P = -O) {}",
+            "an operator on a struct M3.6",
+        ),
+        (
+            "class C {}\nF(c: C = new C()) {}",
+            "an expression with a class type M2.1",
+        ),
+    ];
+    let outcomes: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(text, _)| {
+            let source = unchecked(&format!("{text}\n"));
+            assert_eq!(
+                codes(diagnostics(&source.db, source.project)),
+                Vec::<String>::new(),
+                "{text}"
+            );
+            (text, outcome(source.evaluated(evaluated_key(&source))))
+        })
+        .collect();
+    let expected: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(text, outcome)| (text, outcome.to_owned()))
+        .collect();
+    assert_eq!(outcomes, expected);
+}
+
+#[test]
+fn editing_a_constant_changes_its_readers() {
+    use salsa::Setter;
+
+    let mut source = checked("const A: int = 1;\nF(): int => A;\n");
+    assert_eq!(source.code("F"), ["_0 = 1;", "return;"]);
+    source
+        .file
+        .set_text(&mut source.db)
+        .to("const A: int = 5;\nF(): int => A;\n".to_owned());
+    assert_eq!(source.code("F"), ["_0 = 5;", "return;"]);
 }

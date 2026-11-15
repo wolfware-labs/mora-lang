@@ -9,6 +9,7 @@ use mora_span::Span;
 use mora_syntax::lexer::literal::{char_value, string_value};
 
 use super::{Lowered, Lowerer};
+use crate::eval::const_read;
 use crate::{
     AggregateKind, BinOp, CastKind, Const, InterpPiece, LocalId, LocalTy, Operand, Place,
     Projection, Rvalue, UnOp,
@@ -112,6 +113,13 @@ impl Lowerer<'_> {
                 increment,
                 expr: target,
             } => self.postfix(expr, *target, *increment)?,
+            // A constant, read as its value.
+            Expr::Member { .. } | Expr::Path(_)
+                if let Some((project, key)) =
+                    const_read(self.owner.db, self.owner.resolution, expr) =>
+            {
+                self.const_operand(expr, project, key)
+            }
             // A field, `this`, or what a field of `this` names.
             Expr::Member { .. } | Expr::Path(_) | Expr::This => Operand::Copy(self.place(expr)?),
             // The base comes first, and may not return.

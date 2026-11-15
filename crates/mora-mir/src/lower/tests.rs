@@ -783,8 +783,7 @@ fn a_broken_invariant_is_an_internal_error() {
 #[test]
 fn a_static_member_named_through_a_value_comes_with_statics() {
     // MR0155 from M3.13 on (D-152): a static method, a static getter, a
-    // constant and a static field, each read or called through a value;
-    // the constant's own M1.11 is earlier.
+    // constant and a static field, each read or called through a value.
     let text = "struct S {\n    public X: int;\n    public static K(): int => 1;\n    \
                 public static G: int => 2;\n    public const N: int = 3;\n    \
                 public static mut F: int = 4;\n}\n\
@@ -2725,14 +2724,15 @@ fn an_initializer_of_plain_values_lowers() {
 
 #[test]
 fn a_static_member_named_by_its_name_comes_with_statics() {
-    // A constant in a field initializer, and a static field read in a
-    // method, each by its bare name.
+    // A static field read in a method by its bare name; a constant read
+    // the same way in a field initializer is its value.
     let text = "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n    \
                 public static S: int = 1;\n    Get(): int => S;\n}\nF(): P => new P();\n";
-    assert_eq!(
-        later_error(text, |l| l.initializer("P", "X")),
-        "internal error lowering UsersApi.P.X: a static member is not lowered until M3.13"
-    );
+    let lowered = lowered(text);
+    let mut out = String::new();
+    let init = lowered.mir_of(lowered.initializer("P", "X"));
+    write_mir(&mut out, &lowered.db, Some(lowered.file), init);
+    assert_eq!(code(&out), ["_0 = 4 + 1;", "return;"]);
     assert_eq!(
         later_error(text, |l| l.owner("Get")),
         "internal error lowering UsersApi.P.Get: a static member is not lowered until M3.13"
@@ -3266,7 +3266,6 @@ fn values_by_where_they_are_declared_come_with_their_milestone() {
                 I(p: P) {\n    p.S3(new { Y = 1 });\n}\n\
                 J(p: P) {\n    p.S4(Console.ReadLine());\n}\n";
     for (name, what, milestone) in [
-        ("A", "a constant", "M1.11"),
         ("B", "a static", "M3.13"),
         ("C", "a static", "M3.13"),
         ("D", "an enum member", "M3.2"),
@@ -3284,6 +3283,73 @@ fn values_by_where_they_are_declared_come_with_their_milestone() {
             )
         );
     }
+}
+
+#[test]
+fn a_constant_declared_in_a_namespace_is_its_value() {
+    let lowered = lowered("public const C1: int = 1;\nA(): int => C1;\n");
+    assert_eq!(lowered.code("A"), ["_0 = 1;", "return;"]);
+}
+
+#[test]
+fn a_read_of_a_struct_constant_is_an_aggregate() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public Y: int;\n}\n\
+         const O: P = new P { X = 1, Y = 2 };\nF(): int => O.Y;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = UsersApi.P{struct UsersApi.P}(1, 2);",
+            "_0 = copy _1.Y;",
+        ],
+    );
+}
+
+#[test]
+fn a_read_of_a_nested_aggregate_builds_the_inner_one_first() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public T: (int, string);\n}\n\
+         const O: P = new P { X = 1, T = (2, \"a\") };\nF(): P => O;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = (2, \"a\");",
+            "_2 = UsersApi.P{struct UsersApi.P}(1, copy _1);",
+            "_0 = copy _2;",
+        ],
+    );
+}
+
+#[test]
+fn a_read_of_a_constant_without_a_value_is_an_internal_error() {
+    // Evaluation reports the overflow, and the build stops before
+    // lowering a body that reads `B`.
+    let lowered = lowered("const A: int = 2_000_000_000;\nconst B: int = A * 2;\nF(): int => B;\n");
+    assert_eq!(
+        lowered.internal_error("F"),
+        "internal error lowering UsersApi.F: a read of a constant without a value: `B` at 3:13"
+    );
+}
+
+#[test]
+fn member_constants_are_read_by_name_and_through_their_type() {
+    let lowered = lowered(
+        "struct P {\n    public const K: int = 4;\n    public X: int;\n    \
+         Get(): int => K;\n}\nF(): int => P.K;\n",
+    );
+    assert_eq!(lowered.code("F"), ["_0 = 4;", "return;"]);
+    let get = lowered.mir_of(BodyOwner::Item(lowered.item("Get").item));
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), get);
+    assert_in_order(&code(&out), &["_0 = 4;"]);
+}
+
+#[test]
+fn a_read_of_a_constant_is_converted_as_inference_records() {
+    let lowered = lowered("const K: int = 4;\nF(): long => K;\n");
+    assert_in_order(&lowered.code("F"), &["_0 = (implicit long)4;"]);
 }
 
 #[test]
@@ -3833,9 +3899,9 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.C.K: the initializer of a constant of a class is not lowered until M2.1",
         ),
         (
-            "const A: int = 1;\nconst B: int = A;\n",
+            "const A: int = default;\nconst B: int = A;\n",
             |l| l.owner("B"),
-            "UsersApi.B: a constant is not lowered until M1.11",
+            "UsersApi.B: a constant is not lowered until M3.12",
         ),
         (
             "static S: int = 1;\n",

@@ -9,10 +9,6 @@
 
 mod arith;
 pub(crate) mod graph;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the evaluation that runs it comes next")
-)]
 pub(crate) mod interp;
 pub(crate) mod scan;
 
@@ -20,10 +16,15 @@ use mora_hir::{
     BodyOwner, BodyResolution, ExprId, ItemId, ItemKind, LocalId, Resolved, Target, ValueKind,
     body, body_owners, body_source_map, infer, instance_fields, item_tree, owner_name,
 };
-use mora_span::{Db, Project, SourceFile, TextSize};
+use mora_span::{Db, Project, SourceFile, TextRange, TextSize};
 
+use self::graph::const_graph;
+use self::interp::{Failure, Stop};
+use self::scan::const_scan;
+use crate::lower::consts::default_mir;
 use crate::lower::expr::constant;
-use crate::{AggregateKind, Const};
+use crate::lower::later::{Later, exprs_later, lowered_later};
+use crate::{AggregateKind, Const, mir};
 
 /// A body that constant evaluation runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -164,7 +165,13 @@ pub(crate) fn const_read(
     resolution: &BodyResolution,
     expr: ExprId,
 ) -> Option<(Project, ConstKey)> {
-    let (item, owner) = match &resolution.paths.get(&expr)?.target {
+    const_target(db, &resolution.paths.get(&expr)?.target)
+}
+
+/// The constant that a path resolved to `target` reads, with its project,
+/// as [`const_read`] gives it.
+pub(crate) fn const_target(db: &dyn Db, target: &Target) -> Option<(Project, ConstKey)> {
+    let (item, owner) = match target {
         Target::Item(Resolved::Item(item)) => {
             let data = item_tree(db, item.file).item(item.item);
             if data.kind != ItemKind::Field || data.is_static {
@@ -236,6 +243,119 @@ pub(crate) fn defaults(db: &dyn Db, project: Project, file: SourceFile) -> Vec<C
     }
     found.sort_by_key(|&(start, _)| start);
     found.into_iter().map(|(_, key)| key).collect()
+}
+
+/// What evaluating a [`ConstKey`] gives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Evaluated {
+    /// Its value.
+    Value(ConstValue),
+    /// No value: the error, or `None` when a key it reads has no value,
+    /// whose own evaluation reports why.
+    Failed(Option<ConstError>),
+    /// No value yet: its code, or the code of a key it reads, is lowered
+    /// by a later milestone.
+    Later(Later),
+}
+
+/// Why a key has no value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConstError {
+    /// The key.
+    pub(crate) key: ConstKey,
+    /// Where in the file of the key.
+    pub(crate) range: TextRange,
+    /// What went wrong.
+    pub(crate) kind: ErrorKind,
+}
+
+/// What went wrong in the evaluation of a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ErrorKind {
+    /// An operation that §14.6 never allows in a constant, and what it is.
+    Unsupported(&'static str),
+    /// An operation that failed.
+    Failed(Failure),
+    /// A cycle of reads, as [`graph::Cycle::members`] orders it; the key is
+    /// its first member.
+    Cycle(Vec<ConstKey>),
+}
+
+/// The value of `key`, a key of `project`, each step in order: a key in a
+/// cycle of reads fails, with the error on the cycle's first member; then
+/// one with an operation §14.6 never allows; a key whose code a later
+/// milestone lowers waits; a key that reads one without a value fails
+/// without an error of its own, or waits for it; and any other key runs
+/// its MIR in the interpreter.
+///
+/// No body that a later milestone lowers is ever lowered or run. What runs
+/// is one expression, without a block, a `match` or a lambda, so the
+/// interpreter never sees a loop.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evaluated {
+    if let Some(cycle) = const_graph(db, project).cycle_of(key) {
+        if cycle.members.first() != Some(&key) {
+            return Evaluated::Failed(None);
+        }
+        let kind = ErrorKind::Cycle(cycle.members.clone());
+        return failed(key, cycle.read, kind);
+    }
+    let scan = const_scan(db, project, key);
+    if let Some((range, what)) = scan.unsupported {
+        return failed(key, range, ErrorKind::Unsupported(what));
+    }
+    let file = key.file();
+    let owner = key.owner(db);
+    let later = match key {
+        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+            lowered_later(db, project, file, owner)
+        }
+        ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),
+    };
+    if let Some(later) = later {
+        return Evaluated::Later(later);
+    }
+    let mut waits: Option<&Later> = None;
+    for &(read_project, read, _) in &scan.reads {
+        match const_value(db, read_project, read) {
+            Evaluated::Value(_) => {}
+            Evaluated::Failed(_) => return Evaluated::Failed(None),
+            Evaluated::Later(later) => {
+                if waits.is_none_or(|latest| later.milestone > latest.milestone) {
+                    waits = Some(later);
+                }
+            }
+        }
+    }
+    if let Some(later) = waits {
+        return Evaluated::Later(later.clone());
+    }
+    let body = match key {
+        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+            &mir(db, project, file, owner).bodies[0]
+        }
+        ConstKey::Default { default, .. } => {
+            &default_mir(db, project, file, owner, default).bodies[0]
+        }
+    };
+    let mut initializer = |item: ItemId, field| match const_value(
+        db,
+        item.project,
+        ConstKey::Initializer { item, field },
+    ) {
+        Evaluated::Value(value) => Some(value.clone()),
+        Evaluated::Failed(_) | Evaluated::Later(_) => None,
+    };
+    match interp::run(db, body, &mut initializer) {
+        Ok(value) => Evaluated::Value(value),
+        Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
+        Err(Stop::Dependency) => Evaluated::Failed(None),
+    }
+}
+
+/// The error `kind` of `key` at `range`.
+fn failed(key: ConstKey, range: TextRange, kind: ErrorKind) -> Evaluated {
+    Evaluated::Failed(Some(ConstError { key, range, kind }))
 }
 
 #[cfg(test)]

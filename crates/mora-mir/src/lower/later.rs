@@ -37,6 +37,7 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::calls::default_of;
 use super::expr::constant;
+use crate::eval::{Evaluated, const_target, const_value};
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -359,6 +360,41 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
         .any(|default| constant(declared, declared_inference, default).is_none())
 }
 
+/// The milestone that lowers the expressions `exprs` of the body of
+/// `owner`, the latest of them, by the rules that look at one expression at
+/// a time: those of [`expressions_later`], and the constructor calls, the
+/// operators on structs, the calls without a callee and the types of
+/// expressions that [`creations_later`], [`operators_later`],
+/// [`calls_later`] and [`body_types_later`] count. `None` when this one
+/// lowers them all.
+pub(crate) fn exprs_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    exprs: &[ExprId],
+) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    let resolution = body_resolution(db, project, file, owner);
+    let uses = Uses::of(db, project, file, owner, hir, inference, resolution);
+    let mut walk = TypeWalk::new(db);
+    latest(exprs.iter().map(|&id| {
+        let expr = &hir.exprs[id];
+        let ty = inference
+            .expr(id)
+            .and_then(|ty| walk.later(ty))
+            .and_then(|kind| kind.later(|what| format!("an expression with {what}")));
+        latest([
+            expression_later(db, hir, inference, resolution, &uses, id, expr),
+            creation_later(db, inference, id, expr),
+            operator_on_struct(inference, expr).then(operator_later),
+            unresolved_call_later(db, hir, inference, resolution, id, expr),
+            ty,
+        ])
+    }))
+}
+
 /// The milestone that lowers the body of `owner` for an expression or a
 /// statement that a later milestone brings. Statics bring a static member
 /// named through a value, error `MR0155` then, or through its type or its
@@ -368,8 +404,8 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
 /// and the members of built-in types and of their values; extension blocks,
 /// with the smaller expressions, bring members a struct does not declare.
 /// Options bring `?.`, `??` and `none`, operators an index of a number or a
-/// tuple, dynamic interface values `as`, shared objects an array creation,
-/// and constant evaluation a constant declared in a namespace. Positional
+/// tuple, dynamic interface values `as` and shared objects an array
+/// creation; a constant comes when its value does. Positional
 /// structs bring `with`, patterns `match` and `is`, results `?`, strings
 /// an index of a string (`MR0130`) and the ordering of strings, interfaces
 /// the ordering of structs, both through `IComparable<T>` (§8.5), enumeration
@@ -393,152 +429,10 @@ fn expressions_later(
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
     let uses = Uses::of(db, project, file, owner, hir, inference, resolution);
-    let exprs = hir.exprs.iter().map(|(id, expr)| {
-        let (what, milestone) = match expr {
-            // Error `MR0155` from statics on.
-            _ if static_through_value(db, hir, inference, &uses, id) => {
-                ("a static member named through a value", STATICS)
-            }
-            _ if let Some(found) = named_value_later(db, resolution, id) => found,
-            _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
-            _ if uses.function_value(db, hir, inference, resolution, id) => {
-                ("a function used as a value", CLOSURES)
-            }
-            _ if uses.library_value(hir, inference, resolution, id) => {
-                ("a value of the standard library", STD_BOOTSTRAP)
-            }
-            // A member a struct does not declare is an extension member.
-            Expr::Member { .. } if undeclared_member(db, hir, inference, id) => {
-                ("an extension member", SMALLER_EXPRESSIONS)
-            }
-            // The members of a built-in type, and of its values, are
-            // declared in the library.
-            Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
-            Expr::Member { receiver, .. }
-                if matches!(
-                    inference.expr(*receiver),
-                    Some(Ty::Primitive(_) | Ty::String)
-                ) =>
-            {
-                ("a member of a value of a built-in type", STD_BOOTSTRAP)
-            }
-            Expr::NewArray { .. } => ("an array creation", SHARED_OBJECTS),
-            Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
-            // Inference types no member of a tuple yet.
-            Expr::Member { receiver, .. }
-                if matches!(inference.expr(*receiver), Some(Ty::Tuple(_))) =>
-            {
-                ("an element of a tuple", SMALLER_EXPRESSIONS)
-            }
-            Expr::Member { optional: true, .. } | Expr::Index { optional: true, .. } => {
-                ("`?.`", OPTIONS)
-            }
-            Expr::Binary {
-                op: BinaryOp::Coalesce,
-                ..
-            }
-            | Expr::Assign {
-                op: Some(BinaryOp::Coalesce),
-                ..
-            } => ("`??`", OPTIONS),
-            Expr::Literal(Literal::None) => ("`none`", OPTIONS),
-            Expr::Index { base, .. } if inference.expr(*base) == Some(&Ty::String) => {
-                ("an index of a string", STRINGS)
-            }
-            // A number or a tuple has no indexer; indexers come with
-            // operators, which report it.
-            Expr::Index { base, .. }
-                if matches!(inference.expr(*base), Some(Ty::Primitive(_) | Ty::Tuple(_))) =>
-            {
-                ("an index", OPERATORS)
-            }
-            Expr::Assign { op: None, lhs, .. } if matches!(hir.exprs[*lhs], Expr::Tuple(_)) => {
-                ("a deconstruction", SMALLER_EXPRESSIONS)
-            }
-            Expr::Binary { op, lhs, rhs } if op.is_ordering() => {
-                let operand = |ty: fn(&Ty) -> bool| {
-                    [lhs, rhs]
-                        .iter()
-                        .any(|operand| inference.expr(**operand).is_some_and(ty))
-                };
-                if operand(|ty| *ty == Ty::String) {
-                    ("an ordering of strings", STRINGS)
-                } else if operand(|ty| matches!(ty, Ty::Struct(_))) {
-                    ("an ordering of structs", INTERFACES)
-                } else {
-                    return None;
-                }
-            }
-            Expr::Binary {
-                op: BinaryOp::Eq | BinaryOp::Ne,
-                lhs,
-                rhs,
-            } if inference.expr(id).is_none()
-                && [lhs, rhs]
-                    .iter()
-                    .all(|operand| matches!(inference.expr(**operand), Some(Ty::Tuple(_)))) =>
-            {
-                (
-                    "a comparison of tuples of different types",
-                    SMALLER_EXPRESSIONS,
-                )
-            }
-            // Before the parameter modes, which come earlier: a call that
-            // also borrows a value that is not a place waits for this one.
-            Expr::Call { callee, args }
-                if borrows_element(db, hir, inference, id, *callee, args) =>
-            {
-                (
-                    "a `ref` argument or a `mut` receiver that is an element",
-                    OPERATORS,
-                )
-            }
-            Expr::Call { args, .. }
-                if args
-                    .iter()
-                    .any(|arg| arg.mode == Some(ArgMode::Ref) && !is_place(hir, arg.expr)) =>
-            {
-                ("a `ref` argument that is not a place", PARAMETER_MODES)
-            }
-            Expr::Call { callee, .. }
-                if mut_receiver(db, hir, inference, id, *callee)
-                    .is_some_and(|receiver| !is_place(hir, receiver)) =>
-            {
-                (
-                    "a `mut` method called on a value that is not a place",
-                    PARAMETER_MODES,
-                )
-            }
-            // A stand-in call passes its arguments as values: the modes they
-            // are written with come with the library's signatures.
-            Expr::Call { args, .. }
-                if from_library(hir, resolution, id)
-                    && args.iter().any(|arg| arg.mode.is_some()) =>
-            {
-                (
-                    "a call of the standard library with an argument mode",
-                    STD_BOOTSTRAP,
-                )
-            }
-            Expr::Await(_) => ("`await`", ASYNC),
-            Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
-            Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
-            Expr::Match { .. } => ("a `match`", PATTERNS),
-            Expr::Is { .. } => ("an `is` test", PATTERNS),
-            Expr::Propagate(_) => ("`?`", RESULTS),
-            Expr::Collection(_) => ("a collection expression", SMALLER_EXPRESSIONS),
-            Expr::Range { .. } => ("a range", SMALLER_EXPRESSIONS),
-            Expr::Unary {
-                op: UnaryOp::FromEnd,
-                ..
-            } => ("an index from the end", SMALLER_EXPRESSIONS),
-            Expr::Nameof(_) => ("`nameof`", SMALLER_EXPRESSIONS),
-            Expr::Sizeof(_) => ("`sizeof`", SMALLER_EXPRESSIONS),
-            Expr::Default(_) => ("`default`", SMALLER_EXPRESSIONS),
-            _ => return None,
-        };
-        later(what, milestone)
-    });
+    let exprs = hir
+        .exprs
+        .iter()
+        .map(|(id, expr)| expression_later(db, hir, inference, resolution, &uses, id, expr));
     let stmts = hir.stmts.iter().map(|(_, stmt)| match stmt {
         Stmt::Match { .. } => later("a `match`", PATTERNS),
         Stmt::Deconstruct { .. } => later("a deconstruction", SMALLER_EXPRESSIONS),
@@ -546,6 +440,159 @@ fn expressions_later(
         _ => None,
     });
     latest(exprs.chain(stmts))
+}
+
+/// What `expr`, the expression `id` of the body `hir`, is and the
+/// milestone that lowers it, by the rules [`expressions_later`] states;
+/// `None` when this one does.
+fn expression_later(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    resolution: &BodyResolution,
+    uses: &Uses,
+    id: ExprId,
+    expr: &Expr,
+) -> Option<Later> {
+    let (what, milestone) = match expr {
+        // Error `MR0155` from statics on.
+        _ if static_through_value(db, hir, inference, uses, id) => {
+            ("a static member named through a value", STATICS)
+        }
+        _ if let Some(found) = named_value_later(db, resolution, id) => found,
+        _ if names_getter(db, hir, inference, resolution, id) => ("a getter", CLASSES),
+        _ if uses.function_value(db, hir, inference, resolution, id) => {
+            ("a function used as a value", CLOSURES)
+        }
+        _ if uses.library_value(hir, inference, resolution, id) => {
+            ("a value of the standard library", STD_BOOTSTRAP)
+        }
+        // A member a struct does not declare is an extension member.
+        Expr::Member { .. } if undeclared_member(db, hir, inference, id) => {
+            ("an extension member", SMALLER_EXPRESSIONS)
+        }
+        // The members of a built-in type, and of its values, are
+        // declared in the library.
+        Expr::Type(_) => ("a member of a built-in type", STD_BOOTSTRAP),
+        Expr::Member { receiver, .. }
+            if matches!(
+                inference.expr(*receiver),
+                Some(Ty::Primitive(_) | Ty::String)
+            ) =>
+        {
+            ("a member of a value of a built-in type", STD_BOOTSTRAP)
+        }
+        Expr::NewArray { .. } => ("an array creation", SHARED_OBJECTS),
+        Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
+        // Inference types no member of a tuple yet.
+        Expr::Member { receiver, .. }
+            if matches!(inference.expr(*receiver), Some(Ty::Tuple(_))) =>
+        {
+            ("an element of a tuple", SMALLER_EXPRESSIONS)
+        }
+        Expr::Member { optional: true, .. } | Expr::Index { optional: true, .. } => {
+            ("`?.`", OPTIONS)
+        }
+        Expr::Binary {
+            op: BinaryOp::Coalesce,
+            ..
+        }
+        | Expr::Assign {
+            op: Some(BinaryOp::Coalesce),
+            ..
+        } => ("`??`", OPTIONS),
+        Expr::Literal(Literal::None) => ("`none`", OPTIONS),
+        Expr::Index { base, .. } if inference.expr(*base) == Some(&Ty::String) => {
+            ("an index of a string", STRINGS)
+        }
+        // A number or a tuple has no indexer; indexers come with
+        // operators, which report it.
+        Expr::Index { base, .. }
+            if matches!(inference.expr(*base), Some(Ty::Primitive(_) | Ty::Tuple(_))) =>
+        {
+            ("an index", OPERATORS)
+        }
+        Expr::Assign { op: None, lhs, .. } if matches!(hir.exprs[*lhs], Expr::Tuple(_)) => {
+            ("a deconstruction", SMALLER_EXPRESSIONS)
+        }
+        Expr::Binary { op, lhs, rhs } if op.is_ordering() => {
+            let operand = |ty: fn(&Ty) -> bool| {
+                [lhs, rhs]
+                    .iter()
+                    .any(|operand| inference.expr(**operand).is_some_and(ty))
+            };
+            if operand(|ty| *ty == Ty::String) {
+                ("an ordering of strings", STRINGS)
+            } else if operand(|ty| matches!(ty, Ty::Struct(_))) {
+                ("an ordering of structs", INTERFACES)
+            } else {
+                return None;
+            }
+        }
+        Expr::Binary {
+            op: BinaryOp::Eq | BinaryOp::Ne,
+            lhs,
+            rhs,
+        } if inference.expr(id).is_none()
+            && [lhs, rhs]
+                .iter()
+                .all(|operand| matches!(inference.expr(**operand), Some(Ty::Tuple(_)))) =>
+        {
+            (
+                "a comparison of tuples of different types",
+                SMALLER_EXPRESSIONS,
+            )
+        }
+        // Before the parameter modes, which come earlier: a call that
+        // also borrows a value that is not a place waits for this one.
+        Expr::Call { callee, args } if borrows_element(db, hir, inference, id, *callee, args) => (
+            "a `ref` argument or a `mut` receiver that is an element",
+            OPERATORS,
+        ),
+        Expr::Call { args, .. }
+            if args
+                .iter()
+                .any(|arg| arg.mode == Some(ArgMode::Ref) && !is_place(hir, arg.expr)) =>
+        {
+            ("a `ref` argument that is not a place", PARAMETER_MODES)
+        }
+        Expr::Call { callee, .. }
+            if mut_receiver(db, hir, inference, id, *callee)
+                .is_some_and(|receiver| !is_place(hir, receiver)) =>
+        {
+            (
+                "a `mut` method called on a value that is not a place",
+                PARAMETER_MODES,
+            )
+        }
+        // A stand-in call passes its arguments as values: the modes they
+        // are written with come with the library's signatures.
+        Expr::Call { args, .. }
+            if from_library(hir, resolution, id) && args.iter().any(|arg| arg.mode.is_some()) =>
+        {
+            (
+                "a call of the standard library with an argument mode",
+                STD_BOOTSTRAP,
+            )
+        }
+        Expr::Await(_) => ("`await`", ASYNC),
+        Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
+        Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
+        Expr::Match { .. } => ("a `match`", PATTERNS),
+        Expr::Is { .. } => ("an `is` test", PATTERNS),
+        Expr::Propagate(_) => ("`?`", RESULTS),
+        Expr::Collection(_) => ("a collection expression", SMALLER_EXPRESSIONS),
+        Expr::Range { .. } => ("a range", SMALLER_EXPRESSIONS),
+        Expr::Unary {
+            op: UnaryOp::FromEnd,
+            ..
+        } => ("an index from the end", SMALLER_EXPRESSIONS),
+        Expr::Nameof(_) => ("`nameof`", SMALLER_EXPRESSIONS),
+        Expr::Sizeof(_) => ("`sizeof`", SMALLER_EXPRESSIONS),
+        Expr::Default(_) => ("`default`", SMALLER_EXPRESSIONS),
+        _ => return None,
+    };
+    later(what, milestone)
 }
 
 /// Whether `expr` names a place, by its shape: a local, `this`, a path,
@@ -617,21 +664,29 @@ fn borrows_element(
 }
 
 /// What the path `expr` names, as `a union case`, and the milestone that
-/// lowers it, when it names a value that comes later: through its type or
-/// by its bare name, a static field, a static getter or a constant comes
-/// with statics; an enum member and a union case come with their kinds of
-/// type; and a static or a constant declared in a namespace with statics
-/// and constant evaluation.
+/// lowers it, when it names a value that comes later: a constant, declared
+/// in a namespace or in a type, comes when its value does
+/// ([`const_value`]); through its type or by its bare name, a static field
+/// or a static getter comes with statics, and so does a static declared in
+/// a namespace; an enum member and a union case come with their kinds of
+/// type.
 fn named_value_later(
     db: &dyn Db,
     resolution: &BodyResolution,
     expr: ExprId,
 ) -> Option<(&'static str, Milestone)> {
-    match &resolution.paths.get(&expr)?.target {
+    let target = &resolution.paths.get(&expr)?.target;
+    if let Some((project, key)) = const_target(db, target) {
+        return match const_value(db, project, key) {
+            Evaluated::Later(later) => Some(("a constant", later.milestone)),
+            Evaluated::Value(_) | Evaluated::Failed(_) => None,
+        };
+    }
+    match target {
         Target::Value(value) => {
             let member = value.member(db)?;
             match member.kind {
-                ValueKind::Field | ValueKind::Getter | ValueKind::Const if member.is_static => {
+                ValueKind::Field | ValueKind::Getter if member.is_static => {
                     Some(("a static member", STATICS))
                 }
                 ValueKind::Field | ValueKind::Getter | ValueKind::Const => None,
@@ -641,11 +696,7 @@ fn named_value_later(
         }
         Target::Item(Resolved::Item(item)) => {
             let data = item_tree(db, item.file).item(item.item);
-            match data.kind {
-                ItemKind::Field if data.is_static => Some(("a static", STATICS)),
-                ItemKind::Field => Some(("a constant", CONSTANT_EVALUATION)),
-                _ => None,
-            }
+            (data.kind == ItemKind::Field && data.is_static).then_some(("a static", STATICS))
         }
         _ => None,
     }
@@ -903,25 +954,40 @@ fn calls_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
     let resolution = body_resolution(db, project, file, owner);
-    latest(hir.exprs.iter().map(|(id, expr)| {
-        let Expr::Call { callee, args } = expr else {
-            return None;
-        };
-        if inference.callee(id).is_some() {
-            return None;
-        }
-        let functions: Vec<ItemId> = match resolution.paths.get(callee).map(|path| &path.target) {
-            Some(Target::Item(Resolved::Functions(items))) => items.clone(),
-            _ => methods(db, hir, inference, *callee).collect(),
-        };
-        if functions.is_empty() {
-            return extension_call_later(db, hir, inference, *callee);
-        }
-        latest([
-            call_later(db, functions.iter().copied()),
-            unresolved_later(db, hir, resolution, args, &functions),
-        ])
-    }))
+    latest(
+        hir.exprs
+            .iter()
+            .map(|(id, expr)| unresolved_call_later(db, hir, inference, resolution, id, expr)),
+    )
+}
+
+/// The milestone that lowers `expr`, the expression `id` of the body
+/// `hir`, when it is a call that [`calls_later`] counts; `None` otherwise.
+fn unresolved_call_later(
+    db: &dyn Db,
+    hir: &Body,
+    inference: &Inference,
+    resolution: &BodyResolution,
+    id: ExprId,
+    expr: &Expr,
+) -> Option<Later> {
+    let Expr::Call { callee, args } = expr else {
+        return None;
+    };
+    if inference.callee(id).is_some() {
+        return None;
+    }
+    let functions: Vec<ItemId> = match resolution.paths.get(callee).map(|path| &path.target) {
+        Some(Target::Item(Resolved::Functions(items))) => items.clone(),
+        _ => methods(db, hir, inference, *callee).collect(),
+    };
+    if functions.is_empty() {
+        return extension_call_later(db, hir, inference, *callee);
+    }
+    latest([
+        call_later(db, functions.iter().copied()),
+        unresolved_later(db, hir, resolution, args, &functions),
+    ])
 }
 
 /// The milestone that lowers a call of overloads that a type not known
@@ -1045,22 +1111,33 @@ fn operators_later(
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
-    let on_struct = |expr| matches!(inference.expr(expr), Some(Ty::Struct(_)));
     hir.exprs
         .iter()
-        .any(|(_, expr)| match expr {
-            Expr::Binary { op, lhs, rhs }
-            | Expr::Assign {
-                op: Some(op),
-                lhs,
-                rhs,
-            } => declarable(*op) && (on_struct(*lhs) || on_struct(*rhs)),
-            Expr::Unary { op, expr } => *op != UnaryOp::FromEnd && on_struct(*expr),
-            Expr::Postfix { expr, .. } => on_struct(*expr),
-            Expr::Index { base, .. } => on_struct(*base),
-            _ => false,
-        })
-        .then(|| Later::new("an operator on a struct", OPERATORS))
+        .any(|(_, expr)| operator_on_struct(inference, expr))
+        .then(operator_later)
+}
+
+/// Whether `expr` applies an operator to a struct, as [`operators_later`]
+/// counts it.
+fn operator_on_struct(inference: &Inference, expr: &Expr) -> bool {
+    let on_struct = |expr| matches!(inference.expr(expr), Some(Ty::Struct(_)));
+    match expr {
+        Expr::Binary { op, lhs, rhs }
+        | Expr::Assign {
+            op: Some(op),
+            lhs,
+            rhs,
+        } => declarable(*op) && (on_struct(*lhs) || on_struct(*rhs)),
+        Expr::Unary { op, expr } => *op != UnaryOp::FromEnd && on_struct(*expr),
+        Expr::Postfix { expr, .. } => on_struct(*expr),
+        Expr::Index { base, .. } => on_struct(*base),
+        _ => false,
+    }
+}
+
+/// An operator applied to a struct, which comes with operators.
+fn operator_later() -> Later {
+    Later::new("an operator on a struct", OPERATORS)
 }
 
 /// Whether a struct may declare the binary operator `op` (§6.9).
@@ -1081,19 +1158,25 @@ fn creations_later(
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
-    latest(hir.exprs.iter().map(|(id, expr)| {
-        let Expr::New { args, .. } = expr else {
-            return None;
-        };
-        let item = inference.expr(id)?.as_struct()?;
-        match creation(db, item, args.as_deref()) {
-            Creation::Constructor => later("a constructor call", CLASSES),
-            Creation::Positional => {
-                later("the creation of a positional struct", POSITIONAL_STRUCTS)
-            }
-            Creation::Memberwise | Creation::MemberwiseOff | Creation::NoConstructor => None,
-        }
-    }))
+    latest(
+        hir.exprs
+            .iter()
+            .map(|(id, expr)| creation_later(db, inference, id, expr)),
+    )
+}
+
+/// The milestone that lowers `expr`, the expression `id`, when it creates
+/// a struct with a constructor, as [`creations_later`] counts it.
+fn creation_later(db: &dyn Db, inference: &Inference, id: ExprId, expr: &Expr) -> Option<Later> {
+    let Expr::New { args, .. } = expr else {
+        return None;
+    };
+    let item = inference.expr(id)?.as_struct()?;
+    match creation(db, item, args.as_deref()) {
+        Creation::Constructor => later("a constructor call", CLASSES),
+        Creation::Positional => later("the creation of a positional struct", POSITIONAL_STRUCTS),
+        Creation::Memberwise | Creation::MemberwiseOff | Creation::NoConstructor => None,
+    }
 }
 
 /// The milestone that lowers the body of `owner` for its `this`: a method,

@@ -2,11 +2,12 @@
 //! that constant evaluation runs (§14.6). The initializer of a constant is
 //! the body of its owner, which [`super::mir`] lowers.
 
-use mora_hir::{BodyOwner, ExprId, Inference, Ty};
-use mora_span::{Db, Project, SourceFile};
+use mora_hir::{BodyOwner, ExprId, Inference, Ty, instance_fields};
+use mora_span::{Db, Project, SourceFile, Span};
 
-use super::{BodyShape, Lowerer, Owner, std_loaded};
-use crate::{Mir, debug_validate};
+use super::{BodyShape, Lowerer, Owner, fail_in, std_loaded};
+use crate::eval::{ConstKey, ConstValue, Evaluated, const_value};
+use crate::{LocalTy, Mir, Operand, Place, Rvalue, debug_validate};
 
 /// The type a default value is passed as: the conversion inference records
 /// on it, or its own type.
@@ -22,10 +23,16 @@ pub(crate) fn default_ty(inference: &Inference, default: ExprId) -> Option<Ty> {
 /// to [`default_ty`]. Named `<owner name>: a default value`. It is checked
 /// by [`debug_validate`] before it is returned.
 ///
+/// Unlike [`super::mir`], it does not check that this milestone lowers the
+/// default value: its caller does, with
+/// [`exprs_later`](super::later::exprs_later) over the expressions of the
+/// default, before it asks for it.
+///
 /// # Panics
 ///
 /// When the default value holds what lowering cannot handle, as
-/// [`super::mir`] does.
+/// [`super::mir`] does, a default value that a later milestone lowers
+/// among them.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn default_mir(
     db: &dyn Db,
@@ -51,4 +58,62 @@ pub(crate) fn default_mir(
     };
     debug_validate(db, &mir, std_loaded(db, project));
     mir
+}
+
+impl Lowerer<'_> {
+    /// The value of the constant `expr` reads, the key `key` of `project`:
+    /// a constant operand, or a temporary holding an `Aggregate` of
+    /// constant operands, as [`Lowerer::value_operand`] builds it.
+    ///
+    /// # Panics
+    ///
+    /// When the constant has no value: a body that reads one is never
+    /// lowered, since its evaluation reports an error or waits for a later
+    /// milestone first.
+    pub(super) fn const_operand(
+        &mut self,
+        expr: ExprId,
+        project: Project,
+        key: ConstKey,
+    ) -> Operand {
+        let Evaluated::Value(value) = const_value(self.owner.db, project, key) else {
+            self.ice(expr, "a read of a constant without a value");
+        };
+        let ty = self.ty(expr);
+        self.value_operand(value, &ty, self.span(expr))
+    }
+
+    /// `value` of type `ty` as an operand: a scalar is a constant operand,
+    /// and a struct or a tuple a temporary holding an `Aggregate` of the
+    /// operands of its fields, those that are aggregates themselves in
+    /// temporaries made first.
+    ///
+    /// # Panics
+    ///
+    /// When the shape of `value` is not that of `ty`, which only a compiler
+    /// bug can cause.
+    pub(super) fn value_operand(&mut self, value: &ConstValue, ty: &Ty, span: Span) -> Operand {
+        let (kind, parts) = match value {
+            ConstValue::Scalar(constant) => return Operand::Const(constant.clone()),
+            ConstValue::Aggregate(kind, parts) => (*kind, parts),
+        };
+        let types: Vec<Ty> = match ty {
+            Ty::Struct(item) => instance_fields(self.owner.db, *item)
+                .map(|(_, field)| field.ty.clone())
+                .collect(),
+            Ty::Tuple(elems) => elems.iter().map(|elem| elem.ty.clone()).collect(),
+            _ => Vec::new(),
+        };
+        if types.len() != parts.len() {
+            fail_in(&self.name, "a constant value whose shape is not its type's");
+        }
+        let mut operands = Vec::with_capacity(parts.len());
+        for (part, ty) in parts.iter().zip(&types) {
+            operands.push(self.value_operand(part, ty, span));
+        }
+        let temp = self.builder.temp(LocalTy::Value(ty.clone()), span);
+        self.builder
+            .assign(Place::local(temp), Rvalue::Aggregate(kind, operands), span);
+        Operand::Copy(Place::local(temp))
+    }
 }
