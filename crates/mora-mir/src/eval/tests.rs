@@ -11,6 +11,7 @@ use mora_span::{Dependency, FileId, Project, ProjectKind, SourceFile, Span, Text
 use super::arith::{ArithError, MAX_STRING_BYTES};
 use super::graph::{ConstGraph, const_graph};
 use super::interp::{Failure, Stop, run};
+use super::report::failed_message;
 use super::scan::const_scan;
 use super::{
     ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, const_read, const_value, constants,
@@ -1794,4 +1795,284 @@ fn editing_a_constant_changes_its_readers() {
         .set_text(&mut source.db)
         .to("const A: int = 5;\nF(): int => A;\n".to_owned());
     assert_eq!(source.code("F"), ["_0 = 5;", "return;"]);
+}
+
+/// A diagnostic of constant evaluation, as the tests compare it.
+#[derive(Debug, PartialEq, Eq)]
+struct Reported {
+    /// Its code.
+    code: String,
+    /// Its message.
+    message: String,
+    /// The text its label points at.
+    at: String,
+    /// Its label.
+    label: Option<String>,
+    /// Its note.
+    note: Option<String>,
+}
+
+/// The note of every `MR0460`.
+const UNSUPPORTED_NOTE: &str = "constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`";
+
+/// The note of every `MR0461`.
+const FAILED_NOTE: &str = "a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile";
+
+impl Source {
+    /// The diagnostics of constant evaluation in the project, each in the
+    /// file of the source.
+    fn reported(&self) -> Vec<Reported> {
+        crate::diagnostics(&self.db, self.project)
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.primary.span.file, self.file.id(&self.db));
+                assert_eq!(diagnostic.secondary, []);
+                assert_eq!(diagnostic.fixes, []);
+                assert_eq!(diagnostic.severity, mora_diag::Severity::Error);
+                Reported {
+                    code: diagnostic.code.to_string(),
+                    message: diagnostic.message.clone(),
+                    at: self.text(diagnostic.primary.span.range).to_owned(),
+                    label: diagnostic.primary.message.clone(),
+                    note: diagnostic.note.clone(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// A diagnostic that `reported` gives.
+fn reported(code: &str, message: &str, at: &str, label: &str, note: &str) -> Reported {
+    Reported {
+        code: code.to_owned(),
+        message: message.to_owned(),
+        at: at.to_owned(),
+        label: Some(label.to_owned()),
+        note: Some(note.to_owned()),
+    }
+}
+
+#[test]
+fn diagnostics_render_each_code() {
+    let source = checked("Zero(): int => 0;\nconst A: int = Zero();\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0460",
+            "a call cannot be evaluated at compile time",
+            "Zero()",
+            "evaluated at compile time",
+            UNSUPPORTED_NOTE,
+        )]
+    );
+
+    let source = checked("const Big: int = 2_000_000_000;\nconst Twice: int = Big * 2;\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0461",
+            "`Big * 2` overflows `int`: 2000000000 * 2",
+            "Big * 2",
+            "evaluated at compile time",
+            FAILED_NOTE,
+        )]
+    );
+
+    let source = unchecked("const A: int = B + 1;\nconst B: int = A + 1;\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0462",
+            "constant `A` depends on its own value",
+            "B",
+            "this needs the value of `B`",
+            "the cycle is A -> B -> A",
+        )]
+    );
+}
+
+#[test]
+fn a_cycle_of_one_needs_its_own_value() {
+    let source = unchecked("const A: int = A + 1;\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0462",
+            "constant `A` depends on its own value",
+            "A",
+            "this needs the value of `A`",
+            "the cycle is A -> A",
+        )]
+    );
+}
+
+#[test]
+fn a_cycle_that_starts_at_an_initializer_names_it() {
+    let source = unchecked(
+        "struct P {\n    public X: int = Q.Y;\n}\nstruct Q {\n    public Y: int = P.X;\n}\n",
+    );
+    // No constant creates `P` or `Q`, so the initializers are not in the
+    // graph; a constant that creates one brings its cycle in.
+    assert_eq!(source.reported(), []);
+
+    let source =
+        unchecked("struct P {\n    public X: int = new P {}.X;\n}\nconst C: int = new P {}.X;\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0462",
+            "the initializer of `P.X` depends on its own value",
+            "new P {}",
+            "this needs the value of `P.X`",
+            "the cycle is P.X -> P.X",
+        )]
+    );
+}
+
+#[test]
+fn a_failed_constant_is_reported_once() {
+    let source = checked(
+        "const A: int = 2_000_000_000;\nconst B: int = A * 2;\nconst C: int = B;\n\
+         const D: int = B + C;\nF(x: int = B) {}\nG(): int => B;\n",
+    );
+    let found = source.reported();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].code, "MR0461");
+    assert_eq!(found[0].at, "A * 2");
+}
+
+#[test]
+fn diagnostics_follow_the_order_of_the_graph() {
+    // The initializer of `P.X` comes before `C`, which reads it, though
+    // its text comes after `D`.
+    let source = checked(
+        "const C: P = new P {};\nconst D: int = Zero();\nZero(): int => 0;\n\
+         struct P {\n    public X: int = Zero();\n}\nconst Big: int = 2_000_000_000;\nconst E: int = Big * 2;\n",
+    );
+    let found: Vec<(String, usize)> = crate::diagnostics(&source.db, source.project)
+        .iter()
+        .map(|d| {
+            (
+                d.code.to_string(),
+                usize::from(d.primary.span.range.start()),
+            )
+        })
+        .collect();
+    let text = source.file.text(&source.db);
+    let in_p = text.find("= Zero();\n}").expect("the initializer") + 2;
+    let in_d = text.find("= Zero();\nZero").expect("the constant") + 2;
+    let in_e = text.find("Big * 2").expect("the product");
+    assert_eq!(
+        found,
+        [
+            ("MR0460".to_owned(), in_p),
+            ("MR0460".to_owned(), in_d),
+            ("MR0461".to_owned(), in_e),
+        ]
+    );
+}
+
+#[test]
+fn a_constant_that_waits_reports_nothing() {
+    let source = checked("class C {}\nF(c: C = new C()) {}\n");
+    assert_eq!(source.reported(), []);
+}
+
+#[test]
+fn a_long_chain_of_constants_does_not_overflow_the_stack() {
+    // 256 KiB is enough for the front end and for evaluation one key at a
+    // time, and far too little for 2,000 nested evaluations: each nested
+    // `const_value` takes several salsa frames.
+    const STACK: usize = 256 * 1024;
+    const LENGTH: usize = 2_000;
+    let run = || {
+        // The last constant comes first in the text, so a walk in text
+        // order would evaluate the whole chain inside its first key.
+        let text: String = (0..LENGTH)
+            .rev()
+            .map(|i| {
+                if i == 0 {
+                    "const C0: int = 1;\n".to_owned()
+                } else {
+                    format!("const C{i}: int = C{} + 1;\n", i - 1)
+                }
+            })
+            .collect();
+        let source = unchecked(&text);
+        assert_eq!(source.reported(), []);
+        assert_eq!(
+            source.evaluated(source.constant(&format!("C{}", LENGTH - 1))),
+            &Evaluated::Value(int(2_000, Primitive::Int))
+        );
+    };
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(run)
+        .expect("a thread")
+        .join()
+        .expect("no overflow");
+}
+
+#[test]
+fn an_initializer_error_names_the_constant_creation() {
+    let source = checked(
+        "Zero(): int => 0;\nstruct P {\n    public X: int = Zero();\n}\nconst C: P = new P {};\n",
+    );
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0460",
+            "a call cannot be evaluated at compile time",
+            "Zero()",
+            "evaluated at compile time",
+            &format!(
+                "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a constant creates a `P` without `X`"
+            ),
+        )]
+    );
+}
+
+#[test]
+fn each_failed_operation_has_its_message() {
+    let failure = |error| Failure {
+        range: TextRange::empty(TextSize::new(0)),
+        error,
+        ty: Ty::Primitive(Primitive::Int),
+        operation: "1 / 0".to_owned(),
+    };
+    let messages: Vec<String> = [
+        ArithError::Overflow,
+        ArithError::DivisionByZero,
+        ArithError::RemainderByZero,
+        ArithError::TargetDependent,
+        ArithError::TooLong(16_777_217),
+    ]
+    .into_iter()
+    .map(|error| failed_message("X / Y", &failure(error), "nint"))
+    .collect();
+    assert_eq!(
+        messages,
+        [
+            "`X / Y` overflows `nint`: 1 / 0",
+            "`X / Y` divides by zero: 1 / 0",
+            "`X / Y` takes a remainder of a division by zero: 1 / 0",
+            "`X / Y` gives a `nint` that is not the same on every target: 1 / 0",
+            "`X / Y` makes a string of 16777217 bytes, more than a constant can hold",
+        ]
+    );
+}
+
+#[test]
+fn a_division_by_zero_names_the_division() {
+    let source = checked("const Z: int = 0;\nconst Q: int = 7 % Z;\n");
+    assert_eq!(
+        source.reported(),
+        [reported(
+            "MR0461",
+            "`7 % Z` takes a remainder of a division by zero: 7 % 0",
+            "7 % Z",
+            "evaluated at compile time",
+            FAILED_NOTE,
+        )]
+    );
 }

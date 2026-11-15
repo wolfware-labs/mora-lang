@@ -197,6 +197,8 @@ registry! {
     MR0450 = 450: "an `extern` function with a parameter or return type that is not plain",
     MR0451 = 451: "an `extern` function without `[Import]`",
     MR0460 = 460: "a constant expression that cannot be evaluated at compile time",
+    MR0461 = 461: "a constant evaluation that fails",
+    MR0462 = 462: "a constant whose value depends on itself",
     MR0500 = 500: "an unknown key in `mora.toml`",
     MR0501 = 501: "two dependencies with the same name, or a dependency named like `Std` or the root namespace",
     MR0502 = 502: "a cycle between project dependencies",

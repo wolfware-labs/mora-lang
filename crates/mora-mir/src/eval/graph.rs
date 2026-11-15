@@ -40,10 +40,6 @@ pub(crate) struct ConstGraph {
 impl ConstGraph {
     /// Every key of the project that evaluation runs, each after the keys
     /// it reads.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the diagnostics of constant evaluation walk it")
-    )]
     pub(crate) fn order(&self) -> &[ConstKey] {
         &self.order
     }

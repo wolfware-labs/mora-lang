@@ -10,6 +10,7 @@ mod validate;
 mod tests;
 
 pub use dump::{write_body, write_body_in, write_mir};
+pub use eval::{ConstValue, diagnostics};
 pub use lower::{mir, mir_dump};
 pub use types::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,

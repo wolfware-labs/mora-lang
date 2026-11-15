@@ -10,7 +10,10 @@
 mod arith;
 pub(crate) mod graph;
 pub(crate) mod interp;
+mod report;
 pub(crate) mod scan;
+
+pub use self::report::diagnostics;
 
 use mora_hir::{
     BodyOwner, BodyResolution, ExprId, ItemId, ItemKind, LocalId, Resolved, Target, ValueKind,

@@ -2133,7 +2133,7 @@ Macro expansion (§9) sits between signature resolution and body checking. `mora
 
 ### 14.6 Constant evaluation
 
-`const` values, default parameter values, constants converted to a newtype and the defaults of refined newtypes (§6.12) are evaluated by a MIR interpreter at compile time. In the MVP the interpreter supports arithmetic, comparisons, string literals and concatenation of constants, construction of plain structs, tuples and unions, read-only sequences of such values for `ReadOnlySpan<T>` constants (a constant is never an array, §4.7), and matching a value against a newtype's refinement pattern. Anything else is error `MR0460` with the hint to use `static lazy`.
+`const` values, default parameter values, constants converted to a newtype and the defaults of refined newtypes (§6.12) are evaluated by a MIR interpreter at compile time. In the MVP the interpreter supports arithmetic, comparisons, string literals and concatenation of constants, construction of plain structs, tuples and unions, read-only sequences of such values for `ReadOnlySpan<T>` constants (a constant is never an array, §4.7), and matching a value against a newtype's refinement pattern. Anything else is error `MR0460` with the hint to use `static lazy`. An operation that fails while a constant is evaluated, such as an overflow or a division by zero, is error `MR0461`, and a constant whose value depends on itself is error `MR0462`.
 
 ### 14.7 MIR
 
