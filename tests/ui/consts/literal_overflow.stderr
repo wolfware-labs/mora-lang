@@ -1,0 +1,7 @@
+error[MR0010]: the value of `2_000_000_000 * 2` does not fit in `int`
+ --> tests/ui/consts/literal_overflow.mr:1:16
+  |
+1 | const X: int = 2_000_000_000 * 2; //~ ERROR MR0010
+  |                ^^^^^^^^^^^^^^^^^ out of range
+  |
+  = note: `int` holds values from -2147483648 to 2147483647

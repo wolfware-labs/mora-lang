@@ -1,0 +1,13 @@
+const A: int = A + 1; //~ ERROR MR0462
+
+const B: int = C; //~ ERROR MR0462
+const C: int = B;
+
+struct P {
+    public X: int = Q.X;
+}
+const Q: P = new P {}; //~ ERROR MR0462
+
+Console.WriteLine(A);
+Console.WriteLine(B);
+Console.WriteLine(Q.X);

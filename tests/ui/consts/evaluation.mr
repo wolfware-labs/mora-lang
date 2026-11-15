@@ -1,0 +1,11 @@
+const A: int = 2_000_000_000;
+const B: int = A * 2; //~ ERROR MR0461
+const Z: int = A - A;
+const D: int = A / Z; //~ ERROR MR0461
+const R: int = A % Z; //~ ERROR MR0461
+const N: nint = (nint)2147483647 + (nint)1; //~ ERROR MR0461
+
+Console.WriteLine(B);
+Console.WriteLine(D);
+Console.WriteLine(R);
+Console.WriteLine(N);

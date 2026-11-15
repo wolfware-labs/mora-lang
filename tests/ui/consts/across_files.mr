@@ -1,0 +1,5 @@
+//@ file src/Limits.mr
+public const Big: int = 2_000_000_000;
+public const Twice: int = Big * 2; //~ ERROR MR0461
+//@ file src/Program.mr
+Console.WriteLine(Twice);
