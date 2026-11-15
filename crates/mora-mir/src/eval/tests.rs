@@ -295,6 +295,16 @@ fn a_scan_names_each_unsupported_operation() {
             "`this`",
         ),
         (
+            "struct P {\n    public X: int;\n    M(x: int = X) {}\n}\n",
+            "X",
+            "`this`",
+        ),
+        (
+            "struct P {\n    public X: int => 1;\n    M(x: int = X) {}\n}\n",
+            "X",
+            "`this`",
+        ),
+        (
             "const A: int = Std.Math.Max(1, 2);\n",
             "Std.Math.Max(1, 2)",
             "a call",
@@ -308,6 +318,29 @@ fn a_scan_names_each_unsupported_operation() {
         };
         assert_eq!(source.unsupported(key), Some((at, what)), "{text}");
     }
+}
+
+#[test]
+fn a_scan_flags_a_field_initializer_that_reads_another_field() {
+    let source = unchecked("struct P {\n    public X: int = 1;\n    public Y: int = X;\n}\n");
+    let y = ConstKey::Initializer {
+        item: source.item("P"),
+        field: 1,
+    };
+    assert_eq!(source.unsupported(y), Some(("X", "`this`")));
+}
+
+#[test]
+fn a_scan_leaves_the_operand_of_nameof_alone() {
+    let source = unchecked(
+        "struct P {\n    public static S: int = 1;\n    public X: int;\n    M(x: int = S) {}\n}\nF() {\n    var n = 1;\n    G(x: string = nameof(n)) {}\n    G();\n}\n",
+    );
+    let found = defaults(&source.db, source.project, source.file);
+    // A static named by its bare name is not `this`.
+    assert_eq!(source.unsupported(found[0]), None);
+    assert_eq!(source.visited(found[0]), vec!["S"]);
+    assert_eq!(source.unsupported(found[1]), None);
+    assert_eq!(source.visited(found[1]), vec!["nameof(n)"]);
 }
 
 #[test]

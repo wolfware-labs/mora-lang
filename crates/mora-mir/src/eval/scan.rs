@@ -6,7 +6,7 @@ use std::ops::ControlFlow;
 
 use mora_hir::{
     Arg, Body, BodyResolution, BodySourceMap, Creation, Expr, ExprId, Inference, ItemId, UnaryOp,
-    body, body_resolution, body_source_map, creation, infer, instance_fields,
+    ValueKind, body, body_resolution, body_source_map, creation, infer, instance_fields,
 };
 use mora_span::{Db, Project, TextRange};
 
@@ -138,6 +138,18 @@ impl Scanner<'_> {
             } => "`--`",
             Expr::Local(_) => "a local variable",
             Expr::This => "`this`",
+            // A field or getter of `this` named by its bare name.
+            Expr::Path(_)
+                if self
+                    .resolution
+                    .value_member(self.db, expr)
+                    .is_some_and(|member| {
+                        !member.is_static
+                            && matches!(member.kind, ValueKind::Field | ValueKind::Getter)
+                    }) =>
+            {
+                "`this`"
+            }
             _ => return None,
         })
     }
@@ -165,8 +177,8 @@ impl Scanner<'_> {
 
 /// The expressions `node` holds that a scan descends into, in the order of
 /// the text: none for a `match` and a block, which are left to the
-/// milestones that lower them, nor for what [`Scanner::unsupported`]
-/// stops at.
+/// milestones that lower them, for the operand of `nameof`, which is never
+/// evaluated, nor for what [`Scanner::unsupported`] stops at.
 fn children(node: &Expr) -> Vec<ExprId> {
     match node {
         Expr::Missing
@@ -181,6 +193,7 @@ fn children(node: &Expr) -> Vec<ExprId> {
         | Expr::Assign { .. }
         | Expr::Default(_)
         | Expr::Sizeof(_)
+        | Expr::Nameof(_)
         | Expr::Macro
         | Expr::Match { .. }
         | Expr::Block(_)
@@ -199,8 +212,7 @@ fn children(node: &Expr) -> Vec<ExprId> {
         | Expr::Cast { expr, .. }
         | Expr::Await(expr)
         | Expr::Is { expr, .. }
-        | Expr::As { expr, .. }
-        | Expr::Nameof(expr) => vec![*expr],
+        | Expr::As { expr, .. } => vec![*expr],
         Expr::NewArray { size, .. } => vec![*size],
         Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
         Expr::Range { start, end } => start.iter().chain(end).copied().collect(),
