@@ -3014,7 +3014,7 @@ Monomorphized generics mean `List<MyType>` cannot exist in the library's compile
 
 - **Wasm app, static (default):** libraries link into one module with one linear memory, so `List<T>` and spans cross library boundaries without copying.
 - **Wasm, dynamic:** libraries stay separate modules that import a shared memory and allocator from the host, for plugins.
-- **Component Model:** `--emit component` exports `public` APIs as WIT interfaces. It is shared-nothing and copies at the boundary: the cross-language and sandboxed-plugin path, not the default link.
+- **Component Model:** `--emit component` exports `public` APIs as WIT interfaces. It is shared-nothing and copies at the boundary: the cross-language and sandboxed-plugin path, not the default link. The import side is planned [post-MVP] for M8: `mora bindgen wit` reads a WIT interface and writes Mora declarations for it, records as structs, variants as unions, `result` and `option` as `Result` and options, resources as classes. The exact mapping, including how dropping a future maps to cancellation in the Component Model, is decided with that milestone.
 - **Native:** the compiler reads each dependency's `mora.ir` and compiles the whole program (§14). A plain wasm module without `mora.ir`, written in another language, is translated ahead of time from wasm to native code through Cranelift, runs sandboxed in its own memory, and is called through the Component Model boundary.
 
 ### 18.4 ABI stability
