@@ -727,18 +727,24 @@ fn constant_without_value(
 /// `const` on the node is `MR0113`, that is the one error reported. No
 /// fix: only the author knows where the member belongs. A constructor
 /// cannot be written in an interface or an extension: there, `P() {}` is
-/// a method.
+/// a method. A member with a syntax error in its head is reported by the
+/// parser alone ([`head_has_syntax_error`]).
 fn misplaced_member(
     file: FileId,
     frame: &ModifierFrame<'_>,
     syntax_errors: &[SyntaxError],
 ) -> Option<Diagnostic> {
-    // A member the parser built around an error may be no member the
-    // author wrote, as the fields it makes of a broken lambda.
-    if frame.misplaced_const() || head_has_syntax_error(frame.node, syntax_errors) {
+    if frame.misplaced_const() {
         return None;
     }
     let rule = member_rule(frame.container, frame.node)?;
+    // A member the parser built around an error may be no member the
+    // author wrote, as the fields it makes of a broken lambda. Asked only
+    // of a misplaced member, so the walk does not search the errors at
+    // every node.
+    if head_has_syntax_error(frame.node, syntax_errors) {
+        return None;
+    }
     Some(
         Diagnostic::error(
             codes::MR0115,
