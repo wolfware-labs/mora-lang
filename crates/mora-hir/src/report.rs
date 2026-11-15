@@ -2713,6 +2713,16 @@ mod tests {
                 "an extension adds no indexers; an indexer is declared in the type itself; an \
                  extension may add a method that takes the index, as `At(i: int): int`",
             ),
+            // The rule of an accessor's indexer reads the indexer's own
+            // modifiers: `static` without `abstract`.
+            (
+                "interface I {\n    static this[i: int]: int { const get => i; }\n}\n",
+                "an accessor",
+                "a static member of an interface is `static abstract`; a member each \
+                 implementing type gives is `static abstract`, as `static abstract M(): int;`, \
+                 with a body for a default, as `static abstract M(): int => 1;`; a function \
+                 every implementation shares goes in the namespace, next to the interface",
+            ),
         ];
         for (text, declaration, note) in cases {
             let found = diagnostics_of(text);

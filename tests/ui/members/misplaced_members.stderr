@@ -166,82 +166,98 @@ error[MR0115]: a static member of an interface is `static abstract`
    |
    = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
 
-error[MR0115]: an interface has no macros
-  --> tests/ui/members/misplaced_members.mr:65:11
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:66:5
    |
-65 |     macro Grid(t: Type) {} //~ ERROR MR0115
+66 |     static this[i: int, j: int]: int { const get => i + j; } //~ ERROR MR0115 //~ ERROR MR0113
+   |     ^^^^^^ a static indexer without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0113]: `const` does not apply to an accessor
+  --> tests/ui/members/misplaced_members.mr:66:40
+   |
+66 |     static this[i: int, j: int]: int { const get => i + j; } //~ ERROR MR0115 //~ ERROR MR0113
+   |                                        ^^^^^ it is code that runs, not a value
+   |
+   = note: a static member of an interface is `static abstract`; a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: an interface has no macros
+  --> tests/ui/members/misplaced_members.mr:67:11
+   |
+67 |     macro Grid(t: Type) {} //~ ERROR MR0115
    |           ^^^^ a macro
    |
    = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
 
 error[MR0115]: a struct has no macros
-  --> tests/ui/members/misplaced_members.mr:69:11
+  --> tests/ui/members/misplaced_members.mr:71:11
    |
-69 |     macro Wrap(t: Type) {} //~ ERROR MR0115
+71 |     macro Wrap(t: Type) {} //~ ERROR MR0115
    |           ^^^^ a macro
    |
    = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
 
 error[MR0115]: an extension adds no macros
-  --> tests/ui/members/misplaced_members.mr:73:11
+  --> tests/ui/members/misplaced_members.mr:75:11
    |
-73 |     macro Each(t: Type) {} //~ ERROR MR0115
+75 |     macro Each(t: Type) {} //~ ERROR MR0115
    |           ^^^^ a macro
    |
    = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
 
 error[MR0113]: `const` does not apply to a destructor
-  --> tests/ui/members/misplaced_members.mr:81:5
+  --> tests/ui/members/misplaced_members.mr:83:5
    |
-81 |     const ~IKeyed() {} //~ ERROR MR0113
+83 |     const ~IKeyed() {} //~ ERROR MR0113
    |     ^^^^^ it is code that runs, not a value
    |
    = note: an interface has no destructors; a destructor is declared in each type that needs one, which may implement the interface
 
 error[MR0113]: `const` does not apply to a struct
-  --> tests/ui/members/misplaced_members.mr:82:5
+  --> tests/ui/members/misplaced_members.mr:84:5
    |
-82 |     const struct Key {} //~ ERROR MR0113
+84 |     const struct Key {} //~ ERROR MR0113
    |     ^^^^^ it declares a type, not a value
    |
    = note: an interface has no nested types; a type is declared in the namespace, next to the interface
 
 error[MR0113]: `const` does not apply to a method
-  --> tests/ui/members/misplaced_members.mr:83:5
+  --> tests/ui/members/misplaced_members.mr:85:5
    |
-83 |     const static Make(): int => 0; //~ ERROR MR0113
+85 |     const static Make(): int => 0; //~ ERROR MR0113
    |     ^^^^^ it is code that runs, not a value
    |
    = note: a static member of an interface is `static abstract`; a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
 
 error[MR0113]: `const` does not apply to an indexer
-  --> tests/ui/members/misplaced_members.mr:87:5
+  --> tests/ui/members/misplaced_members.mr:89:5
    |
-87 |     const this[i: int]: int { get => i; } //~ ERROR MR0113
+89 |     const this[i: int]: int { get => i; } //~ ERROR MR0113
    |     ^^^^^ it is code that runs, not a value
    |
    = note: an extension adds no indexers; an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
 
 error[MR0113]: `const` does not apply to an associated type
-  --> tests/ui/members/misplaced_members.mr:88:5
+  --> tests/ui/members/misplaced_members.mr:90:5
    |
-88 |     const type Item = int; //~ ERROR MR0113
+90 |     const type Item = int; //~ ERROR MR0113
    |     ^^^^^ it declares a type, not a value
    |
    = note: an extension adds no associated types; an associated type is declared in an interface and bound by each type that implements it
 
 error[MR0115]: an extension adds no indexers
-  --> tests/ui/members/misplaced_members.mr:89:5
+  --> tests/ui/members/misplaced_members.mr:91:5
    |
-89 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
+91 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
    |     ^^^^ an indexer
    |
    = note: an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
 
 error[MR0113]: `const` does not apply to an accessor
-  --> tests/ui/members/misplaced_members.mr:89:25
+  --> tests/ui/members/misplaced_members.mr:91:25
    |
-89 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
+91 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
    |                         ^^^^^ it is code that runs, not a value
    |
    = note: an extension adds no indexers; an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`

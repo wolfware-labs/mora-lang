@@ -62,6 +62,8 @@ public union Shape {
 public interface IGrid {
     static abstract this[i: int]: int { get; }
     static this[i: int]: int { get => i; } //~ ERROR MR0115
+    // `const` on its accessor names the indexer's own rule.
+    static this[i: int, j: int]: int { const get => i + j; } //~ ERROR MR0115 //~ ERROR MR0113
     macro Grid(t: Type) {} //~ ERROR MR0115
 }
 
