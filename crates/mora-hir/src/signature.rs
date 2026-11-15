@@ -4,7 +4,8 @@ use crate::arena::arena_index;
 use crate::bodies::Arg;
 use crate::defs::ItemId;
 use crate::items::{
-    ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree, signature_refs,
+    Item, ItemIdx, ItemKind, ItemTree, ValueKind, ValueMember, Visibility, item_tree,
+    signature_refs,
 };
 use crate::resolve::{
     ResolveErrorKind, Resolved, Scope, declaring_type, effective_visibility, enclosing_types,
@@ -43,12 +44,20 @@ pub fn struct_field(db: &dyn Db, item: ItemId, index: u32) -> Option<(usize, &Fi
 /// among the value members. A `static` field and a constant belong to the
 /// type and are not among them. Nothing when `item` is not a struct.
 pub fn instance_fields(db: &dyn Db, item: ItemId) -> impl Iterator<Item = (u32, &Field)> + '_ {
-    let fields = match signature(db, item) {
+    instance_fields_in(signature(db, item), &item_data(db, item).values)
+}
+
+/// [`instance_fields`] of the struct whose signature is `signature` and
+/// whose value members are `values`, for a caller that has both at hand.
+pub(crate) fn instance_fields_in<'a>(
+    signature: &'a Signature,
+    values: &'a [ValueMember],
+) -> impl Iterator<Item = (u32, &'a Field)> + 'a {
+    let fields = match signature {
         Signature::Struct(fields) => fields.as_slice(),
         _ => &[],
     };
-    item_data(db, item)
-        .values
+    values
         .iter()
         .zip(0u32..)
         .filter(|(member, _)| declares_field(member))
@@ -102,7 +111,12 @@ pub enum Creation {
 /// What `new T(args) { ... }` of the struct `item` does, with `args` when
 /// it has parentheses (§6.5, §6.9).
 pub fn creation(db: &dyn Db, item: ItemId, args: Option<&[Arg]>) -> Creation {
-    let data = item_data(db, item);
+    creation_of(item_data(db, item), args)
+}
+
+/// [`creation`] of the struct that `data` declares, for a caller that has
+/// it at hand.
+pub(crate) fn creation_of(data: &Item, args: Option<&[Arg]>) -> Creation {
     match args {
         None if data.has_constructor || data.is_positional => Creation::MemberwiseOff,
         Some(_) if data.is_positional => Creation::Positional,

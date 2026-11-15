@@ -26,9 +26,10 @@ use crate::bodies::{
 };
 use crate::defs::ItemId;
 use crate::items::{Item, ItemKind, ItemTree, ValueKind, ValueMember, item_tree};
-use crate::resolve::{Resolved, Scope, value_visible};
+use crate::resolve::{Resolved, Scope, is_visible, member_reaches, value_visible};
 use crate::signature::{
-    Creation, creation, instance_field_named, instance_fields, signature, struct_field, this_type,
+    Creation, creation_of, instance_field_named, instance_fields, instance_fields_in, signature,
+    struct_field, this_type,
 };
 use crate::suggest::closest;
 use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
@@ -144,7 +145,7 @@ pub(super) fn infer_body(
         arguments: FxHashMap::default(),
         local_functions: None,
         constants: FxHashMap::default(),
-        literals: ArenaMap::default(),
+        literals: ArenaMap::with_capacity(body.exprs.len()),
         conversions: FxHashMap::default(),
         element_conversions: FxHashMap::default(),
         errors: Vec::new(),
@@ -1576,7 +1577,7 @@ impl Check<'_> {
             return written;
         };
         let inits = inits.unwrap_or_default();
-        let creation = creation(self.db, item, args);
+        let creation = creation_of(self.item_data(item), args);
         match creation {
             Creation::Memberwise => self.memberwise(expr, item, &written, inits),
             Creation::MemberwiseOff => {
@@ -1734,11 +1735,17 @@ impl Check<'_> {
     /// with `inits` (§6.9).
     fn memberwise(&mut self, expr: ExprId, item: ItemId, ty: &Ty, inits: &[(String, ExprId)]) {
         // The instance fields, and whether the body sees each, looked up
-        // once for all the initializers.
-        let fields: Vec<(u32, &Field)> = instance_fields(self.db, item).collect();
+        // once for all the initializers: the struct's own visibility once
+        // for all its fields.
+        let values = &self.item_data(item).values;
+        let fields: Vec<(u32, &Field)> = instance_fields_in(self.signature(item), values).collect();
+        let seen = is_visible(self.db, item, self.scope);
         let visible: Vec<bool> = fields
             .iter()
-            .map(|&(index, _)| self.field_visible(item, index))
+            .map(|&(index, _)| {
+                let visibility = values[index as usize].visibility;
+                seen && member_reaches(self.db, item, visibility, self.scope)
+            })
             .collect();
         // Memberwise creation needs every required field visible (`MR0144`);
         // where one is hidden, that error replaces `MR0129` for the hidden

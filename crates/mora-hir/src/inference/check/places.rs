@@ -4,7 +4,7 @@
 
 use super::Check;
 use crate::arena::arena_index;
-use crate::bodies::{Expr, ExprId, LocalKind, Pat, Target};
+use crate::bodies::{Body, Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
 use crate::items::{ItemKind, ValueKind};
 use crate::resolve::{Resolved, members_named};
@@ -19,29 +19,16 @@ impl Check<'_> {
     /// a type keyword anywhere but as a receiver, as `int` in `int.Parse`.
     pub(super) fn types_as_values(&mut self) {
         let body = self.body;
-        // Whether each expression, by its index, stands where a type may.
-        let mut type_allowed = vec![false; body.exprs.len()];
-        for (_, node) in body.exprs.iter() {
-            match node {
-                Expr::Member { receiver, .. } => type_allowed[arena_index(*receiver)] = true,
-                Expr::Nameof(inner) => type_allowed[arena_index(*inner)] = true,
-                _ => {}
-            }
-        }
-        // A pattern tests for a type by its name, as `p is P`.
-        for (_, pat) in body.pats.iter() {
-            match pat {
-                Pat::Constant(expr) | Pat::Case { path: expr, .. } => {
-                    type_allowed[arena_index(*expr)] = true;
-                }
-                _ => {}
-            }
-        }
+        // Where a type may stand is looked up only once an expression names
+        // a type or is a type keyword, which most bodies have none of.
+        let mut type_allowed: Option<Vec<bool>> = None;
+        let mut allowed = |expr: ExprId| {
+            type_allowed.get_or_insert_with(|| type_positions(body))[arena_index(expr)]
+        };
         for (expr, node) in body.exprs.iter() {
-            let allowed = type_allowed[arena_index(expr)];
             match node {
                 Expr::Type(_) => {
-                    if !allowed {
+                    if !allowed(expr) {
                         self.errors.push(TypeError::TypeKeywordAsValue { expr });
                     }
                     continue;
@@ -50,12 +37,13 @@ impl Check<'_> {
                 Expr::Path(_) | Expr::Member { .. } => {}
                 _ => continue,
             }
-            if allowed && !self.member_of_value(expr) {
+            let Some(named) = self.named_type(expr) else {
+                continue;
+            };
+            if allowed(expr) && !self.member_of_value(expr) {
                 continue;
             }
-            if let Some(named) = self.named_type(expr) {
-                self.errors.push(TypeError::TypeAsValue { expr, named });
-            }
+            self.errors.push(TypeError::TypeAsValue { expr, named });
         }
     }
 
@@ -184,4 +172,28 @@ fn value_problem(kind: ValueKind) -> Option<NotAPlace> {
         ValueKind::Const => Some(NotAPlace::Constant),
         ValueKind::EnumMember | ValueKind::UnionCase => Some(NotAPlace::Case),
     }
+}
+
+/// Whether each expression of `body`, by its index, stands where a type
+/// may ([`Check::types_as_values`]): as the receiver of a member, as `P`
+/// in `P.Create()`, the operand of `nameof`, or a pattern, which tests for
+/// a type by its name, as `p is P`.
+fn type_positions(body: &Body) -> Vec<bool> {
+    let mut allowed = vec![false; body.exprs.len()];
+    for (_, node) in body.exprs.iter() {
+        match node {
+            Expr::Member { receiver, .. } => allowed[arena_index(*receiver)] = true,
+            Expr::Nameof(inner) => allowed[arena_index(*inner)] = true,
+            _ => {}
+        }
+    }
+    for (_, pat) in body.pats.iter() {
+        match pat {
+            Pat::Constant(expr) | Pat::Case { path: expr, .. } => {
+                allowed[arena_index(*expr)] = true;
+            }
+            _ => {}
+        }
+    }
+    allowed
 }
