@@ -5,8 +5,9 @@ use mora_hir::test_support::{TestDb, app, codes, file_named, item_named};
 use mora_hir::{
     BodyOwner, Expr, ExprId, ItemId, body, body_resolution, body_source_map, diagnostics,
 };
-use mora_span::{Project, SourceFile, TextRange, TextSize};
+use mora_span::{Dependency, Project, ProjectKind, SourceFile, TextRange, TextSize};
 
+use super::graph::{ConstGraph, const_graph};
 use super::scan::const_scan;
 use super::{ConstKey, const_read, constants, defaults};
 
@@ -139,6 +140,25 @@ impl Source {
             .iter()
             .map(|&expr| self.text(map.expr(expr)))
             .collect()
+    }
+
+    /// The read graph of the project.
+    fn graph(&self) -> &ConstGraph {
+        const_graph(&self.db, self.project)
+    }
+
+    /// The names of `keys`, in order.
+    fn names(&self, keys: &[ConstKey]) -> Vec<String> {
+        keys.iter()
+            .map(|key| key.name(&self.db, self.project))
+            .collect()
+    }
+
+    /// The names of the members of the cycle that holds `key`, and the
+    /// text of its first member's read of the second.
+    fn cycle(&self, key: ConstKey) -> Option<(Vec<String>, &str)> {
+        let cycle = self.graph().cycle_of(key)?;
+        Some((self.names(&cycle.members), self.text(cycle.read)))
     }
 
     /// The only default value of the file that needs evaluation.
@@ -504,4 +524,177 @@ fn keys_sort_constants_then_initializers_then_defaults_then_by_place() {
     assert_eq!(keys, vec![k, a, x, c, d]);
     let (kind, path, _) = x.sort_key(db);
     assert_eq!((kind, path.as_str()), (1, "src/Program.mr"));
+}
+
+#[test]
+fn a_direct_cycle_is_one_member() {
+    let source = unchecked("const A: int = A + 1;\n");
+    let a = source.constant("A");
+    assert_eq!(source.cycle(a), Some((vec!["A".to_owned()], "A")));
+    assert_eq!(
+        source.graph().cycle_of(a).map(|cycle| cycle.read),
+        Some(source.range_in("= A + 1", "A"))
+    );
+    assert_eq!(source.graph().order(), [a]);
+}
+
+#[test]
+fn a_cycle_through_two_constants_starts_at_the_first() {
+    let source = unchecked("const B: int = A;\nconst A: int = B;\n");
+    let expected = Some((vec!["B".to_owned(), "A".to_owned()], "A"));
+    assert_eq!(source.cycle(source.constant("A")), expected);
+    assert_eq!(source.cycle(source.constant("B")), expected);
+    assert_eq!(
+        source
+            .graph()
+            .cycle_of(source.constant("B"))
+            .map(|cycle| cycle.read),
+        Some(source.range_in("B: int = A", "A"))
+    );
+    // The members of one component are in the order of their sort keys.
+    assert_eq!(source.names(source.graph().order()), ["B", "A"]);
+}
+
+#[test]
+fn a_cycle_through_a_field_initializer() {
+    let source = unchecked("struct P {\n    public X: int = A.X;\n}\nconst A: P = new P {};\n");
+    let x = ConstKey::Initializer {
+        item: source.item("P"),
+        field: 0,
+    };
+    let expected = Some((vec!["A".to_owned(), "P.X".to_owned()], "new P {}"));
+    assert_eq!(source.cycle(source.constant("A")), expected);
+    assert_eq!(source.cycle(x), expected);
+}
+
+#[test]
+fn a_cycle_through_three_constants_follows_the_reads() {
+    let source = unchecked("const A: int = B;\nconst B: int = C;\nconst C: int = A;\n");
+    let expected = Some((vec!["A".to_owned(), "B".to_owned(), "C".to_owned()], "B"));
+    for name in ["A", "B", "C"] {
+        assert_eq!(source.cycle(source.constant(name)), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_cycle_starts_at_its_smallest_key_whatever_the_walk_reached_first() {
+    // The walk reaches `P.X` through `C` before it reaches `A`.
+    let source = unchecked(
+        "struct P {\n    public X: int = A.X;\n}\nconst C: P = new P {};\nconst A: P = new P {};\n",
+    );
+    assert_eq!(source.names(source.graph().order()), ["A", "P.X", "C"]);
+    assert_eq!(
+        source
+            .graph()
+            .cycle_of(source.constant("A"))
+            .map(|cycle| cycle.read),
+        Some(source.range_in("A: P = new P {}", "new P {}"))
+    );
+    assert_eq!(source.cycle(source.constant("C")), None);
+}
+
+#[test]
+fn every_member_of_a_component_maps_to_its_cycle() {
+    let source = unchecked("const A: int = B + C;\nconst B: int = A;\nconst C: int = A;\n");
+    let expected = Some((vec!["A".to_owned(), "B".to_owned()], "B"));
+    for name in ["A", "B", "C"] {
+        assert_eq!(source.cycle(source.constant(name)), expected, "{name}");
+    }
+    assert_eq!(source.names(source.graph().order()), ["A", "B", "C"]);
+}
+
+#[test]
+fn a_cycle_leaves_a_read_that_does_not_lead_back_to_its_start() {
+    // From `A`, `B` reads `C` first, which only leads back to `B`.
+    let source = unchecked("const A: int = B;\nconst B: int = C + A;\nconst C: int = B;\n");
+    let expected = Some((vec!["A".to_owned(), "B".to_owned()], "B"));
+    for name in ["A", "B", "C"] {
+        assert_eq!(source.cycle(source.constant(name)), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_cycle_follows_only_reads_inside_its_component() {
+    // `A` reads `D` first, which is outside the component.
+    let source = unchecked("const D: int = 1;\nconst A: int = D + B;\nconst B: int = D + A;\n");
+    assert_eq!(
+        source.cycle(source.constant("B")),
+        Some((vec!["A".to_owned(), "B".to_owned()], "B"))
+    );
+    assert_eq!(source.cycle(source.constant("D")), None);
+    assert_eq!(source.names(source.graph().order()), ["D", "A", "B"]);
+}
+
+#[test]
+fn a_self_read_inside_a_component_closes_the_cycle_at_once() {
+    let source = unchecked("const A: int = A + B;\nconst B: int = A;\n");
+    let expected = Some((vec!["A".to_owned()], "A"));
+    assert_eq!(source.cycle(source.constant("B")), expected);
+}
+
+#[test]
+fn the_order_puts_reads_first() {
+    let source = checked("const B: int = A + 1;\nconst A: int = 1;\n");
+    let graph = source.graph();
+    assert_eq!(graph.order(), [source.constant("A"), source.constant("B")]);
+    assert_eq!(graph.cycle_of(source.constant("A")), None);
+    assert_eq!(graph.cycle_of(source.constant("B")), None);
+}
+
+#[test]
+fn the_order_lists_constants_then_defaults_and_the_initializers_they_read() {
+    let source = checked(
+        "F(x: int = B) {}\nstruct P {\n    public X: int = A;\n}\nconst B: int = 1;\nconst C: P = new P {};\nconst A: int = 2;\n",
+    );
+    assert_eq!(
+        source.names(source.graph().order()),
+        ["B", "A", "P.X", "C", "the default value of x in F"]
+    );
+}
+
+#[test]
+fn the_order_leaves_out_constants_of_other_projects() {
+    let db = TestDb::new();
+    let util = db.project(
+        "util",
+        ProjectKind::Lib,
+        &[("src/Lib.mr", "public const K: int = 1;\n")],
+        Vec::new(),
+    );
+    let project = db.project(
+        "users-api",
+        ProjectKind::App,
+        &[("src/Program.mr", "const A: int = Util.K;\n")],
+        vec![Dependency {
+            name: "Util".to_owned(),
+            project: util,
+        }],
+    );
+    assert_eq!(codes(diagnostics(&db, project)), Vec::<String>::new());
+    let file = file_named(&db, project, "src/Program.mr");
+    let source = Source { db, project, file };
+    let a = source.constant("A");
+    let reads = &const_scan(&source.db, project, a).reads;
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].0, util);
+    assert_eq!(source.graph().order(), [a]);
+}
+
+#[test]
+fn a_long_chain_builds_without_recursion() {
+    const LENGTH: usize = 2_000;
+    let text: String = (0..LENGTH)
+        .map(|i| {
+            if i + 1 == LENGTH {
+                format!("const C{i}: int = 1;\n")
+            } else {
+                format!("const C{i}: int = C{} + 1;\n", i + 1)
+            }
+        })
+        .collect();
+    let source = unchecked(&text);
+    let order = source.graph().order();
+    assert_eq!(order.len(), LENGTH);
+    assert_eq!(order[0], source.constant(&format!("C{}", LENGTH - 1)));
+    assert_eq!(order[LENGTH - 1], source.constant("C0"));
 }

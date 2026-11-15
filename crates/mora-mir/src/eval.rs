@@ -12,6 +12,7 @@
     expect(dead_code, reason = "the interpreter that calls it comes next")
 )]
 mod arith;
+pub(crate) mod graph;
 pub(crate) mod scan;
 
 use mora_hir::{
@@ -34,10 +35,6 @@ pub(crate) enum ConstKey {
     Initializer { item: ItemId, field: u32 },
     /// The default value `default` of a parameter of a function or local
     /// function of `owner`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the interpreter that calls it comes next")
-    )]
     Default {
         file: SourceFile,
         owner: BodyOwner,
@@ -104,10 +101,6 @@ impl ConstKey {
     ///
     /// When no parameter of a default's owner has it, which only a
     /// compiler bug can cause.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the interpreter that calls it comes next")
-    )]
     pub(crate) fn name(self, db: &dyn Db, project: Project) -> String {
         let file = self.file();
         let owner = self.owner(db);
@@ -127,10 +120,6 @@ impl ConstKey {
     /// The order keys are reported in: constants first, then initializers,
     /// then defaults; then by the path of the file; then by where the
     /// expression it evaluates starts.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the interpreter that calls it comes next")
-    )]
     pub(crate) fn sort_key(self, db: &dyn Db) -> (u8, String, TextSize) {
         let kind = match self {
             ConstKey::Constant { .. } => 0,
@@ -147,10 +136,6 @@ impl ConstKey {
 
 /// The parameter whose default value is `default`, among those of the
 /// body and of its local functions.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the interpreter that calls it comes next")
-)]
 fn default_param(hir: &mora_hir::Body, default: ExprId) -> Option<LocalId> {
     all_defaults(hir)
         .find(|&(_, expr)| expr == default)
@@ -159,10 +144,6 @@ fn default_param(hir: &mora_hir::Body, default: ExprId) -> Option<LocalId> {
 
 /// The default values of the parameters of the body and of its local
 /// functions, each with its parameter; those of lambdas are not among them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the interpreter that calls it comes next")
-)]
 fn all_defaults(hir: &mora_hir::Body) -> impl Iterator<Item = (LocalId, ExprId)> + '_ {
     let functions = hir
         .stmts
@@ -208,10 +189,6 @@ pub(crate) fn const_read(
 }
 
 /// The constants of `file`, in the order of [`body_owners`].
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the interpreter that calls it comes next")
-)]
 pub(crate) fn constants(db: &dyn Db, file: SourceFile) -> Vec<ConstKey> {
     let tree = item_tree(db, file);
     body_owners(db, file)
@@ -236,10 +213,6 @@ pub(crate) fn constants(db: &dyn Db, file: SourceFile) -> Vec<ConstKey> {
 /// functions, methods and local functions for which [`constant`] gives no
 /// value, in the order of the text. The defaults of lambdas are not among
 /// them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the interpreter that calls it comes next")
-)]
 pub(crate) fn defaults(db: &dyn Db, project: Project, file: SourceFile) -> Vec<ConstKey> {
     let mut found = Vec::new();
     for owner in body_owners(db, file) {
