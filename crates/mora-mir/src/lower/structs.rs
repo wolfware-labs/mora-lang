@@ -2,7 +2,6 @@
 //! (§6.2, §6.9).
 
 use mora_hir::{Arg, BodyOwner, Creation, ExprId, Field, ItemId, body, creation, instance_fields};
-use mora_span::Db;
 
 use super::expr::Dest;
 use super::{Lowered, Lowerer};
@@ -101,12 +100,4 @@ impl Lowerer<'_> {
         let member = self.expect(member, expr, what);
         self.field_place(expr, self.this_place(expr), &member.name)
     }
-}
-
-/// The instance field of the struct `item` whose initializer is the body
-/// of the value member at `index`.
-pub(super) fn field_of_value(db: &dyn Db, item: ItemId, index: u32) -> Option<&Field> {
-    instance_fields(db, item)
-        .find(|&(member, _)| member == index)
-        .map(|(_, field)| field)
 }

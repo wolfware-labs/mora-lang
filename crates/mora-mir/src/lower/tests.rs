@@ -3550,8 +3550,104 @@ fn a_captured_this_is_borrowed_after_the_arguments() {
     assert!(code[call].contains("(copy _"), "{code:#?}");
 }
 
+#[test]
+fn a_constant_initializer_lowers_to_a_body() {
+    let lowered = lowered("const S: string = \"ab\" + \"cd\";\n");
+    assert_eq!(lowered.bodies("S"), ["UsersApi.S"]);
+    assert_eq!(lowered.code("S"), ["_0 = \"ab\" + \"cd\";", "return;"]);
+}
+
+#[test]
+fn a_struct_constant_calls_the_initializers_it_leaves_out() {
+    let lowered = lowered(
+        "struct P {\n    public X: int = 1;\n    public Y: int;\n}\n\
+         const C: P = new P { Y = 2 };\n",
+    );
+    assert_in_order(
+        &lowered.code("C"),
+        &[
+            "_1 = call UsersApi.P{struct UsersApi.P}.X{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(copy _1, 2);",
+            "return;",
+        ],
+    );
+}
+
+#[test]
+fn a_member_constant_lowers() {
+    let lowered = lowered("struct P {\n    public X: int;\n    public const K: int = 2 * 3;\n}\n");
+    let mut out = String::new();
+    let constant = lowered.mir_of(lowered.initializer("P", "K"));
+    write_mir(&mut out, &lowered.db, Some(lowered.file), constant);
+    assert!(out.starts_with("fn UsersApi.P.K() -> int {"), "{out}");
+    assert_eq!(code(&out), ["_0 = 6;", "return;"]);
+}
+
+#[test]
+fn a_default_value_lowers_to_a_body() {
+    // The written cast makes the value an `int`, which is passed as the
+    // `long` of the parameter.
+    let lowered = lowered("O(x: long = (int)((1 > 0) ? 2 : 3)) {}\n");
+    let owner = lowered.owner("O");
+    let hir = body(&lowered.db, lowered.file, owner);
+    let [(_, default)] = hir.defaults[..] else {
+        panic!("one default: {:?}", hir.defaults);
+    };
+    let mir =
+        super::consts::default_mir(&lowered.db, lowered.project, lowered.file, owner, default);
+    assert_eq!(validate(&lowered.db, mir, false), Ok(()));
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), mir);
+    assert!(
+        out.starts_with("fn UsersApi.O: a default value() -> long {"),
+        "{out}"
+    );
+    assert_eq!(
+        code(&out),
+        [
+            "storage_live(_1);",
+            "storage_live(_2);",
+            "_2 = 1 > 0;",
+            "switch copy _2 [false -> bb2] otherwise bb1;",
+            "storage_dead(_2);",
+            "_1 = 2;",
+            "goto bb3;",
+            "storage_dead(_2);",
+            "_1 = 3;",
+            "goto bb3;",
+            "storage_live(_3);",
+            "_3 = (int)copy _1;",
+            "_0 = (implicit long)copy _3;",
+            "storage_dead(_3);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn a_default_value_passes_as_its_conversion() {
+    let lowered = lowered("O(x: long = (int)2, y: int = 3, z: long = 4) {}\n");
+    let owner = lowered.owner("O");
+    let hir = body(&lowered.db, lowered.file, owner);
+    let inference = mora_hir::infer(&lowered.db, lowered.project, lowered.file, owner);
+    let tys: Vec<Option<mora_hir::Ty>> = hir
+        .defaults
+        .iter()
+        .map(|&(_, default)| super::consts::default_ty(inference, default))
+        .collect();
+    assert_eq!(
+        tys,
+        [
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Long)),
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Int)),
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Long)),
+        ]
+    );
+}
+
 /// A struct with a member of each kind that a later milestone lowers, and
-/// a function that this one lowers.
+/// a constant and a function that this one lowers.
 const LOWERED_LATER: &str = "struct P {\n    public X: int;\n    public Get: int => X;\n    \
      public static S: int = 1;\n    public const C: int = 2;\n    \
      public P(x: int) { X = x; }\n    \
@@ -3562,12 +3658,15 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
     let lowered = lowered(LOWERED_LATER);
     let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
     let one = lowered.dump("One");
+    let mut constant = String::new();
+    let c = lowered.mir_of(lowered.initializer("P", "C"));
+    write_mir(&mut constant, &lowered.db, Some(lowered.file), c);
     assert_eq!(
         dump,
         format!(
             "// UsersApi.P.Get: not lowered until M2.1\n\n\
              // UsersApi.P.S: not lowered until M3.13\n\n\
-             // UsersApi.P.C: not lowered until M1.11\n\n\
+             {constant}\n\
              // UsersApi.P: not lowered until M2.1\n\n\
              // UsersApi.P.-: not lowered until M3.6\n\n\
              {one}"
@@ -3674,11 +3773,6 @@ fn every_owner_lowered_later_names_its_milestone() {
         ),
         (
             LOWERED_LATER,
-            |l| l.initializer("P", "C"),
-            "UsersApi.P.C: the initializer of a constant is not lowered until M1.11",
-        ),
-        (
-            LOWERED_LATER,
             |l| l.member("P", 0),
             "UsersApi.P: a constructor is not lowered until M2.1",
         ),
@@ -3734,9 +3828,14 @@ fn every_owner_lowered_later_names_its_milestone() {
             "extension#0.Twice: an extension member is not lowered until M3.12",
         ),
         (
-            "const K: int = 1;\n",
-            |l| l.owner("K"),
-            "UsersApi.K: the initializer of a constant is not lowered until M1.11",
+            "class C {\n    const K: int = 1;\n}\n",
+            |l| l.initializer("C", "K"),
+            "UsersApi.C.K: the initializer of a constant of a class is not lowered until M2.1",
+        ),
+        (
+            "const A: int = 1;\nconst B: int = A;\n",
+            |l| l.owner("B"),
+            "UsersApi.B: a constant is not lowered until M1.11",
         ),
         (
             "static S: int = 1;\n",

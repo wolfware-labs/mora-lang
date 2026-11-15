@@ -368,11 +368,11 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
 /// and the members of built-in types and of their values; extension blocks,
 /// with the smaller expressions, bring members a struct does not declare.
 /// Options bring `?.`, `??` and `none`, operators an index of a number or a
-/// tuple, dynamic interface values `as`, and constant evaluation an array
-/// creation and a constant declared in a namespace. Positional structs
-/// bring `with`, patterns `match` and `is`, results `?`, strings an index
-/// of a string (`MR0130`) and the ordering of strings, interfaces the
-/// ordering of structs, both through `IComparable<T>` (§8.5), enumeration
+/// tuple, dynamic interface values `as`, shared objects an array creation,
+/// and constant evaluation a constant declared in a namespace. Positional
+/// structs bring `with`, patterns `match` and `is`, results `?`, strings
+/// an index of a string (`MR0130`) and the ordering of strings, interfaces
+/// the ordering of structs, both through `IComparable<T>` (§8.5), enumeration
 /// `foreach`, expansion a quote, a splice or a macro call, and async
 /// lowering `await`. Parameter modes bring a `ref` argument, and the
 /// receiver of a `mut` method, that is not a place, which they report
@@ -1192,17 +1192,14 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
                 }
                 // Besides functions, only a constant or a static at
                 // namespace level owns an item body.
-                _ if data.is_static => ("the initializer of a static".to_owned(), STATICS),
-                _ => (
-                    "the initializer of a constant".to_owned(),
-                    CONSTANT_EVALUATION,
-                ),
+                _ if data.is_static => ("the initializer of a static".to_owned(), Some(STATICS)),
+                _ => ("the initializer of a constant".to_owned(), None),
             };
             let types = match sig {
                 Signature::Value(ty) => vec![ty.clone()],
                 _ => Vec::new(),
             };
-            (what, Some(own), types)
+            (what, own, types)
         }
         BodyOwner::Value(ty, index) => {
             let data = tree.item(ty);
@@ -1219,10 +1216,13 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
                     ),
                     None => ("the initializer of a field".to_owned(), None),
                 },
-                ValueKind::Const => (
-                    "the initializer of a constant".to_owned(),
-                    Some(CONSTANT_EVALUATION),
-                ),
+                ValueKind::Const => match parent_later(data.kind) {
+                    Some(parent) => (
+                        format!("the initializer of a constant of {}", parent.what),
+                        Some(parent.milestone),
+                    ),
+                    None => ("the initializer of a constant".to_owned(), None),
+                },
                 ValueKind::Getter => match parent_later(data.kind) {
                     Some(parent) if data.kind != ItemKind::Class => (
                         format!("a getter of {}", parent.what),

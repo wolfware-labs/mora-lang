@@ -24,6 +24,7 @@
 //! a `return`, and no jump starts there: such code ends in `unreachable`.
 
 mod calls;
+mod consts;
 mod control;
 pub(crate) mod expr;
 pub(crate) mod later;
@@ -35,9 +36,9 @@ use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Stmt,
-    StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known, owner_name,
-    signature, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Signature,
+    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known,
+    owner_name, signature, struct_field, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
@@ -551,15 +552,18 @@ impl<'a> Owner<'a> {
         let root = self.expect(self.hir.root, "the body has no code");
         let (ret, this, params) = match owner {
             BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
-            BodyOwner::Item(item) => self.function_signature(self.item(item)),
+            BodyOwner::Item(item) => match signature(self.db, self.item(item)) {
+                Signature::Value(ty) => (ty.clone(), None, Vec::new()),
+                _ => self.function_signature(self.item(item)),
+            },
             BodyOwner::Value(ty, index) => {
-                let field = structs::field_of_value(self.db, self.item(ty), index);
-                let field = self.expect(field, "only the initializer of a field is lowered");
+                let field = struct_field(self.db, self.item(ty), index);
+                let what = "only the initializer of a field or a constant is lowered";
+                let (_, field) = self.expect(field, what);
                 (field.ty.clone(), None, Vec::new())
             }
-            _ => self.fail(
-                "only functions, methods, field initializers and top-level statements are lowered",
-            ),
+            _ => self
+                .fail("only functions, methods, initializers and top-level statements are lowered"),
         };
         let params = self.hir.params.iter().copied().zip(params).collect();
         BodyShape {
