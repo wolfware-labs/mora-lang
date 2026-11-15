@@ -59,6 +59,11 @@ pub(super) const CONSTANT_EVALUATION: Milestone = Milestone {
     phase: 1,
     number: 11,
 };
+/// M2.3, shared objects and reference counts in the runtime.
+const SHARED_OBJECTS: Milestone = Milestone {
+    phase: 2,
+    number: 3,
+};
 /// M1.15, the standard library bootstrap.
 const STD_BOOTSTRAP: Milestone = Milestone {
     phase: 1,
@@ -417,7 +422,7 @@ fn expressions_later(
             {
                 ("a member of a value of a built-in type", STD_BOOTSTRAP)
             }
-            Expr::NewArray { .. } => ("an array creation", CONSTANT_EVALUATION),
+            Expr::NewArray { .. } => ("an array creation", SHARED_OBJECTS),
             Expr::With { .. } => ("`with`", POSITIONAL_STRUCTS),
             // Inference types no member of a tuple yet.
             Expr::Member { receiver, .. }
@@ -1464,7 +1469,7 @@ impl<'a> TypeWalk<'a> {
 /// The milestone that lowers a type made with `construct`.
 fn construct_later(construct: Construct) -> Kind {
     let milestone = match construct {
-        Construct::Array => CONSTANT_EVALUATION,
+        Construct::Array => SHARED_OBJECTS,
         Construct::External => STD_BOOTSTRAP,
         Construct::Class => CLASSES,
         Construct::Weak => WEAK_REFERENCES,

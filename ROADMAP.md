@@ -335,11 +335,11 @@ Done when:
 
 Spec: [§4.7](docs/design/mora.md#47-static-state), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-mir`. Blocked by: M1.10.
 
-A MIR interpreter for `const` values, `static mut` initializers and default parameter values with the subset of §14.6 and `MR0460` outside it.
+A MIR interpreter for `const` values and default parameter values with the subset of §14.6 and `MR0460` outside it.
 
 Done when:
 
-- Run tests using constants in array sizes, defaults and string concatenation.
+- Run tests using constants used as array sizes (the evaluated size; `new` itself lowers in M2.3), defaults and string concatenation.
 - A UI test for `MR0460`.
 
 ### M1.12 Cranelift code generation
@@ -515,6 +515,7 @@ Done when:
 - Releasing a linked list of 1,000,000 nodes does not overflow the stack.
 - Retaining an immortal object never writes to it (the test places one in read-only memory).
 - Layout unit tests compute every header, string, array and union layout for both the 64-bit targets and the 32-bit test description.
+- MIR lowers array creation `new T[n]` and signatures with an array type.
 
 ### M2.4 Parameter modes and `this`
 
@@ -828,7 +829,7 @@ Done when:
 
 Spec: [§4.7](docs/design/mora.md#47-static-state), [§6.10](docs/design/mora.md#610-constants-and-statics). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
 
-`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut`, and `MR0155` for a static member named through a value (§6.10).
+`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut` with its initializers evaluated at compile time, and `MR0155` for a static member named through a value (§6.10).
 
 Done when:
 

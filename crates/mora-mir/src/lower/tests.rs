@@ -3128,7 +3128,7 @@ fn later_expressions_and_statements_come_with_their_milestone() {
                 E() {\n    foreach (let c in \"ab\") {\n    }\n}\n\
                 G(n: int) {\n    #Assert(n > 0);\n}\n";
     for (name, what, milestone) in [
-        ("A", "an array creation", "M1.11"),
+        ("A", "an array creation", "M2.3"),
         ("B", "`with`", "M2.2"),
         ("C", "an element of a tuple", "M3.12"),
         ("D", "an index of a string", "M5.2"),
@@ -3606,8 +3606,8 @@ fn mir_dump_writes_a_line_for_each_signature_lowered_later() {
              // UsersApi.S.X: not lowered until M2.1\n\n\
              // UsersApi.ClassParam: not lowered until M2.1\n\n\
              // UsersApi.ClassReturn: not lowered until M2.1\n\n\
-             // UsersApi.ArrayParam: not lowered until M1.11\n\n\
-             // UsersApi.TupleParam: not lowered until M1.11\n\n\
+             // UsersApi.ArrayParam: not lowered until M2.3\n\n\
+             // UsersApi.TupleParam: not lowered until M2.3\n\n\
              // UsersApi.OptionParam: not lowered until M3.5\n\n\
              // UsersApi.FuncParam: not lowered until M2.11\n\n\
              // UsersApi.GenericParam: not lowered until M3.9\n\n\
@@ -3836,12 +3836,12 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "F(a: int[]) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "F(t: (int, int[])) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "F(a: int?) {}\n",
@@ -3936,12 +3936,12 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "F(): int[] => Todo();\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "class C {}\nF(a: int[], c: C) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "class C {}\nF(c: C, d: C) {\n    G(e: C) {}\n}\n",
@@ -3951,7 +3951,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "class C {}\nF(t: (int[], C)) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "struct B<T> {}\nF(a: B<int>[]) {}\n",
@@ -3976,7 +3976,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "class C {}\nF() {\n    G(a: int[]) {}\n    H(c: C) {}\n    K(d: C) {}\n}\n",
             |l| l.owner("F"),
-            "UsersApi.F: the local function `H` with a class type in its signature is not lowered until M2.1",
+            "UsersApi.F: the local function `G` with an array type in its signature is not lowered until M2.3",
         ),
         (
             "struct B<T> {\n    struct In {\n        public X: T;\n        M(): int {\n            let a = this;\n            return 1;\n        }\n    }\n}\n",
@@ -4072,7 +4072,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "struct S {\n    public s: S[];\n}\nF(s: S): int => 1;\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "struct S {\n    public c: int?;\n}\nF() {\n    G(s: S) {}\n}\n",
@@ -4200,7 +4200,7 @@ fn every_owner_lowered_later_names_its_milestone() {
              Look(in x: int) {}\nF(ps: P[], xs: int[]) {\n    ps[0].Show();\n    \
              Look(in xs[0]);\n}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
     ];
     for &(text, owner, message) in cases {
