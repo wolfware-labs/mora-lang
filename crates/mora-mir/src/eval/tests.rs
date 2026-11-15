@@ -8,7 +8,7 @@ use mora_hir::{
 };
 use mora_span::{Dependency, FileId, Project, ProjectKind, SourceFile, Span, TextRange, TextSize};
 
-use super::arith::ArithError;
+use super::arith::{ArithError, MAX_STRING_BYTES};
 use super::graph::{ConstGraph, const_graph};
 use super::interp::{Failure, Stop, run};
 use super::scan::const_scan;
@@ -277,7 +277,7 @@ fn int_operand(value: i128) -> Operand {
 
 /// What a run of a hand-built body gives, with no field initializer.
 fn run_hand_built(body: &Body) -> Result<ConstValue, Stop> {
-    let db = mora_hir::test_support::TestDb::new();
+    let db = TestDb::new();
     run(&db, body, &mut |_, _| None)
 }
 
@@ -907,7 +907,20 @@ fn run_stops_at_a_failed_operation() {
         "const F: long = 9223372036854775807L + 1L;\n\
          const G: long = 1L % (2L - 2L);\n\
          const H: int = -((int)(-2147483648L));\n\
-         const N: nint = (nint)1099511627776L;\n",
+         const N: nint = (nint)1099511627776L;\n\
+         const X: long = (9223372036854775806L + 2L) * 2L;\n",
+    );
+    assert_eq!(
+        source.failure("X"),
+        Failure {
+            range: source.range_in(
+                "(9223372036854775806L + 2L) * 2L",
+                "9223372036854775806L + 2L"
+            ),
+            error: ArithError::Overflow,
+            ty: Ty::Primitive(Primitive::Long),
+            operation: "9223372036854775806 + 2".to_owned(),
+        }
     );
     assert_eq!(
         source.failure("F"),
@@ -1116,7 +1129,7 @@ fn copy_to_return(place: Place) -> StatementKind {
 }
 
 /// Each form a body that constant evaluation runs never holds, after
-/// `_1 = (1,)`, and what the panic it gives says.
+/// `_1 = (1,)` and `_2 = (1, 2)`, and what the panic it gives says.
 fn unsupported_forms() -> Vec<(StatementKind, TerminatorKind, &'static str)> {
     use Projection::{Deref, Field};
     let ret = TerminatorKind::Return;
@@ -1153,10 +1166,14 @@ fn unsupported_forms() -> Vec<(StatementKind, TerminatorKind, &'static str)> {
         ),
         (
             to_return(Rvalue::Binary(BinOp::Lt, whole(), whole())),
-            "`<` on aggregates",
+            "`<` on an aggregate",
         ),
         (
             to_return(Rvalue::Binary(BinOp::Eq, whole(), int_operand(1))),
+            "`==` on values of different shapes",
+        ),
+        (
+            to_return(Rvalue::Binary(BinOp::Eq, whole(), Operand::Copy(local(2)))),
             "`==` on values of different shapes",
         ),
         (
@@ -1189,11 +1206,13 @@ fn unsupported_forms() -> Vec<(StatementKind, TerminatorKind, &'static str)> {
 #[test]
 fn run_panics_on_what_constant_evaluation_never_runs() {
     for (statement, terminator, what) in unsupported_forms() {
-        let tuple = Rvalue::Aggregate(AggregateKind::Tuple, vec![int_operand(1)]);
-        let body = hand_built(
-            2,
-            vec![block(vec![assign(local(1), tuple), statement], terminator)],
-        );
+        let tuple = |parts: Vec<Operand>| Rvalue::Aggregate(AggregateKind::Tuple, parts);
+        let prelude = vec![
+            assign(local(1), tuple(vec![int_operand(1)])),
+            assign(local(2), tuple(vec![int_operand(1), int_operand(2)])),
+            statement,
+        ];
+        let body = hand_built(3, vec![block(prelude, terminator)]);
         let panic = std::panic::catch_unwind(|| run_hand_built(&body)).expect_err(what);
         let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
         assert_eq!(
@@ -1266,4 +1285,26 @@ fn run_compares_aggregates_with_eq_and_ne() {
     assert_eq!(run_hand_built(&compare(BinOp::Eq, 3)), Ok(boolean(false)));
     assert_eq!(run_hand_built(&compare(BinOp::Ne, 2)), Ok(boolean(false)));
     assert_eq!(run_hand_built(&compare(BinOp::Ne, 3)), Ok(boolean(true)));
+}
+
+#[test]
+fn run_gives_the_lengths_of_a_concatenation_too_long_to_keep() {
+    let long = "a".repeat(MAX_STRING_BYTES - 1);
+    let string = |text: &str| Operand::Const(Const::String(text.to_owned()));
+    let body = hand_built(
+        1,
+        vec![block(
+            vec![to_return(Rvalue::Binary(
+                BinOp::Add,
+                string(&long),
+                string("bc"),
+            ))],
+            TerminatorKind::Return,
+        )],
+    );
+    let Err(Stop::Failed(failure)) = run_hand_built(&body) else {
+        panic!("the concatenation fails");
+    };
+    assert_eq!(failure.error, ArithError::TooLong(MAX_STRING_BYTES + 1));
+    assert_eq!(failure.operation, "<16777215 bytes> + <2 bytes>");
 }

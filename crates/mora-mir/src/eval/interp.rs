@@ -26,7 +26,9 @@ pub(crate) struct Failure {
     pub(crate) error: ArithError,
     /// The type of its result.
     pub(crate) ty: Ty,
-    /// The operation with its operands' values, as code writes it.
+    /// The operation with its operands' values, as code writes it; a
+    /// concatenation too long to keep ([`ArithError::TooLong`]) gives the
+    /// length of each operand instead, as in `<16777215 bytes> + <2 bytes>`.
     pub(crate) operation: String,
 }
 
@@ -169,14 +171,19 @@ impl Machine<'_> {
             (ConstValue::Scalar(left), ConstValue::Scalar(right)) => arith::binary(op, left, right)
                 .map(ConstValue::Scalar)
                 .map_err(|error| {
-                    let text = format!("{} {} {}", constant(left), op.text(), constant(right));
+                    let text = match (error, left, right) {
+                        (ArithError::TooLong(_), Const::String(left), Const::String(right)) => {
+                            format!("<{} bytes> + <{} bytes>", left.len(), right.len())
+                        }
+                        _ => format!("{} {} {}", constant(left), op.text(), constant(right)),
+                    };
                     (error, text)
                 }),
             _ => {
                 let equal = match op {
                     BinOp::Eq => true,
                     BinOp::Ne => false,
-                    _ => self.internal(&format!("`{}` on aggregates", op.text())),
+                    _ => self.internal(&format!("`{}` on an aggregate", op.text())),
                 };
                 Ok(ConstValue::Scalar(Const::Bool(
                     self.equal(left, right) == equal,
