@@ -485,7 +485,7 @@ const OPERATOR_NOT_LOWERED: &str = "the operator is not lowered";
 
 /// The constant `expr` of `hir` stands for: a literal, or an operation
 /// on literals, whose value inference records for a number.
-pub(super) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId) -> Option<Const> {
+pub(crate) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId) -> Option<Const> {
     let ty = inference.expr(expr)?;
     if let Ty::Primitive(primitive) = ty
         && let Some(value) = inference.constant(expr).or(inference.literal(expr))

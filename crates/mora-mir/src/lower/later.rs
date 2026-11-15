@@ -956,7 +956,7 @@ fn unresolved_later(
 
 /// Whether `expr` is a value of the standard library: a path into it, a
 /// member of one, or a call of one of its functions.
-pub(super) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId) -> bool {
+pub(crate) fn from_library(hir: &Body, resolution: &BodyResolution, expr: ExprId) -> bool {
     match &hir.exprs[expr] {
         Expr::Path(_) => resolution.is_external(expr),
         Expr::Member { receiver, .. } => from_library(hir, resolution, *receiver),

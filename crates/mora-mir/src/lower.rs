@@ -25,8 +25,8 @@
 
 mod calls;
 mod control;
-mod expr;
-mod later;
+pub(crate) mod expr;
+pub(crate) mod later;
 mod local;
 mod structs;
 
