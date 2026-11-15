@@ -38,9 +38,10 @@ exclude_re = [
     # single-candidate path uses; the guard only skips that work.
     '^crates/mora-hir/src/inference/check/call\.rs:191:56: replace && with \|\| in Check<.a>::call$',
     '^crates/mora-hir/src/inference/check/call\.rs:191:52: replace > with >= in Check<.a>::call$',
-    # The placeholder compiler has no backends either way.
-    '^crates/mora-testkit/src/compiler\.rs:52:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
-    '^crates/mora-testkit/src/compiler\.rs:144:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    # Neither compiler has a backend yet: `&[]` and a leaked empty `Vec` are
+    # the same empty slice.
+    '^crates/mora-testkit/src/compiler\.rs:59:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    '^crates/mora-testkit/src/compiler\.rs:152:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     # Where the lines differ, `common[i][j]` is the larger of the two
     # entries the diff compares, so comparing with it picks the same side.
     '^crates/mora-testkit/src/diff\.rs:34:87: replace \+ with \* in diff$',

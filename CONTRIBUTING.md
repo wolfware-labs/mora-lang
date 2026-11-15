@@ -31,7 +31,7 @@ These are the checks CI runs on every pull request (§20.5 of the spec). They ar
 | Spec and error-page examples | `cargo xtask spec-examples` |
 | Generated syntax code (§14.4): `SyntaxKind` and the AST views, from `crates/mora-syntax/mora.ungram` and §3.4 | `cargo xtask codegen`; CI runs `cargo xtask codegen --check` |
 | Test coverage (§20.5) | `cargo llvm-cov --workspace --open` after `cargo install cargo-llvm-cov` and `rustup component add llvm-tools`; CI uploads it to Codecov |
-| Mutation testing (§20.5) | `git diff origin/main... > pr.diff && cargo mutants --in-diff pr.diff`, after `cargo install cargo-mutants`; CI runs it on every pull request, and a surviving mutant fails it |
+| Mutation testing (§20.5) | `git diff origin/main... > pr.diff && cargo mutants --in-diff pr.diff`, after `cargo install cargo-mutants`; the mutation check on every pull request runs it, and a surviving mutant fails it |
 | Parser fuzzing (§20.1) | `cargo +nightly fuzz run parse` in `fuzz/`, after `cargo install cargo-fuzz`; the nightly workflow runs it for 10 minutes from the parser test files |
 | Error-code registry | `cargo xtask error-codes` |
 | Runtime libraries (§13.2) | `cargo xtask runtime --test` for the host; CI builds and tests every hosted target. Set `CC` to a C compiler for the target, such as `musl-gcc` for `x86_64-unknown-linux-musl`, and `CFLAGS` to any flags it needs, such as `-arch x86_64` for `x86_64-apple-darwin` on an arm64 Mac |

@@ -1,0 +1,48 @@
+name: Roadmap dispatch
+
+# Asks mora-docs to rebuild the site when the roadmap it shows may have
+# changed: an issue in a milestone, an issue labelled explore, or a milestone.
+on:
+  issues:
+    types: [opened, edited, closed, reopened, deleted, transferred, milestoned, demilestoned, labeled, unlabeled]
+  milestone:
+    types: [created, edited, closed, opened, deleted]
+
+permissions: {}
+
+# A burst of changes (closing a milestone's last issues) sends one dispatch:
+# each new run cancels the waiting one, and only the last finishes its wait.
+concurrency:
+  group: roadmap-dispatch
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    # Anyone can open an issue, but only maintainers set milestones and
+    # labels, so issues outside the roadmap never trigger a rebuild.
+    if: >-
+      github.event_name == 'milestone' ||
+      github.event.issue.milestone != null ||
+      github.event.action == 'demilestoned' ||
+      contains(github.event.issue.labels.*.name, 'explore') ||
+      github.event.label.name == 'explore'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wait for more changes
+        run: sleep 60
+      # The mora-docs bot app is installed on mora-docs only. The token is
+      # scoped to it and expires with the job.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        with:
+          client-id: ${{ vars.DOCS_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.DOCS_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: mora-docs
+          permission-contents: write
+      - name: Ask mora-docs to rebuild
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: gh api "repos/$OWNER/mora-docs/dispatches" -f event_type=roadmap-changed
