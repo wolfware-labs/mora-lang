@@ -37,7 +37,7 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::calls::default_of;
 use super::expr::constant;
-use crate::eval::{Evaluated, const_read, const_target, const_value};
+use crate::eval::{ConstKey, Evaluated, const_read, const_target, const_value};
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -55,11 +55,6 @@ impl fmt::Display for Milestone {
     }
 }
 
-/// M1.11, constant evaluation.
-pub(super) const CONSTANT_EVALUATION: Milestone = Milestone {
-    phase: 1,
-    number: 11,
-};
 /// M2.3, shared objects and reference counts in the runtime.
 const SHARED_OBJECTS: Milestone = Milestone {
     phase: 2,
@@ -318,10 +313,10 @@ fn later_with(
 
 /// The milestone that lowers the body of `owner` for a call of a function,
 /// a method or a local function that leaves out an argument whose default
-/// value is not a constant that lowering reads ([`constant`]): a literal,
-/// or an operation on literals whose value inference records. Constant
-/// evaluation computes any other default. `None` when every call that
-/// leaves out an argument takes a constant.
+/// value waits for a later milestone: the latest of those the defaults
+/// that constant evaluation computes wait for ([`const_value`]). A
+/// literal default, or one constant evaluation gives a value or an error
+/// for, decides nothing. `None` when no call waits.
 fn defaults_later(
     db: &dyn Db,
     project: Project,
@@ -330,24 +325,34 @@ fn defaults_later(
 ) -> Option<Later> {
     let hir = body(db, file, owner);
     let inference = infer(db, project, file, owner);
-    hir.exprs
-        .iter()
-        .any(|(id, _)| omits_evaluated_default(db, hir, inference, id))
-        .then(|| {
-            Later::new(
-                "a call that leaves out a default that needs evaluation",
-                CONSTANT_EVALUATION,
-            )
-        })
+    let here = (project, file, owner);
+    latest(
+        hir.exprs
+            .iter()
+            .map(|(id, _)| omitted_default_later(db, here, hir, inference, id)),
+    )
+    .map(|later| {
+        Later::new(
+            "a call that leaves out a default that needs evaluation",
+            later.milestone,
+        )
+    })
 }
 
-/// Whether `call`, a call that inference checked in the body `hir`, leaves
-/// out an argument whose default value is not a [`constant`]. The callee's
-/// body is read only when the call leaves out an argument, so an edit
-/// inside it puts off only the callers that take a default.
-fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call: ExprId) -> bool {
+/// What the latest of the default values that `call` leaves out waits
+/// for, `call` being a call that inference checked in the body `hir` of
+/// `here`. The callee's body is read only when the call leaves out an
+/// argument, so an edit inside it puts off only the callers that take a
+/// default.
+fn omitted_default_later(
+    db: &dyn Db,
+    here: (Project, SourceFile, BodyOwner),
+    hir: &Body,
+    inference: &Inference,
+    call: ExprId,
+) -> Option<Later> {
     let (Some(callee), Some(bound)) = (inference.callee(call), inference.arguments(call)) else {
-        return false;
+        return None;
     };
     let local = |local| {
         hir.stmts.iter().find_map(|(_, stmt)| match stmt {
@@ -363,38 +368,51 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
         .filter(|index| !bound.contains(index))
         .collect();
     if omitted.is_empty() {
-        return false;
+        return None;
     }
-    // The body that declares the defaults, with its inference, and the
-    // callee's parameters and their defaults.
-    let (declared, declared_inference, params, defaults) = match callee {
+    // The body that declares the defaults, where it is, with its
+    // inference, and the callee's parameters and their defaults.
+    let (declared, (project, file, owner), declared_inference, params, defaults) = match callee {
         Callee::Item(item) => {
             let owner = BodyOwner::Item(item.item);
             let callee_body: &Body = body(db, item.file, owner);
             (
                 callee_body,
+                (item.project, item.file, owner),
                 infer(db, item.project, item.file, owner),
                 callee_body.params.as_slice(),
                 callee_body.defaults.as_slice(),
             )
         }
         Callee::Local(id) => {
-            let Some(function) = local(id) else {
-                return false;
-            };
+            let function = local(id)?;
             (
                 hir,
+                here,
                 inference,
                 function.params.as_slice(),
                 function.defaults.as_slice(),
             )
         }
     };
-    omitted
-        .iter()
-        .filter_map(|&index| params.get(index))
-        .filter_map(|&param| default_of(param, defaults))
-        .any(|default| constant(declared, declared_inference, default).is_none())
+    latest(
+        omitted
+            .iter()
+            .filter_map(|&index| params.get(index))
+            .filter_map(|&param| default_of(param, defaults))
+            .filter(|&default| constant(declared, declared_inference, default).is_none())
+            .map(|default| {
+                let key = ConstKey::Default {
+                    file,
+                    owner,
+                    default,
+                };
+                match const_value(db, project, key) {
+                    Evaluated::Later(later) => Some(later.clone()),
+                    Evaluated::Value(_) | Evaluated::Failed(_) => None,
+                }
+            }),
+    )
 }
 
 /// The milestone that lowers the expressions `exprs` of the body of

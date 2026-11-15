@@ -9,7 +9,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-pub use dump::{write_body, write_body_in, write_mir};
+pub use dump::{write_body, write_body_in, write_const, write_mir};
 pub use eval::{ConstValue, diagnostics};
 pub use lower::{mir, mir_dump};
 pub use types::{

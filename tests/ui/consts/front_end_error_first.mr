@@ -1,0 +1,6 @@
+// An error the front end reports stops the build before constants are
+// evaluated, so a constant that would fail reports nothing yet.
+const Big: int = 2_000_000_000;
+const Twice: int = Big * 2;
+
+Broken(): int => Missing; //~ ERROR MR0127

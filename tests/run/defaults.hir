@@ -1,0 +1,8 @@
+top-level {
+    Console{external}.WriteLine{external}(Advance{fn App.Advance}(1));
+    Console{external}.WriteLine{external}(Advance{fn App.Advance}(1, 3));
+}
+
+init App.Step => 2;
+
+fn App.Advance(x#0, by#1 = Step{value App.Step} * 2) => x#0 + by#1;

@@ -2,7 +2,9 @@
 //! that constant evaluation runs (§14.6). The initializer of a constant is
 //! the body of its owner, which [`super::mir`] lowers.
 
-use mora_hir::{BodyOwner, ExprId, Inference, Ty, instance_fields};
+use mora_hir::{
+    BodyOwner, ExprId, Inference, ItemId, Signature, Ty, instance_fields, signature, struct_field,
+};
 use mora_span::{Db, Project, SourceFile, Span};
 
 use super::{BodyShape, Lowerer, Owner, fail_in, std_loaded};
@@ -15,6 +17,31 @@ pub(crate) fn default_ty(inference: &Inference, default: ExprId) -> Option<Ty> {
     match inference.conversion(default) {
         Some(conversion) => Some(conversion.to.clone()),
         None => inference.expr(default).cloned(),
+    }
+}
+
+/// The declared type of the constant `owner` of `file`, a constant at
+/// namespace level or a member of a type; `None` for another owner.
+pub(crate) fn const_ty(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Ty> {
+    let item = |item| ItemId {
+        project,
+        file,
+        item,
+    };
+    match owner {
+        BodyOwner::Item(index) => match signature(db, item(index)) {
+            Signature::Value(ty) => Some(ty.clone()),
+            _ => None,
+        },
+        BodyOwner::Value(ty, index) => {
+            struct_field(db, item(ty), index).map(|(_, field)| field.ty.clone())
+        }
+        BodyOwner::TopLevel | BodyOwner::Member(..) | BodyOwner::Extension(..) => None,
     }
 }
 

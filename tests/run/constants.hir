@@ -1,0 +1,47 @@
+top-level {
+    let n#0: int = Size{value App.Size};
+    Console{external}.WriteLine{external}(n#0);
+    Console{external}.WriteLine{external}(Greeting{value App.Greeting});
+    let origin#1: Point = Origin{value App.Origin};
+    Console{external}.WriteLine{external}(origin#1.X);
+    Console{external}.WriteLine{external}(origin#1.Y);
+    let pair#2: (int, string) = Pair{value App.Pair};
+    Console{external}.WriteLine{external}(Small{value App.Small});
+    Console{external}.WriteLine{external}(Wrapped{value App.Wrapped});
+    Console{external}.WriteLine{external}(FromNaN{value App.FromNaN});
+    Console{external}.WriteLine{external}(Pick{value App.Pick});
+}
+
+init App.Size => 4 * 2{= 8};
+
+init App.Hello => "Hello";
+
+init App.Name => "Mora";
+
+init App.Greeting => ((Hello{value App.Hello} + ", ") + Name{value App.Name}) + "!";
+
+init App.Point.X => 1;
+
+init App.Origin => new Point { Y = 0 };
+
+init App.Pair => (Size{value App.Size}, Greeting{value App.Greeting});
+
+init App.Big => 300;
+
+init App.Small => (byte)Big{value App.Big};
+
+init App.Max => 2147483647;
+
+init App.Wrapped => Max{value App.Max} +% 1;
+
+init App.Zero => 0.0;
+
+init App.NotANumber => Zero{value App.Zero} / Zero{value App.Zero};
+
+init App.FromNaN => (int)NotANumber{value App.NotANumber};
+
+init App.Pick => (Size{value App.Size} > 4) ? 1 : 2;
+
+fn App.MakeBuffer() {
+    let a#0 = new int[Size{value App.Size}];
+}

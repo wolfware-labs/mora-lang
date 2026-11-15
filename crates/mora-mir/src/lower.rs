@@ -42,10 +42,12 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
+use crate::eval::{ConstKey, Evaluated, const_value, constants};
 use crate::types::param_ty;
 use crate::{
     Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
-    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_mir,
+    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_const,
+    write_mir,
 };
 
 #[cfg(test)]
@@ -91,13 +93,17 @@ pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) ->
 /// The text of the MIR of every body of `file` that has code, in the order
 /// of [`body_owners`], one blank line between them. A body that a later
 /// milestone lowers is the line `// Name: not lowered until M2.1` instead,
-/// with the name of its owner and the milestone.
+/// with the name of its owner and the milestone. A constant is the line
+/// [`write_const`] writes, with the value constant evaluation computes,
+/// or that line of the milestone its value waits for.
 ///
 /// # Panics
 ///
-/// As [`mir`] does, for a body this milestone lowers.
+/// As [`mir`] does, for a body this milestone lowers; for a constant
+/// without a value, since the build stops at its error first.
 pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     let mut out = String::new();
+    let constants = constants(db, file);
     for owner in body_owners(db, file) {
         if body(db, file, owner).root.is_none() {
             continue;
@@ -105,7 +111,26 @@ pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        match later::lowered_later(db, project, file, owner) {
+        let key = ConstKey::Constant { file, owner };
+        let later = if constants.contains(&key) {
+            match const_value(db, project, key) {
+                Evaluated::Value(value) => {
+                    let name = owner_name(db, project, file, owner);
+                    let ty = consts::const_ty(db, project, file, owner);
+                    let ty = ty.unwrap_or_else(|| fail_in(&name, "a constant without a type"));
+                    write_const(&mut out, db, &name, &ty, value);
+                    continue;
+                }
+                Evaluated::Later(later) => Some(later.clone()),
+                Evaluated::Failed(_) => {
+                    let name = owner_name(db, project, file, owner);
+                    fail_in(&name, "a constant without a value");
+                }
+            }
+        } else {
+            later::lowered_later(db, project, file, owner)
+        };
+        match later {
             Some(later) => {
                 let name = owner_name(db, project, file, owner);
                 // Writing to a `String` cannot fail.
@@ -493,6 +518,8 @@ pub(crate) struct Owner<'a> {
     project: Project,
     /// The file the owner is in.
     file: SourceFile,
+    /// The owner itself.
+    owner: BodyOwner,
     /// The owner's name.
     name: String,
     /// The HIR body.
@@ -532,6 +559,7 @@ impl<'a> Owner<'a> {
             db,
             project,
             file,
+            owner,
             name: owner_name(db, project, file, owner),
             hir: body(db, file, owner),
             map: body_source_map(db, file, owner),

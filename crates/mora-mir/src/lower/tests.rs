@@ -1078,38 +1078,65 @@ fn an_omitted_argument_takes_its_constant_default() {
 }
 
 #[test]
-fn a_call_that_leaves_out_a_default_that_needs_evaluation_comes_later() {
-    let text = "Zero(): int => 0;\nO(move a: int = Zero()) {}\n\
-                struct P {\n    public X: int;\n    public M(move a: int = Zero()) {}\n}\n\
-                F() {\n    O();\n}\nG(p: P) {\n    p.M();\n}\n\
-                H() {\n    L(a: int = Zero()) {}\n    L();\n}\n\
-                I() {\n    A(move a: int = 1) {}\n    B(move a: int = Zero()) {}\n    B();\n}\n\
-                J() {\n    A(move a: int = Zero()) {}\n    B(move a: int = 1) {}\n    B();\n}\n\
+fn an_omitted_default_is_evaluated() {
+    let text = "const Two: int = 2;\nO(move a: long = Two * 3) {}\n\
+                struct P {\n    public X: int;\n    public M(move a: int = Two + 1) {}\n}\n\
+                G(p: P) {\n    p.M();\n}\n\
+                H() {\n    L(move a: int = Two * 5) {}\n    L();\n}\n\
                 K(p: P) {\n    O(1);\n    p.M(a: 2);\n}\nO();\n";
-    let what = "a call that leaves out a default that needs evaluation is not lowered until M1.11";
-    for name in ["F", "G", "H", "I"] {
+    let lowered = lowered(text);
+    assert_in_order(
+        &lowered.code("top-level"),
+        &["call UsersApi.O{fn UsersApi.O}(6) -> bb1;"],
+    );
+    // The value is passed as the type of the parameter.
+    let args: Vec<&Operand> = lowered.mir("top-level").bodies[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call { args, .. } => Some(args),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        args,
+        [&Operand::Const(Const::Int(6, mora_hir::Primitive::Long))]
+    );
+    let g = lowered.code("G");
+    assert!(g.iter().any(|line| line.contains(", 3) -> bb")), "{g:#?}");
+    // A local function's default is evaluated as well.
+    let h = lowered.code("H");
+    assert!(h.iter().any(|line| line.contains("(10) -> bb")), "{h:#?}");
+    // A call that passes every argument passes them.
+    assert_in_order(
+        &lowered.code("K"),
+        &["call UsersApi.O{fn UsersApi.O}(1) -> bb1;"],
+    );
+}
+
+#[test]
+fn a_default_waiting_for_its_milestone_defers_only_callers_that_omit_it() {
+    let text = "O(a: int = default) {}\nF() {\n    O();\n}\nG() {\n    O(1);\n}\n\
+                H() {\n    L(a: int = default) {}\n    L();\n}\n";
+    let what = "a call that leaves out a default that needs evaluation is not lowered until M3.12";
+    for name in ["F", "H"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!("internal error lowering UsersApi.{name}: {what}")
         );
     }
-    assert_eq!(
-        later_error(text, |l| l.owner("top-level")),
-        format!("internal error lowering top-level: {what}")
-    );
     let lowered = lowered(text);
     let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
-    for owner in ["top-level", "UsersApi.F", "UsersApi.G", "UsersApi.H"] {
-        let line = format!("// {owner}: not lowered until M1.11\n");
+    for owner in ["UsersApi.F", "UsersApi.H"] {
+        let line = format!("// {owner}: not lowered until M3.12\n");
         assert!(dump.contains(&line), "{line}{dump}");
     }
-    // A local function's own defaults decide, not those of another one.
-    let j = lowered.code("J");
-    assert!(j.iter().any(|line| line.contains("(1) -> bb")), "{j:#?}");
-    // A call that passes every argument lowers now.
-    assert_in_order(
-        &lowered.code("K"),
-        &["call UsersApi.O{fn UsersApi.O}(1) -> bb1;"],
+    let g = lowered.code("G");
+    assert!(
+        g.iter()
+            .any(|line| line.starts_with("call UsersApi.O{fn UsersApi.O}(")),
+        "{g:#?}"
     );
 }
 
@@ -3776,19 +3803,59 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
     let lowered = lowered(LOWERED_LATER);
     let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
     let one = lowered.dump("One");
-    let mut constant = String::new();
-    let c = lowered.mir_of(lowered.initializer("P", "C"));
-    write_mir(&mut constant, &lowered.db, Some(lowered.file), c);
     assert_eq!(
         dump,
         format!(
             "// UsersApi.P.Get: not lowered until M2.1\n\n\
              // UsersApi.P.S: not lowered until M3.13\n\n\
-             {constant}\n\
+             const UsersApi.P.C: int = 2;\n\n\
              // UsersApi.P: not lowered until M2.1\n\n\
              // UsersApi.P.-: not lowered until M3.6\n\n\
              {one}"
         )
+    );
+}
+
+#[test]
+fn mir_dump_writes_a_line_for_each_constant() {
+    let lowered = lowered(
+        "struct Q {\n    public A: int;\n    public B: (int, bool);\n}\n\
+         const T: (int, string) = (1, \"a\");\n\
+         const K: Q = new Q { A = 1, B = (2, true) };\n\
+         const W: int = default;\n",
+    );
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    assert_eq!(
+        dump,
+        "const UsersApi.T: (int, string) = (1, \"a\");\n\n\
+         const UsersApi.K: Q = UsersApi.Q{struct UsersApi.Q}(1, (2, true));\n\n\
+         // UsersApi.W: not lowered until M3.12\n"
+    );
+}
+
+#[test]
+fn mir_dump_of_a_constant_without_a_value_is_an_internal_error() {
+    // Constant evaluation reports the error, which stops the build first.
+    let lowered = lowered("const D: int = 1 / 0;\n");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mir_dump(&lowered.db, lowered.project, lowered.file);
+    }))
+    .expect_err("an internal error");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some("internal error lowering UsersApi.D: a constant without a value")
+    );
+}
+
+#[test]
+fn a_call_that_leaves_out_a_failing_default_is_an_internal_error() {
+    // Constant evaluation reports the error, which stops the build before
+    // the caller is lowered; the caller waits for no milestone.
+    let lowered = lowered("O(move a: int = 1 / 0) {}\nF() {\n    O();\n}\n");
+    assert_eq!(
+        lowered.internal_error("F"),
+        "internal error lowering UsersApi.F: a left out default value without a value: \
+         `O()` at 3:5"
     );
 }
 
