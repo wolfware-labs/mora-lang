@@ -407,6 +407,12 @@ unlowered MR0300
         problems.starts_with("the program does not lower:\nerror[MR0300]: fake lowering failure\n"),
         "{problems}"
     );
+    // A program that reports an error has neither snapshot, so its HIR
+    // is neither compared nor blessed.
+    assert!(!problems.contains("snapshot"), "{problems}");
+    let report = run_with(&none, &root, &bless());
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(!root.join("tests/run/a.hir").exists());
 }
 
 #[test]

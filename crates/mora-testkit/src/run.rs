@@ -89,7 +89,7 @@ pub struct Outcome {
     /// What is wrong, empty when the case passes.
     pub problems: Vec<String>,
     /// The HIR of the program, for its `.hir` snapshot; `None` when it does
-    /// not compile.
+    /// not compile or does not lower.
     pub hir: Option<String>,
     /// The MIR of the program, for its `.mir` snapshot; `None` when it does
     /// not compile.
@@ -131,7 +131,7 @@ pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
                     "the program does not lower:\n{}",
                     rendered(&checked)
                 )],
-                hir: Some(hir),
+                hir: None,
                 mir: None,
             };
         }
