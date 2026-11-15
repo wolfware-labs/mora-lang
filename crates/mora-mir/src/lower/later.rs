@@ -35,6 +35,7 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile};
 
+use super::calls::default_of;
 use super::expr::constant;
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
@@ -349,8 +350,8 @@ fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call:
     omitted
         .iter()
         .filter_map(|&index| params.get(index))
-        .filter_map(|param| defaults.iter().find(|(local, _)| local == param))
-        .any(|&(_, default)| constant(declared, declared_inference, default).is_none())
+        .filter_map(|&param| default_of(param, defaults))
+        .any(|default| constant(declared, declared_inference, default).is_none())
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a

@@ -345,12 +345,7 @@ impl Lowerer<'_> {
         defaults: &[(mora_hir::LocalId, ExprId)],
         mode: ParamMode,
     ) -> Operand {
-        let default = param.and_then(|param| {
-            defaults
-                .iter()
-                .find(|&&(local, _)| local == param)
-                .map(|&(_, default)| default)
-        });
+        let default = param.and_then(|param| default_of(param, defaults));
         let what = "an argument without a default value is left out";
         let default = self.expect(default, call, what);
         let what = "a default value that is not a literal needs constant evaluation (M1.11)";
@@ -359,6 +354,18 @@ impl Lowerer<'_> {
         let operand = self.converted(inference.conversion(default), Operand::Const(value), span);
         self.pass(operand, mode, span)
     }
+}
+
+/// The default value of the parameter `param` among `defaults`, those of
+/// the body or the local function that declares it.
+pub(super) fn default_of(
+    param: mora_hir::LocalId,
+    defaults: &[(mora_hir::LocalId, ExprId)],
+) -> Option<ExprId> {
+    defaults
+        .iter()
+        .find(|&&(local, _)| local == param)
+        .map(|&(_, default)| default)
 }
 
 /// The values of `args`, in the order they are written.
