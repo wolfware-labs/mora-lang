@@ -407,7 +407,7 @@ impl Checker<'_> {
         if dest_value == Some(&Ty::Never) {
             self.error(at, "assignment to a place of the never type");
         }
-        let value_ty = self.rvalue(at, rvalue, dest_value);
+        let value_ty = self.rvalue(at, rvalue);
         if let (Some(dest_ty), Some(value_ty)) = (dest_ty, value_ty)
             && !same_local(&dest_ty, &value_ty)
         {
@@ -418,10 +418,10 @@ impl Checker<'_> {
         }
     }
 
-    /// The type of `rvalue`, keeping a borrow a borrow. A tuple takes the
-    /// element names of `dest_ty`, since the names are not part of what its
-    /// operands carry.
-    fn rvalue(&mut self, at: &str, rvalue: &Rvalue, dest_ty: Option<&Ty>) -> Option<LocalTy> {
+    /// The type of `rvalue`, keeping a borrow a borrow. A tuple's elements
+    /// have no names: its operands carry none, and [`same`] does not
+    /// compare them.
+    fn rvalue(&mut self, at: &str, rvalue: &Rvalue) -> Option<LocalTy> {
         let value = match rvalue {
             Rvalue::Use(operand) => return self.operand_lt(at, operand),
             Rvalue::Borrow(mode, place) => {
@@ -432,16 +432,9 @@ impl Checker<'_> {
             Rvalue::Cast(kind, operand, ty) => self.cast(at, *kind, operand, ty),
             Rvalue::Aggregate(AggregateKind::Tuple, operands) => {
                 let tys = self.operands(at, operands)?;
-                let names = match dest_ty {
-                    Some(Ty::Tuple(elems)) if elems.len() == tys.len() => {
-                        elems.iter().map(|e| e.name.clone()).collect()
-                    }
-                    _ => vec![None; tys.len()],
-                };
                 Some(Ty::Tuple(
                     tys.into_iter()
-                        .zip(names)
-                        .map(|(ty, name)| mora_hir::TupleElem { name, ty })
+                        .map(|ty| mora_hir::TupleElem { name: None, ty })
                         .collect(),
                 ))
             }
