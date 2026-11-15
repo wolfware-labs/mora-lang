@@ -724,6 +724,25 @@ fn a_value_of_the_library_comes_with_the_library() {
 }
 
 #[test]
+fn a_library_call_with_an_argument_mode_comes_with_the_library() {
+    for mode in ["ref", "in", "move"] {
+        let text = format!("var x = 1;\nConsole.WriteLine({mode} x);\n");
+        assert_eq!(
+            later_error(&text, |l| l.owner("top-level")),
+            "internal error lowering top-level: a call of the standard library with an \
+             argument mode is not lowered until M1.15",
+            "{text}"
+        );
+    }
+    // Without one, the stand-in call lowers.
+    let lowered = lowered("var x = 1;\nConsole.WriteLine(x);\n");
+    assert_in_order(
+        &lowered.code("top-level"),
+        &["call Console.WriteLine{external}(copy x#0) -> bb1;"],
+    );
+}
+
+#[test]
 fn a_lambda_stored_in_a_local_comes_with_closures() {
     assert_eq!(
         later_error("let f = (x: int) => x;\n", |l| l.owner("top-level")),

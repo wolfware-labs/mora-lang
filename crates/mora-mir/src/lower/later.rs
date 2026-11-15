@@ -504,6 +504,17 @@ fn expressions_later(
                     PARAMETER_MODES,
                 )
             }
+            // A stand-in call passes its arguments as values: the modes they
+            // are written with come with the library's signatures.
+            Expr::Call { args, .. }
+                if from_library(hir, resolution, id)
+                    && args.iter().any(|arg| arg.mode.is_some()) =>
+            {
+                (
+                    "a call of the standard library with an argument mode",
+                    STD_BOOTSTRAP,
+                )
+            }
             Expr::Await(_) => ("`await`", ASYNC),
             Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
             Expr::Macro => ("a quote, a splice or a macro call", EXPANSION),
