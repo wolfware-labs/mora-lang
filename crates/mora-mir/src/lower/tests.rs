@@ -2270,6 +2270,21 @@ fn a_local_function_takes_its_default_arguments() {
     );
 }
 
+/// A local function with no parameters and no captures has only its
+/// return slot, and its callers still validate.
+#[test]
+fn a_call_of_a_local_function_without_parameters_validates() {
+    let lowered =
+        lowered("F(): int {\n    G(): int => 1;\n    H() {}\n    H();\n    return G();\n}\n");
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "call UsersApi.F.H() -> bb1;",
+            "_0 = call UsersApi.F.G() -> bb2;",
+        ],
+    );
+}
+
 #[test]
 fn a_method_named_alone_takes_this() {
     let lowered = lowered(
