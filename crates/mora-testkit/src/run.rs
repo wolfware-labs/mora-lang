@@ -92,7 +92,7 @@ pub struct Outcome {
     /// not compile or does not lower.
     pub hir: Option<String>,
     /// The MIR of the program, for its `.mir` snapshot; `None` when it does
-    /// not compile.
+    /// not compile or does not lower.
     pub mir: Option<String>,
 }
 
