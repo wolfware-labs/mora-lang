@@ -14,8 +14,8 @@ use super::interp::{Failure, Stop, run};
 use super::report::failed_message;
 use super::scan::const_scan;
 use super::{
-    ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, const_read, const_value, constants,
-    defaults,
+    ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, REACHED, WALKING, const_read,
+    const_value, constants, defaults,
 };
 use crate::lower::consts::default_mir;
 use crate::{
@@ -1978,39 +1978,109 @@ fn a_constant_that_waits_reports_nothing() {
     assert_eq!(source.reported(), []);
 }
 
-#[test]
-fn a_long_chain_of_constants_does_not_overflow_the_stack() {
-    // 256 KiB is enough for the front end and for evaluation one key at a
-    // time, and far too little for 2,000 nested evaluations: each nested
-    // `const_value` takes several salsa frames.
-    const STACK: usize = 256 * 1024;
-    const LENGTH: usize = 2_000;
-    let run = || {
-        // The last constant comes first in the text, so a walk in text
-        // order would evaluate the whole chain inside its first key.
-        let text: String = (0..LENGTH)
-            .rev()
-            .map(|i| {
-                if i == 0 {
-                    "const C0: int = 1;\n".to_owned()
-                } else {
-                    format!("const C{i}: int = C{} + 1;\n", i - 1)
-                }
-            })
-            .collect();
-        let source = unchecked(&text);
-        assert_eq!(source.reported(), []);
-        assert_eq!(
-            source.evaluated(source.constant(&format!("C{}", LENGTH - 1))),
-            &Evaluated::Value(int(2_000, Primitive::Int))
-        );
-    };
+/// 256 KiB is enough for the front end and for evaluation one key at a
+/// time, and far too little for 2,000 nested evaluations.
+const SMALL_STACK: usize = 256 * 1024;
+
+/// The length of the long chains of constants.
+const CHAIN: usize = 2_000;
+
+/// A chain of `CHAIN` constants, `C0` to `C1999`, each but `C0` reading the
+/// one before it, the last one first in the text; each declared with
+/// `modifier` in front.
+fn reversed_chain(modifier: &str) -> String {
+    (0..CHAIN)
+        .rev()
+        .map(|i| {
+            if i == 0 {
+                format!("{modifier}const C0: int = 1;\n")
+            } else {
+                format!("{modifier}const C{i}: int = C{} + 1;\n", i - 1)
+            }
+        })
+        .collect()
+}
+
+/// Runs `test` on a thread with [`SMALL_STACK`].
+fn on_a_small_stack(test: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
-        .stack_size(STACK)
-        .spawn(run)
+        .stack_size(SMALL_STACK)
+        .spawn(test)
         .expect("a thread")
         .join()
         .expect("no overflow");
+}
+
+#[test]
+fn a_long_chain_lowers_without_overflowing_the_stack() {
+    on_a_small_stack(|| {
+        let source = unchecked(&reversed_chain(""));
+        // Lowering comes first: nothing has evaluated the chain in order.
+        let dump = crate::mir_dump(&source.db, source.project, source.file);
+        assert!(dump.contains("C1999"), "{dump}");
+        assert_eq!(
+            source.evaluated(source.constant(&format!("C{}", CHAIN - 1))),
+            &Evaluated::Value(int(2_000, Primitive::Int))
+        );
+        // The last constant reaches the rest of the chain.
+        assert_walked(CHAIN - 1);
+    });
+}
+
+#[test]
+fn a_long_chain_in_another_project_lowers_without_overflowing_the_stack() {
+    on_a_small_stack(|| {
+        let db = TestDb::new();
+        let util = db.project(
+            "util",
+            ProjectKind::Lib,
+            &[("src/Lib.mr", &reversed_chain("public "))],
+            Vec::new(),
+        );
+        let project = db.project(
+            "users-api",
+            ProjectKind::App,
+            &[("src/Program.mr", "const A: int = Util.C1999 + 1;\n")],
+            vec![Dependency {
+                name: "Util".to_owned(),
+                project: util,
+            }],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let source = Source { db, project, file };
+        // Lowering comes first: nothing has evaluated the chain in order.
+        let dump = crate::mir_dump(&source.db, project, file);
+        assert!(dump.contains("2001"), "{dump}");
+        assert_eq!(
+            source.evaluated(source.constant("A")),
+            &Evaluated::Value(int(2_001, Primitive::Int))
+        );
+        // `A` reaches the whole chain.
+        assert_walked(CHAIN);
+    });
+}
+
+#[test]
+fn a_long_chain_of_constants_does_not_overflow_the_stack() {
+    on_a_small_stack(|| {
+        // The last constant comes first in the text, so a walk in text
+        // order would evaluate the whole chain inside its first key.
+        let source = unchecked(&reversed_chain(""));
+        assert_eq!(source.reported(), []);
+        assert_eq!(
+            source.evaluated(source.constant(&format!("C{}", CHAIN - 1))),
+            &Evaluated::Value(int(2_000, Primitive::Int))
+        );
+        // The last constant reaches the rest of the chain.
+        assert_walked(CHAIN - 1);
+    });
+}
+
+/// Checks that the walks of this thread reached `keys` keys, each key of
+/// the chain once, and that none is still going on.
+fn assert_walked(keys: usize) {
+    assert_eq!(REACHED.get(), keys);
+    assert!(!WALKING.get());
 }
 
 #[test]

@@ -24,13 +24,18 @@ const FAILED_NOTE: &str = "a constant is computed when the program is compiled, 
 /// `MR0462`), in the order of the read graph. It runs on a program the
 /// front end accepted.
 ///
-/// Each key is evaluated after the keys it reads, so no evaluation nests
-/// another deeply. A key that fails because a key it reads has no value
-/// reports nothing, so each cause is reported once.
+/// The keys are evaluated from the last in the order back, so a key walks
+/// the keys it reads only when no key after it in the order reads it; the
+/// others are evaluated inside such a walk and walk nothing themselves. A
+/// key that fails because a key it reads has no value reports nothing, so
+/// each cause is reported once.
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
-    const_graph(db, project)
-        .order()
+    let order = const_graph(db, project).order();
+    for &key in order.iter().rev() {
+        const_value(db, project, key);
+    }
+    order
         .iter()
         .filter_map(|&key| match const_value(db, project, key) {
             Evaluated::Failed(Some(error)) => Some(render(db, project, error)),

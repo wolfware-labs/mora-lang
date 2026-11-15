@@ -13,6 +13,9 @@ pub(crate) mod interp;
 mod report;
 pub(crate) mod scan;
 
+use std::cell::Cell;
+use std::collections::HashSet;
+
 pub use self::report::diagnostics;
 
 use mora_hir::{
@@ -291,7 +294,8 @@ pub(crate) enum ErrorKind {
 
 /// The value of `key`, a key of `project`, each step in order: a key in a
 /// cycle of reads fails, with the error on the cycle's first member; then
-/// one with an operation §14.6 never allows; a key whose code a later
+/// one with an operation §14.6 never allows; then the keys it reads are
+/// evaluated first ([`evaluate_reads_first`]); a key whose code a later
 /// milestone lowers, or that reads one that waits, waits for the latest of
 /// those milestones; a key that reads one without a value fails without an
 /// error of its own; and any other key runs its MIR in the interpreter.
@@ -314,6 +318,7 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
     if let Some((range, what)) = scan.unsupported {
         return failed(key, range, ErrorKind::Unsupported(what));
     }
+    evaluate_reads_first(db, project, key);
     let file = key.file();
     let owner = key.owner(db);
     let later = match key {
@@ -381,6 +386,64 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
         Ok(value) => Evaluated::Value(value),
         Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
         Err(Stop::Dependency) => without_value(),
+    }
+}
+
+thread_local! {
+    /// Whether this thread is inside a walk of [`evaluate_reads_first`].
+    /// It decides only the order keys are evaluated in, never a value.
+    static WALKING: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many keys the walks of this thread have reached.
+    static REACHED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Evaluates every key that `key`, a key of `project` outside any cycle,
+/// reads directly or through other keys, in any project, each after the
+/// keys it reads; inside another walk, nothing.
+///
+/// The evaluation of each of them, and then of `key`, finds the value of
+/// every key it reads already computed, so however long a chain of reads
+/// and whichever key is asked for first, evaluations never nest deeply.
+/// The walk keeps its own stack instead of recursing. None of the keys
+/// reads `key`: they are outside its component, which holds only `key`,
+/// and a project never reads a project that reads it.
+///
+/// A key evaluated inside a walk has had its own reads evaluated by it, so
+/// it walks nothing again, and evaluating a chain once costs its length.
+fn evaluate_reads_first(db: &dyn Db, project: Project, key: ConstKey) {
+    /// Ends the walk when dropped, also when an evaluation unwinds.
+    struct Walking;
+    impl Drop for Walking {
+        fn drop(&mut self) {
+            WALKING.set(false);
+        }
+    }
+    if WALKING.replace(true) {
+        return;
+    }
+    let _walking = Walking;
+    let mut reached = HashSet::from([(project, key)]);
+    let reads = |project, key| const_scan(db, project, key).reads.as_slice();
+    // Each frame is a key, its reads and the position of its next read.
+    let mut walk = vec![(project, key, reads(project, key), 0)];
+    while let Some(&mut (read_project, read, keys, ref mut next)) = walk.last_mut() {
+        if let Some(&(project, key, _)) = keys.get(*next) {
+            *next += 1;
+            if reached.insert((project, key)) {
+                #[cfg(test)]
+                REACHED.set(REACHED.get() + 1);
+                walk.push((project, key, reads(project, key), 0));
+            }
+            continue;
+        }
+        walk.pop();
+        if !walk.is_empty() {
+            const_value(db, read_project, read);
+        }
     }
 }
 
