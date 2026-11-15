@@ -1060,10 +1060,39 @@ fn an_omitted_argument_takes_its_constant_default() {
 }
 
 #[test]
-#[should_panic(expected = "constant evaluation")]
-fn a_default_that_needs_evaluation_is_an_internal_error() {
-    let lowered = lowered("Zero(): int => 0;\nO(move a: int = Zero()) {}\nO();\n");
-    lowered.mir("top-level");
+fn a_call_that_leaves_out_a_default_that_needs_evaluation_comes_later() {
+    let text = "Zero(): int => 0;\nO(move a: int = Zero()) {}\n\
+                struct P {\n    public X: int;\n    public M(move a: int = Zero()) {}\n}\n\
+                F() {\n    O();\n}\nG(p: P) {\n    p.M();\n}\n\
+                H() {\n    L(a: int = Zero()) {}\n    L();\n}\n\
+                I() {\n    A(move a: int = 1) {}\n    B(move a: int = Zero()) {}\n    B();\n}\n\
+                J() {\n    A(move a: int = Zero()) {}\n    B(move a: int = 1) {}\n    B();\n}\n\
+                K(p: P) {\n    O(1);\n    p.M(a: 2);\n}\nO();\n";
+    let what = "a call that leaves out a default that needs evaluation is not lowered until M1.11";
+    for name in ["F", "G", "H", "I"] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what}")
+        );
+    }
+    assert_eq!(
+        later_error(text, |l| l.owner("top-level")),
+        format!("internal error lowering top-level: {what}")
+    );
+    let lowered = lowered(text);
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    for owner in ["top-level", "UsersApi.F", "UsersApi.G", "UsersApi.H"] {
+        let line = format!("// {owner}: not lowered until M1.11\n");
+        assert!(dump.contains(&line), "{line}{dump}");
+    }
+    // A local function's own defaults decide, not those of another one.
+    let j = lowered.code("J");
+    assert!(j.iter().any(|line| line.contains("(1) -> bb")), "{j:#?}");
+    // A call that passes every argument lowers now.
+    assert_in_order(
+        &lowered.code("K"),
+        &["call UsersApi.O{fn UsersApi.O}(1) -> bb1;"],
+    );
 }
 
 #[test]

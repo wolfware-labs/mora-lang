@@ -35,6 +35,8 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile};
 
+use super::expr::constant;
+
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -265,8 +267,90 @@ pub(crate) fn lowered_later(
         operators_later(db, project, file, owner),
         lambdas_later(db, file, owner),
         calls_later(db, project, file, owner),
+        defaults_later(db, project, file, owner),
         expressions_later(db, project, file, owner),
     ])
+}
+
+/// The milestone that lowers the body of `owner` for a call of a function,
+/// a method or a local function that leaves out an argument whose default
+/// value is not a constant that lowering reads ([`constant`]): a literal,
+/// or an operation on literals whose value inference records. Constant
+/// evaluation computes any other default. `None` when every call that
+/// leaves out an argument takes a constant.
+fn defaults_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    let hir = body(db, file, owner);
+    let inference = infer(db, project, file, owner);
+    hir.exprs
+        .iter()
+        .any(|(id, _)| omits_evaluated_default(db, hir, inference, id))
+        .then(|| {
+            Later::new(
+                "a call that leaves out a default that needs evaluation",
+                CONSTANT_EVALUATION,
+            )
+        })
+}
+
+/// Whether `call`, a call that inference checked in the body `hir`, leaves
+/// out an argument whose default value is not a [`constant`]. The callee's
+/// body is read only when the call leaves out an argument, so an edit
+/// inside it puts off only the callers that take a default.
+fn omits_evaluated_default(db: &dyn Db, hir: &Body, inference: &Inference, call: ExprId) -> bool {
+    let (Some(callee), Some(bound)) = (inference.callee(call), inference.arguments(call)) else {
+        return false;
+    };
+    let local = |local| {
+        hir.stmts.iter().find_map(|(_, stmt)| match stmt {
+            Stmt::Function(function) if function.local == local => Some(function),
+            _ => None,
+        })
+    };
+    let count = match callee {
+        Callee::Item(item) => signature(db, item).as_function().map(|f| f.params.len()),
+        Callee::Local(id) => local(id).map(|function| function.params.len()),
+    };
+    let omitted: Vec<usize> = (0..count.unwrap_or_default())
+        .filter(|index| !bound.contains(index))
+        .collect();
+    if omitted.is_empty() {
+        return false;
+    }
+    // The body that declares the defaults, with its inference, and the
+    // callee's parameters and their defaults.
+    let (declared, declared_inference, params, defaults) = match callee {
+        Callee::Item(item) => {
+            let owner = BodyOwner::Item(item.item);
+            let callee_body: &Body = body(db, item.file, owner);
+            (
+                callee_body,
+                infer(db, item.project, item.file, owner),
+                callee_body.params.as_slice(),
+                callee_body.defaults.as_slice(),
+            )
+        }
+        Callee::Local(id) => {
+            let Some(function) = local(id) else {
+                return false;
+            };
+            (
+                hir,
+                inference,
+                function.params.as_slice(),
+                function.defaults.as_slice(),
+            )
+        }
+    };
+    omitted
+        .iter()
+        .filter_map(|&index| params.get(index))
+        .filter_map(|param| defaults.iter().find(|(local, _)| local == param))
+        .any(|&(_, default)| constant(declared, declared_inference, default).is_none())
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a
