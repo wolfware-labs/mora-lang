@@ -2,14 +2,14 @@
 //! cannot run (`MR0460`), an operation that fails (`MR0461`) and a value
 //! that depends on itself (`MR0462`).
 
-use mora_diag::{Diagnostic, Label};
+use mora_diag::{Diagnostic, Label, codes};
 use mora_hir::ty_name;
 use mora_span::{Db, Project, Span};
 
 use super::arith::ArithError;
 use super::graph::const_graph;
 use super::interp::Failure;
-use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_value};
+use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_value, fail_evaluating};
 
 /// The label of `MR0460` and `MR0461`.
 const EVALUATED: &str = "evaluated at compile time";
@@ -51,7 +51,7 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
                 ConstKey::Initializer { .. } => {
                     let name = error.key.name(db, project);
                     let Some((ty, field)) = name.rsplit_once('.') else {
-                        panic!("internal error evaluating {name}: a field without its type");
+                        fail_evaluating(&name, "a field without its type");
                     };
                     format!(
                         "{UNSUPPORTED_NOTE}\n`{name}` runs at compile time because a constant creates a `{ty}` without `{field}`"
@@ -59,22 +59,13 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
                 }
                 ConstKey::Constant { .. } | ConstKey::Default { .. } => UNSUPPORTED_NOTE.to_owned(),
             };
-            Diagnostic::error(
-                mora_diag::codes::MR0460,
-                message,
-                Label::new(span, EVALUATED),
-            )
-            .with_note(note)
+            Diagnostic::error(codes::MR0460, message, Label::new(span, EVALUATED)).with_note(note)
         }
         ErrorKind::Failed(failure) => {
             let code = &file.text(db)[std::ops::Range::<usize>::from(error.range)];
             let message = failed_message(code, failure, &ty_name(db, &failure.ty));
-            Diagnostic::error(
-                mora_diag::codes::MR0461,
-                message,
-                Label::new(span, EVALUATED),
-            )
-            .with_note(FAILED_NOTE)
+            Diagnostic::error(codes::MR0461, message, Label::new(span, EVALUATED))
+                .with_note(FAILED_NOTE)
         }
         ErrorKind::Cycle(members) => {
             let names: Vec<String> = members.iter().map(|key| key.name(db, project)).collect();
@@ -88,7 +79,7 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
             };
             let read = names.get(1).unwrap_or(first);
             Diagnostic::error(
-                mora_diag::codes::MR0462,
+                codes::MR0462,
                 message,
                 Label::new(span, format!("this needs the value of `{read}`")),
             )

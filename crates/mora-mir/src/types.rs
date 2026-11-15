@@ -355,6 +355,11 @@ impl BinOp {
             BinOp::Ge => ">=",
         }
     }
+
+    /// Whether it is a shift: `<<`, `>>` or `>>>`.
+    pub fn is_shift(self) -> bool {
+        matches!(self, BinOp::Shl | BinOp::Shr | BinOp::UShr)
+    }
 }
 
 /// A unary operator.

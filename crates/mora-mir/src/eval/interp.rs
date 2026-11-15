@@ -8,8 +8,8 @@
 use mora_hir::{ItemId, Ty, ty_name};
 use mora_span::{Db, TextRange};
 
-use super::ConstValue;
 use super::arith::{self, ArithError};
+use super::{ConstValue, fail_evaluating};
 use crate::dump::constant;
 use crate::{
     BinOp, BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection, Rvalue,
@@ -235,9 +235,9 @@ impl Machine<'_> {
             value = match (value, projection) {
                 (ConstValue::Aggregate(_, fields), Projection::Field(n)) => field(name, fields, n),
                 (ConstValue::Scalar(_), Projection::Field(n)) => {
-                    internal(name, &format!("field {n} of a scalar"))
+                    fail_evaluating(name, &format!("field {n} of a scalar"))
                 }
-                (_, Projection::Deref) => internal(name, "a dereference"),
+                (_, Projection::Deref) => fail_evaluating(name, "a dereference"),
             };
         }
         value.clone()
@@ -262,9 +262,9 @@ impl Machine<'_> {
                     field_mut(name, fields, n)
                 }
                 (ConstValue::Scalar(_), Projection::Field(n)) => {
-                    internal(name, &format!("field {n} of a scalar"))
+                    fail_evaluating(name, &format!("field {n} of a scalar"))
                 }
-                (_, Projection::Deref) => internal(name, "a dereference"),
+                (_, Projection::Deref) => fail_evaluating(name, "a dereference"),
             };
         }
         *target = value;
@@ -280,7 +280,7 @@ impl Machine<'_> {
 
     /// Panics with an internal error that names the body.
     fn internal(&self, what: &str) -> ! {
-        internal(&self.body.name, what)
+        fail_evaluating(&self.body.name, what)
     }
 }
 
@@ -288,7 +288,7 @@ impl Machine<'_> {
 fn field<'v>(name: &str, fields: &'v [ConstValue], n: u32) -> &'v ConstValue {
     match fields.get(n as usize) {
         Some(field) => field,
-        None => internal(name, &format!("no field {n}")),
+        None => fail_evaluating(name, &format!("no field {n}")),
     }
 }
 
@@ -296,21 +296,16 @@ fn field<'v>(name: &str, fields: &'v [ConstValue], n: u32) -> &'v ConstValue {
 fn field_mut<'v>(name: &str, fields: &'v mut [ConstValue], n: u32) -> &'v mut ConstValue {
     match fields.get_mut(n as usize) {
         Some(field) => field,
-        None => internal(name, &format!("no field {n}")),
+        None => fail_evaluating(name, &format!("no field {n}")),
     }
 }
 
 /// Panics on a read of `local`, which has no value, in the body `name`.
 fn no_value(name: &str, local: LocalId) -> ! {
-    internal(name, &format!("_{} has no value", local.0))
+    fail_evaluating(name, &format!("_{} has no value", local.0))
 }
 
 /// Panics on a use of `local`, which the body `name` does not have.
 fn no_local(name: &str, local: LocalId) -> ! {
-    internal(name, &format!("no local _{}", local.0))
-}
-
-/// Panics with an internal error that names the body `name`.
-fn internal(name: &str, what: &str) -> ! {
-    panic!("internal error evaluating {name}: {what}")
+    fail_evaluating(name, &format!("no local _{}", local.0))
 }

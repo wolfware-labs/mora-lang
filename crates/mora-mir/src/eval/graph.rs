@@ -11,7 +11,7 @@ use mora_hir::def_map;
 use mora_span::{Db, Project, TextRange};
 
 use super::scan::const_scan;
-use super::{ConstKey, constants, defaults};
+use super::{ConstKey, constants, defaults, fail_evaluating};
 
 /// A cycle of reads: its first member (smallest `sort_key`) first, in the
 /// order each reads the next.
@@ -228,6 +228,6 @@ impl Tarjan<'_> {
             }
         }
         let name = self.nodes[start].key.name(self.db, self.project);
-        panic!("internal error evaluating {name}: no cycle leads back to it");
+        fail_evaluating(&name, "no cycle leads back to it");
     }
 }

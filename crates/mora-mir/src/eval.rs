@@ -16,8 +16,8 @@ pub(crate) mod scan;
 pub use self::report::diagnostics;
 
 use mora_hir::{
-    BodyOwner, BodyResolution, ExprId, ItemId, ItemKind, LocalId, Resolved, Target, ValueKind,
-    body, body_owners, body_source_map, infer, instance_fields, item_tree, owner_name,
+    BodyOwner, BodyResolution, ExprId, ItemId, LocalId, Resolved, Target, ValueKind, body,
+    body_owners, body_source_map, infer, instance_fields, item_tree, owner_name,
 };
 use mora_span::{Db, Project, SourceFile, TextRange, TextSize};
 
@@ -79,7 +79,7 @@ impl ConstKey {
             ConstKey::Initializer { item, field } => {
                 let Some((index, _)) = instance_fields(db, item).nth(field as usize) else {
                     let name = &item_tree(db, item.file).item(item.item).name;
-                    panic!("internal error evaluating {name}: no instance field {field}");
+                    fail_evaluating(name, &format!("no instance field {field}"));
                 };
                 BodyOwner::Value(item.item, index)
             }
@@ -116,7 +116,10 @@ impl ConstKey {
         };
         let hir = body(db, file, owner);
         let Some(param) = default_param(hir, default) else {
-            panic!("internal error evaluating a default value in {short}: no parameter has it");
+            fail_evaluating(
+                &format!("a default value in {short}"),
+                "no parameter has it",
+            );
         };
         format!("the default value of {} in {short}", hir.locals[param].name)
     }
@@ -176,8 +179,7 @@ pub(crate) fn const_read(
 pub(crate) fn const_target(db: &dyn Db, target: &Target) -> Option<(Project, ConstKey)> {
     let (item, owner) = match target {
         Target::Item(Resolved::Item(item)) => {
-            let data = item_tree(db, item.file).item(item.item);
-            if data.kind != ItemKind::Field || data.is_static {
+            if !item_tree(db, item.file).item(item.item).is_constant() {
                 return None;
             }
             (*item, BodyOwner::Item(item.item))
@@ -200,23 +202,26 @@ pub(crate) fn const_target(db: &dyn Db, target: &Target) -> Option<(Project, Con
 
 /// The constants of `file`, in the order of [`body_owners`].
 pub(crate) fn constants(db: &dyn Db, file: SourceFile) -> Vec<ConstKey> {
-    let tree = item_tree(db, file);
     body_owners(db, file)
         .into_iter()
-        .filter(|&owner| match owner {
-            BodyOwner::Item(item) => {
-                let data = tree.item(item);
-                data.kind == ItemKind::Field && !data.is_static
-            }
-            BodyOwner::Value(item, index) => tree
-                .item(item)
-                .values
-                .get(index as usize)
-                .is_some_and(|value| value.kind == ValueKind::Const),
-            BodyOwner::TopLevel | BodyOwner::Member(..) | BodyOwner::Extension(..) => false,
-        })
+        .filter(|&owner| is_constant(db, file, owner))
         .map(|owner| ConstKey::Constant { file, owner })
         .collect()
+}
+
+/// Whether the body of `owner` of `file` is the initializer of a
+/// constant, declared in a namespace or in a type.
+pub(crate) fn is_constant(db: &dyn Db, file: SourceFile, owner: BodyOwner) -> bool {
+    let tree = item_tree(db, file);
+    match owner {
+        BodyOwner::Item(item) => tree.item(item).is_constant(),
+        BodyOwner::Value(item, index) => tree
+            .item(item)
+            .values
+            .get(index as usize)
+            .is_some_and(|value| value.kind == ValueKind::Const),
+        BodyOwner::TopLevel | BodyOwner::Member(..) | BodyOwner::Extension(..) => false,
+    }
 }
 
 /// The default values of `file` that evaluation computes: those of
@@ -363,7 +368,7 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
     // value by now.
     let without_value = || -> ! {
         let name = key.name(db, project);
-        panic!("internal error evaluating {name}: a field initializer without a value");
+        fail_evaluating(&name, "a field initializer without a value");
     };
     let mut initializer = |item: ItemId, field| {
         let read = ConstKey::Initializer { item, field };
@@ -382,6 +387,12 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
 /// The error `kind` of `key` at `range`.
 fn failed(key: ConstKey, range: TextRange, kind: ErrorKind) -> Evaluated {
     Evaluated::Failed(Some(ConstError { key, range, kind }))
+}
+
+/// Panics with an internal error of the evaluation of `name`: what only a
+/// compiler bug can cause.
+pub(crate) fn fail_evaluating(name: &str, what: &str) -> ! {
+    panic!("internal error evaluating {name}: {what}")
 }
 
 #[cfg(test)]

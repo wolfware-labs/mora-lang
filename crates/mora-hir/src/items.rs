@@ -122,6 +122,14 @@ pub struct Item {
     pub has_constructor: bool,
 }
 
+impl Item {
+    /// Whether it is a constant declared in a namespace: a value that is
+    /// not `static`.
+    pub fn is_constant(&self) -> bool {
+        self.kind == ItemKind::Field && !self.is_static
+    }
+}
+
 /// A member of a type that an expression reads as a value (§14.5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueMember {
@@ -683,6 +691,29 @@ mod tests {
         );
         assert_eq!(usings[1].alias.as_deref(), Some("Json"));
         assert_eq!(usings[1].path, path("Std.Json.JsonValue"));
+    }
+
+    #[test]
+    fn only_a_value_without_static_in_a_namespace_is_a_constant() {
+        let db = TestDb::new();
+        let file = db.file(
+            "src/A.mr",
+            "const Max: int = 5;\nstatic Count: int = 0;\nArea(): int => 1;\nstruct P {}\n",
+        );
+        let tree = item_tree(&db, file);
+        let constants: Vec<(&str, bool)> = tree
+            .items()
+            .map(|(_, item)| (item.name.as_str(), item.is_constant()))
+            .collect();
+        assert_eq!(
+            constants,
+            [
+                ("Max", true),
+                ("Count", false),
+                ("Area", false),
+                ("P", false)
+            ]
+        );
     }
 
     #[test]

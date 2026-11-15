@@ -35,9 +35,9 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile};
 
-use super::calls::default_of;
+use super::calls::{Declared, default_of};
 use super::expr::constant;
-use crate::eval::{ConstKey, Evaluated, const_read, const_target, const_value};
+use crate::eval::{Evaluated, const_read, const_target, const_value};
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -323,13 +323,12 @@ fn defaults_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    let hir = body(db, file, owner);
-    let inference = infer(db, project, file, owner);
-    let here = (project, file, owner);
+    let here = Declared::of(db, project, file, owner);
     latest(
-        hir.exprs
+        here.hir
+            .exprs
             .iter()
-            .map(|(id, _)| omitted_default_later(db, here, hir, inference, id)),
+            .map(|(id, _)| omitted_default_later(db, here, id)),
     )
     .map(|later| {
         Later::new(
@@ -340,17 +339,11 @@ fn defaults_later(
 }
 
 /// What the latest of the default values that `call` leaves out waits
-/// for, `call` being a call that inference checked in the body `hir` of
-/// `here`. The callee's body is read only when the call leaves out an
-/// argument, so an edit inside it puts off only the callers that take a
-/// default.
-fn omitted_default_later(
-    db: &dyn Db,
-    here: (Project, SourceFile, BodyOwner),
-    hir: &Body,
-    inference: &Inference,
-    call: ExprId,
-) -> Option<Later> {
+/// for, `call` being a call that inference checked in the body `here`. The
+/// callee's body is read only when the call leaves out an argument, so an
+/// edit inside it puts off only the callers that take a default.
+fn omitted_default_later(db: &dyn Db, here: Declared<'_>, call: ExprId) -> Option<Later> {
+    let (hir, inference) = (here.hir, here.inference);
     let (Some(callee), Some(bound)) = (inference.callee(call), inference.arguments(call)) else {
         return None;
     };
@@ -370,26 +363,21 @@ fn omitted_default_later(
     if omitted.is_empty() {
         return None;
     }
-    // The body that declares the defaults, where it is, with its
-    // inference, and the callee's parameters and their defaults.
-    let (declared, (project, file, owner), declared_inference, params, defaults) = match callee {
+    // The body that declares the defaults, and the callee's parameters
+    // and their defaults.
+    let (declared, params, defaults) = match callee {
         Callee::Item(item) => {
-            let owner = BodyOwner::Item(item.item);
-            let callee_body: &Body = body(db, item.file, owner);
+            let declared = Declared::of(db, item.project, item.file, BodyOwner::Item(item.item));
             (
-                callee_body,
-                (item.project, item.file, owner),
-                infer(db, item.project, item.file, owner),
-                callee_body.params.as_slice(),
-                callee_body.defaults.as_slice(),
+                declared,
+                declared.hir.params.as_slice(),
+                declared.hir.defaults.as_slice(),
             )
         }
         Callee::Local(id) => {
             let function = local(id)?;
             (
-                hir,
                 here,
-                inference,
                 function.params.as_slice(),
                 function.defaults.as_slice(),
             )
@@ -400,14 +388,9 @@ fn omitted_default_later(
             .iter()
             .filter_map(|&index| params.get(index))
             .filter_map(|&param| default_of(param, defaults))
-            .filter(|&default| constant(declared, declared_inference, default).is_none())
+            .filter(|&default| constant(declared.hir, declared.inference, default).is_none())
             .map(|default| {
-                let key = ConstKey::Default {
-                    file,
-                    owner,
-                    default,
-                };
-                match const_value(db, project, key) {
+                match const_value(db, declared.project, declared.default_key(default)) {
                     Evaluated::Later(later) => Some(later.clone()),
                     Evaluated::Value(_) | Evaluated::Failed(_) => None,
                 }
@@ -672,19 +655,14 @@ fn expression_later(
 /// not a place otherwise, as a getter, comes later for what it is.
 /// Lowering has no place for an element yet, so a borrow of one comes
 /// later too ([`borrows_element`]).
-fn is_place(db: &dyn Db, hir: &Body, resolution: &BodyResolution, mut expr: ExprId) -> bool {
-    loop {
-        if const_read(db, resolution, expr).is_some() {
-            return false;
-        }
-        match hir.exprs[expr] {
-            Expr::Member { receiver, .. } => expr = receiver,
+fn is_place(db: &dyn Db, hir: &Body, resolution: &BodyResolution, expr: ExprId) -> bool {
+    !member_chain(hir, expr).any(|part| const_read(db, resolution, part).is_some())
+        && matches!(
+            member_root(hir, expr),
             // `borrows_element` holds every element back until M3.6, so
             // `Index` decides nothing yet.
-            Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. } => return true,
-            _ => return false,
-        }
-    }
+            Expr::Local(_) | Expr::This | Expr::Path(_) | Expr::Index { .. }
+        )
 }
 
 /// Whether `expr` is an element or a field of one, by its shape.
@@ -694,11 +672,18 @@ fn is_element(hir: &Body, expr: ExprId) -> bool {
 
 /// The expression a chain of members starts from, as `xs[0]` in
 /// `xs[0].P.X`, or `expr` itself when it is not a member.
-fn member_root(hir: &Body, mut expr: ExprId) -> &Expr {
-    while let Expr::Member { receiver, .. } = hir.exprs[expr] {
-        expr = receiver;
-    }
-    &hir.exprs[expr]
+fn member_root(hir: &Body, expr: ExprId) -> &Expr {
+    let root = member_chain(hir, expr).last().unwrap_or(expr);
+    &hir.exprs[root]
+}
+
+/// `expr` and, while the last one is a member, its receiver: `xs[0].P.X`,
+/// `xs[0].P` and `xs[0]` for `xs[0].P.X`, the root of the chain last.
+fn member_chain(hir: &Body, expr: ExprId) -> impl Iterator<Item = ExprId> + '_ {
+    std::iter::successors(Some(expr), |&part| match hir.exprs[part] {
+        Expr::Member { receiver, .. } => Some(receiver),
+        _ => None,
+    })
 }
 
 /// The receiver, as `p` in `p.Inc()`, when the call `call` of `callee`
@@ -848,14 +833,7 @@ impl Uses {
                 Expr::Member { receiver, .. } => {
                     receivers.insert(*receiver);
                 }
-                Expr::Nameof(operand) => {
-                    let mut part = *operand;
-                    named.insert(part);
-                    while let Expr::Member { receiver, .. } = hir.exprs[part] {
-                        part = receiver;
-                        named.insert(part);
-                    }
-                }
+                Expr::Nameof(operand) => named.extend(member_chain(hir, *operand)),
                 _ => {}
             }
         }
@@ -1376,10 +1354,7 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
                 _ if data.is_static => ("the initializer of a static".to_owned(), Some(STATICS)),
                 _ => ("the initializer of a constant".to_owned(), None),
             };
-            let types = match sig {
-                Signature::Value(ty) => vec![ty.clone()],
-                _ => Vec::new(),
-            };
+            let types = sig.as_value().cloned().into_iter().collect();
             (what, own, types)
         }
         BodyOwner::Value(ty, index) => {

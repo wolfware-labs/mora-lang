@@ -3,7 +3,7 @@
 //! the body of its owner, which [`super::mir`] lowers.
 
 use mora_hir::{
-    BodyOwner, ExprId, Inference, ItemId, Signature, Ty, instance_fields, signature, struct_field,
+    BodyOwner, ExprId, Inference, ItemId, Ty, instance_fields, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile, Span};
 
@@ -20,9 +20,10 @@ pub(crate) fn default_ty(inference: &Inference, default: ExprId) -> Option<Ty> {
     }
 }
 
-/// The declared type of the constant `owner` of `file`, a constant at
-/// namespace level or a member of a type; `None` for another owner.
-pub(crate) fn const_ty(
+/// The declared type of the value the body of `owner` of `file` computes:
+/// a constant or a static at namespace level, or a field or a constant of
+/// a type; `None` for another owner.
+pub(crate) fn value_ty(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
@@ -34,10 +35,7 @@ pub(crate) fn const_ty(
         item,
     };
     match owner {
-        BodyOwner::Item(index) => match signature(db, item(index)) {
-            Signature::Value(ty) => Some(ty.clone()),
-            _ => None,
-        },
+        BodyOwner::Item(index) => signature(db, item(index)).as_value().cloned(),
         BodyOwner::Value(ty, index) => {
             struct_field(db, item(ty), index).map(|(_, field)| field.ty.clone())
         }

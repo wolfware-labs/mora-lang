@@ -570,6 +570,17 @@ mod tests {
     }
 
     #[test]
+    fn a_value_signature_gives_its_type_and_a_function_none() {
+        let db = TestDb::new();
+        let text = "const Max: int = 5;\nArea(): int => 1;\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let value = |name: &str| signature(&db, item_named(&db, project, file, name)).as_value();
+        assert_eq!(value("Max"), Some(&Ty::Primitive(Primitive::Int)));
+        assert_eq!(value("Area"), None);
+    }
+
+    #[test]
     fn a_const_or_static_getter_declares_no_field() {
         // A getter is no field, whatever its modifiers: `Z` stays paired
         // with the second field of the signature. `const` on a getter is

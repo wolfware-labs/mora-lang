@@ -9,7 +9,7 @@ use mora_hir::{
     Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Ty, body,
     calls_diverging, infer, signature,
 };
-use mora_span::{Project, SourceFile, Span};
+use mora_span::{Db, Project, SourceFile, Span};
 
 use super::consts::default_ty;
 use super::expr::{Dest, constant};
@@ -128,13 +128,8 @@ impl Lowerer<'_> {
             arguments.push(match operand {
                 Some(operand) => operand,
                 None => {
-                    let declared = *callee_hir.get_or_insert_with(|| Declared {
-                        project: item.project,
-                        file: item.file,
-                        owner,
-                        hir: body(db, item.file, owner),
-                        inference: infer(db, item.project, item.file, owner),
-                    });
+                    let declared = *callee_hir
+                        .get_or_insert_with(|| Declared::of(db, item.project, item.file, owner));
                     self.default_argument(
                         expr,
                         declared,
@@ -368,11 +363,7 @@ impl Lowerer<'_> {
                 self.converted(inference.conversion(default), Operand::Const(value), span);
             return self.pass(operand, mode, span);
         }
-        let key = ConstKey::Default {
-            file: declared.file,
-            owner: declared.owner,
-            default,
-        };
+        let key = declared.default_key(default);
         let Evaluated::Value(value) = const_value(self.owner.db, declared.project, key) else {
             self.ice(call, "a left out default value without a value");
         };
@@ -387,17 +378,40 @@ impl Lowerer<'_> {
 /// function or method, or the body around a local function, with what
 /// constant evaluation names it by.
 #[derive(Clone, Copy)]
-struct Declared<'a> {
+pub(super) struct Declared<'a> {
     /// The project of the body.
-    project: Project,
+    pub(super) project: Project,
     /// The file of the body.
-    file: SourceFile,
+    pub(super) file: SourceFile,
     /// The owner of the body.
-    owner: BodyOwner,
+    pub(super) owner: BodyOwner,
     /// The HIR body.
-    hir: &'a mora_hir::Body,
+    pub(super) hir: &'a mora_hir::Body,
     /// The types and records of the HIR body.
-    inference: &'a Inference,
+    pub(super) inference: &'a Inference,
+}
+
+impl<'a> Declared<'a> {
+    /// The body of `owner` of `file`, in `project`.
+    pub(super) fn of(db: &'a dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Self {
+        Declared {
+            project,
+            file,
+            owner,
+            hir: body(db, file, owner),
+            inference: infer(db, project, file, owner),
+        }
+    }
+
+    /// The key that constant evaluation computes the default value
+    /// `default` of this body by.
+    pub(super) fn default_key(self, default: ExprId) -> ConstKey {
+        ConstKey::Default {
+            file: self.file,
+            owner: self.owner,
+            default,
+        }
+    }
 }
 
 /// The default value of the parameter `param` among `defaults`, those of

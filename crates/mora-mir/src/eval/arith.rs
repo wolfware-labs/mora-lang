@@ -8,6 +8,7 @@ use std::ops::{Add, Div, Mul, Rem, Sub};
 
 use mora_hir::Primitive;
 
+use super::fail_evaluating;
 use crate::{BinOp, Const, UnOp};
 
 /// Why an operation has no value.
@@ -141,9 +142,7 @@ fn on_every_target(
 /// `int`.
 pub(crate) fn binary(op: BinOp, left: &Const, right: &Const) -> Result<Const, ArithError> {
     match (left, right) {
-        (Const::Int(value, ty), Const::Int(count, _))
-            if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::UShr) =>
-        {
+        (Const::Int(value, ty), Const::Int(count, _)) if op.is_shift() => {
             shift(op, *value, *ty, *count)
         }
         (Const::Int(left, ty), Const::Int(right, right_ty)) if ty == right_ty => {
@@ -337,7 +336,7 @@ fn unsupported(op: BinOp, operands: &str) -> ! {
 /// Panics with an internal error: the operation is one that only a
 /// compiler bug passes in.
 fn internal(what: &str) -> ! {
-    panic!("internal error evaluating a constant: {what}")
+    fail_evaluating("a constant", what)
 }
 
 #[cfg(test)]

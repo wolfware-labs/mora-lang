@@ -36,13 +36,13 @@ use std::fmt::Write;
 
 use mora_diag::line_column;
 use mora_hir::{
-    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Signature,
-    Stmt, StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known,
-    owner_name, signature, struct_field, this_type,
+    BodyOwner, BodyResolution, BodySourceMap, ExprId, Inference, ItemId, ItemIdx, STD, Stmt,
+    StmtId, Ty, body, body_owners, body_resolution, body_source_map, infer, is_known, owner_name,
+    signature, this_type,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
-use crate::eval::{ConstKey, Evaluated, const_value, constants};
+use crate::eval::{ConstKey, Evaluated, const_value, is_constant};
 use crate::types::param_ty;
 use crate::{
     Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
@@ -103,8 +103,6 @@ pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) ->
 /// without a value, since the build stops at its error first.
 pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     let mut out = String::new();
-    // Only looked up, never iterated.
-    let constants: HashSet<ConstKey> = constants(db, file).into_iter().collect();
     for owner in body_owners(db, file) {
         if body(db, file, owner).root.is_none() {
             continue;
@@ -112,12 +110,11 @@ pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        let key = ConstKey::Constant { file, owner };
-        let later = if constants.contains(&key) {
-            match const_value(db, project, key) {
+        let later = if is_constant(db, file, owner) {
+            match const_value(db, project, ConstKey::Constant { file, owner }) {
                 Evaluated::Value(value) => {
                     let name = owner_name(db, project, file, owner);
-                    let ty = consts::const_ty(db, project, file, owner);
+                    let ty = consts::value_ty(db, project, file, owner);
                     let ty = ty.unwrap_or_else(|| fail_in(&name, "a constant without a type"));
                     write_const(&mut out, db, &name, &ty, value);
                     continue;
@@ -581,15 +578,16 @@ impl<'a> Owner<'a> {
         let root = self.expect(self.hir.root, "the body has no code");
         let (ret, this, params) = match owner {
             BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
-            BodyOwner::Item(item) => match signature(self.db, self.item(item)) {
-                Signature::Value(ty) => (ty.clone(), None, Vec::new()),
-                _ => self.function_signature(self.item(item)),
-            },
-            BodyOwner::Value(ty, index) => {
-                let field = struct_field(self.db, self.item(ty), index);
+            BodyOwner::Item(item) => {
+                match consts::value_ty(self.db, self.project, self.file, owner) {
+                    Some(ty) => (ty, None, Vec::new()),
+                    None => self.function_signature(self.item(item)),
+                }
+            }
+            BodyOwner::Value(..) => {
+                let ty = consts::value_ty(self.db, self.project, self.file, owner);
                 let what = "only the initializer of a field or a constant is lowered";
-                let (_, field) = self.expect(field, what);
-                (field.ty.clone(), None, Vec::new())
+                (self.expect(ty, what), None, Vec::new())
             }
             _ => self
                 .fail("only functions, methods, initializers and top-level statements are lowered"),
