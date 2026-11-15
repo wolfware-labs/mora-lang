@@ -103,7 +103,8 @@ pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) ->
 /// without a value, since the build stops at its error first.
 pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     let mut out = String::new();
-    let constants = constants(db, file);
+    // Only looked up, never iterated.
+    let constants: HashSet<ConstKey> = constants(db, file).into_iter().collect();
     for owner in body_owners(db, file) {
         if body(db, file, owner).root.is_none() {
             continue;

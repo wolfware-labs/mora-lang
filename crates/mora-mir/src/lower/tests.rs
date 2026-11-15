@@ -1118,9 +1118,11 @@ fn an_omitted_default_is_evaluated() {
 #[test]
 fn a_default_waiting_for_its_milestone_defers_only_callers_that_omit_it() {
     let text = "O(a: int = default) {}\nF() {\n    O();\n}\nG() {\n    O(1);\n}\n\
-                H() {\n    L(a: int = default) {}\n    L();\n}\n";
+                H() {\n    L(a: int = default) {}\n    L();\n}\n\
+                I() {\n    A(move a: int = 1) {}\n    B(move a: int = default) {}\n    B();\n}\n\
+                J() {\n    A(move a: int = default) {}\n    B(move a: int = 1) {}\n    B();\n}\n";
     let what = "a call that leaves out a default that needs evaluation is not lowered until M3.12";
-    for name in ["F", "H"] {
+    for name in ["F", "H", "I"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!("internal error lowering UsersApi.{name}: {what}")
@@ -1128,7 +1130,7 @@ fn a_default_waiting_for_its_milestone_defers_only_callers_that_omit_it() {
     }
     let lowered = lowered(text);
     let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
-    for owner in ["UsersApi.F", "UsersApi.H"] {
+    for owner in ["UsersApi.F", "UsersApi.H", "UsersApi.I"] {
         let line = format!("// {owner}: not lowered until M3.12\n");
         assert!(dump.contains(&line), "{line}{dump}");
     }
@@ -1137,6 +1139,13 @@ fn a_default_waiting_for_its_milestone_defers_only_callers_that_omit_it() {
         g.iter()
             .any(|line| line.starts_with("call UsersApi.O{fn UsersApi.O}(")),
         "{g:#?}"
+    );
+    // A local function's own defaults decide, not those of another one:
+    // `B()` in `J` takes a literal, so `J` waits only for the default of
+    // `A`, a `default` written in its body, and not as a call does.
+    assert_eq!(
+        later_error(text, |l| l.owner("J")),
+        "internal error lowering UsersApi.J: `default` is not lowered until M3.12"
     );
 }
 
