@@ -1,0 +1,14 @@
+// A struct nested in a generic type that declares no type parameters of its
+// own is a struct, so its fields and its values are checked (§5.10, §8.1).
+struct G<T> {
+    public struct In {
+        public N: int;
+        public Wrong(o: In): string => o.N; //~ ERROR MR0203
+        public Mk(): In => new In { N = "s" }; //~ ERROR MR0203
+        public Mk2(): In => new In { Q = 1 }; //~ ERROR MR0143 //~ ERROR MR0147
+        public Bad(): In => 3; //~ ERROR MR0203
+    }
+    public M(i: In): string => i.N; //~ ERROR MR0203
+    public K(): In => new In { N = "x" }; //~ ERROR MR0203
+    public L(): In => 5; //~ ERROR MR0203
+}

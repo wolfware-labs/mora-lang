@@ -1,0 +1,97 @@
+fn top-level() -> () {
+    let _0: ();
+    let a#0: bool;
+    let b#1: bool;
+    let c#2: bool;
+    let _4: bool;
+    let _5: bool;
+    let _6: bool;
+    let _7: string;
+    let _8: bool;
+
+    bb0: {
+        storage_live(a#0); // 5:5
+        a#0 = 3 < 4; // 5:9
+        storage_live(b#1); // 6:5
+        storage_live(_4); // 6:9
+        switch copy a#0 [false -> bb2] otherwise bb1; // 6:9
+    }
+
+    bb1: {
+        _4 = 2 > 5; // 6:14
+        goto bb3; // 6:9
+    }
+
+    bb2: {
+        _4 = false; // 6:9
+        goto bb3; // 6:9
+    }
+
+    bb3: {
+        b#1 = copy _4; // 6:9
+        storage_dead(_4); // 6:9
+        storage_live(c#2); // 7:5
+        storage_live(_5); // 7:9
+        storage_live(_6); // 7:9
+        _6 = !copy b#1; // 7:9
+        switch copy _6 [false -> bb5] otherwise bb4; // 7:9
+    }
+
+    bb4: {
+        storage_dead(_6); // 7:9
+        _5 = true; // 7:9
+        goto bb6; // 7:9
+    }
+
+    bb5: {
+        storage_dead(_6); // 7:9
+        _5 = false; // 7:15
+        goto bb6; // 7:9
+    }
+
+    bb6: {
+        c#2 = copy _5; // 7:9
+        storage_dead(_5); // 7:9
+        call Console.WriteLine{external}(copy a#0) -> bb7; // 8:1
+    }
+
+    bb7: {
+        call Console.WriteLine{external}(copy b#1) -> bb8; // 9:1
+    }
+
+    bb8: {
+        call Console.WriteLine{external}(copy c#2) -> bb9; // 10:1
+    }
+
+    bb9: {
+        storage_live(_7); // 11:19
+        storage_live(_8); // 11:19
+        _8 = copy a#0 != copy b#1; // 11:19
+        switch copy _8 [false -> bb11] otherwise bb10; // 11:19
+    }
+
+    bb10: {
+        storage_dead(_8); // 11:19
+        _7 = "yes"; // 11:28
+        goto bb12; // 11:19
+    }
+
+    bb11: {
+        storage_dead(_8); // 11:19
+        _7 = "no"; // 11:36
+        goto bb12; // 11:19
+    }
+
+    bb12: {
+        call Console.WriteLine{external}(copy _7) -> bb13; // 11:1
+    }
+
+    bb13: {
+        storage_dead(_7); // 11:1
+        _0 = (); // 11:42
+        storage_dead(c#2); // 11:42
+        storage_dead(b#1); // 11:42
+        storage_dead(a#0); // 11:42
+        return; // 11:42
+    }
+}

@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use mora_diag::{Code, Diagnostic, Files, Label};
-use mora_span::{Span, TextRange, TextSize};
+use mora_span::{FileId, Span, TextRange, TextSize};
 use mora_testkit::harness::{Options, Report, run_suite, ui_suite};
 use mora_testkit::{Backend, Checked, Compiler, Output};
 
 /// Compiles a toy language, one statement per line, with `//` comments:
 /// `fail MRnnnn` reports an error on the word `fail`, `warn MRnnnn` a
 /// warning, `print text` prints a line, `jit-print text` prints it under the
-/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR
-/// and `panic` crashes the compiler.
+/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR,
+/// `mir text` one to the MIR, `unlowered MRnnnn` reports an error only when
+/// the program is lowered to MIR, and `panic` crashes the compiler.
 struct Fake {
     backends: &'static [Backend],
 }
@@ -37,16 +38,21 @@ fn statements(text: &str) -> impl Iterator<Item = (usize, &str, &str)> {
     })
 }
 
+/// The span of `word`, written at the offset `at` of `file`.
+fn word_span(file: FileId, at: usize, word: &str) -> Span {
+    Span::new(
+        file,
+        TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
+    )
+}
+
 impl Compiler for Fake {
     fn check(&self, path: &str, text: &str) -> Checked {
         let mut files = Files::new();
         let file = files.add(path, text);
         let mut diagnostics = Vec::new();
         for (at, word, rest) in statements(text) {
-            let span = Span::new(
-                file,
-                TextRange::at(TextSize::new(at as u32), TextSize::of(word)),
-            );
+            let span = word_span(file, at, word);
             let code = || rest.parse::<Code>().unwrap();
             match word {
                 "fail" => diagnostics.push(Diagnostic::error(
@@ -85,9 +91,13 @@ impl Compiler for Fake {
         };
         for (_, word, rest) in statements(text) {
             match word {
-                "print" => output.stdout.push_str(&format!("{rest}\n")),
+                "print" => {
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
+                }
                 "jit-print" if backend == Backend::Jit => {
-                    output.stdout.push_str(&format!("{rest}\n"));
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
                 }
                 "exit" => output.exit = rest.parse().unwrap(),
                 _ => {}
@@ -107,6 +117,31 @@ impl Compiler for Fake {
         }
         Ok(statements(text)
             .filter(|&(_, word, _)| word == "hir")
+            .map(|(_, _, rest)| format!("{rest}\n"))
+            .collect())
+    }
+
+    fn mir(&self, path: &str, text: &str) -> Result<String, Checked> {
+        let mut checked = self.check(path, text);
+        for (at, word, rest) in statements(text) {
+            if word == "unlowered" {
+                let span = word_span(checked.sources[0], at, word);
+                checked.diagnostics.push(Diagnostic::error(
+                    rest.parse::<Code>().unwrap(),
+                    "fake lowering failure",
+                    Label::new(span, "here"),
+                ));
+            }
+        }
+        if checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == mora_diag::Severity::Error)
+        {
+            return Err(checked);
+        }
+        Ok(statements(text)
+            .filter(|&(_, word, _)| word == "mir")
             .map(|(_, _, rest)| format!("{rest}\n"))
             .collect())
     }
@@ -354,6 +389,33 @@ fn run_reports_a_program_that_does_not_compile_once() {
 }
 
 #[test]
+fn run_reports_a_program_that_compiles_but_does_not_lower() {
+    let root = suite_dir(
+        "run-lower",
+        "run",
+        &[(
+            "a.mr",
+            "hir one
+unlowered MR0300
+",
+        )],
+    );
+    let none = Fake { backends: &[] };
+    let report = run(&none, &root);
+    let problems = failure(&report);
+    assert!(
+        problems.starts_with("the program does not lower:\nerror[MR0300]: fake lowering failure\n"),
+        "{problems}"
+    );
+    // A program that reports an error has neither snapshot, so its HIR
+    // is neither compared nor blessed.
+    assert!(!problems.contains("snapshot"), "{problems}");
+    let report = run_with(&none, &root, &bless());
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(!root.join("tests/run/a.hir").exists());
+}
+
+#[test]
 fn run_without_a_backend_compiles_and_compares_the_hir() {
     let text = "// expect: a\nprint a\nhir one\n";
     let root = suite_dir("run-no-backend", "run", &[("a.mr", text)]);
@@ -434,4 +496,45 @@ fn a_snapshot_that_cannot_be_written_fails_its_case() {
         "{:?}",
         report.failures
     );
+}
+
+#[test]
+fn run_suite_reports_a_stale_mir_snapshot() {
+    let text = "// expect: a\nprint a\nhir one\nmir body\n";
+    let root = suite_dir("run-stale-mir", "run", &[("a.mr", text)]);
+    let none = Fake { backends: &[] };
+    fs::write(root.join("tests/run/a.hir"), "one\n").unwrap();
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(
+        problems.contains("no snapshot; run with --bless"),
+        "{problems}"
+    );
+    fs::write(root.join("tests/run/a.mir"), "old\n").unwrap();
+    let problems = failure(&run(&none, &root)).to_owned();
+    assert!(problems.contains("- old\n+ body"), "{problems}");
+    fs::write(root.join("tests/run/a.mir"), "body\n").unwrap();
+    assert_eq!(run(&none, &root).failures.len(), 0);
+}
+
+#[test]
+fn bless_writes_the_mir_snapshot() {
+    let text = "// expect: a\nprint a\nhir one\nmir body\n";
+    let root = suite_dir("run-bless-mir", "run", &[("a.mr", text)]);
+    let none = Fake { backends: &[] };
+    let report = run_with(&none, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert_eq!(
+        fs::read_to_string(root.join("tests/run/a.mir")).unwrap(),
+        "body\n"
+    );
+    assert_eq!(run(&none, &root).failures.len(), 0);
+}
+
+#[test]
+fn blessing_an_empty_mir_removes_the_snapshot() {
+    let root = suite_dir("run-bless-empty-mir", "run", &[("a.mr", "print a\n")]);
+    fs::write(root.join("tests/run/a.mir"), "old\n").unwrap();
+    let report = run_with(&Fake { backends: &[] }, &root, &bless());
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+    assert!(!root.join("tests/run/a.mir").exists());
 }

@@ -1,0 +1,135 @@
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:50:9
+   |
+50 | let a = new { Q = new { Y = 1 } }; //~ ERROR MR0154
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:51:11
+   |
+51 | let ys = [new { X = 1 }]; //~ ERROR MR0154
+   |           ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:53:12
+   |
+53 |     return new { X = 1 }; //~ ERROR MR0154
+   |            ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:55:7
+   |
+55 | panic(new { X = 1 }); //~ ERROR MR0154
+   |       ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:65:17
+   |
+65 | Back(): int => (new { X = 1 }, 1); //~ ERROR MR0154
+   |                 ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:67:13
+   |
+67 |     return (new { X = 1 }, 1); //~ ERROR MR0154
+   |             ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:71:30
+   |
+71 |     let t3: (P, int, int) = (new { X = 1 }, 1); //~ ERROR MR0154
+   |                              ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:72:20
+   |
+72 |     let ti: int = (new { X = 1 }, 1); //~ ERROR MR0154
+   |                    ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:73:18
+   |
+73 |     let tp: P = (new { X = 1 }, 1); //~ ERROR MR0154
+   |                  ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:74:26
+   |
+74 |     let tt: (P, int) = ((new { X = 1 }, 1), 1); //~ ERROR MR0154
+   |                          ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:75:10
+   |
+75 |     One((new { X = 1 }, 1)); //~ ERROR MR0154
+   |          ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:76:10
+   |
+76 |     TT(((new { X = 1 }, 1), 2)); //~ ERROR MR0154
+   |          ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:77:28
+   |
+77 |     let t2 = new T2 { A = (new { X = 1 }, 1) }; //~ ERROR MR0154
+   |                            ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:79:11
+   |
+79 |     tv = (new { X = 1 }, 1, 2); //~ ERROR MR0154
+   |           ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_inner_target.mr:80:35
+   |
+80 |     let n: int = match (x) { _ => new { X = 1 } }; //~ ERROR MR0154
+   |                                   ^^^^^^^^^^^^^ `int` is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` cannot create the type expected here
+  --> tests/ui/structs/new_inner_target.mr:81:22
+   |
+81 |     let ns: int[] = [new()]; //~ ERROR MR0154
+   |                      ^^^^^ `int` is expected here, which is not a struct or a class
+   |
+   = note: `new` creates a struct or a class; write a value of the expected type another way
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_inner_target.mr:82:24
+   |
+82 |     let f: int = () => new { X = 1 }; //~ ERROR MR0154
+   |                        ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type

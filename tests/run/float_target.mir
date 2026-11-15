@@ -1,0 +1,52 @@
+fn top-level() -> () {
+    let _0: ();
+    let x#0: float;
+    let y#1: float;
+    let z#2: double;
+    let w#3: float;
+    let tenth#4: float;
+    let _6: float;
+
+    bb0: {
+        storage_live(x#0); // 6:5
+        x#0 = 1.5; // 6:16
+        storage_live(y#1); // 7:5
+        y#1 = copy x#0 + 1.0; // 7:16
+        storage_live(z#2); // 8:5
+        z#2 = 0.25; // 8:17
+        storage_live(w#3); // 9:5
+        w#3 = 3.0; // 9:16
+        storage_live(tenth#4); // 10:5
+        tenth#4 = 0.1; // 10:20
+        call Console.WriteLine{external}(copy x#0) -> bb1; // 11:1
+    }
+
+    bb1: {
+        call Console.WriteLine{external}(copy y#1) -> bb2; // 12:1
+    }
+
+    bb2: {
+        call Console.WriteLine{external}(copy z#2) -> bb3; // 13:1
+    }
+
+    bb3: {
+        storage_live(_6); // 14:19
+        _6 = copy w#3 / 2.0; // 14:19
+        call Console.WriteLine{external}(copy _6) -> bb4; // 14:1
+    }
+
+    bb4: {
+        storage_dead(_6); // 14:1
+        call Console.WriteLine{external}(copy tenth#4) -> bb5; // 15:1
+    }
+
+    bb5: {
+        _0 = (); // 15:26
+        storage_dead(tenth#4); // 15:26
+        storage_dead(w#3); // 15:26
+        storage_dead(z#2); // 15:26
+        storage_dead(y#1); // 15:26
+        storage_dead(x#0); // 15:26
+        return; // 15:26
+    }
+}

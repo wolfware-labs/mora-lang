@@ -1,0 +1,35 @@
+fn top-level() -> () {
+    let _0: ();
+    let start#0: int;
+    let mut total#1: int;
+
+    bb0: {
+        storage_live(start#0); // 5:5
+        start#0 = 10; // 5:13
+        storage_live(total#1); // 6:5
+        total#1 = copy start#0; // 6:13
+        call Console.WriteLine{external}(copy total#1) -> bb1; // 7:1
+    }
+
+    bb1: {
+        total#1 = copy total#1 + 3; // 8:1
+        call Console.WriteLine{external}(copy total#1) -> bb2; // 9:1
+    }
+
+    bb2: {
+        total#1 = copy total#1 * 2; // 10:9
+        call Console.WriteLine{external}(copy total#1) -> bb3; // 11:1
+    }
+
+    bb3: {
+        total#1 = copy total#1 - 1; // 12:1
+        call Console.WriteLine{external}(copy total#1) -> bb4; // 13:1
+    }
+
+    bb4: {
+        _0 = (); // 13:26
+        storage_dead(total#1); // 13:26
+        storage_dead(start#0); // 13:26
+        return; // 13:26
+    }
+}

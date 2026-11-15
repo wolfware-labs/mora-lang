@@ -1,0 +1,86 @@
+// A modifier applies to the declaration it is on: `const` declares a
+// constant, a value fixed at compile time, and a getter computes its value
+// on each read.
+public struct Counter {
+    public const Limit: int = 10;
+    public mut Count: int;
+
+    public const Twice: int => Count * 2; //~ ERROR MR0113
+    public const static Zero: int => 0; //~ ERROR MR0113
+    public static One: int => 1;
+}
+
+public interface IShape {
+    const Name: string => "shape"; //~ ERROR MR0113
+}
+
+// Only a field declares a constant, so `const` on any other declaration,
+// on a parameter or on an accessor does not apply either.
+public struct Methods {
+    public const M(): int => 1; //~ ERROR MR0113
+    public const this[i: int]: int { get => i; } //~ ERROR MR0113
+}
+
+public struct Accessors {
+    public this[i: int]: int { const get => i; } //~ ERROR MR0113
+}
+
+public class Built {
+    public const Built() {} //~ ERROR MR0113
+    const ~Built() {} //~ ERROR MR0113
+}
+
+public struct Sum {
+    public const static operator +(a: Sum, b: Sum): Sum => a; //~ ERROR MR0113
+}
+
+public interface IMembers {
+    const M(): int; //~ ERROR MR0113
+    const type Item; //~ ERROR MR0113
+}
+
+// An interface has no fields and an extension adds none, so a constant
+// goes in the namespace or in the type.
+public interface ILimits {
+    const Max: int = 10; //~ ERROR MR0113
+    const Min: int; //~ ERROR MR0113
+}
+
+public extension(counter: Counter) {
+    const Step: int = 1; //~ ERROR MR0113
+    const Start: int; //~ ERROR MR0113
+}
+
+public extension<T>(item: T) where T : IShape {
+    public const Corners: int = 4; //~ ERROR MR0113
+}
+
+const Free(): int => 1; //~ ERROR MR0113
+
+Take(const x: int) {} //~ ERROR MR0113
+
+const struct Point { //~ ERROR MR0113
+    public X: int;
+}
+
+const class Box {} //~ ERROR MR0113
+
+const interface IEmpty {} //~ ERROR MR0113
+
+const union Shape { Dot } //~ ERROR MR0113
+
+const enum Color { Red } //~ ERROR MR0113
+
+const macro Nothing() {} //~ ERROR MR0113
+
+const extension(x: int) {} //~ ERROR MR0113
+
+extension(const y: int) {} //~ ERROR MR0113
+
+// A constant is declared with its value.
+public struct Limits {
+    public const Max: int; //~ ERROR MR0114
+    public const Min: int = 0;
+}
+
+const Size: int; //~ ERROR MR0114

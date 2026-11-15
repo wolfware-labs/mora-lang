@@ -1,9 +1,17 @@
 //! The database and helpers the tests of this crate share.
 
-use mora_span::{Project, SourceFile};
+use mora_span::Project;
 
-pub(crate) use crate::test_support::{TestDb, app, codes, file_named, messages};
+use crate::resolve::item_data;
+pub(crate) use crate::test_support::{TestDb, app, codes, file_named, item_named, messages};
 use crate::*;
+
+/// What `src/Program.mr` alone in an app reports.
+pub(crate) fn diagnostics_of(text: &str) -> Vec<mora_diag::Diagnostic> {
+    let db = TestDb::new();
+    let project = app(&db, &[("src/Program.mr", text)]);
+    diagnostics(&db, project).clone()
+}
 
 pub(crate) fn path(text: &str) -> Vec<String> {
     text.split('.').map(str::to_owned).collect()
@@ -38,16 +46,8 @@ pub(crate) fn item_name(db: &TestDb, item: ItemId) -> String {
     format!(
         "{}.{}",
         map.namespace_path(namespace),
-        item_tree(db, item.file).item(item.item).name
+        item_data(db, item).name
     )
-}
-
-pub(crate) fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -> ItemId {
-    let (idx, _) = item_tree(db, file)
-        .items()
-        .find(|(_, item)| item.name == name)
-        .unwrap();
-    Scope::file(project, file).item(idx)
 }
 
 /// The signature of the item `name` in the file at `path`.

@@ -695,6 +695,7 @@ dependencies = [
  "mora-diag",
  "mora-span",
  "mora-syntax",
+ "rustc-hash 2.1.3",
  "salsa",
 ]
 
@@ -713,6 +714,13 @@ version = "0.0.0"
 [[package]]
 name = "mora-mir"
 version = "0.0.0"
+dependencies = [
+ "mora-diag",
+ "mora-hir",
+ "mora-span",
+ "mora-syntax",
+ "salsa",
+]
 
 [[package]]
 name = "mora-pkg"
@@ -771,6 +779,7 @@ dependencies = [
  "mora-check",
  "mora-diag",
  "mora-hir",
+ "mora-mir",
  "mora-span",
  "salsa",
 ]

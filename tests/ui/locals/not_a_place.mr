@@ -1,0 +1,83 @@
+// The left side of `=`, a compound assignment, `++` and `--` is a place:
+// a local, a parameter, a field or an element.
+public struct P {
+    public X: int;
+    public mut M: int;
+    public G: int => X;
+    public Inst(): int => X;
+    public static S(): int => 1;
+    public static mut SF: int = 1;
+    public static SG: int => 1;
+    public const K: int = 2;
+    Probe() {
+        Inst = 1; //~ ERROR MR0186
+        G = 1; //~ ERROR MR0186
+        K = 1; //~ ERROR MR0186
+        SF = 1;
+    }
+}
+
+public enum Color { Red }
+
+One(): int => 1;
+
+F(p: P, xs: int[]) {
+    var q = p;
+    q.Inst = 1; //~ ERROR MR0186
+    q.Inst += 1; //~ ERROR MR0186
+    q.Inst++; //~ ERROR MR0186
+    q.G = 1; //~ ERROR MR0186
+    q.G--; //~ ERROR MR0186
+    P.S = 1; //~ ERROR MR0186
+    P.SG = 1; //~ ERROR MR0186
+    P.K = 1; //~ ERROR MR0186
+    Color.Red = 1; //~ ERROR MR0186
+    One() = 1; //~ ERROR MR0186
+    q.M = 1;
+    q.M += 1;
+    q.M++;
+    P.SF = 1;
+    xs[0] = 1;
+    var a = 1;
+    var b = 2;
+    (a, b) = (b, a);
+    (a, _) = (1, 2);
+}
+
+// A field of a struct is a place only when the value that holds it is one.
+public struct R {
+    public mut Y: int;
+}
+
+public const C1: int = 1;
+public static mut G1: int = 1;
+
+MkR(): R => new R { Y = 1 };
+
+H(b: bool, r: R) {
+    MkR().Y = 1; //~ ERROR MR0186
+    MkR().Y++; //~ ERROR MR0186
+    new R { Y = 1 }.Y++; //~ ERROR MR0186
+    var s = r;
+    (b ? s : s).Y = 1; //~ ERROR MR0186
+    s.Y = 2;
+    C1 = 2; //~ ERROR MR0186
+    C1++; //~ ERROR MR0186
+    G1 = 2;
+    _ = s.Y + 1;
+    _ += 1; //~ ERROR MR0186
+    L() {}
+    L = L; //~ ERROR MR0186
+}
+
+// `_` under `++` or `--` is no place; a type keyword on the left is no
+// value, once; a tuple on the left of `op=` has no operator.
+J(i: int) {
+    _++; //~ ERROR MR0186
+    --_; //~ ERROR MR0186
+    int = 1; //~ ERROR MR0127
+    int++; //~ ERROR MR0127
+    var j = i;
+    (j, _) += (1, 2); //~ ERROR MR0204
+    (_, _) += (1, 2); //~ ERROR MR0204
+}

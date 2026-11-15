@@ -7,27 +7,12 @@
 use crate::bodies::BinaryOp;
 use crate::ty::{Primitive, Ty};
 
-/// Whether `ty` is a numeric type: an integer type, `float` or `double`.
-pub(crate) fn is_numeric(ty: Primitive) -> bool {
-    !matches!(ty, Primitive::Bool | Primitive::Char)
-}
-
 /// The primitive type `ty` is, when it is a numeric type.
 pub(crate) fn as_numeric(ty: &Ty) -> Option<Primitive> {
     match ty {
-        Ty::Primitive(ty) if is_numeric(*ty) => Some(*ty),
+        Ty::Primitive(ty) if ty.is_numeric() => Some(*ty),
         _ => None,
     }
-}
-
-/// Whether `ty` is a floating-point type: `float` or `double`.
-pub(crate) fn is_floating_point(ty: Primitive) -> bool {
-    matches!(ty, Primitive::Float | Primitive::Double)
-}
-
-/// Whether `ty` is an integer type.
-pub(crate) fn is_integer(ty: Primitive) -> bool {
-    is_numeric(ty) && !is_floating_point(ty)
 }
 
 /// Whether `op` is defined only on two integer operands of one promoted
@@ -91,23 +76,6 @@ pub(crate) fn widen_small(ty: Primitive) -> Primitive {
     }
 }
 
-/// The smallest and largest value of an integer type. `nint` and `nuint`
-/// have the range they have on every target, that of `int` and `uint`.
-pub(crate) fn integer_range(ty: Primitive) -> Option<(i128, i128)> {
-    let range = match ty {
-        Primitive::Byte => (0, u8::MAX.into()),
-        Primitive::SByte => (i8::MIN.into(), i8::MAX.into()),
-        Primitive::Short => (i16::MIN.into(), i16::MAX.into()),
-        Primitive::UShort => (0, u16::MAX.into()),
-        Primitive::Int | Primitive::NInt => (i32::MIN.into(), i32::MAX.into()),
-        Primitive::UInt | Primitive::NUInt => (0, u32::MAX.into()),
-        Primitive::Long => (i64::MIN.into(), i64::MAX.into()),
-        Primitive::ULong => (0, u64::MAX.into()),
-        _ => return None,
-    };
-    Some(range)
-}
-
 /// Whether the integer `value` is a value of `ty` exactly: in the range of
 /// an integer type, or exact as a `float` or `double`.
 pub(crate) fn holds(ty: Primitive, value: i128) -> bool {
@@ -123,7 +91,9 @@ pub(crate) fn holds(ty: Primitive, value: i128) -> bool {
             let rounded = value as f64;
             rounded < i128::MAX as f64 && rounded as i128 == value
         }
-        _ => integer_range(ty).is_some_and(|(min, max)| (min..=max).contains(&value)),
+        _ => ty
+            .integer_range()
+            .is_some_and(|(min, max)| (min..=max).contains(&value)),
     }
 }
 
@@ -169,6 +139,18 @@ pub(crate) fn is_signed(ty: Primitive) -> bool {
 mod tests {
     use super::*;
     use Primitive::*;
+
+    #[test]
+    fn converts_implicitly_is_the_table_and_leaves_native_integers_out() {
+        assert!(crate::converts_implicitly(Byte, Int));
+        assert!(crate::converts_implicitly(Int, Double));
+        assert!(crate::converts_implicitly(Float, Double));
+        assert!(!crate::converts_implicitly(Int, Byte));
+        assert!(!crate::converts_implicitly(Long, Double));
+        assert!(!crate::converts_implicitly(NInt, Int));
+        assert!(!crate::converts_implicitly(Int, NInt));
+        assert!(!crate::converts_implicitly(NUInt, Long));
+    }
 
     const NUMERIC: [Primitive; 12] = [
         Byte, SByte, Short, UShort, Int, UInt, Long, ULong, NInt, NUInt, Float, Double,
@@ -286,14 +268,16 @@ mod tests {
 
     #[test]
     fn kinds_of_numeric_type() {
-        assert!(is_integer(NInt));
-        assert!(!is_integer(Float));
-        assert!(!is_numeric(Bool));
-        assert!(!is_numeric(Char));
-        assert!(is_floating_point(Float));
-        assert!(is_floating_point(Double));
-        assert!(!is_floating_point(Long));
-        assert!(!is_floating_point(Char));
+        assert!(NInt.is_integer());
+        assert!(!Float.is_integer());
+        assert!(!Char.is_integer());
+        assert!(Float.is_numeric());
+        assert!(!Bool.is_numeric());
+        assert!(!Char.is_numeric());
+        assert!(Float.is_floating_point());
+        assert!(Double.is_floating_point());
+        assert!(!Long.is_floating_point());
+        assert!(!Char.is_floating_point());
         assert_eq!(as_numeric(&Ty::Primitive(Double)), Some(Double));
         assert_eq!(as_numeric(&Ty::Primitive(Bool)), None);
         assert_eq!(as_numeric(&Ty::String), None);

@@ -1,0 +1,328 @@
+error[MR0113]: `const` does not apply to a getter
+ --> tests/ui/members/misplaced_modifiers.mr:8:12
+  |
+8 |     public const Twice: int => Count * 2; //~ ERROR MR0113
+  |            ^^^^^ a getter computes its value on each read
+  |
+  = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+  |
+8 -     public const Twice: int => Count * 2; //~ ERROR MR0113
+8 +     public Twice: int => Count * 2; //~ ERROR MR0113
+  |
+
+error[MR0113]: `const` does not apply to a getter
+ --> tests/ui/members/misplaced_modifiers.mr:9:12
+  |
+9 |     public const static Zero: int => 0; //~ ERROR MR0113
+  |            ^^^^^ a getter computes its value on each read
+  |
+  = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+  |
+9 -     public const static Zero: int => 0; //~ ERROR MR0113
+9 +     public static Zero: int => 0; //~ ERROR MR0113
+  |
+
+error[MR0113]: `const` does not apply to a getter
+  --> tests/ui/members/misplaced_modifiers.mr:14:5
+   |
+14 |     const Name: string => "shape"; //~ ERROR MR0113
+   |     ^^^^^ a getter computes its value on each read
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+14 -     const Name: string => "shape"; //~ ERROR MR0113
+14 +     Name: string => "shape"; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a method
+  --> tests/ui/members/misplaced_modifiers.mr:20:12
+   |
+20 |     public const M(): int => 1; //~ ERROR MR0113
+   |            ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+20 -     public const M(): int => 1; //~ ERROR MR0113
+20 +     public M(): int => 1; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an indexer
+  --> tests/ui/members/misplaced_modifiers.mr:21:12
+   |
+21 |     public const this[i: int]: int { get => i; } //~ ERROR MR0113
+   |            ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+21 -     public const this[i: int]: int { get => i; } //~ ERROR MR0113
+21 +     public this[i: int]: int { get => i; } //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an accessor
+  --> tests/ui/members/misplaced_modifiers.mr:25:32
+   |
+25 |     public this[i: int]: int { const get => i; } //~ ERROR MR0113
+   |                                ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+25 -     public this[i: int]: int { const get => i; } //~ ERROR MR0113
+25 +     public this[i: int]: int { get => i; } //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a constructor
+  --> tests/ui/members/misplaced_modifiers.mr:29:12
+   |
+29 |     public const Built() {} //~ ERROR MR0113
+   |            ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+29 -     public const Built() {} //~ ERROR MR0113
+29 +     public Built() {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a destructor
+  --> tests/ui/members/misplaced_modifiers.mr:30:5
+   |
+30 |     const ~Built() {} //~ ERROR MR0113
+   |     ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+30 -     const ~Built() {} //~ ERROR MR0113
+30 +     ~Built() {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an operator
+  --> tests/ui/members/misplaced_modifiers.mr:34:12
+   |
+34 |     public const static operator +(a: Sum, b: Sum): Sum => a; //~ ERROR MR0113
+   |            ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+34 -     public const static operator +(a: Sum, b: Sum): Sum => a; //~ ERROR MR0113
+34 +     public static operator +(a: Sum, b: Sum): Sum => a; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a method
+  --> tests/ui/members/misplaced_modifiers.mr:38:5
+   |
+38 |     const M(): int; //~ ERROR MR0113
+   |     ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+38 -     const M(): int; //~ ERROR MR0113
+38 +     M(): int; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an associated type
+  --> tests/ui/members/misplaced_modifiers.mr:39:5
+   |
+39 |     const type Item; //~ ERROR MR0113
+   |     ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+39 -     const type Item; //~ ERROR MR0113
+39 +     type Item; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a member of an interface
+  --> tests/ui/members/misplaced_modifiers.mr:45:5
+   |
+45 |     const Max: int = 10; //~ ERROR MR0113
+   |     ^^^^^ an interface has no fields
+   |
+   = note: a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`; a value each implementing type gives is a static abstract getter, as `static abstract K: int;`
+
+error[MR0113]: `const` does not apply to a member of an interface
+  --> tests/ui/members/misplaced_modifiers.mr:46:5
+   |
+46 |     const Min: int; //~ ERROR MR0113
+   |     ^^^^^ an interface has no fields
+   |
+   = note: a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`; a value each implementing type gives is a static abstract getter, as `static abstract K: int;`
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_modifiers.mr:50:5
+   |
+50 |     const Step: int = 1; //~ ERROR MR0113
+   |     ^^^^^ an extension adds no fields
+   |
+   = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_modifiers.mr:51:5
+   |
+51 |     const Start: int; //~ ERROR MR0113
+   |     ^^^^^ an extension adds no fields
+   |
+   = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_modifiers.mr:55:12
+   |
+55 |     public const Corners: int = 4; //~ ERROR MR0113
+   |            ^^^^^ an extension adds no fields
+   |
+   = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
+
+error[MR0113]: `const` does not apply to a function
+  --> tests/ui/members/misplaced_modifiers.mr:58:1
+   |
+58 | const Free(): int => 1; //~ ERROR MR0113
+   | ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+58 - const Free(): int => 1; //~ ERROR MR0113
+58 + Free(): int => 1; //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a parameter
+  --> tests/ui/members/misplaced_modifiers.mr:60:6
+   |
+60 | Take(const x: int) {} //~ ERROR MR0113
+   |      ^^^^^ a parameter takes its value from each call
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+60 - Take(const x: int) {} //~ ERROR MR0113
+60 + Take(x: int) {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a struct
+  --> tests/ui/members/misplaced_modifiers.mr:62:1
+   |
+62 | const struct Point { //~ ERROR MR0113
+   | ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+62 - const struct Point { //~ ERROR MR0113
+62 + struct Point { //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a class
+  --> tests/ui/members/misplaced_modifiers.mr:66:1
+   |
+66 | const class Box {} //~ ERROR MR0113
+   | ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+66 - const class Box {} //~ ERROR MR0113
+66 + class Box {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an interface
+  --> tests/ui/members/misplaced_modifiers.mr:68:1
+   |
+68 | const interface IEmpty {} //~ ERROR MR0113
+   | ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+68 - const interface IEmpty {} //~ ERROR MR0113
+68 + interface IEmpty {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a union
+  --> tests/ui/members/misplaced_modifiers.mr:70:1
+   |
+70 | const union Shape { Dot } //~ ERROR MR0113
+   | ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+70 - const union Shape { Dot } //~ ERROR MR0113
+70 + union Shape { Dot } //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an enum
+  --> tests/ui/members/misplaced_modifiers.mr:72:1
+   |
+72 | const enum Color { Red } //~ ERROR MR0113
+   | ^^^^^ it declares a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+72 - const enum Color { Red } //~ ERROR MR0113
+72 + enum Color { Red } //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a macro
+  --> tests/ui/members/misplaced_modifiers.mr:74:1
+   |
+74 | const macro Nothing() {} //~ ERROR MR0113
+   | ^^^^^ it is code that runs, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+74 - const macro Nothing() {} //~ ERROR MR0113
+74 + macro Nothing() {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to an extension
+  --> tests/ui/members/misplaced_modifiers.mr:76:1
+   |
+76 | const extension(x: int) {} //~ ERROR MR0113
+   | ^^^^^ it adds members to a type, not a value
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+76 - const extension(x: int) {} //~ ERROR MR0113
+76 + extension(x: int) {} //~ ERROR MR0113
+   |
+
+error[MR0113]: `const` does not apply to a parameter
+  --> tests/ui/members/misplaced_modifiers.mr:78:11
+   |
+78 | extension(const y: int) {} //~ ERROR MR0113
+   |           ^^^^^ a parameter takes its value from each call
+   |
+   = note: a constant is a value fixed at compile time; for one, write a field with an initializer, as `const K: int = 1;`
+help: remove `const`
+   |
+78 - extension(const y: int) {} //~ ERROR MR0113
+78 + extension(y: int) {} //~ ERROR MR0113
+   |
+
+error[MR0114]: constant `Max` has no value
+  --> tests/ui/members/misplaced_modifiers.mr:82:18
+   |
+82 |     public const Max: int; //~ ERROR MR0114
+   |                  ^^^ a constant is declared with its value
+   |
+   = note: a constant is a value fixed at compile time; write that value after the type, as `const K: int = 1;`
+
+error[MR0114]: constant `Size` has no value
+  --> tests/ui/members/misplaced_modifiers.mr:86:7
+   |
+86 | const Size: int; //~ ERROR MR0114
+   |       ^^^^ a constant is declared with its value
+   |
+   = note: a constant is a value fixed at compile time; write that value after the type, as `const K: int = 1;`

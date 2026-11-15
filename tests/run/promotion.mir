@@ -1,0 +1,120 @@
+fn top-level() -> () {
+    let _0: ();
+    let small#0: byte;
+    let sum#1: int;
+    let count#2: int;
+    let big#3: uint;
+    let wide#4: long;
+    let x#5: float;
+    let literal#6: float;
+    let mixed#7: double;
+    let half#8: float;
+    let u#9: uint;
+    let negated#10: long;
+    let shifted#11: int;
+    let _13: int;
+    let _14: int;
+    let _15: long;
+    let _16: long;
+    let _17: int;
+    let _18: double;
+    let _19: double;
+    let _20: long;
+    let _21: int;
+
+    bb0: {
+        storage_live(small#0); // 8:5
+        small#0 = 255; // 8:19
+        storage_live(sum#1); // 9:5
+        storage_live(_13); // 9:11
+        _13 = (implicit int)copy small#0; // 9:11
+        storage_live(_14); // 9:19
+        _14 = (implicit int)copy small#0; // 9:19
+        sum#1 = copy _13 + copy _14; // 9:11
+        storage_dead(_14); // 9:11
+        storage_dead(_13); // 9:11
+        storage_live(count#2); // 10:5
+        count#2 = 1; // 10:13
+        storage_live(big#3); // 11:5
+        big#3 = 4294967295; // 11:17
+        storage_live(wide#4); // 12:5
+        storage_live(_15); // 12:12
+        _15 = (implicit long)copy count#2; // 12:12
+        storage_live(_16); // 12:20
+        _16 = (implicit long)copy big#3; // 12:20
+        wide#4 = copy _15 + copy _16; // 12:12
+        storage_dead(_16); // 12:12
+        storage_dead(_15); // 12:12
+        storage_live(x#5); // 13:5
+        x#5 = 1.5; // 13:16
+        storage_live(literal#6); // 14:5
+        literal#6 = 2.0 + copy x#5; // 14:15
+        storage_live(mixed#7); // 15:5
+        storage_live(_17); // 15:13
+        _17 = copy count#2 * 2; // 15:13
+        storage_live(_18); // 15:13
+        _18 = (implicit double)copy _17; // 15:13
+        storage_live(_19); // 15:25
+        _19 = (implicit double)copy x#5; // 15:25
+        mixed#7 = copy _18 + copy _19; // 15:13
+        storage_dead(_19); // 15:13
+        storage_dead(_18); // 15:13
+        storage_dead(_17); // 15:13
+        storage_live(half#8); // 16:5
+        half#8 = copy x#5 * 0.5; // 16:12
+        storage_live(u#9); // 17:5
+        u#9 = 3000000000; // 17:15
+        storage_live(negated#10); // 18:5
+        storage_live(_20); // 18:16
+        _20 = (implicit long)copy u#9; // 18:16
+        negated#10 = -copy _20; // 18:15
+        storage_dead(_20); // 18:15
+        storage_live(shifted#11); // 19:5
+        storage_live(_21); // 19:15
+        _21 = (implicit int)copy small#0; // 19:15
+        shifted#11 = copy _21 << 2; // 19:15
+        storage_dead(_21); // 19:15
+        call Console.WriteLine{external}(copy sum#1) -> bb1; // 20:1
+    }
+
+    bb1: {
+        call Console.WriteLine{external}(copy wide#4) -> bb2; // 21:1
+    }
+
+    bb2: {
+        call Console.WriteLine{external}(copy literal#6) -> bb3; // 22:1
+    }
+
+    bb3: {
+        call Console.WriteLine{external}(copy mixed#7) -> bb4; // 23:1
+    }
+
+    bb4: {
+        call Console.WriteLine{external}(copy half#8) -> bb5; // 24:1
+    }
+
+    bb5: {
+        call Console.WriteLine{external}(copy negated#10) -> bb6; // 25:1
+    }
+
+    bb6: {
+        call Console.WriteLine{external}(copy shifted#11) -> bb7; // 26:1
+    }
+
+    bb7: {
+        _0 = (); // 26:28
+        storage_dead(shifted#11); // 26:28
+        storage_dead(negated#10); // 26:28
+        storage_dead(u#9); // 26:28
+        storage_dead(half#8); // 26:28
+        storage_dead(mixed#7); // 26:28
+        storage_dead(literal#6); // 26:28
+        storage_dead(x#5); // 26:28
+        storage_dead(wide#4); // 26:28
+        storage_dead(big#3); // 26:28
+        storage_dead(count#2); // 26:28
+        storage_dead(sum#1); // 26:28
+        storage_dead(small#0); // 26:28
+        return; // 26:28
+    }
+}

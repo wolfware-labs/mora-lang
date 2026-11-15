@@ -1,0 +1,20 @@
+// A field the parser recovered gets its syntax error alone: the value the
+// author wrote may be what the parser could not take.
+const G: int => 1; //~ ERROR MR0110 //~ ERROR MR0110
+
+public struct Limits {
+    const K: int { get => 1; } //~ ERROR MR0110
+    const L; //~ ERROR MR0110
+}
+
+// An error that starts where a complete field ends is about the text after
+// it, so the constant without a value is reported as well.
+public struct Bounds {
+    const Max: int;) //~ ERROR MR0110 //~ ERROR MR0114
+}
+
+// The fields the parser makes of a broken lambda are not judged; the
+// indexer around it, which an extension cannot have, is.
+extension(b: Bounds) {
+    this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110
+} //~ ERROR MR0110

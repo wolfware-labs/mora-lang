@@ -1,10 +1,10 @@
 top-level {
-    let p#0 = new Point { X = 3, Y = 4 };
+    let p#0: Point = new Point { X = 3, Y = 4 };
     Console{external}.WriteLine{external}(p#0.LengthSquared());
-    let q#1 = p#0.Scaled(2);
+    let q#1: Point = p#0.Scaled(2);
     Console{external}.WriteLine{external}(q#1.X);
     Console{external}.WriteLine{external}(q#1.Y);
-    let zero#2 = new Point { X = 0, Y = 0 };
+    let zero#2: Point = new Point { X = 0, Y = 0 };
     if (zero#2.IsOrigin()) {
         Console{external}.WriteLine{external}("origin");
     }

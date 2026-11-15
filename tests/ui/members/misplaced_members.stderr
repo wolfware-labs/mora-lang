@@ -1,0 +1,263 @@
+error[MR0115]: an interface has no fields
+  --> tests/ui/members/misplaced_members.mr:12:5
+   |
+12 |     Corners: int = 4; //~ ERROR MR0115
+   |     ^^^^^^^ a field, since it has a value
+   |
+   = note: a value each implementing type gives is a getter, as `K: int;`, which may have a default, as `K: int => 1;`; a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`
+
+error[MR0115]: an interface has no fields
+  --> tests/ui/members/misplaced_members.mr:13:12
+   |
+13 |     static Count: int = 0; //~ ERROR MR0115
+   |            ^^^^^ a static field
+   |
+   = note: a value each implementing type gives is a static abstract getter, as `static abstract K: int;`; a value every implementation shares is a constant in the namespace, next to the interface, as `const K: int = 1;`
+
+error[MR0115]: an interface has no destructors
+  --> tests/ui/members/misplaced_members.mr:14:5
+   |
+14 |     ~IShape() {} //~ ERROR MR0115
+   |     ^^^^^^^ a destructor
+   |
+   = note: a destructor is declared in each type that needs one, which may implement the interface
+
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:15:5
+   |
+15 |     static Make(): int => 0; //~ ERROR MR0115
+   |     ^^^^^^ a static method without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:16:5
+   |
+16 |     static Zero: int => 0; //~ ERROR MR0115
+   |     ^^^^^^ a static getter without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: an interface has no nested types
+  --> tests/ui/members/misplaced_members.mr:17:12
+   |
+17 |     struct Side {} //~ ERROR MR0115
+   |            ^^^^ a struct
+   |
+   = note: a type is declared in the namespace, next to the interface
+
+error[MR0115]: an extension adds no fields
+  --> tests/ui/members/misplaced_members.mr:28:5
+   |
+28 |     Limit: int = 10; //~ ERROR MR0115
+   |     ^^^^^ a field
+   |
+   = note: a field is declared in the type itself; an extension may add a getter, as `K: int => 1;`, which computes its value on each read
+
+error[MR0115]: an extension adds no fields
+  --> tests/ui/members/misplaced_members.mr:29:9
+   |
+29 |     mut Seen: int; //~ ERROR MR0115
+   |         ^^^^ a field
+   |
+   = note: a field is declared in the type itself; an extension may add a getter, as `K: int => 1;`, which computes its value on each read
+
+error[MR0115]: an extension adds no fields
+  --> tests/ui/members/misplaced_members.mr:30:12
+   |
+30 |     static Made: int = 0; //~ ERROR MR0115
+   |            ^^^^ a static field
+   |
+   = note: a static field is declared in the type itself, or in the namespace, next to the extension, as `static mut K: int = 1;`
+
+error[MR0115]: an extension adds no destructors
+  --> tests/ui/members/misplaced_members.mr:31:5
+   |
+31 |     ~Point() {} //~ ERROR MR0115
+   |     ^^^^^^ a destructor
+   |
+   = note: a destructor is declared in the type itself
+
+error[MR0115]: an extension adds no static members
+  --> tests/ui/members/misplaced_members.mr:32:12
+   |
+32 |     public static Origin(): Point => new Point { X = 0 }; //~ ERROR MR0115
+   |            ^^^^^^ a static method
+   |
+   = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
+
+error[MR0115]: an extension adds no static members
+  --> tests/ui/members/misplaced_members.mr:33:12
+   |
+33 |     public static Zero: int => 0; //~ ERROR MR0115
+   |            ^^^^^^ a static getter
+   |
+   = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
+
+error[MR0115]: an extension adds no static members
+  --> tests/ui/members/misplaced_members.mr:34:12
+   |
+34 |     public static operator +(a: Point, b: Point): Point => a; //~ ERROR MR0115
+   |            ^^^^^^ an operator is a static method
+   |
+   = note: a static member is declared in the type itself, or as a function in the namespace, next to the extension
+
+error[MR0115]: an extension adds no indexers
+  --> tests/ui/members/misplaced_members.mr:35:12
+   |
+35 |     public this[i: int]: int => p.X + i; //~ ERROR MR0115
+   |            ^^^^ an indexer
+   |
+   = note: an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
+
+error[MR0115]: an extension adds no associated types
+  --> tests/ui/members/misplaced_members.mr:36:10
+   |
+36 |     type Unit = int; //~ ERROR MR0115
+   |          ^^^^ an associated type
+   |
+   = note: an associated type is declared in an interface and bound by each type that implements it
+
+error[MR0115]: an extension adds no nested types
+  --> tests/ui/members/misplaced_members.mr:37:10
+   |
+37 |     enum Axis { X, Y } //~ ERROR MR0115
+   |          ^^^^ an enum
+   |
+   = note: a type is declared in the namespace, next to the extension
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_members.mr:42:5
+   |
+42 |     const Max: int = 10; //~ ERROR MR0113
+   |     ^^^^^ an extension adds no fields
+   |
+   = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
+
+error[MR0113]: `const` does not apply to a member of an extension
+  --> tests/ui/members/misplaced_members.mr:43:5
+   |
+43 |     const static Min: int = 0; //~ ERROR MR0113
+   |     ^^^^^ an extension adds no fields
+   |
+   = note: a constant goes in the namespace, next to the extension, or in the type itself, as `const K: int = 1;`
+
+error[MR0115]: a union has no instance fields
+  --> tests/ui/members/misplaced_members.mr:56:5
+   |
+56 |     Color: string = "black"; //~ ERROR MR0115
+   |     ^^^^^ a union has no fields besides its cases
+   |
+   = note: put the value in each case, or wrap the union in a struct, as `struct Drawn { Shape: Shape; Color: string; }`
+
+error[MR0115]: a union has no instance fields
+  --> tests/ui/members/misplaced_members.mr:57:16
+   |
+57 |     public mut Seen: int; //~ ERROR MR0115
+   |                ^^^^ a union has no fields besides its cases
+   |
+   = note: put the value in each case, or wrap the union in a struct, as `struct Drawn { Shape: Shape; Color: string; }`
+
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:64:5
+   |
+64 |     static this[i: int]: int { get => i; } //~ ERROR MR0115
+   |     ^^^^^^ a static indexer without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: a static member of an interface is `static abstract`
+  --> tests/ui/members/misplaced_members.mr:66:5
+   |
+66 |     static this[i: int, j: int]: int { const get => i + j; } //~ ERROR MR0115 //~ ERROR MR0113
+   |     ^^^^^^ a static indexer without `abstract`
+   |
+   = note: a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0113]: `const` does not apply to an accessor
+  --> tests/ui/members/misplaced_members.mr:66:40
+   |
+66 |     static this[i: int, j: int]: int { const get => i + j; } //~ ERROR MR0115 //~ ERROR MR0113
+   |                                        ^^^^^ it is code that runs, not a value
+   |
+   = note: a static member of an interface is `static abstract`; a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0115]: an interface has no macros
+  --> tests/ui/members/misplaced_members.mr:67:11
+   |
+67 |     macro Grid(t: Type) {} //~ ERROR MR0115
+   |           ^^^^ a macro
+   |
+   = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
+
+error[MR0115]: a struct has no macros
+  --> tests/ui/members/misplaced_members.mr:71:11
+   |
+71 |     macro Wrap(t: Type) {} //~ ERROR MR0115
+   |           ^^^^ a macro
+   |
+   = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
+
+error[MR0115]: an extension adds no macros
+  --> tests/ui/members/misplaced_members.mr:75:11
+   |
+75 |     macro Each(t: Type) {} //~ ERROR MR0115
+   |           ^^^^ a macro
+   |
+   = note: a macro is declared in a namespace, like a function, and found by name through `using` directives
+
+error[MR0113]: `const` does not apply to a destructor
+  --> tests/ui/members/misplaced_members.mr:83:5
+   |
+83 |     const ~IKeyed() {} //~ ERROR MR0113
+   |     ^^^^^ it is code that runs, not a value
+   |
+   = note: an interface has no destructors; a destructor is declared in each type that needs one, which may implement the interface
+
+error[MR0113]: `const` does not apply to a struct
+  --> tests/ui/members/misplaced_members.mr:84:5
+   |
+84 |     const struct Key {} //~ ERROR MR0113
+   |     ^^^^^ it declares a type, not a value
+   |
+   = note: an interface has no nested types; a type is declared in the namespace, next to the interface
+
+error[MR0113]: `const` does not apply to a method
+  --> tests/ui/members/misplaced_members.mr:85:5
+   |
+85 |     const static Make(): int => 0; //~ ERROR MR0113
+   |     ^^^^^ it is code that runs, not a value
+   |
+   = note: a static member of an interface is `static abstract`; a member each implementing type gives is `static abstract`, as `static abstract M(): int;`, with a body for a default, as `static abstract M(): int => 1;`; a function every implementation shares goes in the namespace, next to the interface
+
+error[MR0113]: `const` does not apply to an indexer
+  --> tests/ui/members/misplaced_members.mr:89:5
+   |
+89 |     const this[i: int]: int { get => i; } //~ ERROR MR0113
+   |     ^^^^^ it is code that runs, not a value
+   |
+   = note: an extension adds no indexers; an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
+
+error[MR0113]: `const` does not apply to an associated type
+  --> tests/ui/members/misplaced_members.mr:90:5
+   |
+90 |     const type Item = int; //~ ERROR MR0113
+   |     ^^^^^ it declares a type, not a value
+   |
+   = note: an extension adds no associated types; an associated type is declared in an interface and bound by each type that implements it
+
+error[MR0115]: an extension adds no indexers
+  --> tests/ui/members/misplaced_members.mr:91:5
+   |
+91 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
+   |     ^^^^ an indexer
+   |
+   = note: an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
+
+error[MR0113]: `const` does not apply to an accessor
+  --> tests/ui/members/misplaced_members.mr:91:25
+   |
+91 |     this[i: int]: int { const get => i; } //~ ERROR MR0115 //~ ERROR MR0113
+   |                         ^^^^^ it is code that runs, not a value
+   |
+   = note: an extension adds no indexers; an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`

@@ -1,0 +1,23 @@
+error[MR0143]: memberwise creation of `Point` does not assign `Y`
+ --> tests/ui/structs/missing_field.mr:9:9
+  |
+9 | let b = new Point { X = 1 }; //~ ERROR MR0143
+  |         ^^^^^^^^^^^^^^^^^^^ `Y` has no initializer, so it needs a value here
+  |
+  = note: give the field an initializer, or assign it in the `new` expression
+
+error[MR0143]: memberwise creation of `Point` does not assign `X`
+  --> tests/ui/structs/missing_field.mr:10:9
+   |
+10 | let c = new Point { Y = 2, Z = 3 }; //~ ERROR MR0143
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ `X` has no initializer, so it needs a value here
+   |
+   = note: give the field an initializer, or assign it in the `new` expression
+
+error[MR0143]: memberwise creation of `Point` does not assign `X`
+  --> tests/ui/structs/missing_field.mr:12:9
+   |
+12 | let d = new Point(); //~ ERROR MR0143
+   |         ^^^^^^^^^^^ `X` has no initializer, so it needs a value here
+   |
+   = note: give the field an initializer, or assign it in the `new` expression

@@ -1,0 +1,70 @@
+// A `new` without a type creates its target type, a struct or a class.
+public struct Point {
+    public X: int;
+    public Y: int;
+}
+
+public class Store {
+}
+
+public enum Color { Red }
+
+let p: Point = new { X = 1, Y = 2 };
+let s: Store = new();
+
+var a = new { X = 1, Y = 2 }; //~ ERROR MR0154
+new(); //~ ERROR MR0154
+let n: int = new(); //~ ERROR MR0154
+let o: Point? = new { X = 1, Y = 2 }; //~ ERROR MR0154
+let c: Color = new(); //~ ERROR MR0154
+
+Origin(): string => new(); //~ ERROR MR0154
+
+// An argument takes the type that every overload the call can bind has
+// at its position.
+public struct Size {
+    public W: int;
+}
+
+Draw(p: Point) {}
+Draw(s: Size) {}
+Fill(p: Point, n: int) {}
+Fill(p: Point, s: string) {}
+
+Draw(new { W = 1 }); //~ ERROR MR0154
+Fill(new { X = 1, Y = 2 }, 3);
+
+// A written type must be a struct or a class too.
+let i = new int(); //~ ERROR MR0154
+let k = new Color { }; //~ ERROR MR0154
+
+// The other arguments rule out the overloads they do not fit.
+Pick(p: Point, n: int) {}
+Pick(s: Size, t: string) {}
+
+Pick(new { X = 1, Y = 2 }, 1);
+Pick(new { W = 1 }, "a");
+
+// An argument of a type not known yet, an error included, fits every
+// overload, and so does a parameter of such a type: the call is not
+// resolved (D-137), and the `new` is not reported.
+public class Box {
+}
+
+Put(p: Point, b: Box) {}
+Put(s: Size, t: string) {}
+Mark(p: Point, n: int) {}
+Mark(s: Size, t: string) {}
+
+Wrap(b: Box): int {
+    Put(new { X = 1, Y = 2 }, b);
+    return 1;
+}
+Mark(new { X = 1, Y = 2 }, Missing); //~ ERROR MR0127
+
+// The mode written before each argument rules out overloads too, the
+// `new`'s own included.
+Swap(ref p: Point, n: int) {}
+Swap(s: Size, n: long) {}
+
+Swap(new { W = 1 }, 1);

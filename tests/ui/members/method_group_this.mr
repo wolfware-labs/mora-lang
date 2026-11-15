@@ -1,0 +1,19 @@
+// A method group of an instance method needs a value of the type, so a static
+// member and an instance field's initializer cannot name one.
+public struct Counter {
+    public Count: int;
+
+    Value(): int => Count;
+    static Apply(f: () => int): int => f();
+    static Zero(): int => 0;
+
+    public static Run(): int {
+        var f = Value; //~ ERROR MR0149
+        return Apply(Value); //~ ERROR MR0149
+    }
+    public Read: (() => int) = Value; //~ ERROR MR0152
+    public Applied: int = Apply(Value); //~ ERROR MR0152
+    public static Fine(): int => Apply(Zero);
+    public FineField: int = Apply(Zero);
+    public Own(): int => Apply(Value);
+}

@@ -1,0 +1,39 @@
+error[MR0153]: `Counter` declares a constructor, so it is not created memberwise
+  --> tests/ui/structs/memberwise_off.mr:14:9
+   |
+14 | let a = new Counter { Count = 2 }; //~ ERROR MR0153
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^ memberwise creation of `Counter`
+   |
+   = note: declaring a constructor turns memberwise creation off; call one with `new Counter(...)`
+help: call the constructor that takes no arguments
+   |
+14 | let a = new Counter() { Count = 2 }; //~ ERROR MR0153
+   |                    ++
+
+error[MR0153]: `Counter` declares a constructor, so it is not created memberwise
+  --> tests/ui/structs/memberwise_off.mr:15:9
+   |
+15 | let b = new Counter { }; //~ ERROR MR0153
+   |         ^^^^^^^^^^^^^^^ memberwise creation of `Counter`
+   |
+   = note: declaring a constructor turns memberwise creation off; call one with `new Counter(...)`
+help: call the constructor that takes no arguments
+   |
+15 | let b = new Counter() { }; //~ ERROR MR0153
+   |                    ++
+
+error[MR0153]: `Sized` declares a constructor, so it is not created memberwise
+  --> tests/ui/structs/memberwise_off.mr:16:9
+   |
+16 | let c = new Sized { Size = 3 }; //~ ERROR MR0153
+   |         ^^^^^^^^^^^^^^^^^^^^^^ memberwise creation of `Sized`
+   |
+   = note: declaring a constructor turns memberwise creation off; call one with `new Sized(...)`
+
+error[MR0153]: `User` is a positional struct, so it is not created memberwise
+  --> tests/ui/structs/memberwise_off.mr:17:9
+   |
+17 | let d = new User { }; //~ ERROR MR0153
+   |         ^^^^^^^^^^^^ memberwise creation of `User`
+   |
+   = note: create it from its positional parameters: `new User(...)`

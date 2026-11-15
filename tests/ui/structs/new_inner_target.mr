@@ -1,0 +1,83 @@
+// A `new` without a type inside a value that has a target type takes its
+// target from that value, even where the checker passes it down only in a
+// later milestone: an arm of a `match`, an element of a collection, a
+// branch of a conditional, an element of a tuple, the result of a lambda,
+// and a value of a field of a type checked later.
+public struct Q {
+    public Y: int;
+}
+
+public struct P {
+    public X: int;
+}
+
+public struct R {
+    public Q: Q;
+}
+
+public class C {
+    public Take(p: P) {}
+    public TakeT(t: (P, int)) {}
+    public Run(f: () => P) {}
+    public TakeR(r: R) {}
+}
+
+Make<T>(t: T, p: P) {}
+G(p: P) {}
+F(xs: P[]) {}
+
+H(x: int, b: bool, p: P, c: C) {
+    let q: P = match (x) { _ => new { X = 1 } };
+    let xs: P[] = [new { X = 1 }];
+    F([new { X = 1 }]);
+    G(match (x) { _ => new { X = 1 } });
+    c.Take(b ? new { X = 1 } : p);
+    c.TakeT((new { X = 1 }, 1));
+    Make(1, b ? new { X = 1 } : p);
+    c.Run(() => b ? new { X = 1 } : p);
+    c.Run(() => {
+        return b ? new { X = 1 } : p;
+    });
+    c.Run(() => {
+        return new { X = 1 };
+    });
+    c.Take(match (x) { _ => new { X = 1 } });
+    c.TakeR(new { Q = new { Y = 1 } });
+    Make(new { Q = new { Y = 1 } }, p);
+}
+
+// Without a target there is one error for the one missing type.
+let a = new { Q = new { Y = 1 } }; //~ ERROR MR0154
+let ys = [new { X = 1 }]; //~ ERROR MR0154
+let f = () => {
+    return new { X = 1 }; //~ ERROR MR0154
+};
+panic(new { X = 1 }); //~ ERROR MR0154
+
+// A target the value does not fit gives its parts none, or one that `new`
+// cannot create.
+public struct T2 {
+    public A: P;
+}
+
+TT(t: (P, int)) {}
+One(p: P) {}
+Back(): int => (new { X = 1 }, 1); //~ ERROR MR0154
+BackP(): P {
+    return (new { X = 1 }, 1); //~ ERROR MR0154
+}
+
+K(x: int) {
+    let t3: (P, int, int) = (new { X = 1 }, 1); //~ ERROR MR0154
+    let ti: int = (new { X = 1 }, 1); //~ ERROR MR0154
+    let tp: P = (new { X = 1 }, 1); //~ ERROR MR0154
+    let tt: (P, int) = ((new { X = 1 }, 1), 1); //~ ERROR MR0154
+    One((new { X = 1 }, 1)); //~ ERROR MR0154
+    TT(((new { X = 1 }, 1), 2)); //~ ERROR MR0154
+    let t2 = new T2 { A = (new { X = 1 }, 1) }; //~ ERROR MR0154
+    var tv = (new P { X = 0 }, 1);
+    tv = (new { X = 1 }, 1, 2); //~ ERROR MR0154
+    let n: int = match (x) { _ => new { X = 1 } }; //~ ERROR MR0154
+    let ns: int[] = [new()]; //~ ERROR MR0154
+    let f: int = () => new { X = 1 }; //~ ERROR MR0154
+}

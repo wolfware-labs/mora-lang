@@ -1,0 +1,39 @@
+error[MR0152]: the initializer of `FromField` cannot use the instance member `Count`: initializers run before the value exists
+  --> tests/ui/members/initializer_this.mr:10:29
+   |
+10 |     public FromField: int = Count; //~ ERROR MR0152
+   |                             ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members
+
+error[MR0152]: the initializer of `FromGetter` cannot use the instance member `Twice`: initializers run before the value exists
+  --> tests/ui/members/initializer_this.mr:11:30
+   |
+11 |     public FromGetter: int = Twice; //~ ERROR MR0152
+   |                              ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members
+
+error[MR0152]: the initializer of `FromMethod` cannot use the instance member `Value`: initializers run before the value exists
+  --> tests/ui/members/initializer_this.mr:12:30
+   |
+12 |     public FromMethod: int = Value(); //~ ERROR MR0152
+   |                              ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members
+
+error[MR0152]: the initializer of `FromThis` cannot use `this`: initializers run before the value exists
+  --> tests/ui/members/initializer_this.mr:13:28
+   |
+13 |     public FromThis: int = this.Count; //~ ERROR MR0152
+   |                            ^^^^ there is no value of the type yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members
+
+error[MR0152]: the initializer of `FromLambda` cannot use the instance member `Count`: initializers run before the value exists
+  --> tests/ui/members/initializer_this.mr:14:37
+   |
+14 |     public FromLambda: int = (() => Count)(); //~ ERROR MR0152
+   |                                     ^^^^^ the value does not exist yet
+   |
+   = note: an initializer runs for each field that `new T { ... }` leaves out, with no `this`; it may use constants and `static` members

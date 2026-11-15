@@ -1,0 +1,103 @@
+error[MR0154]: `new` without a type needs a target type to create
+ --> tests/ui/structs/new_without_target.mr:7:11
+  |
+7 | let top = new { X = 1 }.X; //~ ERROR MR0154
+  |           ^^^^^^^^^^^^^ nothing here gives this `new` a type
+  |
+  = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:10:13
+   |
+10 |     let x = new { X = 1 }.X; //~ ERROR MR0154
+   |             ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:11:23
+   |
+11 |     Console.WriteLine(new { X = 1 }); //~ ERROR MR0154
+   |                       ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:12:16
+   |
+12 |     let s = $"{new()}"; //~ ERROR MR0154
+   |                ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:13:14
+   |
+13 |     let t = (new { X = 1 }, 2); //~ ERROR MR0154
+   |              ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:14:17
+   |
+14 |     let c = b ? new { X = 1 } : new { X = 2 }; //~ ERROR MR0154 //~ ERROR MR0154
+   |                 ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:14:33
+   |
+14 |     let c = b ? new { X = 1 } : new { X = 2 }; //~ ERROR MR0154 //~ ERROR MR0154
+   |                                 ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:15:9
+   |
+15 |     b ? new() : new(); //~ ERROR MR0154 //~ ERROR MR0154
+   |         ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:15:17
+   |
+15 |     b ? new() : new(); //~ ERROR MR0154 //~ ERROR MR0154
+   |                 ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:16:18
+   |
+16 |     let i = (int)new(); //~ ERROR MR0154
+   |                  ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:17:14
+   |
+17 |     if (p == new { X = 1 }) { //~ ERROR MR0154
+   |              ^^^^^^^^^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:19:5
+   |
+19 |     new()(); //~ ERROR MR0154
+   |     ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type
+
+error[MR0154]: `new` without a type needs a target type to create
+  --> tests/ui/structs/new_without_target.mr:21:10
+   |
+21 |     n += new(); //~ ERROR MR0154
+   |          ^^^^^ nothing here gives this `new` a type
+   |
+   = note: write the type, as in `new T { ... }`, or give the place a type

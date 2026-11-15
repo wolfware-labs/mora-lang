@@ -1,0 +1,17 @@
+// Memberwise creation assigns instance fields of the struct, each once.
+public struct Point {
+    public X: int;
+    public Y: int = 0;
+    public Sum: int => X + Y;
+    public static Origin: int = 0;
+    public const Dimensions: int = 2;
+}
+
+let a = new Point { X = 1, Y = 2 };
+let b = new Point { X = 1, Width = 2 }; //~ ERROR MR0147
+let c = new Point { X = 1, Yy = 2 }; //~ ERROR MR0147
+let d = new Point { X = 1, Sum = 3 }; //~ ERROR MR0147
+let e = new Point { X = 1, Origin = 3 }; //~ ERROR MR0147
+let f = new Point { X = 1, Dimensions = 3 }; //~ ERROR MR0147
+let g = new Point { X = 1, X = 2 }; //~ ERROR MR0148
+let h = new Point { Y = 1, X = 2, Y = 3 }; //~ ERROR MR0148

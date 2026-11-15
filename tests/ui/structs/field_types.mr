@@ -1,0 +1,7 @@
+// A field's initializer has the field's type, and `this` the struct's (§5.10, §10.3).
+struct P {
+    public X: string = 7; //~ ERROR MR0203
+    public Y: int;
+
+    public Get(): string => this.Y; //~ ERROR MR0203
+}

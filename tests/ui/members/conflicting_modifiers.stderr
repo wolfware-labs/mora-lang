@@ -1,0 +1,74 @@
+error[MR0112]: `private` conflicts with `public`: a declaration has one visibility
+ --> tests/ui/members/conflicting_modifiers.mr:4:12
+  |
+4 |     public private Count: int; //~ ERROR MR0112
+  |     ------ ^^^^^^^ `public` is written already
+  |     |
+  |     written first here
+  |
+  = note: keep the one that is meant; the fix keeps the first
+help: remove `private`
+  |
+4 -     public private Count: int; //~ ERROR MR0112
+4 +     public Count: int; //~ ERROR MR0112
+  |
+
+error[MR0112]: `file` conflicts with `internal`: a declaration has one visibility
+ --> tests/ui/members/conflicting_modifiers.mr:5:14
+  |
+5 |     internal file Limit: int; //~ ERROR MR0112
+  |     -------- ^^^^ `internal` is written already
+  |     |
+  |     written first here
+  |
+  = note: keep the one that is meant; the fix keeps the first
+help: remove `file`
+  |
+5 -     internal file Limit: int; //~ ERROR MR0112
+5 +     internal Limit: int; //~ ERROR MR0112
+  |
+
+error[MR0112]: `move` conflicts with `ref`: a parameter has one mode
+ --> tests/ui/members/conflicting_modifiers.mr:7:20
+  |
+7 |     public Add(ref move n: int) {} //~ ERROR MR0112
+  |                --- ^^^^ `ref` is written already
+  |                |
+  |                written first here
+  |
+  = note: keep the one that is meant; the fix keeps the first
+help: remove `move`
+  |
+7 -     public Add(ref move n: int) {} //~ ERROR MR0112
+7 +     public Add(ref n: int) {} //~ ERROR MR0112
+  |
+
+error[MR0112]: `move` conflicts with `mut`: a method takes `this` one way
+ --> tests/ui/members/conflicting_modifiers.mr:9:16
+  |
+9 |     public mut move Reset() {} //~ ERROR MR0112
+  |            --- ^^^^ `mut` is written already
+  |            |
+  |            written first here
+  |
+  = note: keep the one that is meant; the fix keeps the first
+help: remove `move`
+  |
+9 -     public mut move Reset() {} //~ ERROR MR0112
+9 +     public mut Reset() {} //~ ERROR MR0112
+  |
+
+error[MR0112]: `ref` conflicts with `in`: a parameter has one mode
+  --> tests/ui/members/conflicting_modifiers.mr:12:13
+   |
+12 | let f = (in ref x: int) => 1; //~ ERROR MR0112
+   |          -- ^^^ `in` is written already
+   |          |
+   |          written first here
+   |
+   = note: keep the one that is meant; the fix keeps the first
+help: remove `ref`
+   |
+12 - let f = (in ref x: int) => 1; //~ ERROR MR0112
+12 + let f = (in x: int) => 1; //~ ERROR MR0112
+   |

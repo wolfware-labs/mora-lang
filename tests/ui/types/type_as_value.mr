@@ -1,0 +1,47 @@
+// An expression that names a type or a namespace is no value, anywhere but
+// as the receiver of a member, the operand of `nameof` or a pattern.
+public struct P {
+    public X: int;
+    public static S(): int => 1;
+    public struct N {
+        public Y: int;
+    }
+    Probe(): int {
+        let a = N; //~ ERROR MR0127
+        return 0;
+    }
+}
+
+public enum Color { Red }
+
+F(p: P, x: int) {
+    let a = p.N; //~ ERROR MR0127
+    let b = P.N; //~ ERROR MR0127
+    p.N(); //~ ERROR MR0127
+    P.N(); //~ ERROR MR0127
+    let c = P; //~ ERROR MR0127
+    P(); //~ ERROR MR0127
+    let d = Color; //~ ERROR MR0127
+    let e = App; //~ ERROR MR0127
+    let f = P.S();
+    let g = nameof(P);
+    let h = p is P;
+    let i = new P.N { Y = 1 };
+    let j = Color.Red;
+}
+
+// Through a value a nested type is no receiver either; a type keyword is
+// a type too.
+public struct S {
+    public X: int;
+    public struct M {
+        public static Make(): int => 1;
+    }
+}
+
+G(s: S) {
+    let a = s.M.Make(); //~ ERROR MR0127
+    let b = S.M.Make();
+    let c = int; //~ ERROR MR0127
+    let d = int.Parse("1");
+}

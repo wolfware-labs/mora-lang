@@ -51,7 +51,7 @@ internal First<T>(items: T[], compare: (T, T) => int): T {
 }
 
 internal Sizes(a: bool, b: byte, c: sbyte, d: short, e: ushort, f: uint, g: ulong, h: nint, i: nuint, j: char): Box<User> {
-    return new Box<User> { Value = new User {} };
+    return new Box<User> { Value = default };
 }
 
 internal async Save(ref user: User, move repository: Repository, params ids: ReadOnlySpan<int>): Result<(), string> {

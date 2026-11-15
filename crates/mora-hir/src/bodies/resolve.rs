@@ -1,8 +1,7 @@
 //! The names of a body that are not locals (§14.5).
 
-use std::collections::HashMap;
-
 use mora_span::{Db, Project, SourceFile};
+use rustc_hash::FxHashMap;
 
 use super::{BodyOwner, CaptureTarget, Expr, ExprId, ScopeId, TypeId, body};
 use crate::arena::arena_index;
@@ -20,7 +19,7 @@ use crate::ty::Ty;
 pub struct BodyResolution {
     /// What each [`Expr::Path`] names, and each [`Expr::Member`] whose
     /// receiver names a namespace or a type.
-    pub paths: HashMap<ExprId, PathResolution>,
+    pub paths: FxHashMap<ExprId, PathResolution>,
     /// Each of [`super::Body::types`], with its names looked up.
     pub types: Vec<Ty>,
     /// What does not resolve.
@@ -72,11 +71,46 @@ impl BodyResolution {
     pub fn return_type(&self, ret: Option<TypeId>) -> Ty {
         ret.map_or(Ty::UNIT, |ty| self.written(ty))
     }
+
+    /// Whether the path `path` names something of the standard library
+    /// while the library is not loaded ([`Resolved::External`]).
+    pub fn is_external(&self, path: ExprId) -> bool {
+        self.paths
+            .get(&path)
+            .is_some_and(|resolution| matches!(resolution.target, Target::Item(Resolved::External)))
+    }
+
+    /// The value member the path `path` names, when it names one.
+    pub fn value_member<'db>(&self, db: &'db dyn Db, path: ExprId) -> Option<&'db ValueMember> {
+        self.paths.get(&path)?.member(db)
+    }
+
+    /// The value member the path `path` names, with the type that declares
+    /// it, when it names one.
+    pub(crate) fn value_ref(&self, path: ExprId) -> Option<ValueRef> {
+        self.paths.get(&path)?.value_ref()
+    }
+}
+
+impl PathResolution {
+    /// The value member the path names, when it names one.
+    pub fn member<'db>(&self, db: &'db dyn Db) -> Option<&'db ValueMember> {
+        self.value_ref()?.member(db)
+    }
+
+    /// The value member the path names, with the type that declares it,
+    /// when it names one.
+    pub(crate) fn value_ref(&self) -> Option<ValueRef> {
+        match self.target {
+            Target::Value(value) => Some(value),
+            Target::Item(_) | Target::Error => None,
+        }
+    }
 }
 
 impl ValueRef {
     /// The value member it refers to.
-    pub(crate) fn member(self, db: &dyn Db) -> Option<&ValueMember> {
+    pub fn member(self, db: &dyn Db) -> Option<&ValueMember> {
         item_data(db, self.ty).values.get(self.index)
     }
 }
@@ -164,7 +198,7 @@ pub fn body_resolution(
     // first.
     // Every path of a body is looked up from the same scope, so a name used
     // again gives the same answer.
-    let mut cache = HashMap::new();
+    let mut cache = FxHashMap::default();
     for (id, expr) in body.exprs.iter() {
         match expr {
             Expr::Path(path) => {

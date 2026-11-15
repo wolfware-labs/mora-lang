@@ -75,6 +75,8 @@ struct Callable<'a> {
     ret: Option<ast::Type<'a>>,
     /// Whether it is `async`.
     is_async: bool,
+    /// Whether it is `static`, for a member the item tree does not hold.
+    is_static: bool,
     /// A `set` accessor's implicit `value`, and where it is declared.
     value: Option<TextRange>,
     /// The arguments of a constructor's `: this(...)`.
@@ -96,6 +98,7 @@ impl Default for Callable<'_> {
             visibility: Visibility::Private,
             ret: None,
             is_async: false,
+            is_static: false,
             value: None,
             this_call: None,
             block: None,
@@ -131,6 +134,7 @@ fn callable(kind: BodyKind, name: String, it: Callable) -> Lowered {
         lower.body.ret = Some(ty);
     }
     lower.body.is_async = it.is_async;
+    lower.body.is_static = it.is_static;
     if let Some(args) = it.this_call {
         let range = args.syntax().text_range();
         let this = lower.alloc_expr(Expr::This, range);
@@ -345,6 +349,7 @@ fn member_bodies(
                         },
                         check_types: true,
                         ret: it.ty(),
+                        is_static: Written::of(it.modifiers()).is_static,
                         expr: it.expr_body(),
                         ..Callable::default()
                     },
@@ -359,6 +364,7 @@ fn member_bodies(
             // A method is an item, unless it implements an interface member.
             ast::Member::FunctionDecl(it) if it.explicit_impl().is_some() => {
                 let name = name_of(it.name()).unwrap_or_default();
+                let written = Written::of(it.modifiers());
                 let body = callable(
                     BodyKind::Function,
                     explicit(&name, it.explicit_impl()),
@@ -367,7 +373,8 @@ fn member_bodies(
                         type_params: it.type_param_list().into_iter().collect(),
                         check_types: true,
                         ret: it.ret(),
-                        is_async: Written::of(it.modifiers()).is_async,
+                        is_async: written.is_async,
+                        is_static: written.is_static,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()
@@ -415,6 +422,9 @@ fn member_bodies(
                         params: params(it.param_list()),
                         check_types: true,
                         ret: it.ret(),
+                        // An operator is static whether or not `static` is
+                        // written (§6.9).
+                        is_static: true,
                         block: it.block(),
                         expr: it.expr_body(),
                         ..Callable::default()

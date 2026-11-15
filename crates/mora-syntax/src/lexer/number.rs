@@ -1,6 +1,8 @@
 //! Numeric literals (§3.5): telling integers from reals, checking their
 //! form, and their values.
 
+use std::borrow::Cow;
+
 use mora_diag::Code;
 use mora_diag::codes;
 
@@ -37,7 +39,7 @@ pub fn int_value(text: &str) -> Option<(u64, IntSuffix)> {
     if parts.real {
         return None;
     }
-    let value = u64::from_str_radix(&parts.digits.replace('_', ""), parts.radix).ok()?;
+    let value = u64::from_str_radix(&without_separators(parts.digits), parts.radix).ok()?;
     Some((value, int_suffix(parts.suffix)?))
 }
 
@@ -48,8 +50,18 @@ pub fn real_value(text: &str) -> Option<(f64, RealSuffix)> {
         return None;
     }
     let suffix = real_suffix(parts.suffix)?;
-    let value = parts.digits.replace('_', "").parse::<f64>().ok()?;
+    let value = without_separators(parts.digits).parse::<f64>().ok()?;
     Some((value, suffix))
+}
+
+/// `digits` without the `_` that separate them, borrowed when it has none,
+/// as most literals do.
+fn without_separators(digits: &str) -> Cow<'_, str> {
+    if digits.contains('_') {
+        Cow::Owned(digits.replace('_', ""))
+    } else {
+        Cow::Borrowed(digits)
+    }
 }
 
 /// Whether the finite real `value` is too large for a `float`: it would

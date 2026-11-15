@@ -7,6 +7,7 @@
 //! snapshots after a deliberate change, run
 //! `MORA_BLESS=1 cargo test -p mora-syntax --test parser` and review the diff.
 
+use std::fmt::Write;
 use std::path::Path;
 
 use mora_syntax::ast::{self, AstNode};
@@ -16,10 +17,12 @@ fn render(text: &str) -> String {
     let parse = parse(text);
     let mut out = parse.syntax().debug_tree();
     for error in parse.errors() {
-        out.push_str(&format!(
-            "error {} {:?}: {}\n",
+        // Writing to a `String` cannot fail.
+        let _ = writeln!(
+            out,
+            "error {} {:?}: {}",
             error.code, error.range, error.message
-        ));
+        );
     }
     out
 }
