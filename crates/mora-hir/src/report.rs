@@ -354,7 +354,7 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
                 if let Some(diagnostic) = constant_without_value(id, &frame, parsed.errors()) {
                     report(diagnostic);
                 }
-                if let Some(diagnostic) = misplaced_member(id, &frame) {
+                if let Some(diagnostic) = misplaced_member(id, &frame, parsed.errors()) {
                     report(diagnostic);
                 }
             }
@@ -681,9 +681,9 @@ fn misplaced_modifier(
 /// a constant may be declared (§6.1, D-156): in an interface or an
 /// extension, `const` is `MR0113` whatever the value. A constant is a value
 /// fixed at compile time, so it is declared with it. No fix: only the
-/// author knows the value. A field with a syntax error in it or at its
-/// end, as `const K: int => 1;` or `const K;`, is reported by the parser
-/// alone.
+/// author knows the value. A field with a syntax error in it, or a
+/// missing token at its end, as `const K: int => 1;` or `const K;`, is
+/// reported by the parser alone ([`head_has_syntax_error`]).
 fn constant_without_value(
     file: FileId,
     frame: &ModifierFrame<'_>,
@@ -691,13 +691,12 @@ fn constant_without_value(
 ) -> Option<Diagnostic> {
     frame.modifier(SyntaxKind::ConstKw)?;
     let declarator = ast::FieldDecl::cast(frame.node)?.variable_declarator()?;
-    // After a syntax error in or at the end of the field, the value may be
-    // what the parser could not take, as in `const K: int => 1;`.
-    let at = frame.node.text_range();
-    let recovered = syntax_errors
-        .iter()
-        .any(|error| at.intersect(error.range).is_some());
-    if declarator.eq_token().is_some() || recovered || frame.misplaced_const() {
+    // After a syntax error in the field, the value may be what the parser
+    // could not take, as in `const K: int => 1;`.
+    if declarator.eq_token().is_some()
+        || head_has_syntax_error(frame.node, syntax_errors)
+        || frame.misplaced_const()
+    {
         return None;
     }
     let name = declarator.name()?.ident_token()?;
@@ -729,8 +728,14 @@ fn constant_without_value(
 /// fix: only the author knows where the member belongs. A constructor
 /// cannot be written in an interface or an extension: there, `P() {}` is
 /// a method.
-fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnostic> {
-    if frame.misplaced_const() {
+fn misplaced_member(
+    file: FileId,
+    frame: &ModifierFrame<'_>,
+    syntax_errors: &[SyntaxError],
+) -> Option<Diagnostic> {
+    // A member the parser built around an error may be no member the
+    // author wrote, as the fields it makes of a broken lambda.
+    if frame.misplaced_const() || head_has_syntax_error(frame.node, syntax_errors) {
         return None;
     }
     let rule = member_rule(frame.container, frame.node)?;
@@ -742,6 +747,37 @@ fn misplaced_member(file: FileId, frame: &ModifierFrame<'_>) -> Option<Diagnosti
         )
         .with_note(rule.note),
     )
+}
+
+/// Whether one of `syntax_errors` lies in the head of `node`, the part
+/// before its body (its block, expression body, accessors or members), or
+/// is an empty one, a missing token, at the head's end. A non-empty error
+/// that starts at the end is about the text after the node.
+fn head_has_syntax_error(node: SyntaxNode<'_>, syntax_errors: &[SyntaxError]) -> bool {
+    use SyntaxKind as K;
+    let start = node.text_range().start();
+    let end = node
+        .children()
+        .find(|child| {
+            matches!(
+                child.kind(),
+                K::Block
+                    | K::ExprBody
+                    | K::AccessorList
+                    | K::MemberList
+                    | K::UnionBody
+                    | K::EnumBody
+            )
+        })
+        .map_or(node.text_range().end(), |body| body.text_range().start());
+    syntax_errors.iter().any(|error| {
+        let range = error.range;
+        if range.is_empty() {
+            start <= range.start() && range.start() <= end
+        } else {
+            range.start() < end && start < range.end()
+        }
+    })
 }
 
 /// What `MR0115` says about a member.
@@ -2508,8 +2544,8 @@ mod tests {
         let text = "interface I {\n    K: int;\n    static abstract S: int;\n    \
                     M(): int => 1;\n    static abstract operator +(a: I, b: I): I;\n    \
                     abstract static D(): int => 1;\n    static abstract E: int => 1;\n    \
-                    type T : I;\n    this[i: int]: int;\n    \
-                    static abstract this[i: int]: int;\n}\nmacro N(t: Type) {}\n\
+                    type T : I;\n    this[i: int]: int { get; }\n    \
+                    static abstract this[i: int]: int { get; }\n}\nmacro N(t: Type) {}\n\
                     struct P {\n    K: int = 1;\n    static S: int = 1;\n    ~P() {}\n    \
                     static M(): int => 1;\n    struct In {}\n    this[i: int]: int => i;\n}\n\
                     extension(p: P) {\n    G: int => 1;\n    public M(): int => 1;\n    \
@@ -2518,10 +2554,26 @@ mod tests {
                     union U { A;\n    const C: int = 1;\n    static S: int = 1;\n    \
                     static mut T: int;\n    G: int => 1;\n}\n\
                     union V { A;\n    const N: int;\n}\n";
+        assert_eq!(
+            mora_syntax::parse(text).errors(),
+            &[] as &[mora_syntax::SyntaxError],
+            "{text}"
+        );
         let found = diagnostics_of(text);
         assert_eq!(
             codes(&found),
             ["MR0113", "MR0113", "MR0113", "MR0114"],
+            "{found:#?}"
+        );
+        // The fields the parser makes of a broken lambda are not judged; the
+        // indexer it is in, whose head is whole, is.
+        let text = "struct S {}\nextension(s: S) {\n    \
+                    this[i: int]: int { get => (const x: int) => x; }\n}\n";
+        assert!(!mora_syntax::parse(text).errors().is_empty(), "{text}");
+        let found = diagnostics_of(text);
+        assert_eq!(
+            messages(&found),
+            ["an extension adds no indexers"],
             "{found:#?}"
         );
     }
@@ -2763,6 +2815,15 @@ mod tests {
             let found = diagnostics_of(text);
             assert_eq!(codes(&found), Vec::<String>::new(), "{text}: {found:#?}");
         }
+        // An error that starts where a complete field ends is about the
+        // text after it: the constant still has no value.
+        let text = "struct S {\n    const K: int;)\n}\n";
+        assert!(!mora_syntax::parse(text).errors().is_empty(), "{text}");
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0114"]);
+        // So is one that ends where it starts.
+        let text = "struct S {\n    )const K: int;\n}\n";
+        assert!(!mora_syntax::parse(text).errors().is_empty(), "{text}");
+        assert_eq!(codes(&diagnostics_of(text)), ["MR0114"]);
     }
 
     #[test]

@@ -21,3 +21,91 @@ error[MR0110]: expected `:` and a type
   |
 7 |     const L; //~ ERROR MR0110
   |            ^
+
+error[MR0110]: expected a member
+  --> tests/ui/syntax/constant_recovery.mr:13:20
+   |
+13 |     const Max: int;) //~ ERROR MR0110 //~ ERROR MR0114
+   |                    ^
+
+error[MR0110]: expected an identifier
+  --> tests/ui/syntax/constant_recovery.mr:19:33
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                 ^
+
+error[MR0110]: expected `)`
+  --> tests/ui/syntax/constant_recovery.mr:19:33
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                 ^
+
+error[MR0110]: expected `=>`
+  --> tests/ui/syntax/constant_recovery.mr:19:33
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                 ^
+
+error[MR0110]: expected an expression
+  --> tests/ui/syntax/constant_recovery.mr:19:33
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                 ^
+
+error[MR0110]: expected `;`
+  --> tests/ui/syntax/constant_recovery.mr:19:33
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                 ^
+
+error[MR0110]: expected `get` or `set`
+  --> tests/ui/syntax/constant_recovery.mr:19:38
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                      ^
+
+error[MR0110]: expected `}`
+  --> tests/ui/syntax/constant_recovery.mr:19:38
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                      ^
+
+error[MR0110]: expected `;`
+  --> tests/ui/syntax/constant_recovery.mr:19:45
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                             ^
+
+error[MR0110]: expected a member
+  --> tests/ui/syntax/constant_recovery.mr:19:45
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                             ^
+
+error[MR0110]: expected `:` and a type
+  --> tests/ui/syntax/constant_recovery.mr:19:51
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |                                                   ^
+
+error[MR0110]: expected a statement
+  --> tests/ui/syntax/constant_recovery.mr:20:1
+   |
+20 | } //~ ERROR MR0110
+   | ^
+
+error[MR0114]: constant `Max` has no value
+  --> tests/ui/syntax/constant_recovery.mr:13:11
+   |
+13 |     const Max: int;) //~ ERROR MR0110 //~ ERROR MR0114
+   |           ^^^ a constant is declared with its value
+   |
+   = note: a constant is a value fixed at compile time; write that value after the type, as `const K: int = 1;`
+
+error[MR0115]: an extension adds no indexers
+  --> tests/ui/syntax/constant_recovery.mr:19:5
+   |
+19 |     this[i: int]: int { get => (const x: int) => x; } //~ ERROR MR0115 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR MR0110 //~ ERROR ...
+   |     ^^^^ an indexer
+   |
+   = note: an indexer is declared in the type itself; an extension may add a method that takes the index, as `At(i: int): int`
