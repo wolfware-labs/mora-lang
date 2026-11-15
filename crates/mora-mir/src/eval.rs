@@ -284,9 +284,9 @@ pub(crate) enum ErrorKind {
 /// The value of `key`, a key of `project`, each step in order: a key in a
 /// cycle of reads fails, with the error on the cycle's first member; then
 /// one with an operation §14.6 never allows; a key whose code a later
-/// milestone lowers waits; a key that reads one without a value fails
-/// without an error of its own, or waits for it; and any other key runs
-/// its MIR in the interpreter.
+/// milestone lowers, or that reads one that waits, waits for the latest of
+/// those milestones; a key that reads one without a value fails without an
+/// error of its own; and any other key runs its MIR in the interpreter.
 ///
 /// The milestones are those of [`evaluation_later`], which leaves the reads
 /// to this step, so a key never asks for its own value. No body that a
@@ -314,23 +314,39 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evalu
         }
         ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),
     };
-    if let Some(later) = later {
-        return Evaluated::Later(later);
-    }
-    let mut waits: Option<&Later> = None;
+    // The key waits for the latest of its own milestone and those of its
+    // reads, its own first on a tie, then the reads in order; a constant it
+    // reads waits as `a constant`, an initializer for what it waits for.
+    let waits_itself = later.is_some();
+    let mut waits = later;
+    let mut read_failed = false;
     for &(read_project, read, _) in &scan.reads {
         match const_value(db, read_project, read) {
             Evaluated::Value(_) => {}
-            Evaluated::Failed(_) => return Evaluated::Failed(None),
+            Evaluated::Failed(_) => read_failed = true,
             Evaluated::Later(later) => {
-                if waits.is_none_or(|latest| later.milestone > latest.milestone) {
-                    waits = Some(later);
+                if waits
+                    .as_ref()
+                    .is_none_or(|latest| later.milestone > latest.milestone)
+                {
+                    waits = Some(match read {
+                        ConstKey::Constant { .. } => Later {
+                            what: "a constant".to_owned(),
+                            milestone: later.milestone,
+                        },
+                        ConstKey::Initializer { .. } | ConstKey::Default { .. } => later.clone(),
+                    });
                 }
             }
         }
     }
+    // A read without a value stops a key whose own code this milestone
+    // lowers; a key whose own code waits waits, whatever its reads give.
+    if read_failed && !waits_itself {
+        return Evaluated::Failed(None);
+    }
     if let Some(later) = waits {
-        return Evaluated::Later(later.clone());
+        return Evaluated::Later(later);
     }
     let body = match key {
         ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {

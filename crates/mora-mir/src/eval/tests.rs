@@ -1529,11 +1529,11 @@ fn a_constant_whose_code_comes_later_waits() {
         outcome(source.evaluated(source.constant("K"))),
         "`default` M3.12"
     );
-    // A constant that reads it, by name or by leaving out a field whose
-    // initializer waits, waits for what it waits for.
+    // A constant that reads it waits for it by name, and one that leaves
+    // out a field whose initializer waits, for what the initializer waits.
     assert_eq!(
         outcome(source.evaluated(source.constant("J"))),
-        "`default` M3.12"
+        "a constant M3.12"
     );
     assert_eq!(
         outcome(source.evaluated(source.constant("C"))),
@@ -1565,6 +1565,39 @@ fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn a_waiting_constant_waits_for_the_latest_of_its_code_and_its_reads() {
+    let source = checked(
+        "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
+         const A: int = K + sizeof(int);\nconst T: int = default;\n\
+         const B: int = T + sizeof(int);\nconst C: int = sizeof(int) + K;\n",
+    );
+    for (name, expected) in [
+        ("K", "a static member M3.13"),
+        // `K` waits longer than `sizeof`.
+        ("A", "a constant M3.13"),
+        ("C", "a constant M3.13"),
+        // On a tie its own code names it.
+        ("B", "`sizeof` M3.12"),
+    ] {
+        assert_eq!(
+            outcome(source.evaluated(source.constant(name))),
+            expected,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_constant_whose_code_waits_waits_even_when_a_read_fails() {
+    let source =
+        checked("Zero(): int => 0;\nconst B: int = Zero();\nconst A: int = B + sizeof(int);\n");
+    assert_eq!(
+        outcome(source.evaluated(source.constant("A"))),
+        "`sizeof` M3.12"
+    );
 }
 
 #[test]

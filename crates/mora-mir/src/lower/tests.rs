@@ -3348,6 +3348,16 @@ fn a_body_reading_a_constant_that_reads_itself_waits_with_it() {
 }
 
 #[test]
+fn a_body_waits_for_the_latest_milestone_of_a_constant_it_reads() {
+    let text = "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
+                const A: int = K + sizeof(int);\nF(): int => A;\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a constant is not lowered until M3.13"
+    );
+}
+
+#[test]
 fn nameof_never_waits_for_the_value_of_a_constant() {
     // `K` waits for statics, later than `nameof`, which does not read it.
     let text = "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
