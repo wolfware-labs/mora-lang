@@ -1283,15 +1283,14 @@ impl Check<'_> {
         let comparison = op.is_comparison();
         // An operand of unknown type leaves the result unknown, a comparison's
         // too, so that nothing is reported because of it.
-        let (Some(l), Some(r)) = self.operands(lhs, rhs) else {
+        let (Some(found_l), Some(found_r)) = self.operands(lhs, rhs) else {
             return None;
         };
-        if !is_known(&l) || !is_known(&r) {
+        if !is_known(&found_l) || !is_known(&found_r) {
             return None;
         }
         // An operand of the never type takes the other's type; with two, the
         // operation is of the never type too, a comparison aside (§11.4).
-        let (found_l, found_r) = (l, r);
         let (l, r) = match (&found_l, &found_r) {
             (Ty::Never, Ty::Never) if comparison => return Some(BOOL),
             (Ty::Never, Ty::Never) => return Some(Ty::Never),

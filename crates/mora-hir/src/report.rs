@@ -351,31 +351,22 @@ fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnostic> {
         let Some(child) = frame.children.next() else {
             if let Some(frame) = stack.pop() {
                 let kind = frame.node.kind();
-                // Most nodes have no modifiers and are in no declaration
-                // whose members have rules of their own (`MR0115`, which a
-                // macro has anywhere): nothing to check.
-                if written.len() != frame.written
-                    || matches!(
-                        (frame.container, kind),
-                        (
-                            SyntaxKind::InterfaceDecl
-                                | SyntaxKind::ExtensionDecl
-                                | SyntaxKind::UnionDecl,
-                            _
-                        ) | (_, SyntaxKind::MacroDecl)
-                    )
+                // Most nodes have no modifiers and no rule of `MR0115`
+                // to break: nothing to check.
+                if written.len() != frame.written_from
+                    || member_rule_may_apply(frame.container, kind)
                 {
                     let checked = ModifierFrame {
                         node: frame.node,
                         container: frame.container,
-                        written: &written[frame.written..],
+                        written: &written[frame.written_from..],
                         owner: indexer_of(&stack, kind),
                     };
                     check_node(id, text, errors, &checked, |diagnostic| {
                         found.push((frame.order, diagnostic));
                     });
                 }
-                written.truncate(frame.written);
+                written.truncate(frame.written_from);
             }
             continue;
         };
@@ -412,17 +403,17 @@ struct WalkFrame<'a> {
     /// Where the modifiers among the node's children start on the walk's
     /// list: those of the node's own children follow, since the walk
     /// removes those of a child's children when it leaves the child.
-    written: usize,
+    written_from: usize,
 }
 
 impl<'a> WalkFrame<'a> {
-    fn new(node: SyntaxNode<'a>, container: SyntaxKind, order: usize, written: usize) -> Self {
+    fn new(node: SyntaxNode<'a>, container: SyntaxKind, order: usize, written_from: usize) -> Self {
         Self {
             node,
             children: node.children(),
             container,
             order,
-            written,
+            written_from,
         }
     }
 }
@@ -873,6 +864,18 @@ fn modifier_of(node: SyntaxNode<'_>, keyword: SyntaxKind) -> Option<TextRange> {
         .filter_map(written_modifier)
         .find(|&(kind, _)| kind == keyword)
         .map(|(_, range)| range)
+}
+
+/// Whether a node of the kind `node`, in one of the kind `container`, is
+/// one that [`member_rule`] has a rule about: a member of an interface, an
+/// extension or a union, or a macro anywhere. The walk of
+/// [`modifier_diagnostics`] checks no other node without modifiers.
+fn member_rule_may_apply(container: SyntaxKind, node: SyntaxKind) -> bool {
+    use SyntaxKind as K;
+    matches!(
+        (container, node),
+        (K::InterfaceDecl | K::ExtensionDecl | K::UnionDecl, _) | (_, K::MacroDecl)
+    )
 }
 
 /// The rule of `MR0115` that `node`, in a node of the kind `container`,
@@ -2942,5 +2945,22 @@ mod tests {
             )),
             Vec::<String>::new()
         );
+    }
+
+    /// The walk skips a node without modifiers only where no rule of
+    /// `MR0115` can apply, which no diagnostic shows when it errs.
+    #[test]
+    fn member_rules_apply_to_the_members_of_three_declarations_and_to_macros() {
+        use super::member_rule_may_apply;
+        use mora_syntax::SyntaxKind as K;
+        for container in [K::InterfaceDecl, K::ExtensionDecl, K::UnionDecl] {
+            assert!(
+                member_rule_may_apply(container, K::FieldDecl),
+                "{container:?}"
+            );
+        }
+        assert!(member_rule_may_apply(K::StructDecl, K::MacroDecl));
+        assert!(!member_rule_may_apply(K::StructDecl, K::FieldDecl));
+        assert!(!member_rule_may_apply(K::ClassDecl, K::FunctionDecl));
     }
 }
