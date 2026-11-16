@@ -8,6 +8,11 @@ struct P {
 }
 const Q: P = new P {}; //~ ERROR MR0462
 
+// A read counts whether or not it runs.
+const D: bool = true || E; //~ ERROR MR0462
+const E: bool = D;
+
 Console.WriteLine(A);
 Console.WriteLine(B);
 Console.WriteLine(Q.X);
+Console.WriteLine(E);

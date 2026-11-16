@@ -21,3 +21,11 @@ error[MR0462]: constant `Q` depends on its own value
   |              ^^^^^^^^ this needs the value of `P.X`
   |
   = note: the cycle is Q -> P.X -> Q
+
+error[MR0462]: constant `D` depends on its own value
+  --> tests/ui/consts/cycles.mr:12:25
+   |
+12 | const D: bool = true || E; //~ ERROR MR0462
+   |                         ^ this needs the value of `E`
+   |
+   = note: the cycle is D -> E -> D
