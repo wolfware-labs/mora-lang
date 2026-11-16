@@ -1843,6 +1843,61 @@ fn an_unsupported_constant_runs_no_initializer_it_reads() {
     );
 }
 
+/// Checks that each key in `names` of `text` gives what `expected` says,
+/// as [`outcome`] writes it, and that evaluation reports nothing.
+fn waits_quietly(text: &str, names: &[&str], expected: &[&str]) {
+    assert_eq!(outcomes(text, names), expected, "{text}");
+    let source = checked(text);
+    assert_eq!(
+        crate::diagnostics(&source.db, source.project),
+        &[],
+        "{text}"
+    );
+}
+
+#[test]
+fn a_read_of_a_constant_of_a_class_waits_for_classes() {
+    let class = "class C {\n    public const K: int = 1;\n}\n";
+    waits_quietly(
+        &format!("{class}const A: int = C.K + 1;\nF(x: int = C.K): int => x;\n"),
+        &["A", "the default value of x in F"],
+        &["a constant M2.1", "a constant M2.1"],
+    );
+    waits_quietly(
+        &format!("{class}const A: int = C.K + B;\nconst B: int = 2;\n"),
+        &["A", "B"],
+        &["a constant M2.1", "value"],
+    );
+}
+
+#[test]
+fn a_read_of_a_constant_of_a_library_class_waits_in_both_projects() {
+    let lib = "public class C {\n    public const K: int = 1;\n}\n";
+    let (source, util) = using_util(lib, "const A: int = Util.C.K + 1;\n");
+    assert_eq!(
+        codes(diagnostics(&source.db, source.project)),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("A"))),
+        "a constant M2.1"
+    );
+    assert_eq!(crate::diagnostics(&source.db, source.project), &[]);
+    assert_eq!(crate::diagnostics(&source.db, util), &[]);
+}
+
+#[test]
+fn a_read_of_a_constant_of_a_union_waits_for_unions() {
+    // Of the types that wait, only a class and a union declare constants:
+    // `const` in an enum or an interface is a front-end error.
+    waits_quietly(
+        "union E {\n    A(X: int);\n    public const K: int = 1;\n}\n\
+         const A: int = E.K + 1;\nF(x: int = E.K): int => x;\n",
+        &["A", "the default value of x in F"],
+        &["a constant M3.1", "a constant M3.1"],
+    );
+}
+
 #[test]
 fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
     let source = checked(
