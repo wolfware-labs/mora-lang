@@ -476,13 +476,14 @@ impl Pass<'_> {
         expect_evaluating(self.known(project, key), name, "a key needed before it is")
     }
 
-    /// Evaluates `key`, a key of `project`, after each key it needs
-    /// ([`Pass::needs`]) that is not known, each of those after the keys it
-    /// needs in turn. The walk keeps its own stack instead of recursing.
-    /// The read graph lists each key after every key it reads, but not
-    /// after the default values its calls leave out: a walk may evaluate
-    /// such a default, and the keys it reads, before their turn comes, and
-    /// each turn evaluates its key again, to the same result.
+    /// Evaluates `key`, a key of `project`, unless it is known, after each
+    /// key it needs ([`Pass::needs`]) that is not, each of those after the
+    /// keys it needs in turn. The walk keeps its own stack instead of
+    /// recursing. The read graph lists each key after every key it reads,
+    /// but not after the default values its calls leave out: a walk may
+    /// evaluate such a default, and the keys it reads, before their turn
+    /// comes, perhaps while a cycle through a default is cut, and that first
+    /// result stands.
     ///
     /// A key the walk reaches again while it is still open closes a cycle.
     /// A cycle that goes through a default value a call leaves out is cut
@@ -491,6 +492,9 @@ impl Pass<'_> {
     /// initializers of another project that the read graphs never see, and
     /// fails as [`Pass::close_cycle`] says.
     fn ensure(&mut self, project: Project, key: ConstKey) {
+        if self.resolve(project, key) {
+            return;
+        }
         let needs = self.needs(project, key);
         let mut walk = vec![Frame {
             project,

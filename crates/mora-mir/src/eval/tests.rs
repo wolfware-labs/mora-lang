@@ -1723,6 +1723,57 @@ fn an_equals_that_takes_its_struct_in_any_mode_waits() {
     );
 }
 
+/// What each key named in `names` gives in `text`, as [`outcome`] says,
+/// by the name the key's project gives it.
+fn outcomes(text: &str, names: &[&str]) -> Vec<String> {
+    let source = checked(text);
+    let mut keys = constants(&source.db, source.file);
+    keys.extend(defaults(&source.db, source.project, source.file));
+    names
+        .iter()
+        .map(|&name| {
+            let key = keys
+                .iter()
+                .copied()
+                .find(|key| key.name(&source.db, source.project) == name)
+                .unwrap_or_else(|| panic!("no key {name}"));
+            outcome(source.evaluated(key))
+        })
+        .collect()
+}
+
+#[test]
+fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
+    // `S` reaches `C` through the default of `G` before `C`'s turn, while
+    // the default of `F` that `C` leaves out is not known yet.
+    let rest = "const C: int = match (true) { _ => F() };\nconst E: int = default;\n\
+                F(x: int = C + E): int => x;\nG(y: int = C): int => y;\n";
+    let names = ["C", "the default value of y in G"];
+    let expected = ["a `match` M3.3", "a constant M3.3"];
+    assert_eq!(outcomes(rest, &names), expected);
+    let with_s = format!("const S: int = match (true) {{ _ => G() }};\n{rest}");
+    assert_eq!(outcomes(&with_s, &names), expected);
+    // Only `C` in the defaults.
+    let plain = "const S: int = match (true) { _ => G() };\n\
+                 const C: int = match (true) { _ => F() };\n\
+                 F(x: int = C): int => x;\nG(y: int = C): int => y;\n";
+    assert_eq!(outcomes(plain, &names), expected);
+}
+
+#[test]
+fn an_initializer_a_walk_evaluates_early_keeps_its_first_result() {
+    let text = "const A: int = match (true) { _ => G() };\n\
+                G(y: int = new P {}.X): int => y;\n\
+                struct P {\n    public X: int = match (true) { _ => F() };\n}\n\
+                F(x: int = new P {}.X + B): int => x;\nconst B: int = default;\n";
+    let source = checked(text);
+    let x = ConstKey::Initializer {
+        item: source.item("P"),
+        field: 0,
+    };
+    assert_eq!(outcome(source.evaluated(x)), "a `match` M3.3");
+}
+
 #[test]
 fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
     let source = checked(
