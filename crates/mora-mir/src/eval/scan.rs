@@ -93,16 +93,11 @@ impl Scanner<'_> {
         }
         let hir = self.hir;
         let node = &hir.exprs[expr];
-        if matches!(node, Expr::Path(_) | Expr::Member { .. }) {
-            if let Some((project, key)) = const_read(self.db, self.resolution, expr) {
-                self.scan.reads.push((project, key, self.map.expr(expr)));
-                return ControlFlow::Continue(());
-            }
-            // Any other member of a namespace or a type: its receiver is
-            // not a value.
-            if self.resolution.paths.contains_key(&expr) {
-                return ControlFlow::Continue(());
-            }
+        if matches!(node, Expr::Path(_) | Expr::Member { .. })
+            && let Some((project, key)) = const_read(self.db, self.resolution, expr)
+        {
+            self.scan.reads.push((project, key, self.map.expr(expr)));
+            return ControlFlow::Continue(());
         }
         if let Expr::New { args, inits, .. } = node
             && let Some(item) = self.memberwise(expr, args.as_deref())
