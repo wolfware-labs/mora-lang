@@ -405,16 +405,15 @@ fn call_omitted_defaults(
                 declared.hir.defaults.as_slice(),
             )
         }
-        Callee::Local(id) => {
-            let Some(function) = local(id) else {
-                return Vec::new();
-            };
+        // A local function the body does not declare has no parameter, so
+        // the call left none out and returned above.
+        Callee::Local(id) => local(id).map_or((here, &[][..], &[][..]), |function| {
             (
                 here,
                 function.params.as_slice(),
                 function.defaults.as_slice(),
             )
-        }
+        }),
     };
     omitted
         .iter()
@@ -772,21 +771,21 @@ fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId, args: &[
     else {
         return false;
     };
-    let Some(function) = signature(db, item).as_function() else {
-        return false;
-    };
-    function.params.iter().enumerate().any(|(index, param)| {
-        if !holds_option(&param.ty) {
-            return false;
-        }
-        let arg = bound
-            .iter()
-            .position(|&to| to == index)
-            .and_then(|position| args.get(position));
-        arg.is_none_or(|arg| {
-            inference
-                .expr(arg.expr)
-                .is_none_or(|ty| !same(ty, &param.ty))
+    let function = signature(db, item).as_function();
+    function.is_some_and(|function| {
+        function.params.iter().enumerate().any(|(index, param)| {
+            if !holds_option(&param.ty) {
+                return false;
+            }
+            let arg = bound
+                .iter()
+                .position(|&to| to == index)
+                .and_then(|position| args.get(position));
+            arg.is_none_or(|arg| {
+                inference
+                    .expr(arg.expr)
+                    .is_none_or(|ty| !same(ty, &param.ty))
+            })
         })
     })
 }

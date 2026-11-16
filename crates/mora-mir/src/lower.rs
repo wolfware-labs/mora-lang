@@ -581,21 +581,20 @@ impl<'a> Owner<'a> {
     /// The shape of the body of `owner` itself.
     fn shape(&self, owner: BodyOwner) -> BodyShape {
         let root = self.expect(self.hir.root, "the body has no code");
-        let (ret, this, params) = match owner {
-            BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
-            BodyOwner::Item(item) => {
-                match consts::value_ty(self.db, self.project, self.file, owner) {
-                    Some(ty) => (ty, None, Vec::new()),
-                    None => self.function_signature(self.item(item)),
-                }
+        // A constant or a field has its declared type; a function, a
+        // method or the top-level statements have none.
+        let (ret, this, params) = match (
+            owner,
+            consts::value_ty(self.db, self.project, self.file, owner),
+        ) {
+            (_, Some(ty)) => (ty, None, Vec::new()),
+            (BodyOwner::Item(item), None) => self.function_signature(self.item(item)),
+            (_, None) => {
+                let what =
+                    "only functions, methods, initializers and top-level statements are lowered";
+                self.expect((owner == BodyOwner::TopLevel).then_some(()), what);
+                (Ty::UNIT, None, Vec::new())
             }
-            BodyOwner::Value(..) => {
-                let ty = consts::value_ty(self.db, self.project, self.file, owner);
-                let what = "only the initializer of a field or a constant is lowered";
-                (self.expect(ty, what), None, Vec::new())
-            }
-            _ => self
-                .fail("only functions, methods, initializers and top-level statements are lowered"),
         };
         let params = self.hir.params.iter().copied().zip(params).collect();
         BodyShape {

@@ -24,7 +24,7 @@ use mora_hir::{
 use mora_span::{Db, Project, SourceFile, TextRange, TextSize};
 
 use self::graph::const_graph;
-use self::interp::{Failure, Stop};
+use self::interp::Failure;
 use self::scan::const_scan;
 use crate::lower::consts::eval_mir;
 use crate::lower::expr::constant;
@@ -79,10 +79,12 @@ impl ConstKey {
         match self {
             ConstKey::Constant { owner, .. } | ConstKey::Default { owner, .. } => owner,
             ConstKey::Initializer { item, field } => {
-                let Some((index, _)) = instance_fields(db, item).nth(field as usize) else {
-                    let name = &item_tree(db, item.file).item(item.item).name;
-                    fail_evaluating(name, &format!("no instance field {field}"));
-                };
+                let index = instance_fields(db, item).nth(field as usize);
+                let (index, _) = expect_evaluating(
+                    index,
+                    || item_tree(db, item.file).item(item.item).name.clone(),
+                    || format!("no instance field {field}"),
+                );
                 BodyOwner::Value(item.item, index)
             }
         }
@@ -117,12 +119,11 @@ impl ConstKey {
             return short;
         };
         let hir = body(db, file, owner);
-        let Some(param) = default_param(hir, default) else {
-            fail_evaluating(
-                &format!("a default value in {short}"),
-                "no parameter has it",
-            );
-        };
+        let param = expect_evaluating(
+            default_param(hir, default),
+            || format!("a default value in {short}"),
+            || "no parameter has it".to_owned(),
+        );
         format!("the default value of {} in {short}", hir.locals[param].name)
     }
 
@@ -360,10 +361,11 @@ pub(crate) fn const_values(db: &dyn Db, project: Project) -> ConstValues {
 /// When the read graph of `project` does not hold `key`, which only a
 /// compiler bug can cause.
 pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> &Evaluated {
-    match const_values(db, project).get(key) {
-        Some(evaluated) => evaluated,
-        None => fail_evaluating(&key.name(db, project), "a key outside the read graph"),
-    }
+    expect_evaluating(
+        const_values(db, project).get(key),
+        || key.name(db, project),
+        || "a key outside the read graph".to_owned(),
+    )
 }
 
 /// The projects that `project` depends on, directly or through others,
@@ -473,16 +475,17 @@ impl Pass<'_> {
     /// What `key`, a key of `project` that [`Pass::ensure`] has evaluated
     /// or found, gives.
     fn value(&self, project: Project, key: ConstKey) -> &Evaluated {
-        match self.known(project, key) {
-            Some(evaluated) => evaluated,
-            None => fail_evaluating(&key.name(self.db, project), "a key needed before it is"),
-        }
+        expect_evaluating(
+            self.known(project, key),
+            || key.name(self.db, project),
+            || "a key needed before it is".to_owned(),
+        )
     }
 
-    /// Evaluates `key`, a key of `project`, unless it is known, after each
-    /// key it needs ([`Pass::needs`]) that is not, each of those after the
-    /// keys it needs in turn. The walk keeps its own stack instead of
-    /// recursing.
+    /// Evaluates `key`, a key of `project` that is not known yet (the read
+    /// graph lists each key after every key it needs), after each key it
+    /// needs ([`Pass::needs`]) that is not, each of those after the keys it
+    /// needs in turn. The walk keeps its own stack instead of recursing.
     ///
     /// A key the walk reaches again while it is still open closes a cycle.
     /// A cycle that goes through a default value a call leaves out is cut
@@ -491,9 +494,6 @@ impl Pass<'_> {
     /// initializers of another project that the read graphs never see, and
     /// fails as [`Pass::close_cycle`] says.
     fn ensure(&mut self, project: Project, key: ConstKey) {
-        if self.resolve(project, key) {
-            return;
-        }
         let needs = self.needs(project, key);
         let mut walk = vec![Frame {
             project,
@@ -501,11 +501,8 @@ impl Pass<'_> {
             needs,
             next: 0,
         }];
-        while let Some(frame) = walk.last_mut() {
+        while let Some(mut frame) = walk.pop() {
             let Some(&need) = frame.needs.get(frame.next) else {
-                let Some(frame) = walk.pop() else {
-                    break;
-                };
                 let evaluated = self.evaluate(frame.project, frame.key, &frame.needs);
                 if frame.project != self.project {
                     self.extras.push(frame.key);
@@ -514,6 +511,7 @@ impl Pass<'_> {
                 continue;
             };
             frame.next += 1;
+            walk.push(frame);
             if self.resolve(need.project, need.key) {
                 continue;
             }
@@ -653,9 +651,13 @@ impl Pass<'_> {
         let waits_itself = later.is_some();
         let mut waits = later;
         let mut read_failed = false;
+        // The values of the reads, which the run takes. Only looked up.
+        let mut values = HashMap::new();
         for &(read_project, read, _) in &scan.reads {
             match self.value(read_project, read) {
-                Evaluated::Value(_) => {}
+                Evaluated::Value(value) => {
+                    values.insert((read_project, read), value);
+                }
                 Evaluated::Failed(_) => read_failed = true,
                 Evaluated::Later(later) => {
                     if waits
@@ -685,17 +687,14 @@ impl Pass<'_> {
         }
         // Every key the body reads, and every initializer it calls, is a
         // read of its scan, which has a value by now.
-        let values = |project, key| match self.value(project, key) {
-            Evaluated::Value(value) => Some(value.clone()),
-            Evaluated::Failed(_) | Evaluated::Later(_) => None,
+        let values = |project, key| {
+            values
+                .get(&(project, key))
+                .map(|&value| ConstValue::clone(value))
         };
         match interp::run(db, &eval_mir(db, project, key).bodies[0], &values) {
             Ok(value) => Evaluated::Value(value),
-            Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
-            Err(Stop::Dependency) => {
-                let name = key.name(db, project);
-                fail_evaluating(&name, "a field initializer without a value");
-            }
+            Err(failure) => failed(key, failure.range, ErrorKind::Failed(failure)),
         }
     }
 }
@@ -709,6 +708,17 @@ fn failed(key: ConstKey, range: TextRange, kind: ErrorKind) -> Evaluated {
 /// compiler bug can cause.
 pub(crate) fn fail_evaluating(name: &str, what: &str) -> ! {
     panic!("internal error evaluating {name}: {what}")
+}
+
+/// `value`, or the internal error of [`fail_evaluating`] for the body that
+/// `name` names, saying `what`, when it is `None`: a state only a compiler
+/// bug can cause.
+pub(crate) fn expect_evaluating<T>(
+    value: Option<T>,
+    name: impl FnOnce() -> String,
+    what: impl FnOnce() -> String,
+) -> T {
+    value.unwrap_or_else(|| fail_evaluating(&name(), &what()))
 }
 
 #[cfg(test)]

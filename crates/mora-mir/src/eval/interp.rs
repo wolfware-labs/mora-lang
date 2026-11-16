@@ -32,31 +32,22 @@ pub(crate) struct Failure {
     pub(crate) operation: String,
 }
 
-/// Why a run stopped without a value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Stop {
-    /// An operation failed.
-    Failed(Failure),
-    /// A field initializer the body calls has no value yet.
-    Dependency,
-}
-
 /// Runs `body` from its entry block to `return` and gives the value of
 /// `_0`. A read of a constant ([`Operand::ConstRead`]) and an `Initializer`
-/// call take their values from `values`, by the key and its project; an
-/// initializer without one stops with [`Stop::Dependency`].
+/// call take their values from `values`, by the key and its project. It
+/// stops at the first operation that fails.
 ///
 /// # Panics
 ///
 /// On a form that a body constant evaluation runs never holds: a borrow, a
 /// dereference, an interpolated string, a call of anything but a field
 /// initializer, an unreachable block, a read of a local without a value,
-/// or a read of a constant without one.
+/// or a read of a constant or a call of an initializer without one.
 pub(crate) fn run(
     db: &dyn Db,
     body: &Body,
     values: &dyn Fn(Project, ConstKey) -> Option<ConstValue>,
-) -> Result<ConstValue, Stop> {
+) -> Result<ConstValue, Failure> {
     let mut machine = Machine {
         db,
         body,
@@ -69,14 +60,14 @@ pub(crate) fn run(
         for statement in &data.statements {
             match &statement.kind {
                 StatementKind::Assign(place, rvalue) => {
-                    let value = machine.rvalue(rvalue).map_err(|(error, operation)| {
-                        Stop::Failed(Failure {
+                    let value = machine
+                        .rvalue(rvalue)
+                        .map_err(|(error, operation)| Failure {
                             range: statement.span.range,
                             error,
                             ty: body.place_ty(place, db),
                             operation,
-                        })
-                    })?;
+                        })?;
                     machine.write(place, value);
                 }
                 StatementKind::StorageDead(local) => *machine.slot(*local) = None,
@@ -107,7 +98,8 @@ pub(crate) fn run(
                     item: *item,
                     field: *field,
                 };
-                let value = values(item.project, key).ok_or(Stop::Dependency)?;
+                let value = values(item.project, key)
+                    .unwrap_or_else(|| machine.internal("a field initializer without a value"));
                 if let Some(dest) = dest {
                     machine.write(dest, value);
                 }

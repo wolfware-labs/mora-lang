@@ -9,7 +9,7 @@ use mora_span::{Db, Project, Span};
 use super::arith::ArithError;
 use super::graph::const_graph;
 use super::interp::Failure;
-use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_values, fail_evaluating};
+use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_values, expect_evaluating};
 
 /// The label of `MR0460` and `MR0461`.
 const EVALUATED: &str = "evaluated at compile time";
@@ -62,9 +62,11 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
             let note = match error.key {
                 ConstKey::Initializer { .. } => {
                     let name = error.key.name(db, project);
-                    let Some((ty, field)) = name.rsplit_once('.') else {
-                        fail_evaluating(&name, "a field without its type");
-                    };
+                    let (ty, field) = expect_evaluating(
+                        name.rsplit_once('.'),
+                        || name.clone(),
+                        || "a field without its type".to_owned(),
+                    );
                     format!(
                         "{UNSUPPORTED_NOTE}\n`{name}` runs at compile time because a `{ty}` created at compile time leaves `{field}` out"
                     )

@@ -10,7 +10,7 @@ use mora_span::{Dependency, FileId, Project, ProjectKind, SourceFile, Span, Text
 
 use super::arith::{ArithError, MAX_STRING_BYTES};
 use super::graph::{ConstGraph, const_graph};
-use super::interp::{Failure, Stop, run};
+use super::interp::{Failure, run};
 use super::report::failed_message;
 use super::scan::const_scan;
 use super::{
@@ -206,7 +206,7 @@ impl Source {
         &self,
         name: &str,
         initializer: &mut dyn FnMut(ItemId, u32) -> Option<ConstValue>,
-    ) -> Result<ConstValue, Stop> {
+    ) -> Result<ConstValue, Failure> {
         let owner = BodyOwner::Item(self.item(name).item);
         let key = ConstKey::Constant {
             file: self.file,
@@ -218,7 +218,7 @@ impl Source {
 
     /// What a run of the initializer of the namespace-level constant
     /// `name` gives, when it calls no field initializer.
-    fn run(&self, name: &str) -> Result<ConstValue, Stop> {
+    fn run(&self, name: &str) -> Result<ConstValue, Failure> {
         self.run_with(name, &mut |item, field| {
             panic!("no initializer is called: {item:?} {field}")
         })
@@ -227,7 +227,7 @@ impl Source {
     /// The failure that stops the run of the constant `name`.
     fn failure(&self, name: &str) -> Failure {
         match self.run(name) {
-            Err(Stop::Failed(failure)) => failure,
+            Err(failure) => failure,
             other => panic!("{name} runs to {other:?}"),
         }
     }
@@ -315,7 +315,7 @@ fn initializers(
 }
 
 /// What a run of a hand-built body gives, with no field initializer.
-fn run_hand_built(body: &Body) -> Result<ConstValue, Stop> {
+fn run_hand_built(body: &Body) -> Result<ConstValue, Failure> {
     let db = TestDb::new();
     run(&db, body, &|_, _| None)
 }
@@ -396,6 +396,19 @@ fn a_scan_descends_into_operations_and_values_but_not_into_types() {
         source.visited(source.constant("S2")),
         vec!["P.S + 1", "P.S", "1"]
     );
+}
+
+#[test]
+fn a_scan_reads_inside_constructs_a_later_milestone_lowers() {
+    let source = unchecked(
+        "const A: int = 1;\nconst S: string = \"ab\";\nconst I: char = S[A];\n\
+         const R: int = Get(A)?;\nconst W: int = await Get(A);\nconst G: int = (A..A).Length;\n",
+    );
+    let (a, s) = (source.constant("A"), source.constant("S"));
+    assert_eq!(source.reads(source.constant("I")), vec![(s, "S"), (a, "A")]);
+    assert_eq!(source.reads(source.constant("R")), vec![(a, "A")]);
+    assert_eq!(source.reads(source.constant("W")), vec![(a, "A")]);
+    assert_eq!(source.reads(source.constant("G")), vec![(a, "A"), (a, "A")]);
 }
 
 #[test]
@@ -999,15 +1012,15 @@ fn run_stops_at_a_failed_operation() {
 }
 
 #[test]
-fn run_stops_when_an_initializer_has_no_value() {
+#[should_panic(
+    expected = "internal error evaluating UsersApi.C: a field initializer without a value"
+)]
+fn run_panics_on_an_initializer_without_a_value() {
     let source = checked(
         "struct P {\n    public X: int = 1;\n    public Y: int;\n}\n\
          const C: P = new P { Y = 2 };\n",
     );
-    assert_eq!(
-        source.run_with("C", &mut |_, _| None),
-        Err(Stop::Dependency)
-    );
+    let _ = source.run_with("C", &mut |_, _| None);
 }
 
 #[test]
@@ -1416,7 +1429,7 @@ fn run_gives_the_lengths_of_a_concatenation_too_long_to_keep() {
             TerminatorKind::Return,
         )],
     );
-    let Err(Stop::Failed(failure)) = run_hand_built(&body) else {
+    let Err(failure) = run_hand_built(&body) else {
         panic!("the concatenation fails");
     };
     assert_eq!(failure.error, ArithError::TooLong(MAX_STRING_BYTES + 1));

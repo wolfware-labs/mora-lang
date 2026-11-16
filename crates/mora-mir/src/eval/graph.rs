@@ -11,7 +11,7 @@ use mora_hir::def_map;
 use mora_span::{Db, Project, TextRange};
 
 use super::scan::const_scan;
-use super::{ConstKey, constants, defaults, fail_evaluating};
+use super::{ConstKey, constants, defaults, expect_evaluating};
 
 /// A cycle of reads: its first member (smallest `sort_key`) first, in the
 /// order each reads the next.
@@ -211,7 +211,14 @@ impl Tarjan<'_> {
         // Each step is a node, the position of its next read, and the
         // range of the read that led to it.
         let mut path: Vec<(usize, usize, Option<TextRange>)> = vec![(start, 0, None)];
-        while let Some(&mut (node, ref mut next, _)) = path.last_mut() {
+        // The component is strongly connected, so a read of the path leads
+        // back to `start` before the path runs out.
+        loop {
+            let &mut (node, ref mut next, _) = expect_evaluating(
+                path.last_mut(),
+                || self.nodes[start].key.name(self.db, self.project),
+                || "no cycle leads back to it".to_owned(),
+            );
             let Some(&(read, range)) = self.nodes[node].reads.get(*next) else {
                 path.pop();
                 continue;
@@ -227,7 +234,5 @@ impl Tarjan<'_> {
                 path.push((id, 0, Some(range)));
             }
         }
-        let name = self.nodes[start].key.name(self.db, self.project);
-        fail_evaluating(&name, "no cycle leads back to it");
     }
 }

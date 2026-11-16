@@ -127,16 +127,18 @@ impl Lowerer<'_> {
             ConstValue::Scalar(constant) => return Operand::Const(constant.clone()),
             ConstValue::Aggregate(kind, parts) => (*kind, parts),
         };
+        let what = "a constant value whose shape is not its type's";
         let types: Vec<Ty> = match ty {
-            Ty::Struct(item) => instance_fields(self.owner.db, *item)
-                .map(|(_, field)| field.ty.clone())
-                .collect(),
             Ty::Tuple(elems) => elems.iter().map(|elem| elem.ty.clone()).collect(),
-            _ => Vec::new(),
+            ty => {
+                let item = ty.as_struct().unwrap_or_else(|| fail_in(&self.name, what));
+                let fields = instance_fields(self.owner.db, item);
+                fields.map(|(_, field)| field.ty.clone()).collect()
+            }
         };
-        if types.len() != parts.len() {
-            fail_in(&self.name, "a constant value whose shape is not its type's");
-        }
+        let types = Some(types)
+            .filter(|types| types.len() == parts.len())
+            .unwrap_or_else(|| fail_in(&self.name, what));
         let mut operands = Vec::with_capacity(parts.len());
         for (part, ty) in parts.iter().zip(&types) {
             operands.push(self.value_operand(part, ty, span));
