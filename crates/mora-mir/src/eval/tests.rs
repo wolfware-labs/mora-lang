@@ -3019,6 +3019,10 @@ fn an_initializer_of_a_type_that_waits_is_never_run() {
     let lib = "public class C {\n    public X: int = Zero();\n}\npublic Zero(): int => 0;\n";
     let (source, util) = using_util(lib, "const K: int = new Util.C {}.X;\n");
     assert_eq!(
+        codes(diagnostics(&source.db, source.project)),
+        Vec::<String>::new()
+    );
+    assert_eq!(
         outcome(source.evaluated(source.constant("K"))),
         "an expression with a class type M2.1"
     );
