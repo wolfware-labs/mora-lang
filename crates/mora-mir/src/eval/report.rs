@@ -9,7 +9,7 @@ use mora_span::{Db, Project, Span};
 use super::arith::ArithError;
 use super::graph::const_graph;
 use super::interp::Failure;
-use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_value, fail_evaluating};
+use super::{ConstError, ConstKey, ErrorKind, Evaluated, const_values, fail_evaluating};
 
 /// The label of `MR0460` and `MR0461`.
 const EVALUATED: &str = "evaluated at compile time";
@@ -21,27 +21,39 @@ const UNSUPPORTED_NOTE: &str = "constant evaluation runs literals, operators, ca
 const FAILED_NOTE: &str = "a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile";
 
 /// The errors of constant evaluation in `project` (`MR0460`, `MR0461`,
-/// `MR0462`), in the order of the read graph, from what its pass
-/// ([`const_values`](super::const_values)) gives. It runs on a program the
-/// front end accepted.
+/// `MR0462`), from what its pass ([`const_values`]) gives: those of the
+/// keys of its read graph, in the order of the graph, then those of the
+/// initializers of other projects that the pass evaluated itself, in the
+/// order it did. It runs on a program the front end accepted.
 ///
 /// A key that fails because a key it reads has no value reports nothing,
 /// so each cause is reported once.
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
+    let values = const_values(db, project);
     const_graph(db, project)
         .order()
         .iter()
-        .filter_map(|&key| match const_value(db, project, key) {
-            Evaluated::Failed(Some(error)) => Some(render(db, project, error)),
-            Evaluated::Value(_) | Evaluated::Failed(None) | Evaluated::Later(_) => None,
+        .chain(values.extras())
+        .filter_map(|&key| match values.get(key) {
+            Some(Evaluated::Failed(Some(error))) => Some(render(db, project, error)),
+            Some(Evaluated::Value(_) | Evaluated::Failed(None) | Evaluated::Later(_)) | None => {
+                None
+            }
         })
         .collect()
 }
 
-/// The diagnostic of `error`, labelled at its range in the file of its
-/// key.
+/// The diagnostic of `error`, reported by `project`, labelled at its range
+/// in the file of its key; its keys are named as the project that declares
+/// them names them.
 fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
+    // Only an initializer of another project is evaluated by a project
+    // other than its own, and the keys of a cycle are of one project.
+    let project = match error.key {
+        ConstKey::Initializer { item, .. } => item.project,
+        ConstKey::Constant { .. } | ConstKey::Default { .. } => project,
+    };
     let file = error.key.file();
     let span = Span::new(file.id(db), error.range);
     match &error.kind {

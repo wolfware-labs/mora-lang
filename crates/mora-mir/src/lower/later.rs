@@ -274,7 +274,7 @@ pub(crate) fn lowered_later(
 ) -> Option<Later> {
     let defaults = defaults_later(
         &omitted_defaults(db, project, file, owner),
-        |project, key| const_value(db, project, key),
+        |project, key| Some(const_value(db, project, key)),
     );
     later_with(db, project, file, owner, ConstReads::Evaluated, defaults)
 }
@@ -324,18 +324,18 @@ fn later_with(
 /// or a local function that leave out an argument whose default value
 /// waits for a later milestone: the latest of those that `defaults`, as
 /// [`omitted_defaults`] lists them, wait for, the first on a tie, each
-/// evaluated by `value`. A default with a value or an error decides
-/// nothing. `None` when no call waits.
+/// evaluated by `value`. A default with a value or an error, or that
+/// `value` does not give, decides nothing. `None` when no call waits.
 pub(crate) fn defaults_later<'e>(
     defaults: &[(Project, ConstKey)],
-    value: impl Fn(Project, ConstKey) -> &'e Evaluated,
+    value: impl Fn(Project, ConstKey) -> Option<&'e Evaluated>,
 ) -> Option<Later> {
     latest(
         defaults
             .iter()
             .map(|&(project, key)| match value(project, key) {
-                Evaluated::Later(later) => Some(later.clone()),
-                Evaluated::Value(_) | Evaluated::Failed(_) => None,
+                Some(Evaluated::Later(later)) => Some(later.clone()),
+                Some(Evaluated::Value(_) | Evaluated::Failed(_)) | None => None,
             }),
     )
     .map(|later| {

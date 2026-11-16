@@ -1860,17 +1860,25 @@ impl Source {
     /// The diagnostics of constant evaluation in the project, each in the
     /// file of the source.
     fn reported(&self) -> Vec<Reported> {
+        self.reported_in(self.file)
+    }
+
+    /// The diagnostics of constant evaluation in the project, each in
+    /// `file`, which may be a file of another project.
+    fn reported_in(&self, file: SourceFile) -> Vec<Reported> {
+        let text = file.text(&self.db);
         crate::diagnostics(&self.db, self.project)
             .iter()
             .map(|diagnostic| {
-                assert_eq!(diagnostic.primary.span.file, self.file.id(&self.db));
+                assert_eq!(diagnostic.primary.span.file, file.id(&self.db));
                 assert_eq!(diagnostic.secondary, []);
                 assert_eq!(diagnostic.fixes, []);
                 assert_eq!(diagnostic.severity, mora_diag::Severity::Error);
                 Reported {
                     code: diagnostic.code.to_string(),
                     message: diagnostic.message.clone(),
-                    at: self.text(diagnostic.primary.span.range).to_owned(),
+                    at: text[std::ops::Range::<usize>::from(diagnostic.primary.span.range)]
+                        .to_owned(),
                     label: diagnostic.primary.message.clone(),
                     note: diagnostic.note.clone(),
                 }
@@ -1965,6 +1973,170 @@ fn a_cycle_that_starts_at_an_initializer_names_it() {
             "the cycle is P.X -> P.X",
         )]
     );
+}
+
+/// A library `Util` whose struct `P` has the fields of `fields`, none of
+/// which its own constants create.
+fn util_struct(fields: &str) -> String {
+    format!("public Zero(): int => 0;\npublic struct P {{\n{fields}}}\n")
+}
+
+#[test]
+fn an_initializer_of_another_project_reports_its_error_in_its_file() {
+    let lib = util_struct("    public X: int = Zero();\n");
+    let (source, util) = using_util(&lib, "const C: Util.P = new Util.P {};\n");
+    assert_eq!(
+        codes(diagnostics(&source.db, source.project)),
+        Vec::<String>::new()
+    );
+    let lib = file_named(&source.db, util, "src/Lib.mr");
+    let note = format!(
+        "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a constant creates a `P` without `X`"
+    );
+    assert_eq!(
+        source.reported_in(lib),
+        [reported(
+            "MR0460",
+            "a call cannot be evaluated at compile time",
+            "Zero()",
+            "evaluated at compile time",
+            &note,
+        )]
+    );
+    // Its cause is reported, so the constant fails without an error.
+    assert_eq!(
+        source.evaluated(source.constant("C")),
+        &Evaluated::Failed(None)
+    );
+    // The library's own evaluation never runs it.
+    assert_eq!(crate::diagnostics(&source.db, util), &[]);
+}
+
+#[test]
+fn initializers_of_another_project_that_read_each_other_are_a_cycle() {
+    let cases = [
+        (
+            "    public X: int = new P {}.X;\n",
+            "new P {}",
+            "P.X",
+            "the cycle is P.X -> P.X",
+        ),
+        (
+            "    public X: int = new P { X = 1 }.Y;\n    public Y: int = new P { Y = 1 }.X;\n",
+            "new P { X = 1 }",
+            "P.Y",
+            "the cycle is P.X -> P.Y -> P.X",
+        ),
+    ];
+    for (fields, at, read, note) in cases {
+        let lib = util_struct(fields);
+        let (source, util) = using_util(&lib, "const C: Util.P = new Util.P {};\n");
+        assert_eq!(
+            codes(diagnostics(&source.db, source.project)),
+            Vec::<String>::new()
+        );
+        let lib = file_named(&source.db, util, "src/Lib.mr");
+        assert_eq!(
+            source.reported_in(lib),
+            [reported(
+                "MR0462",
+                "the initializer of `P.X` depends on its own value",
+                at,
+                &format!("this needs the value of `{read}`"),
+                note,
+            )],
+            "{fields}"
+        );
+        assert_eq!(
+            source.evaluated(source.constant("C")),
+            &Evaluated::Failed(None)
+        );
+    }
+}
+
+#[test]
+fn an_initializer_two_projects_run_is_reported_by_the_one_the_other_depends_on() {
+    let db = TestDb::new();
+    let lib = util_struct("    public X: int = Zero();\n");
+    let util = db.project(
+        "util",
+        ProjectKind::Lib,
+        &[("src/Lib.mr", &lib)],
+        Vec::new(),
+    );
+    let on_util = || Dependency {
+        name: "Util".to_owned(),
+        project: util,
+    };
+    let middle = db.project(
+        "middle",
+        ProjectKind::Lib,
+        &[("src/Middle.mr", "public const D: Util.P = new Util.P {};\n")],
+        vec![on_util()],
+    );
+    let on = |name: &str, project| Dependency {
+        name: name.to_owned(),
+        project,
+    };
+    // `Top` runs nothing; the app reaches `Middle` through it.
+    let top = db.project(
+        "top",
+        ProjectKind::Lib,
+        &[("src/Top.mr", "public const T: int = 1;\n")],
+        vec![on_util(), on("Middle", middle)],
+    );
+    let program = "const C: Util.P = new Util.P {};\n";
+    let direct = db.project(
+        "users-api",
+        ProjectKind::App,
+        &[("src/Program.mr", program)],
+        vec![on_util(), on("Middle", middle)],
+    );
+    let through_top = db.project(
+        "other-api",
+        ProjectKind::App,
+        &[("src/Program.mr", program)],
+        vec![on_util(), on("Top", top)],
+    );
+    let codes_of = |project| -> Vec<String> {
+        crate::diagnostics(&db, project)
+            .iter()
+            .map(|diagnostic| diagnostic.code.to_string())
+            .collect()
+    };
+    assert_eq!(codes_of(middle), ["MR0460"]);
+    assert_eq!(codes_of(direct), Vec::<String>::new());
+    assert_eq!(codes_of(through_top), Vec::<String>::new());
+    assert_eq!(codes_of(top), Vec::<String>::new());
+    assert_eq!(codes_of(util), Vec::<String>::new());
+}
+
+#[test]
+fn a_default_that_reads_the_constant_whose_match_leaves_it_out_waits() {
+    let cases = [
+        (
+            "const A: int = match (true) { _ => F() };\nF(x: int = A): int => x;\n",
+            "a constant M3.3",
+        ),
+        (
+            "struct P {\n    public X: int = match (true) { _ => F() };\n}\n\
+             F(x: int = new P {}.X): int => x;\nconst A: int = new P {}.X;\n",
+            "a `match` M3.3",
+        ),
+    ];
+    // The call is inside a `match`, so the constant waits whatever the
+    // default gives, and the default waits for what it reads.
+    for (text, waits) in cases {
+        let source = checked(text);
+        assert_eq!(source.reported(), [], "{text}");
+        assert_eq!(
+            outcome(source.evaluated(source.constant("A"))),
+            "a `match` M3.3",
+            "{text}"
+        );
+        let default = source.only_default();
+        assert_eq!(outcome(source.evaluated(default)), waits, "{text}");
+    }
 }
 
 #[test]
