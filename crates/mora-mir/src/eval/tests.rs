@@ -1803,17 +1803,20 @@ fn a_key_names_the_same_milestone_whatever_reads_it_first() {
 #[test]
 fn an_initializer_names_the_same_milestone_whatever_reads_it_first() {
     // `A` holds a call of `G`, whose default reads `P.X`, which holds a
-    // call of `F` whose default reads `P.X` again.
-    let text = "const A: int = match (true) { _ => G() };\n\
-                G(y: int = new P {}.X): int => y;\n\
+    // call of `F` whose default reads `P.X` again; whether `A` comes first
+    // or not, `P.X` names its own text.
+    let rest = "G(y: int = new P {}.X): int => y;\n\
                 struct P {\n    public X: int = match (true) { _ => F() };\n}\n\
                 F(x: int = new P {}.X + B): int => x;\nconst B: int = default;\n";
-    let source = checked(text);
-    let x = ConstKey::Initializer {
-        item: source.item("P"),
-        field: 0,
-    };
-    assert_eq!(outcome(source.evaluated(x)), "a `match` M3.3");
+    let with_a = format!("const A: int = match (true) {{ _ => G() }};\n{rest}");
+    for text in [rest, &with_a] {
+        let source = checked(text);
+        let x = ConstKey::Initializer {
+            item: source.item("P"),
+            field: 0,
+        };
+        assert_eq!(outcome(source.evaluated(x)), "a `match` M3.3", "{text}");
+    }
 }
 
 #[test]
