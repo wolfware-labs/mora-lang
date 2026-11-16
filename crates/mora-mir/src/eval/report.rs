@@ -66,7 +66,7 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
                         fail_evaluating(&name, "a field without its type");
                     };
                     format!(
-                        "{UNSUPPORTED_NOTE}\n`{name}` runs at compile time because a constant creates a `{ty}` without `{field}`"
+                        "{UNSUPPORTED_NOTE}\n`{name}` runs at compile time because a `{ty}` created at compile time leaves `{field}` out"
                     )
                 }
                 ConstKey::Constant { .. } | ConstKey::Default { .. } => UNSUPPORTED_NOTE.to_owned(),

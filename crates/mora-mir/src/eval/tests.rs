@@ -2063,7 +2063,7 @@ fn an_initializer_of_another_project_reports_its_error_in_its_file() {
     );
     let lib = file_named(&source.db, util, "src/Lib.mr");
     let note = format!(
-        "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a constant creates a `P` without `X`"
+        "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a `P` created at compile time leaves `X` out"
     );
     assert_eq!(
         source.reported_in(lib),
@@ -2380,22 +2380,29 @@ fn editing_a_reader_of_another_project_keeps_reverification_shallow() {
 }
 
 #[test]
-fn an_initializer_error_names_the_constant_creation() {
-    let source = checked(
-        "Zero(): int => 0;\nstruct P {\n    public X: int = Zero();\n}\nconst C: P = new P {};\n",
-    );
-    assert_eq!(
-        source.reported(),
-        [reported(
-            "MR0460",
-            "a call cannot be evaluated at compile time",
-            "Zero()",
-            "evaluated at compile time",
-            &format!(
-                "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a constant creates a `P` without `X`"
-            ),
-        )]
-    );
+fn an_initializer_error_names_the_creation_that_leaves_its_field_out() {
+    let p = "Zero(): int => 0;\nstruct P {\n    public X: int = Zero();\n}\n";
+    // A constant creates the struct, then a default value does.
+    for creation in [
+        "const C: P = new P {};\n",
+        "F(p: P = new P {}): int => 1;\nConsole.WriteLine(F());\n",
+    ] {
+        let source = checked(&format!("{p}{creation}"));
+        assert_eq!(
+            source.reported(),
+            [reported(
+                "MR0460",
+                "a call cannot be evaluated at compile time",
+                "Zero()",
+                "evaluated at compile time",
+                &format!(
+                    "{UNSUPPORTED_NOTE}\n`P.X` runs at compile time because a `P` created at \
+                     compile time leaves `X` out"
+                ),
+            )],
+            "{creation}"
+        );
+    }
 }
 
 #[test]

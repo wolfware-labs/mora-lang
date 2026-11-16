@@ -21,7 +21,7 @@ error[MR0460]: a call cannot be evaluated at compile time
    |                     ^^^^^^ evaluated at compile time
    |
    = note: constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`
-           `P.X` runs at compile time because a constant creates a `P` without `X`
+           `P.X` runs at compile time because a `P` created at compile time leaves `X` out
 
 error[MR0460]: `++` cannot be evaluated at compile time
  --> tests/ui/consts/unsupported.mr:7:16
