@@ -2156,7 +2156,7 @@ Body       { params, return_ty, locals: [LocalDecl { ty, mutable, source }], blo
 Block      { statements: [Statement], terminator: Terminator }
 Place      { local, projections: [Field(n) | Deref | Index(local) | ConstIndex(n) | Case(n) | RawDeref] }
 Operand    = Copy(Place) | Move(Place) | Const(Value) | ConstRead(ConstKey, Type)
-ConstKey   = Constant(owner) | Initializer(Struct, n) | Default(owner, param)
+ConstKey   = Constant(owner) | Initializer(Struct, n) | Default(owner, default)
 Rvalue     = Use(Operand) | Borrow(Mode, Place) | Binary(Op, Operand, Operand) | Unary(Op, Operand)
            | Aggregate(Kind, [Operand]) | Cast(Kind, Operand, Type) | Len(Place) | Discriminant(Place)
            | MakeClosure(Fn, [Operand]) | ToInterface(Operand, Interface)
