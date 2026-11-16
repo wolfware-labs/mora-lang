@@ -14,6 +14,7 @@ mod report;
 pub(crate) mod scan;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 
 pub use self::report::diagnostics;
 
@@ -79,10 +80,10 @@ impl ConstKey {
         match self {
             ConstKey::Constant { owner, .. } | ConstKey::Default { owner, .. } => owner,
             ConstKey::Initializer { item, field } => {
-                let index = instance_fields(db, item).nth(field as usize);
+                let declared = instance_fields(db, item).nth(field as usize);
                 let name = || item_tree(db, item.file).item(item.item).name.clone();
-                let what = format!("no instance field {field}");
-                let (index, _) = expect_evaluating(index, name, &what);
+                let what = format_args!("no instance field {field}");
+                let (index, _) = expect_evaluating(declared, name, what);
                 BodyOwner::Value(item.item, index)
             }
         }
@@ -475,10 +476,13 @@ impl Pass<'_> {
         expect_evaluating(self.known(project, key), name, "a key needed before it is")
     }
 
-    /// Evaluates `key`, a key of `project` that is not known yet (the read
-    /// graph lists each key after every key it needs), after each key it
-    /// needs ([`Pass::needs`]) that is not, each of those after the keys it
+    /// Evaluates `key`, a key of `project`, after each key it needs
+    /// ([`Pass::needs`]) that is not known, each of those after the keys it
     /// needs in turn. The walk keeps its own stack instead of recursing.
+    /// The read graph lists each key after every key it reads, but not
+    /// after the default values its calls leave out: a walk may evaluate
+    /// such a default, and the keys it reads, before their turn comes, and
+    /// each turn evaluates its key again, to the same result.
     ///
     /// A key the walk reaches again while it is still open closes a cycle.
     /// A cycle that goes through a default value a call leaves out is cut
@@ -645,11 +649,11 @@ impl Pass<'_> {
         let mut waits = later;
         let mut read_failed = false;
         // The values of the reads, which the run takes. Only looked up.
-        let mut values = HashMap::new();
+        let mut read_values = HashMap::new();
         for &(read_project, read, _) in &scan.reads {
             match self.value(read_project, read) {
                 Evaluated::Value(value) => {
-                    values.insert((read_project, read), value);
+                    read_values.insert((read_project, read), value);
                 }
                 Evaluated::Failed(_) => read_failed = true,
                 Evaluated::Later(later) => {
@@ -681,7 +685,7 @@ impl Pass<'_> {
         // Every key the body reads, and every initializer it calls, is a
         // read of its scan, which has a value by now.
         let values = |project, key| {
-            values
+            read_values
                 .get(&(project, key))
                 .map(|&value| ConstValue::clone(value))
         };
@@ -705,13 +709,13 @@ pub(crate) fn fail_evaluating(name: &str, what: &str) -> ! {
 
 /// `value`, or the internal error of [`fail_evaluating`] for the body that
 /// `name` names, saying `what`, when it is `None`: a state only a compiler
-/// bug can cause.
+/// bug can cause. Both are built only then.
 pub(crate) fn expect_evaluating<T>(
     value: Option<T>,
     name: impl FnOnce() -> String,
-    what: &str,
+    what: impl Display,
 ) -> T {
-    value.unwrap_or_else(|| fail_evaluating(&name(), what))
+    value.unwrap_or_else(|| fail_evaluating(&name(), &what.to_string()))
 }
 
 #[cfg(test)]

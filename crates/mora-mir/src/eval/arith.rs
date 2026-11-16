@@ -194,9 +194,10 @@ impl Arith<'_> {
                 BinOp::BitXor => Some(Ok(Const::Bool(left ^ right))),
                 _ => equality(op, || left == right),
             },
-            // `+` is the one operation on strings that is not `==` or `!=`.
-            (Const::String(left), Const::String(right)) => equality(op, || left == right)
-                .or_else(|| (op == BinOp::Add).then(|| concatenate(left, right))),
+            (Const::String(left), Const::String(right)) => match op {
+                BinOp::Add => Some(concatenate(left, right)),
+                _ => equality(op, || left == right),
+            },
             (Const::Unit, Const::Unit) => equality(op, || true),
             _ => None,
         };
@@ -245,23 +246,21 @@ impl Arith<'_> {
     /// On a value of a type `op` does not take, which only a compiler bug
     /// causes.
     pub(crate) fn unary(&self, op: UnOp, value: &Const) -> Result<Const, ArithError> {
-        let takes = matches!(
-            (op, value),
-            (UnOp::Neg, Const::Int(..) | Const::Real(..))
-                | (UnOp::BitNot, Const::Int(..))
-                | (UnOp::Not, Const::Bool(_))
-        );
-        self.check(takes, || format!("`{}` on {value:?}", op.text()));
-        match value {
-            Const::Int(value, ty) => self.on_every_target(*ty, |width| match op {
-                UnOp::Neg => width.check(value.checked_neg()),
-                _ => Ok(width.wrap(!value)),
-            }),
+        let result = match (op, value) {
+            (UnOp::Neg, Const::Int(value, ty)) => {
+                Some(self.on_every_target(*ty, |width| width.check(value.checked_neg())))
+            }
             // A `float` value negated is still exact as a `double`.
-            Const::Real(bits, ty) => Ok(Const::Real((-f64::from_bits(*bits)).to_bits(), *ty)),
-            // `!` on a `bool`, as checked above.
-            value => Ok(Const::Bool(*value == Const::Bool(false))),
-        }
+            (UnOp::Neg, Const::Real(bits, ty)) => {
+                Some(Ok(Const::Real((-f64::from_bits(*bits)).to_bits(), *ty)))
+            }
+            (UnOp::BitNot, Const::Int(value, ty)) => {
+                Some(self.on_every_target(*ty, |width| Ok(width.wrap(!value))))
+            }
+            (UnOp::Not, Const::Bool(value)) => Some(Ok(Const::Bool(!value))),
+            _ => None,
+        };
+        self.expect(result, || format!("`{}` on {value:?}", op.text()))
     }
 
     /// `value` converted to the numeric type `to` (§5.10): an integer
@@ -274,27 +273,32 @@ impl Arith<'_> {
     /// On a value that is not a number or a type `to` that is not numeric,
     /// which only a compiler bug causes.
     pub(crate) fn cast(&self, value: &Const, to: Primitive) -> Result<Const, ArithError> {
-        let takes = matches!(value, Const::Int(..) | Const::Real(..)) && to.is_numeric();
-        self.check(takes, || format!("cast of {value:?} to `{}`", to.keyword()));
-        // A floating-point number, as checked above, when not an integer.
-        let real = real_value(value).unwrap_or_default();
-        match (value, to) {
+        let result = match (value, to) {
             // Each rounds once, from the integer itself.
             (Const::Int(value, _), Primitive::Float) => {
-                Ok(Const::Real(f64::from(*value as f32).to_bits(), to))
+                Some(Ok(Const::Real(f64::from(*value as f32).to_bits(), to)))
             }
             (Const::Int(value, _), Primitive::Double) => {
-                Ok(Const::Real((*value as f64).to_bits(), to))
+                Some(Ok(Const::Real((*value as f64).to_bits(), to)))
             }
-            (Const::Int(value, _), _) => self.on_every_target(to, |width| Ok(width.wrap(*value))),
-            (_, Primitive::Float) => Ok(Const::Real(f64::from(real as f32).to_bits(), to)),
-            (_, Primitive::Double) => Ok(Const::Real(real.to_bits(), to)),
-            _ => {
+            (Const::Int(value, _), _) if to.is_integer() => {
+                Some(self.on_every_target(to, |width| Ok(width.wrap(*value))))
+            }
+            (Const::Real(bits, _), Primitive::Float) => Some(Ok(Const::Real(
+                f64::from(f64::from_bits(*bits) as f32).to_bits(),
+                to,
+            ))),
+            (Const::Real(bits, _), Primitive::Double) => Some(Ok(Const::Real(*bits, to))),
+            (Const::Real(bits, _), _) if to.is_integer() => {
                 // `as` truncates, saturates at the bounds of `i128` and maps NaN to 0.
-                let value = real as i128;
-                self.on_every_target(to, |width| Ok(value.clamp(width.min(), width.max())))
+                let value = f64::from_bits(*bits) as i128;
+                Some(self.on_every_target(to, |width| Ok(value.clamp(width.min(), width.max()))))
             }
-        }
+            _ => None,
+        };
+        self.expect(result, || {
+            format!("cast of {value:?} to `{}`", to.keyword())
+        })
     }
 
     /// Panics with an internal error that names the body unless `holds`:
@@ -736,5 +740,23 @@ mod tests {
     #[should_panic(expected = "internal error evaluating App.K: `+` on")]
     fn floating_operands_of_different_types_are_a_compiler_bug() {
         let _ = binary(BinOp::Add, &f(1.0), &d(1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error evaluating App.K: `<` on Bool(true) and Bool(false)")]
+    fn an_operation_the_operands_type_does_not_have_is_a_compiler_bug() {
+        let _ = binary(BinOp::Lt, &Const::Bool(true), &Const::Bool(false));
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error evaluating App.K: `!` on Int(1, Int)")]
+    fn a_unary_operation_on_a_type_it_does_not_take_is_a_compiler_bug() {
+        let _ = unary(UnOp::Not, &i(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error evaluating App.K: cast of Int(1, Int) to `bool`")]
+    fn a_cast_to_a_type_that_is_not_numeric_is_a_compiler_bug() {
+        let _ = cast(&i(1), Primitive::Bool);
     }
 }

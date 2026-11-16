@@ -9,7 +9,7 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile, Span};
 
-use super::{BodyShape, Lowerer, Owner, fail_in, std_loaded};
+use super::{BodyShape, Lowerer, Owner, std_loaded};
 use crate::eval::{ConstKey, ConstValue, Evaluated, const_value};
 use crate::validate::debug_validate_evaluation;
 use crate::{LocalTy, Mir, Operand, Place, Rvalue};
@@ -131,14 +131,12 @@ impl Lowerer<'_> {
         let types: Vec<Ty> = match ty {
             Ty::Tuple(elems) => elems.iter().map(|elem| elem.ty.clone()).collect(),
             ty => {
-                let item = ty.as_struct().unwrap_or_else(|| fail_in(&self.name, what));
+                let item = self.expect_in(ty.as_struct(), what);
                 let fields = instance_fields(self.owner.db, item);
                 fields.map(|(_, field)| field.ty.clone()).collect()
             }
         };
-        let types = Some(types)
-            .filter(|types| types.len() == parts.len())
-            .unwrap_or_else(|| fail_in(&self.name, what));
+        self.expect_in((types.len() == parts.len()).then_some(()), what);
         let mut operands = Vec::with_capacity(parts.len());
         for (part, ty) in parts.iter().zip(&types) {
             operands.push(self.value_operand(part, ty, span));

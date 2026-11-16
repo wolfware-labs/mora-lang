@@ -62,9 +62,9 @@ fn render(db: &dyn Db, project: Project, error: &ConstError) -> Diagnostic {
             let note = match error.key {
                 ConstKey::Initializer { .. } => {
                     let name = error.key.name(db, project);
-                    let field = name.rsplit_once('.');
+                    let split = name.rsplit_once('.');
                     let (ty, field) =
-                        expect_evaluating(field, || name.clone(), "a field without its type");
+                        expect_evaluating(split, || name.clone(), "a field without its type");
                     format!(
                         "{UNSUPPORTED_NOTE}\n`{name}` runs at compile time because a `{ty}` created at compile time leaves `{field}` out"
                     )
