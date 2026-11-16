@@ -381,7 +381,7 @@ fn a_scan_reads_the_initializers_of_every_field_left_out_in_field_order() {
 #[test]
 fn a_scan_descends_into_operations_and_values_but_not_into_types() {
     let source = checked(
-        "const A: int = 1;\nconst B: int = 2;\nstruct P {\n    public Y: int;\n    public static S: int = 4;\n}\nstruct R(V: int);\nconst T: (int, int) = (A, (long)B > 0 ? -A : B);\nconst M: int = (new P { Y = A }).Y;\nconst N: R = new R(B);\nconst S2: int = P.S + 1;\n",
+        "const A: int = 1;\nconst B: int = 2;\nstruct P {\n    public Y: int;\n    public static S: int = 4;\n}\nstruct R(V: int);\nstruct Q(V: int, W: int);\nconst T: (int, int) = (A, (long)B > 0 ? -A : B);\nconst M: int = (new P { Y = A }).Y;\nconst N: R = new R(B);\nconst S2: int = P.S + 1;\nconst N2: Q = new Q(B + 1, 2);\n",
     );
     let (a, b) = (source.constant("A"), source.constant("B"));
     assert_eq!(
@@ -391,6 +391,11 @@ fn a_scan_descends_into_operations_and_values_but_not_into_types() {
     assert_eq!(source.reads(source.constant("M")), vec![(a, "A")]);
     // The creation of a positional struct waits, and so does what it holds.
     assert_eq!(source.reads(source.constant("N")), vec![]);
+    // What a creation that waits holds is listed in pre-order.
+    assert_eq!(
+        source.visited(source.constant("N2")),
+        vec!["new Q(B + 1, 2)", "B + 1", "B", "1", "2"]
+    );
     // `P.S` names a static, which waits and is not read; `P`, which it
     // holds, is listed without being checked.
     assert_eq!(source.reads(source.constant("S2")), vec![]);

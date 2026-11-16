@@ -219,6 +219,12 @@ impl Kind {
     fn later(self, phrase: impl FnOnce(&str) -> String) -> Option<Later> {
         later(phrase(self.what), self.milestone)
     }
+
+    /// A body that comes later for an expression whose type is of this
+    /// kind, as `an expression with a class type`.
+    fn of_expression(self) -> Option<Later> {
+        self.later(|what| format!("an expression with {what}"))
+    }
 }
 
 /// What a milestone of the roadmap lowers.
@@ -444,8 +450,10 @@ pub(crate) fn exprs_later(
 /// [`expressions_later`], and the constructor calls, the operators on
 /// structs, the calls without a callee and the types of expressions that
 /// [`creations_later`], [`operators_later`], [`calls_later`] and
-/// [`body_types_later`] count. A read of a constant decides nothing, as for
-/// [`evaluation_later`]: their user is constant evaluation.
+/// [`body_types_later`] count. A creation also waits for the type it
+/// creates ([`ExprRules::creation_type_later`]), so a scan that stops at
+/// the constructs that wait stops there too. A read of a constant decides
+/// nothing, as for [`evaluation_later`]: their user is constant evaluation.
 pub(crate) struct ExprRules<'a> {
     /// The database.
     db: &'a dyn Db,
@@ -488,8 +496,10 @@ impl<'a> ExprRules<'a> {
     /// does: that of the construct it is ([`ExprRules::construct_later`]),
     /// or that of its type, unless that type was looked into before.
     pub(crate) fn later(&mut self, id: ExprId) -> Option<Later> {
-        let ty = self.inference.expr(id).and_then(|ty| self.walk.later(ty));
-        let ty = ty.and_then(|kind| kind.later(|what| format!("an expression with {what}")));
+        let ty = self
+            .inference
+            .expr(id)
+            .and_then(|ty| self.walk.later(ty)?.of_expression());
         latest([self.construct_later(id), ty])
     }
 
@@ -528,7 +538,7 @@ impl<'a> ExprRules<'a> {
         match &self.hir.exprs[id] {
             Expr::New { .. } => {
                 let ty = self.inference.expr(id)?;
-                types_later(self.db, [ty])?.later(|what| format!("an expression with {what}"))
+                types_later(self.db, [ty])?.of_expression()
             }
             Expr::Call { callee, .. }
                 if self
@@ -1740,10 +1750,11 @@ fn body_types_later(
         walk.later(inference.local(id)?)?
             .later(|what| format!("the local `{}` with {what}", local.name))
     }));
-    let exprs = latest(hir.exprs.iter().map(|(id, _)| {
-        walk.later(inference.expr(id)?)?
-            .later(|what| format!("an expression with {what}"))
-    }));
+    let exprs = latest(
+        hir.exprs
+            .iter()
+            .map(|(id, _)| walk.later(inference.expr(id)?)?.of_expression()),
+    );
     latest([locals, exprs])
 }
 

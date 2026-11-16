@@ -23,7 +23,8 @@ pub(crate) struct ConstScan {
     /// The constants and initializers it reads, in pre-order, each with
     /// the range of the read.
     pub(crate) reads: Vec<(Project, ConstKey, TextRange)>,
-    /// Every expression it visited.
+    /// Every expression it visited, in pre-order, and what each construct
+    /// that waits holds, listed after it.
     pub(crate) exprs: Vec<ExprId>,
 }
 
@@ -32,8 +33,12 @@ pub(crate) struct ConstScan {
 /// a field that a memberwise creation leaves out, is recorded and not
 /// descended into. Neither is a construct a later milestone lowers
 /// ([`ExprRules::construct_later`]), as a constructor call, `with`, `is`,
-/// a `match` or a call of a generic function, nor a block: the milestones
-/// that lower them decide what they hold.
+/// a `match`, a call of a generic function or a creation of a type that
+/// waits, nor a block: the milestones that lower them decide what they
+/// hold. What a construct that waits holds is still listed, unread and
+/// unchecked ([`Scanner::list_held`]), so that a default value, whose
+/// milestone comes from the expressions listed, waits as late as a
+/// constant with the same expression.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn const_scan(db: &dyn Db, project: Project, key: ConstKey) -> ConstScan {
     let file = key.file();
@@ -117,14 +122,15 @@ impl Scanner<'_> {
         ControlFlow::Continue(())
     }
 
-    /// Adds what `expr` holds, at any depth, to the expressions of the scan,
-    /// without reading or checking any of it. It keeps a stack rather than
-    /// recursing.
+    /// Adds what `expr` holds, at any depth and in pre-order, to the
+    /// expressions of the scan, without reading or checking any of it. It
+    /// keeps a stack rather than recursing.
     fn list_held(&mut self, expr: ExprId) {
         let mut stack = children(&self.hir.exprs[expr]);
+        stack.reverse();
         while let Some(held) = stack.pop() {
             self.scan.exprs.push(held);
-            stack.extend(children(&self.hir.exprs[held]));
+            stack.extend(children(&self.hir.exprs[held]).into_iter().rev());
         }
     }
 
@@ -194,9 +200,9 @@ impl Scanner<'_> {
 /// the text: none for a `match` and a block, which are left to the
 /// milestones that lower them, for the operand of `nameof`, which is never
 /// evaluated, nor for what [`Scanner::unsupported`] stops at. A construct
-/// that waits ([`ExprRules::construct_later`]) is stopped at before its
-/// parts are asked for, so the parts listed here are those the scan reads
-/// once its milestone lands.
+/// that waits ([`ExprRules::construct_later`]) is stopped at, and its parts
+/// are only listed ([`Scanner::list_held`]), so the parts given here are
+/// those the scan reads once its milestone lands.
 pub(super) fn children(node: &Expr) -> Vec<ExprId> {
     match node {
         Expr::Missing

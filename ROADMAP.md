@@ -931,7 +931,7 @@ Done when:
 
 Spec: [§6.12](docs/design/mora.md#612-newtypes), [§5.10](docs/design/mora.md#510-conversions), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-syntax`, `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6, M3.10.
 
-`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` and `Parse` (returning an option when there is a refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4, and predicate refinements after the MVP (OQ-22).
+`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` (returning an option when there is a refinement) and `Parse` (whose `ParseError` names the refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4, and predicate refinements after the MVP (OQ-22).
 
 Done when:
 
