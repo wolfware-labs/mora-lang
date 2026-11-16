@@ -11,7 +11,7 @@ use mora_hir::{
 use mora_span::{Db, Project, TextRange};
 
 use super::{ConstKey, const_read};
-use crate::lower::later::ExprRules;
+use crate::lower::later::{ExprRules, container_later};
 
 /// What the body of a [`ConstKey`] reads and the first operation in it
 /// that constant evaluation never runs.
@@ -57,7 +57,17 @@ pub(crate) fn const_scan(db: &dyn Db, project: Project, key: ConstKey) -> ConstS
             exprs: Vec::new(),
         },
     };
-    if let Some(root) = key.root(db) {
+    // A constant or an initializer whose owner waits, as a constant of a
+    // class, waits before anything in it is read or checked, so it reads
+    // nothing and takes part in no cycle. A default value is checked where
+    // it is declared, whatever its function waits for.
+    let owner_waits = match key {
+        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+            container_later(db, project, file, owner).is_some()
+        }
+        ConstKey::Default { .. } => false,
+    };
+    if let Some(root) = key.root(db).filter(|_| !owner_waits) {
         // A scan that stops has recorded why.
         let _ = scanner.visit(root);
     }

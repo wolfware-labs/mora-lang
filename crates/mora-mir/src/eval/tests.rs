@@ -2897,3 +2897,58 @@ fn a_default_waits_as_late_as_a_constant_with_its_expression() {
         assert_eq!(source.reported(), [], "{value}");
     }
 }
+
+#[test]
+fn a_constant_whose_owner_waits_waits_before_any_check() {
+    let class = "the initializer of a constant of a class M2.1";
+    let union = "the initializer of a constant of a union M3.1";
+    /// A source, its constants as their type and name, and what each gives.
+    type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+    let cases: [Case; 5] = [
+        (
+            "class C {\n    public const K: int = K;\n}\n",
+            &[("C", "K")],
+            &[class],
+        ),
+        (
+            "Zero(): int => 0;\nclass C {\n    public const K: int = Zero();\n}\n",
+            &[("C", "K")],
+            &[class],
+        ),
+        (
+            "union U {\n    A(X: int);\n    public const K: int = K;\n}\n",
+            &[("U", "K")],
+            &[union],
+        ),
+        (
+            "Zero(): int => 0;\nunion U {\n    A(X: int);\n    public const K: int = Zero();\n}\n",
+            &[("U", "K")],
+            &[union],
+        ),
+        (
+            "class C {\n    public const A: int = B;\n    public const B: int = A;\n}\n",
+            &[("C", "A"), ("C", "B")],
+            &[class, class],
+        ),
+    ];
+    for (text, keys, expected) in cases {
+        let source = checked(text);
+        let found: Vec<String> = keys
+            .iter()
+            .map(|&(ty, name)| outcome(source.evaluated(source.member_constant(ty, name))))
+            .collect();
+        assert_eq!(found, expected, "{text}");
+        assert_eq!(source.reported(), [], "{text}");
+    }
+    // A constant that reads one of them waits for it, outside any cycle.
+    let source = checked("const T: int = C.K;\nclass C {\n    public const K: int = T;\n}\n");
+    assert_eq!(
+        outcome(source.evaluated(source.member_constant("C", "K"))),
+        class
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("T"))),
+        "a constant M2.1"
+    );
+    assert_eq!(source.reported(), []);
+}

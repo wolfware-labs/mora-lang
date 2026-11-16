@@ -1526,6 +1526,39 @@ fn in_generic_type(db: &dyn Db, item: ItemId) -> bool {
 /// The milestone that lowers the body of `owner` for what it is or for a
 /// type it declares, `None` when this one does.
 fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Option<Later> {
+    owner_later_by(db, project, file, owner, DeclaredTypes::Counted)
+}
+
+/// The milestone that lowers the body of `owner` for what it is alone, as
+/// a constant of a class or a field of a union, leaving out the types it
+/// declares; `None` when this one does.
+pub(crate) fn container_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Option<Later> {
+    owner_later_by(db, project, file, owner, DeclaredTypes::Skipped)
+}
+
+/// Whether [`owner_later_by`] counts the types a body declares.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeclaredTypes {
+    /// They decide too ([`owner_later`]).
+    Counted,
+    /// They decide nothing ([`container_later`]).
+    Skipped,
+}
+
+/// The milestone that lowers the body of `owner` for what it is, and for
+/// a type it declares unless `types_decide` skips them.
+fn owner_later_by(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+    types_decide: DeclaredTypes,
+) -> Option<Later> {
     let tree = item_tree(db, file);
     let id = |item| ItemId {
         project,
@@ -1611,8 +1644,11 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
             declared(),
         ),
     };
+    let types = types
+        .iter()
+        .filter(|_| types_decide == DeclaredTypes::Counted);
     let typed =
-        types_later(db, &types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")));
+        types_later(db, types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")));
     latest([own.map(|own| Later::new(what, own)), typed])
 }
 
