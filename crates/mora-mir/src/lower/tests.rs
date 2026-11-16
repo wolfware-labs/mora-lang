@@ -3950,6 +3950,29 @@ fn a_call_that_converts_an_argument_to_an_option_waits_for_options() {
 }
 
 #[test]
+fn an_equals_that_is_not_the_equality_of_its_struct_leaves_a_comparison_lowered() {
+    for equals in [
+        "public Equals(x: int): bool => X == x;",
+        "public Equals(in other: int): bool => X == other;",
+    ] {
+        let lowered = lowered(&format!(
+            "struct P {{\n    public X: int;\n    {equals}\n}}\nF(p: P, q: P): bool => p == q;\n"
+        ));
+        lowered.mir("F");
+    }
+}
+
+#[test]
+fn a_call_with_an_argument_already_of_the_option_type_waits_for_its_type() {
+    let text = "F(x: int?): int => 1;\nO(): int? => 1;\nG(): int => F(O());\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("G")),
+        "internal error lowering UsersApi.G: an expression with an option type is not lowered \
+         until M3.5"
+    );
+}
+
+#[test]
 fn a_static_method_of_a_generic_struct_is_lowered() {
     let lowered = lowered("struct B<T> {\n    static F(): int => 1;\n}\n");
     assert_eq!(lowered.bodies("F"), ["UsersApi.B.F"]);
@@ -4478,6 +4501,20 @@ fn every_owner_lowered_later_names_its_milestone() {
              F(p: P, q: P): bool => p != q;\n",
             |l| l.owner("F"),
             "UsersApi.F: a comparison that calls a declared `Equals` is not lowered until M3.10",
+        ),
+        // The tuples differ in type, which comes later than the `Equals`.
+        (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             let t: (P, byte) = (new P { X = 1 }, 1);\nlet a = t == (new P { X = 1 }, 1);\n",
+            |l| l.owner("top-level"),
+            "top-level: a comparison of tuples of different types is not lowered until M3.12",
+        ),
+        // Options come later than the parameter modes.
+        (
+            "const K: int = 1;\nG(ref x: int, y: int? = 1): int => 1;\nF(): int => G(ref K);\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a conversion to an option type is not lowered until M3.5",
         ),
         (
             "struct P : IEquatable<P> {\n    public X: int;\n    \

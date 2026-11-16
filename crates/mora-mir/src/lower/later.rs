@@ -29,9 +29,9 @@ use std::fmt;
 use mora_hir::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, Callee, Construct, Creation,
     Expr, ExprId, FnSignature, Inference, Item, ItemId, ItemKind, Literal, LocalKind, ParamMode,
-    Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body, body_resolution,
-    creation, enclosing_types, infer, instance_fields, instance_methods, is_generic_type,
-    item_tree, local_functions, same, signature, struct_field,
+    Primitive, Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body,
+    body_resolution, creation, enclosing_types, infer, instance_fields, instance_methods,
+    is_generic_type, item_tree, local_functions, same, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -610,20 +610,6 @@ fn expression_later(
                 return None;
             }
         }
-        // `==` and `!=` call the `Equals` a struct declares (§6.9), which
-        // comes with static dispatch, in constant evaluation too.
-        Expr::Binary {
-            op: BinaryOp::Eq | BinaryOp::Ne,
-            lhs,
-            rhs,
-        } if [lhs, rhs].iter().any(|operand| {
-            inference
-                .expr(**operand)
-                .is_some_and(|ty| calls_declared_equals(db, ty))
-        }) =>
-        {
-            ("a comparison that calls a declared `Equals`", INTERFACES)
-        }
         Expr::Binary {
             op: BinaryOp::Eq | BinaryOp::Ne,
             lhs,
@@ -638,12 +624,29 @@ fn expression_later(
                 SMALLER_EXPRESSIONS,
             )
         }
+        // `==` and `!=` call the `Equals` a struct declares (§6.9), which
+        // comes with static dispatch, in constant evaluation too.
+        Expr::Binary {
+            op: BinaryOp::Eq | BinaryOp::Ne,
+            lhs,
+            rhs,
+        } if [lhs, rhs].iter().any(|operand| {
+            inference
+                .expr(**operand)
+                .is_some_and(|ty| calls_declared_equals(db, ty))
+        }) =>
+        {
+            ("a comparison that calls a declared `Equals`", INTERFACES)
+        }
         // Before the parameter modes, which come earlier: a call that
         // also borrows a value that is not a place waits for this one.
         Expr::Call { callee, args } if borrows_element(db, hir, inference, id, *callee, args) => (
             "a `ref` argument or a `mut` receiver that is an element",
             OPERATORS,
         ),
+        Expr::Call { args, .. } if converts_to_option(db, inference, id, args) => {
+            ("a conversion to an option type", OPTIONS)
+        }
         Expr::Call { args, .. }
             if args.iter().any(|arg| {
                 arg.mode == Some(ArgMode::Ref) && !is_place(db, hir, resolution, arg.expr)
@@ -669,9 +672,6 @@ fn expression_later(
                 "a call of the standard library with an argument mode",
                 STD_BOOTSTRAP,
             )
-        }
-        Expr::Call { args, .. } if converts_to_option(db, inference, id, args) => {
-            ("a conversion to an option type", OPTIONS)
         }
         Expr::Await(_) => ("`await`", ASYNC),
         Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
@@ -768,16 +768,18 @@ fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId, args: &[
         return false;
     };
     function.params.iter().enumerate().any(|(index, param)| {
+        if !holds_option(&param.ty) {
+            return false;
+        }
         let arg = bound
             .iter()
             .position(|&to| to == index)
             .and_then(|position| args.get(position));
-        holds_option(&param.ty)
-            && arg.is_none_or(|arg| {
-                inference
-                    .expr(arg.expr)
-                    .is_none_or(|ty| !same(ty, &param.ty))
-            })
+        arg.is_none_or(|arg| {
+            inference
+                .expr(arg.expr)
+                .is_none_or(|ty| !same(ty, &param.ty))
+        })
     })
 }
 
@@ -1210,17 +1212,17 @@ fn extension_call_later(
 }
 
 /// Whether `==` on two values of `ty` calls an `Equals` that a struct
-/// declares: `ty` is such a struct, or a struct or a tuple that holds one
-/// in a field or an element, at any depth, since the equality of a struct
-/// or a tuple compares each field or element with `==`. It keeps a stack
-/// rather than recursing, as [`TypeWalk`] does.
+/// declares ([`declares_equality`]): `ty` is such a struct, or a struct or
+/// a tuple that holds one in a field or an element, at any depth, since
+/// the equality of a struct or a tuple compares each field or element with
+/// `==`. It keeps a stack rather than recursing, as [`TypeWalk`] does.
 fn calls_declared_equals(db: &dyn Db, ty: &Ty) -> bool {
     let mut seen = HashSet::new();
     let mut stack = vec![ty];
     while let Some(ty) = stack.pop() {
         match ty {
             Ty::Struct(item) if seen.insert(*item) => {
-                if instance_methods(db, *item, "Equals").next().is_some() {
+                if declares_equality(db, *item) {
                     return true;
                 }
                 stack.extend(instance_fields(db, *item).map(|(_, field)| &field.ty));
@@ -1230,6 +1232,20 @@ fn calls_declared_equals(db: &dyn Db, ty: &Ty) -> bool {
         }
     }
     false
+}
+
+/// Whether the struct `item` declares the method of `IEquatable<T>`
+/// (§8.5): an instance `Equals` with one parameter of the struct's type,
+/// in any mode, that returns `bool`. Another method named `Equals` is an
+/// overload that `==` never calls.
+fn declares_equality(db: &dyn Db, item: ItemId) -> bool {
+    let this = Ty::Struct(item);
+    instance_methods(db, item, "Equals").any(|method| {
+        signature(db, method).as_function().is_some_and(|function| {
+            matches!(function.params.as_slice(), [param] if same(&param.ty, &this))
+                && function.ret == Ty::Primitive(Primitive::Bool)
+        })
+    })
 }
 
 /// Whether `expr` is a member of a struct value that the struct does not

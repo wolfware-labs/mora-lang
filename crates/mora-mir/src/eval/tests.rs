@@ -1677,6 +1677,40 @@ fn a_comparison_that_calls_a_declared_equals_waits() {
 }
 
 #[test]
+fn an_equals_that_is_not_the_equality_of_its_struct_leaves_a_comparison_alone() {
+    // Neither takes one `P` and returns `bool`, so `==` compares field by
+    // field.
+    for equals in [
+        "public Equals(x: int): bool => X == x;",
+        "public Equals(in other: int): bool => X == other;",
+        "public Equals(in other: P): int => 1;",
+        "public Equals(in other: P, x: int): bool => true;",
+    ] {
+        let source = checked(&format!(
+            "struct P {{\n    public X: int = 1;\n    {equals}\n}}\n\
+             const S: bool = new P {{}} == new P {{}};\n"
+        ));
+        assert_eq!(
+            source.evaluated(source.constant("S")),
+            &Evaluated::Value(boolean(true)),
+            "{equals}"
+        );
+    }
+}
+
+#[test]
+fn an_equals_that_takes_its_struct_in_any_mode_waits() {
+    let source = checked(
+        "struct P {\n    public X: int = 1;\n    public Equals(other: P): bool => true;\n}\n\
+         const S: bool = new P {} == new P {};\n",
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("S"))),
+        "a comparison that calls a declared `Equals` M3.10"
+    );
+}
+
+#[test]
 fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
     let source = checked(
         "const B: bool = true;\nstruct P {\n    public X: bool = B is true;\n}\n\
