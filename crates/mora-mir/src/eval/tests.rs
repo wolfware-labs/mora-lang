@@ -2973,3 +2973,55 @@ fn a_call_through_a_value_that_waits_still_checks_its_arguments() {
         );
     }
 }
+
+#[test]
+fn an_initializer_of_a_type_that_waits_is_never_run() {
+    // Each creation waits for its type before any initializer it leaves
+    // out is read, in a constant, a default value or another initializer,
+    // and each names the same milestone.
+    let z = "Zero(): int => 0;\n";
+    let class = "class C {\n    public X: int = Zero();\n}\n";
+    let option = "struct O {\n    public X: int = Zero();\n    public Y: int? = none;\n}\n";
+    let array = "struct A {\n    public X: int = Zero();\n    public Y: int[] = Todo();\n}\n";
+    let generic = "struct G<T> {\n    public X: int = Zero();\n}\n";
+    let nested =
+        "struct N<T> {\n    public struct In {\n        public X: int = Zero();\n    }\n}\n";
+    let cases = [
+        (class, "new C {}.X", "an expression with a class type M2.1"),
+        (
+            option,
+            "new O {}.X",
+            "an expression with an option type M3.5",
+        ),
+        (array, "new A {}.X", "an expression with an array type M2.3"),
+        (
+            generic,
+            "new G<int> {}.X",
+            "an expression with a generic type M3.9",
+        ),
+        (
+            nested,
+            "new N<int>.In {}.X",
+            "an expression with a generic type M3.9",
+        ),
+    ];
+    for (decl, value, expected) in cases {
+        let text = format!(
+            "{z}{decl}const K: int = {value};\nF(x: int = {value}): int => x;\n\
+             struct S {{\n    public Y: int = {value};\n}}\nconst L: S = new S {{}};\n"
+        );
+        waits_quietly(
+            &text,
+            &["K", "the default value of x in F", "L"],
+            &[expected; 3],
+        );
+    }
+    let lib = "public class C {\n    public X: int = Zero();\n}\npublic Zero(): int => 0;\n";
+    let (source, util) = using_util(lib, "const K: int = new Util.C {}.X;\n");
+    assert_eq!(
+        outcome(source.evaluated(source.constant("K"))),
+        "an expression with a class type M2.1"
+    );
+    assert_eq!(source.reported(), []);
+    assert_eq!(crate::diagnostics(&source.db, util), &[]);
+}
