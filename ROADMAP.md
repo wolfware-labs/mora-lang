@@ -751,7 +751,7 @@ Done when:
 
 - Run tests for a vector type with operators and an indexer.
 - UI test for an unpaired `==`.
-- UI tests for the newtype-to-underlying-type row of §5.10, and for a conversion through a user type's `IFrom<S>`.
+- UI tests for a conversion through a user type's `IFrom<S>`.
 - A `ref` argument that is an element or a field of one, as in `Bump(ref xs[0])`, and the receiver of a `mut` method that is one, as in `xs[0].Inc()`, are lowered; until then such a call reports that it is not lowered until M3.6.
 - On a collection type with an addressor indexer, `Bump(ref slots[i])` and `slots[i].Hits += 1` compile, and the MIR snapshot shows one store and no copy-back; growing the collection during the call panics as for a view (§10.10).
 - UI test: `ref slots[i]` and `ref slots[j]` in one call is `MR0320`.
@@ -931,12 +931,12 @@ Done when:
 
 Spec: [§6.12](docs/design/mora.md#612-newtypes), [§5.10](docs/design/mora.md#510-conversions), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-syntax`, `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6, M3.10.
 
-`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` (returning an option when there is a refinement) and `Parse` (whose `ParseError` names the refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4, and predicate refinements after the MVP (OQ-22).
+`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` (returning an option when there is a refinement) and `Parse` (whose `ParseError` names the refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4.9, the JSON mapping of a newtype with M5.11, and predicate refinements after the MVP (OQ-22).
 
 Done when:
 
 - Run tests for `UserId`, `Port` and `Slug` of §6.12: `From`, `Parse`, the implicit conversion to the underlying type and a member that reads `value`.
-- UI tests: `let port: Port = 70000;` is `MR0260` with the message of §6.12, a `UserId` passed where an `OrderId` is expected is a type mismatch, and `default(Port)` is `MR0190`.
+- UI tests: `let port: Port = 70000;` is `MR0260` with the message of §6.12, a `UserId` passed where an `OrderId` is expected is a type mismatch, `default(Port)` is `MR0190`, and the newtype-to-underlying-type row of §5.10.
 - Constant evaluation matches a constant against a refinement pattern (§14.6), and a constant that satisfies it becomes the wrapped value (MIR snapshot).
 
 ## M4: Macros
@@ -955,7 +955,7 @@ Done when:
 | [M4.6](#m46-expansion-cache) | Expansion cache | `macro` | M4.4 |
 | [M4.7](#m47-seeing-and-testing-expansions) | Seeing and testing expansions | `macro` | M4.5 |
 | [M4.8](#m48-error-pages-and-guide-for-macro-authors) | Error pages and guide for macro authors | `docs` | M4.7 |
-| [M4.9](#m49-standard-library-macros) | Standard-library macros | `std` | M4.7 |
+| [M4.9](#m49-standard-library-macros) | Standard-library macros | `std` | M4.7, M3.21 |
 
 ### M4.1 Macro declarations and quoted code
 
@@ -1045,14 +1045,15 @@ Done when:
 
 ### M4.9 Standard-library macros
 
-Spec: [§9.1](docs/design/mora.md#91-a-complete-example), [§9.6](docs/design/mora.md#96-what-a-macro-sees), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.2](docs/design/mora.md#62-structs). Crates: `std`, `mora-hir`. Blocked by: M4.7.
+Spec: [§9.1](docs/design/mora.md#91-a-complete-example), [§9.6](docs/design/mora.md#96-what-a-macro-sees), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.2](docs/design/mora.md#62-structs), [§6.12](docs/design/mora.md#612-newtypes). Crates: `std`, `mora-hir`. Blocked by: M4.7, M3.21.
 
-`@Equatable`, `@Hashable`, `@Comparable`, `@Display`, `@Default`, `@Clone` and `#Assert` with the behaviour of §9.9, and their automatic application to structs, tuples, enums and unions. `@Error` on unions and structs, with `@Code`, `@Public` and `@Status` (D-108), and helper attributes with `MR0615`.
+`@Equatable`, `@Hashable`, `@Comparable`, `@Display`, `@Default`, `@Clone` and `#Assert` with the behaviour of §9.9, and their automatic application to structs, tuples, enums and unions. `@Arithmetic` on newtypes (§6.12), with each result of a refined newtype checked against its refinement. `@Error` on unions and structs, with `@Code`, `@Public` and `@Status` (D-108), and helper attributes with `MR0615`.
 
 Done when:
 
 - A `MacroTest` suite per macro.
 - §9.1's example prints `True`; structs compare by fields and print as `User { Id = 1, ... }`.
+- Run test: `@Arithmetic` on `Port` adds two ports, and 65535 plus 1 panics because the result is not a `Port`.
 
 ## M5: Standard library core
 
@@ -1072,7 +1073,7 @@ Done when:
 | [M5.8](#m58-console-environment-time-and-random) | Console, environment, time and random | `std` | M5.2 |
 | [M5.9](#m59-files-directories-and-paths) | Files, directories and paths | `std` | M5.8 |
 | [M5.10](#m510-json-values-parser-and-writer) | JSON values, parser and writer | `std` | M5.5 |
-| [M5.11](#m511-the-json-macro) | The `@Json` macro | `std` | M5.10, M4.9 |
+| [M5.11](#m511-the-json-macro) | The `@Json` macro | `std` | M5.10, M4.9, M3.21 |
 | [M5.12](#m512-testing-library-and-mora-test) | Testing library and `mora test` | `cli` | M5.7, M5.8, M5.11 |
 | [M5.13](#m513-signals-and-observable) | Signals and `@Observable` | `std` | M5.4, M2.10, M4.9 |
 | [M5.14](#m514-html-url-and-literal) | `Html`, `Url` and `Literal` | `std` | M5.2, M3.17 |
@@ -1199,14 +1200,15 @@ Done when:
 
 ### M5.11 The `@Json` macro
 
-Spec: [§16.3](docs/design/mora.md#163-json-stdjson), [§9.9](docs/design/mora.md#99-standard-library-macros). Crates: `std`. Blocked by: M5.10, M4.9.
+Spec: [§16.3](docs/design/mora.md#163-json-stdjson), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.12](docs/design/mora.md#612-newtypes). Crates: `std`. Blocked by: M5.10, M4.9, M3.21.
 
-`@Json`, `IJsonSerialize`, `IJsonDeserialize`, `Json.Serialize` and `Json.Deserialize` with every mapping row of §16.3, `@JsonName`, `@JsonIgnore`, `@JsonStrict` and `@JsonTag`.
+`@Json`, `IJsonSerialize`, `IJsonDeserialize`, `Json.Serialize` and `Json.Deserialize` with every mapping row of §16.3, `@JsonName`, `@JsonIgnore`, `@JsonStrict` and `@JsonTag`. A newtype maps as its underlying type, and deserializing one checks its refinement (§6.12).
 
 Done when:
 
 - Round-trip tests for each row of the §16.3 table.
 - A missing non-optional property fails with `missing property "name"`.
+- A `UserId` round-trips as a JSON number, and deserializing 70000 as a `Port` fails with a `JsonError` that names the refinement.
 
 ### M5.12 Testing library and `mora test`
 
