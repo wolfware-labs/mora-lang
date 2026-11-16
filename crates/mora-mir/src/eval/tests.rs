@@ -1783,9 +1783,9 @@ impl Source {
 }
 
 #[test]
-fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
-    // `S` reaches `C` through the default of `G` before `C`'s turn, while
-    // the default of `F` that `C` leaves out is not known yet.
+fn a_key_names_the_same_milestone_whatever_reads_it_first() {
+    // `S` holds a call of `G`, whose default reads `C`, which holds a call
+    // of `F`; whether `S` comes first or not, each names its own text.
     let rest = "const C: int = match (true) { _ => F() };\nconst E: int = default;\n\
                 F(x: int = C + E): int => x;\nG(y: int = C): int => y;\n";
     let names = ["C", "the default value of y in G"];
@@ -1801,9 +1801,9 @@ fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
 }
 
 #[test]
-fn an_initializer_a_walk_evaluates_early_keeps_its_first_result() {
-    // `A` reaches `P.X` through the default of `G` before the turn of
-    // `P.X`, while the default of `F` that `P.X` leaves out is not known yet.
+fn an_initializer_names_the_same_milestone_whatever_reads_it_first() {
+    // `A` holds a call of `G`, whose default reads `P.X`, which holds a
+    // call of `F` whose default reads `P.X` again.
     let text = "const A: int = match (true) { _ => G() };\n\
                 G(y: int = new P {}.X): int => y;\n\
                 struct P {\n    public X: int = match (true) { _ => F() };\n}\n\
@@ -1848,9 +1848,9 @@ fn a_call_of_the_library_waits_for_its_signatures() {
 }
 
 #[test]
-fn a_cut_cycle_inside_a_walk_keeps_the_frames_before_the_cut() {
-    // The walk of `S` reaches the cycle `K -> K2 -> F's default -> K` at
-    // its third frame, and the cycle is cut at its second edge.
+fn a_default_that_reads_back_through_a_match_makes_no_cycle() {
+    // `K -> K2` and `F's default -> K` read, but `K2` only holds the call
+    // of `F` in a `match`, which waits, so nothing leads back to `K`.
     let text = "const S: int = match (true) { _ => G() };\nG(y: int = K): int => y;\n\
                 const K: int = K2;\nconst K2: int = match (true) { _ => F() };\n\
                 F(x: int = K): int => x;\n";
@@ -1864,7 +1864,7 @@ fn a_cut_cycle_inside_a_walk_keeps_the_frames_before_the_cut() {
     assert_eq!(
         checked(text).outcomes(&names),
         [
-            "a call that leaves out a default that needs evaluation M3.3",
+            "a `match` M3.3",
             "a constant M3.3",
             "a constant M3.3",
             "a `match` M3.3",
@@ -2482,6 +2482,92 @@ fn a_default_that_reads_the_constant_whose_match_leaves_it_out_waits() {
         let default = source.only_default();
         assert_eq!(outcome(source.evaluated(default)), waits, "{text}");
     }
+}
+
+#[test]
+fn a_waiting_key_names_the_milestone_of_its_own_text() {
+    // The defaults its calls leave out decide nothing for a key that
+    // waits: a default is checked where it is declared, once, and a
+    // constant and a default with one expression name one milestone.
+    let p =
+        "struct P {\n    public X: int;\n    public P(x: int) { X = x; }\n}\nZero(): int => 0;\n";
+    let zero = "G(x: int = Zero()): int => x;\n";
+    let late = "G(x: int = \"a\" < \"b\" ? 1 : 0): int => x;\n";
+    let class = "class C {\n    public const K: int = G();\n}\nconst T: int = C.K;\n";
+    let constructor = "a constructor call M2.1";
+    let matched = "a `match` M3.3";
+    let unsupported = "unsupported a call";
+    let ordering = "an ordering of strings M5.2";
+    let cases: [(String, &[&str], &[&str], usize); 8] = [
+        (
+            format!("{p}{class}{zero}"),
+            &["T", "the default value of x in G"],
+            &["a constant M2.1", unsupported],
+            1,
+        ),
+        (
+            format!("{p}{class}G(x: int = C.K): int => x;\n"),
+            &["T", "the default value of x in G"],
+            &["a constant M2.1", "a constant M2.1"],
+            0,
+        ),
+        (
+            format!("{p}const K: P = new P(G());\n{zero}"),
+            &["K", "the default value of x in G"],
+            &[constructor, unsupported],
+            1,
+        ),
+        (
+            format!("{p}const K: P = new P(G());\nG(x: int = K.X): int => x;\n"),
+            &["K", "the default value of x in G"],
+            &[constructor, "a constant M2.1"],
+            0,
+        ),
+        (
+            format!("{p}const K: int = match (true) {{ _ => G() }};\n{zero}"),
+            &["K", "the default value of x in G"],
+            &[matched, unsupported],
+            1,
+        ),
+        (
+            format!("{p}const K: int = match (true) {{ _ => G() }};\nG(x: int = K): int => x;\n"),
+            &["K", "the default value of x in G"],
+            &[matched, "a constant M3.3"],
+            0,
+        ),
+        (
+            format!(
+                "{p}const T: int = new P(G()).X;\nconst K: int = T;\nG(x: int = K): int => x;\n"
+            ),
+            &["T", "K", "the default value of x in G"],
+            &[constructor, "a constant M2.1", "a constant M2.1"],
+            0,
+        ),
+        (
+            format!("{p}const K: P = new P(G());\nF(p: P = new P(G())): int => 1;\n{late}"),
+            &[
+                "K",
+                "the default value of p in F",
+                "the default value of x in G",
+            ],
+            &[constructor, constructor, ordering],
+            0,
+        ),
+    ];
+    for (text, names, expected, errors) in cases {
+        let source = checked(&text);
+        assert_eq!(source.outcomes(names), expected, "{text}");
+        assert_eq!(source.reported().len(), errors, "{text}");
+    }
+    let source = checked(&format!("{p}{class}{late}"));
+    assert_eq!(
+        outcome(source.evaluated(source.member_constant("C", "K"))),
+        "the initializer of a constant of a class M2.1"
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("T"))),
+        "a constant M2.1"
+    );
 }
 
 #[test]

@@ -287,18 +287,17 @@ pub(crate) fn lowered_later(
 
 /// The milestone that lowers the body of `owner` for constant evaluation,
 /// which runs it: as [`lowered_later`], except that a read of a constant
-/// decides nothing, since evaluation follows each read itself, and that
-/// the calls that leave out a default value wait for `defaults`, which
-/// evaluation gives from the values it has computed ([`defaults_later`]).
-/// `None` when this one lowers it.
+/// decides nothing, since evaluation follows each read itself, and so do
+/// the default values its calls leave out, since a call it runs is
+/// `MR0460` and one it holds waits with its construct. `None` when this
+/// one lowers it.
 pub(crate) fn evaluation_later(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
     owner: BodyOwner,
-    defaults: Option<Later>,
 ) -> Option<Later> {
-    later_with(db, project, file, owner, ConstReads::Skipped, defaults)
+    later_with(db, project, file, owner, ConstReads::Skipped, None)
 }
 
 /// The milestone that lowers the body of `owner`, with constant reads
