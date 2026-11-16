@@ -729,7 +729,7 @@ Done when:
 
 ### M3.5 Options, `none` and flow narrowing
 
-Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `std`. Blocked by: M3.4.
+Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.4.
 
 `Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
 
@@ -791,7 +791,7 @@ Done when:
 
 ### M3.10 Interfaces and static dispatch
 
-Spec: [§6.8](docs/design/mora.md#68-interfaces), [§8.3](docs/design/mora.md#83-static-dispatch), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§8.7](docs/design/mora.md#87-associated-types). Crates: `mora-hir`, `std`. Blocked by: M3.9.
+Spec: [§6.8](docs/design/mora.md#68-interfaces), [§8.3](docs/design/mora.md#83-static-dispatch), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§8.7](docs/design/mora.md#87-associated-types). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.9.
 
 Interface declarations with default members, static abstract members, interface inheritance, implementation by name and explicit implementation, associated types, `MR0232` and `MR0233`, and the built-in interfaces of §8.5 declared in `std/`.
 
