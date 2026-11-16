@@ -2952,3 +2952,24 @@ fn a_constant_whose_owner_waits_waits_before_any_check() {
     );
     assert_eq!(source.reported(), []);
 }
+
+#[test]
+fn a_call_through_a_value_that_waits_still_checks_its_arguments() {
+    // Only a call of a union case creates a value of a type that waits; a
+    // call of a static that holds a function is a call like any other, so
+    // its arguments are checked.
+    let id = "Id(x: int): int => x;\nZero(): int => 0;\n";
+    for text in [
+        format!(
+            "{id}struct P {{\n    public static S: ((int) => int) = Id;\n}}\nconst X: int = P.S(Zero());\n"
+        ),
+        format!("{id}static S: ((int) => int) = Id;\nconst X: int = S(Zero());\n"),
+    ] {
+        let source = checked(&text);
+        assert_eq!(
+            source.unsupported(source.constant("X")),
+            Some(("Zero()", "a call")),
+            "{text}"
+        );
+    }
+}
