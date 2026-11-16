@@ -12,6 +12,7 @@ use mora_hir::{
 };
 use mora_span::Db;
 
+use crate::lower::consts::key_ty;
 use crate::types::param_ty;
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, Callee, CastKind, Const, ConstRead, InterpPiece,
@@ -372,10 +373,19 @@ impl Checker<'_> {
     }
 
     /// The type of the value `read` reads, after reporting the read in a
-    /// body that is not lowered for constant evaluation.
+    /// body that is not lowered for constant evaluation, and a type that is
+    /// not that of the value its key gives ([`key_ty`]).
     fn const_read(&mut self, at: &str, read: &ConstRead) -> Ty {
         if self.lowered == LoweredFor::Program {
             self.error(at, "a read of a constant outside constant evaluation");
+        }
+        let expected = key_ty(self.db, read.project, read.key);
+        if !expected.as_ref().is_some_and(|ty| same(ty, &read.ty)) {
+            let message = format!(
+                "a read of a constant as {:?}, whose type is {expected:?}",
+                read.ty
+            );
+            self.error(at, message);
         }
         read.ty.clone()
     }
@@ -1262,6 +1272,28 @@ mod tests {
         let found =
             check(&fx.db, &mir, true, LoweredFor::Evaluation).expect_err("the body is invalid");
         assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    #[test]
+    fn rejects_a_read_of_a_constant_as_a_type_that_is_not_its_own() {
+        let fx = fx();
+        let read = Operand::ConstRead(Box::new(ConstRead {
+            project: fx.p.project,
+            key: ConstKey::Initializer {
+                item: fx.p,
+                field: 0,
+            },
+            ty: boolean(),
+        }));
+        let mir = with_stmt(assign(place(3), Rvalue::Use(read)));
+        assert_eq!(
+            check(&fx.db, &mir, true, LoweredFor::Evaluation),
+            Err(vec![
+                "fn F bb0[0]: a read of a constant as Primitive(Bool), whose type is \
+                 Some(Primitive(Int))"
+                    .to_owned()
+            ])
+        );
     }
 
     #[test]

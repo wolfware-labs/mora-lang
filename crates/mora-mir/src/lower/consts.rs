@@ -5,7 +5,7 @@
 //! operands of the bodies that read them.
 
 use mora_hir::{
-    BodyOwner, ExprId, Inference, ItemId, Ty, instance_fields, signature, struct_field,
+    BodyOwner, ExprId, Inference, ItemId, Ty, infer, instance_fields, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile, Span};
 
@@ -46,6 +46,19 @@ pub(crate) fn value_ty(
     }
 }
 
+/// The type of the value `key`, a key of `project`, gives: the declared
+/// type of a constant or of a field, or the type a default value is passed
+/// as ([`default_ty`]). `None` for a key without one.
+pub(crate) fn key_ty(db: &dyn Db, project: Project, key: ConstKey) -> Option<Ty> {
+    let (file, owner) = (key.file(), key.owner(db));
+    match key {
+        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+            value_ty(db, project, file, owner)
+        }
+        ConstKey::Default { default, .. } => default_ty(infer(db, project, file, owner), default),
+    }
+}
+
 /// The MIR that constant evaluation runs for `key`, a key of `project`:
 /// for a constant or a field initializer, the body of its owner, as
 /// [`super::mir`] lowers it; for a default value, one body without
@@ -74,10 +87,7 @@ pub(crate) fn eval_mir(db: &dyn Db, project: Project, key: ConstKey) -> Mir {
         ConstKey::Constant { .. } | ConstKey::Initializer { .. } => shared.shape(owner),
         ConstKey::Default { default, .. } => BodyShape {
             name: format!("{}: a default value", shared.name),
-            ret: shared.expect(
-                default_ty(shared.inference, default),
-                "the default value has no type",
-            ),
+            ret: shared.expect(key_ty(db, project, key), "the default value has no type"),
             this: None,
             params: Vec::new(),
             root: default,
