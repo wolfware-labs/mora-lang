@@ -1678,8 +1678,8 @@ fn a_comparison_that_calls_a_declared_equals_waits() {
 
 #[test]
 fn an_equals_that_is_not_the_equality_of_its_struct_leaves_a_comparison_alone() {
-    // Neither takes one `P` and returns `bool`, so `==` compares field by
-    // field.
+    // None of them takes one `P` and returns `bool`, so `==` compares field
+    // by field.
     for equals in [
         "public Equals(x: int): bool => X == x;",
         "public Equals(in other: int): bool => X == other;",

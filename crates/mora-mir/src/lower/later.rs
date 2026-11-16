@@ -475,16 +475,20 @@ pub(crate) fn exprs_later(
 /// named through a value, error `MR0155` then, or through its type or its
 /// bare name, and a static declared in a namespace; enums bring an enum
 /// member and unions a union case; classes bring getters; closures bring a
-/// function used as a value; the standard library brings its own values
-/// and the members of built-in types and of their values; extension blocks,
-/// with the smaller expressions, bring members a struct does not declare.
-/// Options bring `?.`, `??` and `none`, operators an index of a number or a
-/// tuple, dynamic interface values `as` and shared objects an array
-/// creation; a constant comes when its value does. Positional
+/// function used as a value; the standard library brings its own values,
+/// the members of built-in types and of their values, and a call of its own
+/// with an argument mode; extension blocks, with the smaller expressions,
+/// bring members a struct does not declare. Options bring `?.`, `??`,
+/// `none` and a call that converts a value to an option type, operators an
+/// index of a number or a tuple and an element passed by `ref` or as a
+/// `mut` receiver, dynamic interface values `as` and shared objects an
+/// array creation; a constant comes when its value does. Positional
 /// structs bring `with`, patterns `match` and `is`, results `?`, strings
 /// an index of a string (`MR0130`) and the ordering of strings, interfaces
-/// the ordering of structs, both through `IComparable<T>` (§8.5), enumeration
-/// `foreach`, expansion a quote, a splice or a macro call, and async
+/// the ordering of structs, both through `IComparable<T>` (§8.5), and `==`
+/// and `!=` that call the `Equals` of `IEquatable<T>` a struct declares
+/// ([`calls_declared_equals`]), enumeration `foreach`, expansion a quote,
+/// a splice or a macro call, and async
 /// lowering `await`. Parameter modes bring a `ref` argument, and the
 /// receiver of a `mut` method, that is not a place, which they report
 /// (§10.3). The smaller expressions bring the rest: an element of a tuple
@@ -610,6 +614,8 @@ fn expression_later(
                 return None;
             }
         }
+        // Before a declared `Equals`, which comes earlier: tuples of
+        // different types that hold one wait for this one.
         Expr::Binary {
             op: BinaryOp::Eq | BinaryOp::Ne,
             lhs,
@@ -644,6 +650,8 @@ fn expression_later(
             "a `ref` argument or a `mut` receiver that is an element",
             OPERATORS,
         ),
+        // Before the parameter modes too: a call that also has a `ref`
+        // argument that is not a place waits for options.
         Expr::Call { args, .. } if converts_to_option(db, inference, id, args) => {
             ("a conversion to an option type", OPTIONS)
         }
