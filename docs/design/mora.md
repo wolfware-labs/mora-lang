@@ -2145,7 +2145,7 @@ Macro expansion (§9) sits between signature resolution and body checking. `mora
 
 **One error per cause.** A constant that reads a constant without a value reports no error for that read, and a body that reads it, or a call that leaves out a default without a value, is never lowered, because the build has already stopped. Each error points into the file that declares the operation, even when the constant is read from another file. A field initializer of a library that none of the library's own constants runs is evaluated by the project whose constant leaves the field out, and that project reports its error in the library's file: `MR0460`, `MR0461`, or `MR0462` for initializers that need each other. When a project it depends on, directly or not, already runs that initializer, that project reports it instead, so the error is reported once.
 
-The MVP subset in the first paragraph arrives in steps: M1.11 runs what **What runs.** lists, then come unions with M3.1, `ReadOnlySpan<T>` sequences with M2.9 and M3.13, and `static mut` initializers with M3.13.
+The subset of the first paragraph arrives in steps: M1.11 runs what **What runs.** lists, unions come with M3.1, `ReadOnlySpan<T>` sequences with M2.9 and M3.13, and matching a refinement pattern with the newtypes of M3 (§22). M3.13 also runs `static mut` initializers.
 
 ### 14.7 MIR
 
