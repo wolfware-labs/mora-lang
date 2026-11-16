@@ -433,25 +433,20 @@ impl Pass<'_> {
     /// What `key`, a key of `project`, gives, when it is known: evaluated
     /// or taken by this pass, or evaluated by the pass of its own project.
     fn known(&self, project: Project, key: ConstKey) -> Option<&Evaluated> {
-        if let Some(evaluated) = self.values.get(&key) {
-            return Some(evaluated);
-        }
-        if project == self.project {
-            return None;
-        }
-        const_values(self.db, project).get(key)
+        // A key of this project is known once this pass has evaluated it,
+        // which the order of its read graph ensures before any read of it.
+        let theirs = || (project != self.project).then(|| const_values(self.db, project).get(key));
+        self.values.get(&key).or_else(|| theirs().flatten())
     }
 
     /// Whether `key`, a key of `project`, is known, after taking what it
     /// gives from the pass of the first project this one depends on,
     /// directly or not, that has it ([`transitive_dependencies`]), when
-    /// neither this pass nor that of its own project does.
+    /// neither this pass nor that of its own project does. Only a key of
+    /// another project can be unknown here.
     fn resolve(&mut self, project: Project, key: ConstKey) -> bool {
         if self.known(project, key).is_some() {
             return true;
-        }
-        if project == self.project {
-            return false;
         }
         let db = self.db;
         let taken = transitive_dependencies(db, self.project)
