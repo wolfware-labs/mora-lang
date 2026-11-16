@@ -171,7 +171,7 @@ impl Machine<'_> {
         Ok(ConstValue::Scalar(value))
     }
 
-    /// `op` on two values: scalars through [`arith::binary`], two
+    /// `op` on two values: scalars through [`Arith::binary`], two
     /// aggregates compared field by field.
     fn binary(
         &self,

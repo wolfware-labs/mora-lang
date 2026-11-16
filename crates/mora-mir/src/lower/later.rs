@@ -31,7 +31,7 @@ use mora_hir::{
     Expr, ExprId, FnSignature, Inference, Item, ItemId, ItemKind, Literal, LocalKind, ParamMode,
     Resolved, Signature, Stmt, Target, Ty, UnaryOp, ValueKind, ValueMember, body, body_resolution,
     creation, enclosing_types, infer, instance_fields, instance_methods, is_generic_type,
-    item_tree, local_functions, signature, struct_field,
+    item_tree, local_functions, same, signature, struct_field,
 };
 use mora_span::{Db, Project, SourceFile};
 
@@ -768,14 +768,16 @@ fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId, args: &[
         return false;
     };
     function.params.iter().enumerate().any(|(index, param)| {
+        let arg = bound
+            .iter()
+            .position(|&to| to == index)
+            .and_then(|position| args.get(position));
         holds_option(&param.ty)
-            && bound
-                .iter()
-                .position(|&bound| bound == index)
-                .is_none_or(|arg| {
-                    args.get(arg)
-                        .is_none_or(|arg| inference.expr(arg.expr) != Some(&param.ty))
-                })
+            && arg.is_none_or(|arg| {
+                inference
+                    .expr(arg.expr)
+                    .is_none_or(|ty| !same(ty, &param.ty))
+            })
     })
 }
 
