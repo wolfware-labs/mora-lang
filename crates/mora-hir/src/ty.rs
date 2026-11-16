@@ -211,6 +211,15 @@ impl Signature {
             _ => None,
         }
     }
+
+    /// The type of the constant or static this signature describes;
+    /// `None` for another kind of item.
+    pub fn as_value(&self) -> Option<&Ty> {
+        match self {
+            Signature::Value(ty) => Some(ty),
+            _ => None,
+        }
+    }
 }
 
 /// The signature of a function (§6.9).

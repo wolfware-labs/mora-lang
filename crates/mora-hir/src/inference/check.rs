@@ -901,10 +901,7 @@ impl Check<'_> {
         match target {
             Target::Error => Some(Ty::Error),
             // Only a constant or a static has a value signature.
-            Target::Item(Resolved::Item(item)) => match self.signature(*item) {
-                Signature::Value(ty) => Some(ty.clone()),
-                _ => None,
-            },
+            Target::Item(Resolved::Item(item)) => self.signature(*item).as_value().cloned(),
             Target::Item(_) => None,
             // A getter has the type its body declares.
             Target::Value(value) => {

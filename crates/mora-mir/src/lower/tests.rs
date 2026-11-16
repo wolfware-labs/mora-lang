@@ -783,8 +783,7 @@ fn a_broken_invariant_is_an_internal_error() {
 #[test]
 fn a_static_member_named_through_a_value_comes_with_statics() {
     // MR0155 from M3.13 on (D-152): a static method, a static getter, a
-    // constant and a static field, each read or called through a value;
-    // the constant's own M1.11 is earlier.
+    // constant and a static field, each read or called through a value.
     let text = "struct S {\n    public X: int;\n    public static K(): int => 1;\n    \
                 public static G: int => 2;\n    public const N: int = 3;\n    \
                 public static mut F: int = 4;\n}\n\
@@ -1079,38 +1078,74 @@ fn an_omitted_argument_takes_its_constant_default() {
 }
 
 #[test]
-fn a_call_that_leaves_out_a_default_that_needs_evaluation_comes_later() {
-    let text = "Zero(): int => 0;\nO(move a: int = Zero()) {}\n\
-                struct P {\n    public X: int;\n    public M(move a: int = Zero()) {}\n}\n\
-                F() {\n    O();\n}\nG(p: P) {\n    p.M();\n}\n\
-                H() {\n    L(a: int = Zero()) {}\n    L();\n}\n\
-                I() {\n    A(move a: int = 1) {}\n    B(move a: int = Zero()) {}\n    B();\n}\n\
-                J() {\n    A(move a: int = Zero()) {}\n    B(move a: int = 1) {}\n    B();\n}\n\
+fn an_omitted_default_is_evaluated() {
+    let text = "const Two: int = 2;\nO(move a: long = Two * 3) {}\n\
+                struct P {\n    public X: int;\n    public M(move a: int = Two + 1) {}\n}\n\
+                G(p: P) {\n    p.M();\n}\n\
+                H() {\n    L(move a: int = Two * 5) {}\n    L();\n}\n\
                 K(p: P) {\n    O(1);\n    p.M(a: 2);\n}\nO();\n";
-    let what = "a call that leaves out a default that needs evaluation is not lowered until M1.11";
-    for name in ["F", "G", "H", "I"] {
+    let lowered = lowered(text);
+    assert_in_order(
+        &lowered.code("top-level"),
+        &["call UsersApi.O{fn UsersApi.O}(6) -> bb1;"],
+    );
+    // The value is passed as the type of the parameter.
+    let args: Vec<&Operand> = lowered.mir("top-level").bodies[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.terminator.kind {
+            TerminatorKind::Call { args, .. } => Some(args),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(
+        args,
+        [&Operand::Const(Const::Int(6, mora_hir::Primitive::Long))]
+    );
+    let g = lowered.code("G");
+    assert!(g.iter().any(|line| line.contains(", 3) -> bb")), "{g:#?}");
+    // A local function's default is evaluated as well.
+    let h = lowered.code("H");
+    assert!(h.iter().any(|line| line.contains("(10) -> bb")), "{h:#?}");
+    // A call that passes every argument passes them.
+    assert_in_order(
+        &lowered.code("K"),
+        &["call UsersApi.O{fn UsersApi.O}(1) -> bb1;"],
+    );
+}
+
+#[test]
+fn a_default_waiting_for_its_milestone_defers_only_callers_that_omit_it() {
+    let text = "O(a: int = default) {}\nF() {\n    O();\n}\nG() {\n    O(1);\n}\n\
+                H() {\n    L(a: int = default) {}\n    L();\n}\n\
+                I() {\n    A(move a: int = 1) {}\n    B(move a: int = default) {}\n    B();\n}\n\
+                J() {\n    A(move a: int = default) {}\n    B(move a: int = 1) {}\n    B();\n}\n";
+    let what = "a call that leaves out a default that needs evaluation is not lowered until M3.12";
+    for name in ["F", "H", "I"] {
         assert_eq!(
             later_error(text, |l| l.owner(name)),
             format!("internal error lowering UsersApi.{name}: {what}")
         );
     }
-    assert_eq!(
-        later_error(text, |l| l.owner("top-level")),
-        format!("internal error lowering top-level: {what}")
-    );
     let lowered = lowered(text);
     let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
-    for owner in ["top-level", "UsersApi.F", "UsersApi.G", "UsersApi.H"] {
-        let line = format!("// {owner}: not lowered until M1.11\n");
+    for owner in ["UsersApi.F", "UsersApi.H", "UsersApi.I"] {
+        let line = format!("// {owner}: not lowered until M3.12\n");
         assert!(dump.contains(&line), "{line}{dump}");
     }
-    // A local function's own defaults decide, not those of another one.
-    let j = lowered.code("J");
-    assert!(j.iter().any(|line| line.contains("(1) -> bb")), "{j:#?}");
-    // A call that passes every argument lowers now.
-    assert_in_order(
-        &lowered.code("K"),
-        &["call UsersApi.O{fn UsersApi.O}(1) -> bb1;"],
+    let g = lowered.code("G");
+    assert!(
+        g.iter()
+            .any(|line| line.starts_with("call UsersApi.O{fn UsersApi.O}(")),
+        "{g:#?}"
+    );
+    // A local function's own defaults decide, not those of another one:
+    // `B()` in `J` takes a literal, so `J` waits only for the default of
+    // `A`, a `default` written in its body, and not as a call does.
+    assert_eq!(
+        later_error(text, |l| l.owner("J")),
+        "internal error lowering UsersApi.J: `default` is not lowered until M3.12"
     );
 }
 
@@ -2725,14 +2760,15 @@ fn an_initializer_of_plain_values_lowers() {
 
 #[test]
 fn a_static_member_named_by_its_name_comes_with_statics() {
-    // A constant in a field initializer, and a static field read in a
-    // method, each by its bare name.
+    // A static field read in a method by its bare name; a constant read
+    // the same way in a field initializer is its value.
     let text = "struct P {\n    const K: int = 4;\n    public X: int = K + 1;\n    \
                 public static S: int = 1;\n    Get(): int => S;\n}\nF(): P => new P();\n";
-    assert_eq!(
-        later_error(text, |l| l.initializer("P", "X")),
-        "internal error lowering UsersApi.P.X: a static member is not lowered until M3.13"
-    );
+    let lowered = lowered(text);
+    let mut out = String::new();
+    let init = lowered.mir_of(lowered.initializer("P", "X"));
+    write_mir(&mut out, &lowered.db, Some(lowered.file), init);
+    assert_eq!(code(&out), ["_0 = 4 + 1;", "return;"]);
     assert_eq!(
         later_error(text, |l| l.owner("Get")),
         "internal error lowering UsersApi.P.Get: a static member is not lowered until M3.13"
@@ -3128,7 +3164,7 @@ fn later_expressions_and_statements_come_with_their_milestone() {
                 E() {\n    foreach (let c in \"ab\") {\n    }\n}\n\
                 G(n: int) {\n    #Assert(n > 0);\n}\n";
     for (name, what, milestone) in [
-        ("A", "an array creation", "M1.11"),
+        ("A", "an array creation", "M2.3"),
         ("B", "`with`", "M2.2"),
         ("C", "an element of a tuple", "M3.12"),
         ("D", "an index of a string", "M5.2"),
@@ -3266,7 +3302,6 @@ fn values_by_where_they_are_declared_come_with_their_milestone() {
                 I(p: P) {\n    p.S3(new { Y = 1 });\n}\n\
                 J(p: P) {\n    p.S4(Console.ReadLine());\n}\n";
     for (name, what, milestone) in [
-        ("A", "a constant", "M1.11"),
         ("B", "a static", "M3.13"),
         ("C", "a static", "M3.13"),
         ("D", "an enum member", "M3.2"),
@@ -3284,6 +3319,125 @@ fn values_by_where_they_are_declared_come_with_their_milestone() {
             )
         );
     }
+}
+
+#[test]
+fn a_constant_declared_in_a_namespace_is_its_value() {
+    let lowered = lowered("public const C1: int = 1;\nA(): int => C1;\n");
+    assert_eq!(lowered.code("A"), ["_0 = 1;", "return;"]);
+}
+
+#[test]
+fn a_read_of_a_struct_constant_is_an_aggregate() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public Y: int;\n}\n\
+         const O: P = new P { X = 1, Y = 2 };\nF(): int => O.Y;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = UsersApi.P{struct UsersApi.P}(1, 2);",
+            "_0 = copy _1.Y;",
+        ],
+    );
+}
+
+#[test]
+fn a_read_of_a_nested_aggregate_builds_the_inner_one_first() {
+    let lowered = lowered(
+        "struct P {\n    public X: int;\n    public T: (int, string);\n}\n\
+         const O: P = new P { X = 1, T = (2, \"a\") };\nF(): P => O;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_1 = (2, \"a\");",
+            "_2 = UsersApi.P{struct UsersApi.P}(1, copy _1);",
+            "_0 = copy _2;",
+        ],
+    );
+}
+
+#[test]
+fn a_read_of_a_constant_without_a_value_is_an_internal_error() {
+    // Evaluation reports the overflow, and the build stops before
+    // lowering a body that reads `B`.
+    let lowered = lowered("const A: int = 2_000_000_000;\nconst B: int = A * 2;\nF(): int => B;\n");
+    assert_eq!(
+        lowered.internal_error("F"),
+        "internal error lowering UsersApi.F: a read of a constant without a value: `B` at 3:13"
+    );
+}
+
+#[test]
+fn a_body_reading_a_constant_that_reads_itself_waits_with_it() {
+    let text = "const A: int = match (true) { _ => A };\nF(): int => A;\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a constant is not lowered until M3.3"
+    );
+    let lowered = lowered(text);
+    assert_eq!(
+        mir_dump(&lowered.db, lowered.project, lowered.file),
+        "// UsersApi.A: not lowered until M3.3\n\n// UsersApi.F: not lowered until M3.3\n"
+    );
+}
+
+#[test]
+fn a_body_waits_for_the_latest_milestone_of_a_constant_it_reads() {
+    let text = "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
+                const A: int = K + sizeof(int);\nF(): int => A;\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: a constant is not lowered until M3.13"
+    );
+}
+
+#[test]
+fn nameof_never_waits_for_the_value_of_a_constant() {
+    // `K` waits for statics, later than `nameof`, which does not read it.
+    let text = "struct P {\n    public static S: int = 1;\n}\nconst K: int = P.S;\n\
+                F(): string => nameof(K);\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("F")),
+        "internal error lowering UsersApi.F: `nameof` is not lowered until M3.12"
+    );
+}
+
+#[test]
+fn a_constant_is_not_a_place_to_borrow_by_ref() {
+    let text = "struct P {\n    public X: int;\n    mut Bump() { X = X + 1; }\n}\n\
+                const K: int = 1;\nconst O: P = new P { X = 1 };\nG(ref x: int) {}\n\
+                A() {\n    G(ref K);\n}\nB() {\n    G(ref O.X);\n}\nC() {\n    O.Bump();\n}\n";
+    for (name, what) in [
+        ("A", "a `ref` argument that is not a place"),
+        ("B", "a `ref` argument that is not a place"),
+        ("C", "a `mut` method called on a value that is not a place"),
+    ] {
+        assert_eq!(
+            later_error(text, |l| l.owner(name)),
+            format!("internal error lowering UsersApi.{name}: {what} is not lowered until M2.4")
+        );
+    }
+}
+
+#[test]
+fn member_constants_are_read_by_name_and_through_their_type() {
+    let lowered = lowered(
+        "struct P {\n    public const K: int = 4;\n    public X: int;\n    \
+         Get(): int => K;\n}\nF(): int => P.K;\n",
+    );
+    assert_eq!(lowered.code("F"), ["_0 = 4;", "return;"]);
+    let get = lowered.mir_of(BodyOwner::Item(lowered.item("Get").item));
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), get);
+    assert_in_order(&code(&out), &["_0 = 4;"]);
+}
+
+#[test]
+fn a_read_of_a_constant_is_converted_as_inference_records() {
+    let lowered = lowered("const K: int = 4;\nF(): long => K;\n");
+    assert_in_order(&lowered.code("F"), &["_0 = (implicit long)4;"]);
 }
 
 #[test]
@@ -3550,8 +3704,108 @@ fn a_captured_this_is_borrowed_after_the_arguments() {
     assert!(code[call].contains("(copy _"), "{code:#?}");
 }
 
+#[test]
+fn a_constant_initializer_lowers_to_a_body() {
+    let lowered = lowered("const S: string = \"ab\" + \"cd\";\n");
+    assert_eq!(lowered.bodies("S"), ["UsersApi.S"]);
+    assert_eq!(lowered.code("S"), ["_0 = \"ab\" + \"cd\";", "return;"]);
+}
+
+#[test]
+fn a_struct_constant_calls_the_initializers_it_leaves_out() {
+    let lowered = lowered(
+        "struct P {\n    public X: int = 1;\n    public Y: int;\n}\n\
+         const C: P = new P { Y = 2 };\n",
+    );
+    assert_in_order(
+        &lowered.code("C"),
+        &[
+            "_1 = call UsersApi.P{struct UsersApi.P}.X{init}() -> bb1;",
+            "_0 = UsersApi.P{struct UsersApi.P}(copy _1, 2);",
+            "return;",
+        ],
+    );
+}
+
+#[test]
+fn a_member_constant_lowers() {
+    let lowered = lowered("struct P {\n    public X: int;\n    public const K: int = 2 * 3;\n}\n");
+    let mut out = String::new();
+    let constant = lowered.mir_of(lowered.initializer("P", "K"));
+    write_mir(&mut out, &lowered.db, Some(lowered.file), constant);
+    assert!(out.starts_with("fn UsersApi.P.K() -> int {"), "{out}");
+    assert_eq!(code(&out), ["_0 = 6;", "return;"]);
+}
+
+#[test]
+fn a_default_value_lowers_to_a_body() {
+    // The written cast makes the value an `int`, which is passed as the
+    // `long` of the parameter.
+    let lowered = lowered("O(x: long = (int)((1 > 0) ? 2 : 3)) {}\n");
+    let owner = lowered.owner("O");
+    let hir = body(&lowered.db, lowered.file, owner);
+    let [(_, default)] = hir.defaults[..] else {
+        panic!("one default: {:?}", hir.defaults);
+    };
+    let key = crate::eval::ConstKey::Default {
+        file: lowered.file,
+        owner,
+        default,
+    };
+    let mir = super::consts::eval_mir(&lowered.db, lowered.project, key);
+    assert_eq!(validate(&lowered.db, mir, false), Ok(()));
+    let mut out = String::new();
+    write_mir(&mut out, &lowered.db, Some(lowered.file), mir);
+    assert!(
+        out.starts_with("fn UsersApi.O: a default value() -> long {"),
+        "{out}"
+    );
+    assert_eq!(
+        code(&out),
+        [
+            "storage_live(_1);",
+            "storage_live(_2);",
+            "_2 = 1 > 0;",
+            "switch copy _2 [false -> bb2] otherwise bb1;",
+            "storage_dead(_2);",
+            "_1 = 2;",
+            "goto bb3;",
+            "storage_dead(_2);",
+            "_1 = 3;",
+            "goto bb3;",
+            "storage_live(_3);",
+            "_3 = (int)copy _1;",
+            "_0 = (implicit long)copy _3;",
+            "storage_dead(_3);",
+            "storage_dead(_1);",
+            "return;",
+        ]
+    );
+}
+
+#[test]
+fn a_default_value_passes_as_its_conversion() {
+    let lowered = lowered("O(x: long = (int)2, y: int = 3, z: long = 4) {}\n");
+    let owner = lowered.owner("O");
+    let hir = body(&lowered.db, lowered.file, owner);
+    let inference = mora_hir::infer(&lowered.db, lowered.project, lowered.file, owner);
+    let tys: Vec<Option<mora_hir::Ty>> = hir
+        .defaults
+        .iter()
+        .map(|&(_, default)| super::consts::default_ty(inference, default))
+        .collect();
+    assert_eq!(
+        tys,
+        [
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Long)),
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Int)),
+            Some(mora_hir::Ty::Primitive(mora_hir::Primitive::Long)),
+        ]
+    );
+}
+
 /// A struct with a member of each kind that a later milestone lowers, and
-/// a function that this one lowers.
+/// a constant and a function that this one lowers.
 const LOWERED_LATER: &str = "struct P {\n    public X: int;\n    public Get: int => X;\n    \
      public static S: int = 1;\n    public const C: int = 2;\n    \
      public P(x: int) { X = x; }\n    \
@@ -3567,11 +3821,54 @@ fn mir_dump_writes_a_line_for_each_owner_lowered_later() {
         format!(
             "// UsersApi.P.Get: not lowered until M2.1\n\n\
              // UsersApi.P.S: not lowered until M3.13\n\n\
-             // UsersApi.P.C: not lowered until M1.11\n\n\
+             const UsersApi.P.C: int = 2;\n\n\
              // UsersApi.P: not lowered until M2.1\n\n\
              // UsersApi.P.-: not lowered until M3.6\n\n\
              {one}"
         )
+    );
+}
+
+#[test]
+fn mir_dump_writes_a_line_for_each_constant() {
+    let lowered = lowered(
+        "struct Q {\n    public A: int;\n    public B: (int, bool);\n}\n\
+         const T: (int, string) = (1, \"a\");\n\
+         const K: Q = new Q { A = 1, B = (2, true) };\n\
+         const W: int = default;\n",
+    );
+    let dump = mir_dump(&lowered.db, lowered.project, lowered.file);
+    assert_eq!(
+        dump,
+        "const UsersApi.T: (int, string) = (1, \"a\");\n\n\
+         const UsersApi.K: Q = UsersApi.Q{struct UsersApi.Q}(1, (2, true));\n\n\
+         // UsersApi.W: not lowered until M3.12\n"
+    );
+}
+
+#[test]
+fn mir_dump_of_a_constant_without_a_value_is_an_internal_error() {
+    // Constant evaluation reports the error, which stops the build first.
+    let lowered = lowered("const D: int = 1 / 0;\n");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        mir_dump(&lowered.db, lowered.project, lowered.file);
+    }))
+    .expect_err("an internal error");
+    assert_eq!(
+        panic.downcast_ref::<String>().map(String::as_str),
+        Some("internal error lowering UsersApi.D: a constant without a value")
+    );
+}
+
+#[test]
+fn a_call_that_leaves_out_a_failing_default_is_an_internal_error() {
+    // Constant evaluation reports the error, which stops the build before
+    // the caller is lowered; the caller waits for no milestone.
+    let lowered = lowered("O(move a: int = 1 / 0) {}\nF() {\n    O();\n}\n");
+    assert_eq!(
+        lowered.internal_error("F"),
+        "internal error lowering UsersApi.F: a left out default value without a value: \
+         `O()` at 3:5"
     );
 }
 
@@ -3606,8 +3903,8 @@ fn mir_dump_writes_a_line_for_each_signature_lowered_later() {
              // UsersApi.S.X: not lowered until M2.1\n\n\
              // UsersApi.ClassParam: not lowered until M2.1\n\n\
              // UsersApi.ClassReturn: not lowered until M2.1\n\n\
-             // UsersApi.ArrayParam: not lowered until M1.11\n\n\
-             // UsersApi.TupleParam: not lowered until M1.11\n\n\
+             // UsersApi.ArrayParam: not lowered until M2.3\n\n\
+             // UsersApi.TupleParam: not lowered until M2.3\n\n\
              // UsersApi.OptionParam: not lowered until M3.5\n\n\
              // UsersApi.FuncParam: not lowered until M2.11\n\n\
              // UsersApi.GenericParam: not lowered until M3.9\n\n\
@@ -3632,6 +3929,47 @@ fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String 
     let lowered = lowered(text);
     let owner = owner(&lowered);
     lowered.internal_error_of(owner)
+}
+
+#[test]
+fn a_call_that_converts_an_argument_to_an_option_waits_for_options() {
+    let what = "internal error lowering top-level: a conversion to an option type is not \
+                lowered until M3.5";
+    for text in [
+        "F(x: int?): int => 1;\nConsole.WriteLine(F(1));\n",
+        "F(x: int? = 1): int => 1;\nConsole.WriteLine(F());\n",
+        "F(x: (int, int?)): int => 1;\nConsole.WriteLine(F((1, 2)));\n",
+        "const S: string = \"a\";\nF(x: string? = S): int => 1;\nConsole.WriteLine(F());\n",
+        "F(x: string? = \"a\" + \"b\"): int => 1;\nConsole.WriteLine(F());\n",
+        "const S: string = \"a\";\nF(x: string?): int => 1;\nConsole.WriteLine(F(S));\n",
+        "F(x: string?): int => 1;\nConsole.WriteLine(F(\"a\"));\n",
+        "F(x: string? = \"a\"): int => 1;\nConsole.WriteLine(F());\n",
+    ] {
+        assert_eq!(later_error(text, |l| l.owner("top-level")), what, "{text}");
+    }
+}
+
+#[test]
+fn an_equals_that_is_not_the_equality_of_its_struct_leaves_a_comparison_lowered() {
+    for equals in [
+        "public Equals(x: int): bool => X == x;",
+        "public Equals(in other: int): bool => X == other;",
+    ] {
+        let lowered = lowered(&format!(
+            "struct P {{\n    public X: int;\n    {equals}\n}}\nF(p: P, q: P): bool => p == q;\n"
+        ));
+        lowered.mir("F");
+    }
+}
+
+#[test]
+fn a_call_with_an_argument_already_of_the_option_type_waits_for_its_type() {
+    let text = "F(x: int?): int => 1;\nO(): int? => 1;\nG(): int => F(O());\n";
+    assert_eq!(
+        later_error(text, |l| l.owner("G")),
+        "internal error lowering UsersApi.G: an expression with an option type is not lowered \
+         until M3.5"
+    );
 }
 
 #[test]
@@ -3671,11 +4009,6 @@ fn every_owner_lowered_later_names_its_milestone() {
             LOWERED_LATER,
             |l| l.initializer("P", "S"),
             "UsersApi.P.S: the initializer of a static field is not lowered until M3.13",
-        ),
-        (
-            LOWERED_LATER,
-            |l| l.initializer("P", "C"),
-            "UsersApi.P.C: the initializer of a constant is not lowered until M1.11",
         ),
         (
             LOWERED_LATER,
@@ -3734,9 +4067,14 @@ fn every_owner_lowered_later_names_its_milestone() {
             "extension#0.Twice: an extension member is not lowered until M3.12",
         ),
         (
-            "const K: int = 1;\n",
-            |l| l.owner("K"),
-            "UsersApi.K: the initializer of a constant is not lowered until M1.11",
+            "class C {\n    const K: int = 1;\n}\n",
+            |l| l.initializer("C", "K"),
+            "UsersApi.C.K: the initializer of a constant of a class is not lowered until M2.1",
+        ),
+        (
+            "const A: int = default;\nconst B: int = A;\n",
+            |l| l.owner("B"),
+            "UsersApi.B: a constant is not lowered until M3.12",
         ),
         (
             "static S: int = 1;\n",
@@ -3836,12 +4174,12 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "F(a: int[]) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "F(t: (int, int[])) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "F(a: int?) {}\n",
@@ -3936,12 +4274,17 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "F(): int[] => Todo();\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "class C {}\nF(a: int[], c: C) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
+        ),
+        (
+            "class C {}\nF(c: C, a: int[]) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "class C {}\nF(c: C, d: C) {\n    G(e: C) {}\n}\n",
@@ -3951,7 +4294,12 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "class C {}\nF(t: (int[], C)) {}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with a class type is not lowered until M2.1",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
+        ),
+        (
+            "class C {}\nF(t: (C, int[])) {}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "struct B<T> {}\nF(a: B<int>[]) {}\n",
@@ -3974,9 +4322,19 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.F: the async local function `G` is not lowered until M6.2",
         ),
         (
-            "class C {}\nF() {\n    G(a: int[]) {}\n    H(c: C) {}\n    K(d: C) {}\n}\n",
+            "class C {}\nF() {\n    H(c: C) {}\n    K(d: C) {}\n}\n",
             |l| l.owner("F"),
             "UsersApi.F: the local function `H` with a class type in its signature is not lowered until M2.1",
+        ),
+        (
+            "class C {}\nF() {\n    G(a: int[]) {}\n    H(c: C) {}\n    K(d: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with an array type in its signature is not lowered until M2.3",
+        ),
+        (
+            "class C {}\nF() {\n    H(c: C) {}\n    G(a: int[]) {}\n    K(d: C) {}\n}\n",
+            |l| l.owner("F"),
+            "UsersApi.F: the local function `G` with an array type in its signature is not lowered until M2.3",
         ),
         (
             "struct B<T> {\n    struct In {\n        public X: T;\n        M(): int {\n            let a = this;\n            return 1;\n        }\n    }\n}\n",
@@ -4072,7 +4430,7 @@ fn every_owner_lowered_later_names_its_milestone() {
         (
             "struct S {\n    public s: S[];\n}\nF(s: S): int => 1;\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
         (
             "struct S {\n    public c: int?;\n}\nF() {\n    G(s: S) {}\n}\n",
@@ -4138,6 +4496,34 @@ fn every_owner_lowered_later_names_its_milestone() {
             "UsersApi.F: an ordering of structs is not lowered until M3.10",
         ),
         (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             F(p: P, q: P): bool => p != q;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a comparison that calls a declared `Equals` is not lowered until M3.10",
+        ),
+        // The tuples differ in type, which comes later than the `Equals`.
+        (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             let t: (P, byte) = (new P { X = 1 }, 1);\nlet a = t == (new P { X = 1 }, 1);\n",
+            |l| l.owner("top-level"),
+            "top-level: a comparison of tuples of different types is not lowered until M3.12",
+        ),
+        // Options come later than the parameter modes.
+        (
+            "const K: int = 1;\nG(ref x: int, y: int? = 1): int => 1;\nF(): int => G(ref K);\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a conversion to an option type is not lowered until M3.5",
+        ),
+        (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             struct Q {\n    public p: P;\n}\nF(a: (Q, int), b: (Q, int)): bool => a == b;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a comparison that calls a declared `Equals` is not lowered until M3.10",
+        ),
+        (
             "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\n",
             |l| l.owner("top-level"),
             "top-level: a comparison of tuples of different types is not lowered until M3.12",
@@ -4200,7 +4586,7 @@ fn every_owner_lowered_later_names_its_milestone() {
              Look(in x: int) {}\nF(ps: P[], xs: int[]) {\n    ps[0].Show();\n    \
              Look(in xs[0]);\n}\n",
             |l| l.owner("F"),
-            "UsersApi.F: a signature with an array type is not lowered until M1.11",
+            "UsersApi.F: a signature with an array type is not lowered until M2.3",
         ),
     ];
     for &(text, owner, message) in cases {

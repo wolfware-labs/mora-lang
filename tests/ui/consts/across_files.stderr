@@ -1,0 +1,7 @@
+error[MR0461]: `Big * 2` overflows `int`: 2000000000 * 2
+ --> src/Limits.mr:2:27
+  |
+2 | public const Twice: int = Big * 2; //~ ERROR MR0461
+  |                           ^^^^^^^ evaluated at compile time
+  |
+  = note: a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile

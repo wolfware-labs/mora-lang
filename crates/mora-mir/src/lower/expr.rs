@@ -9,9 +9,10 @@ use mora_span::Span;
 use mora_syntax::lexer::literal::{char_value, string_value};
 
 use super::{Lowered, Lowerer};
+use crate::eval::const_read;
 use crate::{
-    AggregateKind, BinOp, CastKind, Const, InterpPiece, LocalId, LocalTy, Operand, Place,
-    Projection, Rvalue, UnOp,
+    AggregateKind, BinOp, CastKind, Const, ConstRead, InterpPiece, LocalId, LocalTy, Operand,
+    Place, Projection, Rvalue, UnOp,
 };
 
 /// Where the value of a call goes.
@@ -112,6 +113,19 @@ impl Lowerer<'_> {
                 increment,
                 expr: target,
             } => self.postfix(expr, *target, *increment)?,
+            // A constant, read as its value, or for constant evaluation
+            // as a read the interpreter gives the value of.
+            Expr::Member { .. } | Expr::Path(_)
+                if let Some((project, key)) =
+                    const_read(self.owner.db, self.owner.resolution, expr) =>
+            {
+                if self.owner.evaluation {
+                    let ty = self.ty(expr);
+                    Operand::ConstRead(Box::new(ConstRead { project, key, ty }))
+                } else {
+                    self.const_operand(expr, project, key)
+                }
+            }
             // A field, `this`, or what a field of `this` names.
             Expr::Member { .. } | Expr::Path(_) | Expr::This => Operand::Copy(self.place(expr)?),
             // The base comes first, and may not return.
@@ -249,21 +263,18 @@ impl Lowerer<'_> {
         })
     }
 
-    /// The place that holds `operand`: a constant is stored in a
-    /// temporary first.
+    /// The place that holds `operand`: a constant, or a read of one, is
+    /// stored in a temporary first.
     pub(super) fn operand_place(&mut self, operand: Operand, span: Span) -> Place {
-        match operand {
-            Operand::Copy(place) | Operand::Move(place) => place,
-            Operand::Const(constant) => {
-                let temp = self.builder.temp(LocalTy::Value(constant.ty()), span);
-                self.builder.assign(
-                    Place::local(temp),
-                    Rvalue::Use(Operand::Const(constant)),
-                    span,
-                );
-                Place::local(temp)
-            }
-        }
+        let ty = match operand {
+            Operand::Copy(place) | Operand::Move(place) => return place,
+            Operand::Const(ref constant) => constant.ty(),
+            Operand::ConstRead(ref read) => read.ty.clone(),
+        };
+        let temp = self.builder.temp(LocalTy::Value(ty), span);
+        self.builder
+            .assign(Place::local(temp), Rvalue::Use(operand), span);
+        Place::local(temp)
     }
 
     /// The place of the value of the HIR local `local`: the local itself,
@@ -485,7 +496,7 @@ const OPERATOR_NOT_LOWERED: &str = "the operator is not lowered";
 
 /// The constant `expr` of `hir` stands for: a literal, or an operation
 /// on literals, whose value inference records for a number.
-pub(super) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId) -> Option<Const> {
+pub(crate) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId) -> Option<Const> {
     let ty = inference.expr(expr)?;
     if let Ty::Primitive(primitive) = ty
         && let Some(value) = inference.constant(expr).or(inference.literal(expr))
@@ -496,7 +507,7 @@ pub(super) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId
         Expr::Literal(Literal::Bool(value)) => Some(Const::Bool(*value)),
         Expr::Literal(Literal::Char(text)) => char_value(text).map(Const::Char),
         Expr::Literal(Literal::String(text)) => {
-            string_value(text).map(|(value, _)| Const::String(value))
+            string_value(text).map(|(value, _)| Const::String(value.into()))
         }
         _ => None,
     }

@@ -24,9 +24,10 @@
 //! a `return`, and no jump starts there: such code ends in `unreachable`.
 
 mod calls;
+pub(crate) mod consts;
 mod control;
-mod expr;
-mod later;
+pub(crate) mod expr;
+pub(crate) mod later;
 mod local;
 mod structs;
 
@@ -41,10 +42,12 @@ use mora_hir::{
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange, line_index};
 
+use crate::eval::{ConstKey, Evaluated, const_value, is_constant};
 use crate::types::param_ty;
 use crate::{
     Block, BlockId, Body, Const, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place,
-    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_mir,
+    Rvalue, Statement, StatementKind, Terminator, TerminatorKind, debug_validate, write_const,
+    write_mir,
 };
 
 #[cfg(test)]
@@ -90,11 +93,14 @@ pub fn mir(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner) ->
 /// The text of the MIR of every body of `file` that has code, in the order
 /// of [`body_owners`], one blank line between them. A body that a later
 /// milestone lowers is the line `// Name: not lowered until M2.1` instead,
-/// with the name of its owner and the milestone.
+/// with the name of its owner and the milestone. A constant is the line
+/// [`write_const`] writes, with the value constant evaluation computes,
+/// or that line of the milestone its value waits for.
 ///
 /// # Panics
 ///
-/// As [`mir`] does, for a body this milestone lowers.
+/// As [`mir`] does, for a body this milestone lowers; for a constant
+/// without a value, since the build stops at its error first.
 pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     let mut out = String::new();
     for owner in body_owners(db, file) {
@@ -104,7 +110,25 @@ pub fn mir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
         if !out.is_empty() {
             out.push('\n');
         }
-        match later::lowered_later(db, project, file, owner) {
+        let later = if is_constant(db, file, owner) {
+            match const_value(db, project, ConstKey::Constant { file, owner }) {
+                Evaluated::Value(value) => {
+                    let name = owner_name(db, project, file, owner);
+                    let ty = consts::value_ty(db, project, file, owner);
+                    let ty = ty.unwrap_or_else(|| fail_in(&name, "a constant without a type"));
+                    write_const(&mut out, db, &name, &ty, value);
+                    continue;
+                }
+                Evaluated::Later(later) => Some(later.clone()),
+                Evaluated::Failed(_) => {
+                    let name = owner_name(db, project, file, owner);
+                    fail_in(&name, "a constant without a value");
+                }
+            }
+        } else {
+            later::lowered_later(db, project, file, owner)
+        };
+        match later {
             Some(later) => {
                 let name = owner_name(db, project, file, owner);
                 // Writing to a `String` cannot fail.
@@ -492,6 +516,8 @@ pub(crate) struct Owner<'a> {
     project: Project,
     /// The file the owner is in.
     file: SourceFile,
+    /// The owner itself.
+    owner: BodyOwner,
     /// The owner's name.
     name: String,
     /// The HIR body.
@@ -507,6 +533,10 @@ pub(crate) struct Owner<'a> {
     functions: Vec<local::LocalFn<'a>>,
     /// The type of `this`, in a method of a struct.
     this_ty: Option<Ty>,
+    /// Whether its bodies are lowered for constant evaluation, where a
+    /// read of a constant is an [`Operand::ConstRead`] instead of its
+    /// value.
+    evaluation: bool,
 }
 
 /// What a body is: its name, return type, receiver and parameters, and
@@ -531,6 +561,7 @@ impl<'a> Owner<'a> {
             db,
             project,
             file,
+            owner,
             name: owner_name(db, project, file, owner),
             hir: body(db, file, owner),
             map: body_source_map(db, file, owner),
@@ -538,6 +569,7 @@ impl<'a> Owner<'a> {
             inference: infer(db, project, file, owner),
             functions: Vec::new(),
             this_ty: None,
+            evaluation: false,
         };
         if let BodyOwner::Item(item) = owner {
             shared.this_ty = this_type(db, shared.item(item));
@@ -549,17 +581,20 @@ impl<'a> Owner<'a> {
     /// The shape of the body of `owner` itself.
     fn shape(&self, owner: BodyOwner) -> BodyShape {
         let root = self.expect(self.hir.root, "the body has no code");
-        let (ret, this, params) = match owner {
-            BodyOwner::TopLevel => (Ty::UNIT, None, Vec::new()),
-            BodyOwner::Item(item) => self.function_signature(self.item(item)),
-            BodyOwner::Value(ty, index) => {
-                let field = structs::field_of_value(self.db, self.item(ty), index);
-                let field = self.expect(field, "only the initializer of a field is lowered");
-                (field.ty.clone(), None, Vec::new())
+        // A constant or a field has its declared type; a function, a
+        // method or the top-level statements have none.
+        let (ret, this, params) = match (
+            owner,
+            consts::value_ty(self.db, self.project, self.file, owner),
+        ) {
+            (_, Some(ty)) => (ty, None, Vec::new()),
+            (BodyOwner::Item(item), None) => self.function_signature(self.item(item)),
+            (_, None) => {
+                let what =
+                    "only functions, methods, initializers and top-level statements are lowered";
+                self.expect((owner == BodyOwner::TopLevel).then_some(()), what);
+                (Ty::UNIT, None, Vec::new())
             }
-            _ => self.fail(
-                "only functions, methods, field initializers and top-level statements are lowered",
-            ),
         };
         let params = self.hir.params.iter().copied().zip(params).collect();
         BodyShape {

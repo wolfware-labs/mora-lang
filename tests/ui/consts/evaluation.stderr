@@ -1,0 +1,31 @@
+error[MR0461]: `A * 2` overflows `int`: 2000000000 * 2
+ --> tests/ui/consts/evaluation.mr:2:16
+  |
+2 | const B: int = A * 2; //~ ERROR MR0461
+  |                ^^^^^ evaluated at compile time
+  |
+  = note: a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile
+
+error[MR0461]: `A / Z` divides by zero: 2000000000 / 0
+ --> tests/ui/consts/evaluation.mr:4:16
+  |
+4 | const D: int = A / Z; //~ ERROR MR0461
+  |                ^^^^^ evaluated at compile time
+  |
+  = note: a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile
+
+error[MR0461]: `A % Z` takes a remainder of a division by zero: 2000000000 % 0
+ --> tests/ui/consts/evaluation.mr:5:16
+  |
+5 | const R: int = A % Z; //~ ERROR MR0461
+  |                ^^^^^ evaluated at compile time
+  |
+  = note: a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile
+
+error[MR0461]: `(nint)2147483647 + (nint)1` gives a `nint` that is not the same on every target: 2147483647 + 1
+ --> tests/ui/consts/evaluation.mr:6:17
+  |
+6 | const N: nint = (nint)2147483647 + (nint)1; //~ ERROR MR0461
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluated at compile time
+  |
+  = note: a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile

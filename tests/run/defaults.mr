@@ -1,0 +1,8 @@
+// expect: 5
+// expect: 4
+const Step: int = 2;
+
+Advance(x: int, by: int = Step * 2): int => x + by;
+
+Console.WriteLine(Advance(1));
+Console.WriteLine(Advance(1, 3));

@@ -9,10 +9,12 @@ use mora_hir::{
     Arg, BodyOwner, Captured, Expr, ExprId, Inference, ItemId, ParamMode, Ty, body,
     calls_diverging, infer, signature,
 };
-use mora_span::Span;
+use mora_span::{Db, Project, SourceFile, Span};
 
+use super::consts::default_ty;
 use super::expr::{Dest, constant};
 use super::{Diverged, Lowered, Lowerer};
+use crate::eval::{ConstKey, Evaluated, const_value};
 use crate::{BorrowMode, Callee, LocalTy, Operand, Place, Rvalue, TerminatorKind};
 
 impl Lowerer<'_> {
@@ -126,18 +128,13 @@ impl Lowerer<'_> {
             arguments.push(match operand {
                 Some(operand) => operand,
                 None => {
-                    let (callee_body, inference) = *callee_hir.get_or_insert_with(|| {
-                        (
-                            body(db, item.file, owner),
-                            infer(db, item.project, item.file, owner),
-                        )
-                    });
+                    let declared = *callee_hir
+                        .get_or_insert_with(|| Declared::of(db, item.project, item.file, owner));
                     self.default_argument(
                         expr,
-                        callee_body,
-                        inference,
-                        callee_body.params.get(index).copied(),
-                        &callee_body.defaults,
+                        declared,
+                        declared.hir.params.get(index).copied(),
+                        &declared.hir.defaults,
                         modes[index],
                     )
                 }
@@ -188,8 +185,13 @@ impl Lowerer<'_> {
                 Some(operand) => operand,
                 None => self.default_argument(
                     expr,
-                    owner.hir,
-                    owner.inference,
+                    Declared {
+                        project: owner.project,
+                        file: owner.file,
+                        owner: owner.owner,
+                        hir: owner.hir,
+                        inference: owner.inference,
+                    },
                     Some(def.params[index]),
                     &def.defaults,
                     def.modes[index],
@@ -331,16 +333,22 @@ impl Lowerer<'_> {
         Operand::Copy(Place::local(temp))
     }
 
-    /// The default value of the parameter `param` of the body `callee`,
-    /// whose defaults are `defaults`, which the call `call` leaves out,
-    /// passed as mode `mode` says. It is a constant: a literal, or an
-    /// operation on literals whose value `inference` records. Any other
-    /// default needs constant evaluation.
+    /// The default value of the parameter `param`, declared in the body
+    /// `declared` with the defaults `defaults`, which the call `call`
+    /// leaves out, passed as mode `mode` says. A literal, or an operation
+    /// on literals whose value inference records, is that constant,
+    /// converted as inference records; any other default is the value
+    /// constant evaluation computes, already of [`default_ty`].
+    ///
+    /// # Panics
+    ///
+    /// When the default has no value: a body whose call leaves one out
+    /// is never lowered, since its evaluation reports an error or waits
+    /// for a later milestone first.
     fn default_argument(
         &mut self,
         call: ExprId,
-        callee: &mora_hir::Body,
-        inference: &Inference,
+        declared: Declared<'_>,
         param: Option<mora_hir::LocalId>,
         defaults: &[(mora_hir::LocalId, ExprId)],
         mode: ParamMode,
@@ -348,11 +356,61 @@ impl Lowerer<'_> {
         let default = param.and_then(|param| default_of(param, defaults));
         let what = "an argument without a default value is left out";
         let default = self.expect(default, call, what);
-        let what = "a default value that is not a literal needs constant evaluation (M1.11)";
-        let value = self.expect(constant(callee, inference, default), call, what);
         let span = self.span(call);
-        let operand = self.converted(inference.conversion(default), Operand::Const(value), span);
+        let inference = declared.inference;
+        if let Some(value) = constant(declared.hir, inference, default) {
+            let operand =
+                self.converted(inference.conversion(default), Operand::Const(value), span);
+            return self.pass(operand, mode, span);
+        }
+        let key = declared.default_key(default);
+        let Evaluated::Value(value) = const_value(self.owner.db, declared.project, key) else {
+            self.ice(call, "a left out default value without a value");
+        };
+        let ty = default_ty(inference, default);
+        let ty = self.expect(ty, call, "the default value has no type");
+        let operand = self.value_operand(value, &ty, span);
         self.pass(operand, mode, span)
+    }
+}
+
+/// The body that declares the default values of a callee: that of a
+/// function or method, or the body around a local function, with what
+/// constant evaluation names it by.
+#[derive(Clone, Copy)]
+pub(super) struct Declared<'a> {
+    /// The project of the body.
+    pub(super) project: Project,
+    /// The file of the body.
+    pub(super) file: SourceFile,
+    /// The owner of the body.
+    pub(super) owner: BodyOwner,
+    /// The HIR body.
+    pub(super) hir: &'a mora_hir::Body,
+    /// The types and records of the HIR body.
+    pub(super) inference: &'a Inference,
+}
+
+impl<'a> Declared<'a> {
+    /// The body of `owner` of `file`, in `project`.
+    pub(super) fn of(db: &'a dyn Db, project: Project, file: SourceFile, owner: BodyOwner) -> Self {
+        Declared {
+            project,
+            file,
+            owner,
+            hir: body(db, file, owner),
+            inference: infer(db, project, file, owner),
+        }
+    }
+
+    /// The key that constant evaluation computes the default value
+    /// `default` of this body by.
+    pub(super) fn default_key(self, default: ExprId) -> ConstKey {
+        ConstKey::Default {
+            file: self.file,
+            owner: self.owner,
+            default,
+        }
     }
 }
 

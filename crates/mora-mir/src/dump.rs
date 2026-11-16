@@ -77,6 +77,13 @@
 //! // UsersApi.Point.Length: not lowered until M2.1
 //! ```
 //!
+//! A constant is one line too, with the value constant evaluation
+//! computes ([`write_const`]):
+//!
+//! ```text
+//! const UsersApi.Size: int = 8;
+//! ```
+//!
 //! # Statements
 //!
 //! * `place = rvalue;`, `storage_live(local);`, `storage_dead(local);` and
@@ -134,6 +141,7 @@ use mora_hir::{
 };
 use mora_span::{Db, FileId, LineIndex, SourceFile, line_index};
 
+use crate::eval::ConstValue;
 use crate::{
     AggregateKind, BlockId, Body, Callee, CastKind, Const, InterpPiece, LocalId, LocalSource,
     LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement, StatementKind, Terminator,
@@ -384,13 +392,7 @@ impl Printer<'_> {
             }
             Rvalue::Aggregate(kind, parts) => {
                 let parts: Vec<String> = parts.iter().map(|part| self.operand(part)).collect();
-                match kind {
-                    AggregateKind::Struct(item) => {
-                        format!("{}({})", item_text(self.db, *item), parts.join(", "))
-                    }
-                    AggregateKind::Tuple if parts.len() == 1 => format!("({},)", parts[0]),
-                    AggregateKind::Tuple => format!("({})", parts.join(", ")),
-                }
+                aggregate_text(self.db, *kind, &parts)
             }
             Rvalue::Interpolate(pieces) => {
                 let mut text = String::from("$\"");
@@ -432,6 +434,7 @@ impl Printer<'_> {
             Operand::Copy(place) => format!("copy {}", self.place(place)),
             Operand::Move(place) => format!("move {}", self.place(place)),
             Operand::Const(value) => constant(value),
+            Operand::ConstRead(read) => format!("read {}", read.key.name(self.db, read.project)),
         }
     }
 
@@ -474,8 +477,45 @@ impl Printer<'_> {
     }
 }
 
+/// Appends the line of a constant to `out`: `const name: type = value;`,
+/// as `const App.Size: int = 8;`. A scalar is written as a constant
+/// operand, and a struct or a tuple as an `Aggregate` value of constant
+/// operands, as `App.P{struct App.P}(1, 2)` and `(1, "a")`, one inside
+/// another written in place.
+pub fn write_const(out: &mut String, db: &dyn Db, name: &str, ty: &Ty, value: &ConstValue) {
+    // Writing to a `String` cannot fail.
+    let _ = writeln!(
+        out,
+        "const {name}: {} = {};",
+        ty_name(db, ty),
+        const_value_text(db, value)
+    );
+}
+
+/// `value` as [`write_const`] writes it.
+fn const_value_text(db: &dyn Db, value: &ConstValue) -> String {
+    let (kind, parts) = match value {
+        ConstValue::Scalar(scalar) => return constant(scalar),
+        ConstValue::Aggregate(kind, parts) => (kind, parts),
+    };
+    let parts: Vec<String> = parts
+        .iter()
+        .map(|part| const_value_text(db, part))
+        .collect();
+    aggregate_text(db, *kind, &parts)
+}
+
+/// An `Aggregate` of `kind` with the parts `parts`, written.
+fn aggregate_text(db: &dyn Db, kind: AggregateKind, parts: &[String]) -> String {
+    match kind {
+        AggregateKind::Struct(item) => format!("{}({})", item_text(db, item), parts.join(", ")),
+        AggregateKind::Tuple if parts.len() == 1 => format!("({},)", parts[0]),
+        AggregateKind::Tuple => format!("({})", parts.join(", ")),
+    }
+}
+
 /// A constant as written.
-fn constant(value: &Const) -> String {
+pub(crate) fn constant(value: &Const) -> String {
     match value {
         Const::Int(value, _) => Constant::Int(*value).to_string(),
         Const::Real(bits, ty) => real_text(*bits, *ty),

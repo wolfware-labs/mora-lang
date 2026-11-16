@@ -6,7 +6,7 @@ use super::Check;
 use crate::arena::arena_index;
 use crate::bodies::{Body, Expr, ExprId, LocalKind, Pat, Target};
 use crate::inference::{NotAPlace, TypeError};
-use crate::items::{ItemKind, ValueKind};
+use crate::items::ValueKind;
 use crate::resolve::{Resolved, members_named};
 use crate::signature::{instance_field_named, instance_methods};
 
@@ -143,7 +143,7 @@ impl Check<'_> {
                 // A constant at namespace level; a static there is a place.
                 Target::Item(Resolved::Item(item)) => {
                     let data = self.item_data(*item);
-                    (data.kind == ItemKind::Field && !data.is_static).then_some(NotAPlace::Constant)
+                    data.is_constant().then_some(NotAPlace::Constant)
                 }
                 Target::Value(value) => value_problem(self.value_member(*value)?.kind),
                 _ => None,

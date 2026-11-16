@@ -1,0 +1,20 @@
+Zero(): int => 0;
+const A: int = Zero(); //~ ERROR MR0460
+const B: string = $"{1}"; //~ ERROR MR0460
+
+F() {
+    var n = 1;
+    G(x: int = n++) {} //~ ERROR MR0460
+    G();
+}
+
+struct P {
+    public X: int = Zero(); //~ ERROR MR0460
+    public Y: int;
+}
+const C: P = new P { Y = 1 };
+
+Console.WriteLine(A);
+Console.WriteLine(B);
+Console.WriteLine(C.Y);
+F();

@@ -1,0 +1,5 @@
+error[MR0127]: cannot find `Missing`
+ --> tests/ui/consts/front_end_error_first.mr:6:18
+  |
+6 | Broken(): int => Missing; //~ ERROR MR0127
+  |                  ^^^^^^^ not found

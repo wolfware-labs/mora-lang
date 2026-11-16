@@ -1,0 +1,33 @@
+//@ file src/Limits.mr
+const App.Limit: int = 100;
+
+const App.Screen: Size = App.Size{struct App.Size}(3, 4);
+//@ file src/Program.mr
+fn top-level() -> () {
+    let _0: ();
+    let screen#0: Size;
+    let _2: Size;
+
+    bb0: {
+        call Console.WriteLine{external}(100) -> bb1; // 1:1
+    }
+
+    bb1: {
+        storage_live(screen#0); // 2:5
+        storage_live(_2); // 2:14
+        _2 = App.Size{struct App.Size}(3, 4); // 2:14
+        screen#0 = copy _2; // 2:14
+        storage_dead(_2); // 2:14
+        call Console.WriteLine{external}(copy screen#0.Width) -> bb2; // 3:1
+    }
+
+    bb2: {
+        call Console.WriteLine{external}(copy screen#0.Height) -> bb3; // 4:1
+    }
+
+    bb3: {
+        _0 = (); // 4:34
+        storage_dead(screen#0); // 4:34
+        return; // 4:34
+    }
+}

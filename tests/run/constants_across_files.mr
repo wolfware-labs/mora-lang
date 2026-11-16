@@ -1,0 +1,16 @@
+// expect: 100
+// expect: 3
+// expect: 4
+//@ file src/Limits.mr
+public struct Size {
+    public Width: int;
+    public Height: int;
+}
+
+public const Limit: int = 10 * 10;
+public const Screen: Size = new Size { Width = 3, Height = 4 };
+//@ file src/Program.mr
+Console.WriteLine(Limit);
+let screen = Screen;
+Console.WriteLine(screen.Width);
+Console.WriteLine(screen.Height);

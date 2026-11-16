@@ -1,8 +1,12 @@
 //! The data types of MIR (§14.7): a control-flow graph of basic blocks per
 //! body, over typed locals and places.
 
+use std::sync::Arc;
+
 use mora_hir::{ItemId, ParamMode, Primitive, Signature, Ty, instance_fields, signature};
-use mora_span::{Db, Span};
+use mora_span::{Db, Project, Span};
+
+use crate::eval::ConstKey;
 
 /// The MIR of one body owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +202,21 @@ pub enum Operand {
     Move(Place),
     /// A constant.
     Const(Const),
+    /// The value of another constant, read by a body lowered for constant
+    /// evaluation, which takes it from the values it has computed. No
+    /// other body holds one: elsewhere a read of a constant is its value.
+    ConstRead(Box<ConstRead>),
+}
+
+/// A read of a constant in a body lowered for constant evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstRead {
+    /// The project of the constant.
+    pub(crate) project: Project,
+    /// The constant.
+    pub(crate) key: ConstKey,
+    /// The type of its value.
+    pub ty: Ty,
 }
 
 /// A constant value.
@@ -211,8 +230,8 @@ pub enum Const {
     Bool(bool),
     /// A `char`.
     Char(char),
-    /// A `string`.
-    String(String),
+    /// A `string`, its text shared by every copy.
+    String(Arc<str>),
     /// The unit value `()`.
     Unit,
 }
@@ -354,6 +373,11 @@ impl BinOp {
             BinOp::Gt => ">",
             BinOp::Ge => ">=",
         }
+    }
+
+    /// Whether it is a shift: `<<`, `>>` or `>>>`.
+    pub fn is_shift(self) -> bool {
+        matches!(self, BinOp::Shl | BinOp::Shr | BinOp::UShr)
     }
 }
 

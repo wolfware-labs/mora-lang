@@ -1,0 +1,32 @@
+error[MR0460]: a call cannot be evaluated at compile time
+ --> tests/ui/consts/unsupported.mr:2:16
+  |
+2 | const A: int = Zero(); //~ ERROR MR0460
+  |                ^^^^^^ evaluated at compile time
+  |
+  = note: constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`
+
+error[MR0460]: an interpolated string cannot be evaluated at compile time
+ --> tests/ui/consts/unsupported.mr:3:19
+  |
+3 | const B: string = $"{1}"; //~ ERROR MR0460
+  |                   ^^^^^^ evaluated at compile time
+  |
+  = note: constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`
+
+error[MR0460]: a call cannot be evaluated at compile time
+  --> tests/ui/consts/unsupported.mr:12:21
+   |
+12 |     public X: int = Zero(); //~ ERROR MR0460
+   |                     ^^^^^^ evaluated at compile time
+   |
+   = note: constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`
+           `P.X` runs at compile time because a `P` created at compile time leaves `X` out
+
+error[MR0460]: `++` cannot be evaluated at compile time
+ --> tests/ui/consts/unsupported.mr:7:16
+  |
+7 |     G(x: int = n++) {} //~ ERROR MR0460
+  |                ^^^ evaluated at compile time
+  |
+  = note: constant evaluation runs literals, operators, casts, other constants and the creation of structs and tuples; a value computed when the program runs can be a `static lazy`

@@ -1,0 +1,48 @@
+// expect: 8
+// expect: Hello, Mora language!
+// expect: 1
+// expect: 0
+// expect: 44
+// expect: -2147483648
+// expect: 0
+// expect: 1
+const Size: int = 4 * 2;
+const Hello: string = "Hello";
+const Name: string = "Mora language";
+const Greeting: string = Hello + ", " + Name + "!";
+
+struct Point {
+    public X: int = 1;
+    public Y: int;
+}
+
+const Origin: Point = new Point { Y = 0 };
+const Pair: (int, string) = (Size, Greeting);
+
+const Big: int = 300;
+const Small: byte = (byte)Big;
+
+const Max: int = 2147483647;
+const Wrapped: int = Max +% 1;
+
+const Zero: double = 0.0;
+const NotANumber: double = Zero / Zero;
+const FromNaN: int = (int)NotANumber;
+
+const Pick: int = Size > 4 ? 1 : 2;
+
+MakeBuffer() {
+    let a = new int[Size];
+}
+
+let n: int = Size;
+Console.WriteLine(n);
+Console.WriteLine(Greeting);
+let origin = Origin;
+Console.WriteLine(origin.X);
+Console.WriteLine(origin.Y);
+let pair: (int, string) = Pair;
+Console.WriteLine(Small);
+Console.WriteLine(Wrapped);
+Console.WriteLine(FromNaN);
+Console.WriteLine(Pick);

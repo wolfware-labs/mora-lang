@@ -1,0 +1,3 @@
+const X: int = 2_000_000_000 * 2; //~ ERROR MR0010
+
+Console.WriteLine(X);

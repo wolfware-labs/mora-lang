@@ -335,11 +335,11 @@ Done when:
 
 Spec: [§4.7](docs/design/mora.md#47-static-state), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-mir`. Blocked by: M1.10.
 
-A MIR interpreter for `const` values, `static mut` initializers and default parameter values with the subset of §14.6 and `MR0460` outside it.
+A MIR interpreter for `const` values and default parameter values with the subset of §14.6 and `MR0460` outside it.
 
 Done when:
 
-- Run tests using constants in array sizes, defaults and string concatenation.
+- Run tests using constants used as array sizes (the evaluated size; `new` itself lowers in M2.3), defaults and string concatenation.
 - A UI test for `MR0460`.
 
 ### M1.12 Cranelift code generation
@@ -400,6 +400,7 @@ Done when:
 - CLI tests build and run a temporary hello-world project in both profiles.
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
 - A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
+- A build of several projects reports a diagnostic once when two of them report the same one, as two sibling projects that run one library field initializer do (§14.6).
 
 ### M1.17 Debug information and symbol names
 
@@ -506,7 +507,7 @@ Done when:
 
 ### M2.3 Shared objects and reference counts in the runtime
 
-Spec: [§13.3](docs/design/mora.md#133-shared-objects), [§13.4](docs/design/mora.md#134-strings-and-arrays). Crates: `mora-rt`, `mora-codegen`. Blocked by: M2.1.
+Spec: [§13.3](docs/design/mora.md#133-shared-objects), [§13.4](docs/design/mora.md#134-strings-and-arrays). Crates: `mora-mir`, `mora-rt`, `mora-codegen`. Blocked by: M2.1.
 
 The object header of §13.3, inline retain and release sequences, `mora_rt_drop` with the iterative release work list, weak count handling, immortal objects, `T[]` layout and allocation, and reference-count overflow abort.
 
@@ -515,6 +516,7 @@ Done when:
 - Releasing a linked list of 1,000,000 nodes does not overflow the stack.
 - Retaining an immortal object never writes to it (the test places one in read-only memory).
 - Layout unit tests compute every header, string, array and union layout for both the 64-bit targets and the 32-bit test description.
+- MIR lowers array creation `new T[n]` and signatures with an array type.
 
 ### M2.4 Parameter modes and `this`
 
@@ -679,6 +681,7 @@ Done when:
 | [M3.18](#m318-effect-inference-and-uses-bounds) | Effect inference and `uses` bounds | `check` | M2.11, M3.11, M3.16, M3.17 |
 | [M3.19](#m319-let-with-a-refutable-pattern-and-else) | `let` with a refutable pattern and `else` | `syntax` | M3.3, M3.4 |
 | [M3.20](#m320-labeled-break-and-continue) | Labeled `break` and `continue` | `syntax` | M1.10 |
+| [M3.21](#m321-newtypes-and-refinements) | Newtypes and refinements | `hir` | M3.5, M3.6, M3.10 |
 
 ### M3.1 Unions
 
@@ -727,7 +730,7 @@ Done when:
 
 ### M3.5 Options, `none` and flow narrowing
 
-Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `std`. Blocked by: M3.4.
+Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.4.
 
 `Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks.
 
@@ -748,7 +751,7 @@ Done when:
 
 - Run tests for a vector type with operators and an indexer.
 - UI test for an unpaired `==`.
-- UI tests for the newtype-to-underlying-type row of §5.10, and for a conversion through a user type's `IFrom<S>`.
+- UI tests for a conversion through a user type's `IFrom<S>`.
 - A `ref` argument that is an element or a field of one, as in `Bump(ref xs[0])`, and the receiver of a `mut` method that is one, as in `xs[0].Inc()`, are lowered; until then such a call reports that it is not lowered until M3.6.
 - On a collection type with an addressor indexer, `Bump(ref slots[i])` and `slots[i].Hits += 1` compile, and the MIR snapshot shows one store and no copy-back; growing the collection during the call panics as for a view (§10.10).
 - UI test: `ref slots[i]` and `ref slots[j]` in one call is `MR0320`.
@@ -789,7 +792,7 @@ Done when:
 
 ### M3.10 Interfaces and static dispatch
 
-Spec: [§6.8](docs/design/mora.md#68-interfaces), [§8.3](docs/design/mora.md#83-static-dispatch), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§8.7](docs/design/mora.md#87-associated-types). Crates: `mora-hir`, `std`. Blocked by: M3.9.
+Spec: [§6.8](docs/design/mora.md#68-interfaces), [§8.3](docs/design/mora.md#83-static-dispatch), [§8.5](docs/design/mora.md#85-built-in-interfaces), [§8.7](docs/design/mora.md#87-associated-types). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.9.
 
 Interface declarations with default members, static abstract members, interface inheritance, implementation by name and explicit implementation, associated types, `MR0232` and `MR0233`, and the built-in interfaces of §8.5 declared in `std/`.
 
@@ -798,6 +801,7 @@ Done when:
 - Run tests for default methods and static abstract members in generic code.
 - A generic `Max<T>` over `IComparable<T>` compiles to a direct call (MIR snapshot).
 - `<`, `>`, `<=` and `>=` on two structs call the struct's `IComparable<T>` and are `MR0204` for a struct that does not implement it (§8.5).
+- `==` and `!=` on a struct that declares the `Equals` of `IEquatable<T>` (one parameter of the struct's type, returning `bool`) call it instead of comparing field by field, in a function body and in a constant, and so does a tuple or struct that holds one (§8.5, §14.6).
 
 ### M3.11 Dynamic interface values
 
@@ -828,7 +832,7 @@ Done when:
 
 Spec: [§4.7](docs/design/mora.md#47-static-state), [§6.10](docs/design/mora.md#610-constants-and-statics). Crates: `mora-hir`, `mora-mir`, `mora-rt`. Blocked by: M1.11, M3.5.
 
-`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut`, and `MR0155` for a static member named through a value (§6.10).
+`const` in read-only data, constant sequences as `ReadOnlySpan<T>`, `static lazy` with run-time cycle detection and `MR0126`, `static mut` with its initializers evaluated at compile time, and `MR0155` for a static member named through a value (§6.10).
 
 Done when:
 
@@ -923,6 +927,18 @@ Done when:
 - UI tests: an unknown label, a label reused by a nested loop (no shadowing, as for locals under D-131) and a label named inside a lambda or local function within the loop each report a code the spec assigns.
 - UI tests: D-138 and §7.10 count `break outer` as leaving `outer`, so a `while outer (true)` that an inner `break outer` leaves does not end the path, and definite assignment follows the labeled exits.
 
+### M3.21 Newtypes and refinements
+
+Spec: [§6.12](docs/design/mora.md#612-newtypes), [§5.10](docs/design/mora.md#510-conversions), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-syntax`, `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6, M3.10.
+
+`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` (returning an option when there is a refinement) and `Parse` (whose `ParseError` names the refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4.9, the JSON mapping of a newtype with M5.11, and predicate refinements after the MVP (OQ-22).
+
+Done when:
+
+- Run tests for `UserId`, `Port` and `Slug` of §6.12: `From`, `Parse`, the implicit conversion to the underlying type and a member that reads `value`.
+- UI tests: `let port: Port = 70000;` is `MR0260` with the message of §6.12, a `UserId` passed where an `OrderId` is expected is a type mismatch, `default(Port)` is `MR0190`, and the newtype-to-underlying-type row of §5.10.
+- Constant evaluation matches a constant against a refinement pattern (§14.6), and a constant that satisfies it becomes the wrapped value (MIR snapshot).
+
 ## M4: Macros
 
 **Goal.** Attribute and expression macros written in Mora, run at compile time on a typed model, plus the standard-library macros that replace a derive list.
@@ -939,7 +955,7 @@ Done when:
 | [M4.6](#m46-expansion-cache) | Expansion cache | `macro` | M4.4 |
 | [M4.7](#m47-seeing-and-testing-expansions) | Seeing and testing expansions | `macro` | M4.5 |
 | [M4.8](#m48-error-pages-and-guide-for-macro-authors) | Error pages and guide for macro authors | `docs` | M4.7 |
-| [M4.9](#m49-standard-library-macros) | Standard-library macros | `std` | M4.7 |
+| [M4.9](#m49-standard-library-macros) | Standard-library macros | `std` | M4.7, M3.21 |
 
 ### M4.1 Macro declarations and quoted code
 
@@ -1029,14 +1045,15 @@ Done when:
 
 ### M4.9 Standard-library macros
 
-Spec: [§9.1](docs/design/mora.md#91-a-complete-example), [§9.6](docs/design/mora.md#96-what-a-macro-sees), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.2](docs/design/mora.md#62-structs). Crates: `std`, `mora-hir`. Blocked by: M4.7.
+Spec: [§9.1](docs/design/mora.md#91-a-complete-example), [§9.6](docs/design/mora.md#96-what-a-macro-sees), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.2](docs/design/mora.md#62-structs), [§6.12](docs/design/mora.md#612-newtypes). Crates: `std`, `mora-hir`. Blocked by: M4.7, M3.21.
 
-`@Equatable`, `@Hashable`, `@Comparable`, `@Display`, `@Default`, `@Clone` and `#Assert` with the behaviour of §9.9, and their automatic application to structs, tuples, enums and unions. `@Error` on unions and structs, with `@Code`, `@Public` and `@Status` (D-108), and helper attributes with `MR0615`.
+`@Equatable`, `@Hashable`, `@Comparable`, `@Display`, `@Default`, `@Clone` and `#Assert` with the behaviour of §9.9, and their automatic application to structs, tuples, enums and unions. `@Arithmetic` on newtypes (§6.12), with each result of a refined newtype checked against its refinement. `@Error` on unions and structs, with `@Code`, `@Public` and `@Status` (D-108), and helper attributes with `MR0615`.
 
 Done when:
 
 - A `MacroTest` suite per macro.
 - §9.1's example prints `True`; structs compare by fields and print as `User { Id = 1, ... }`.
+- Run test: `@Arithmetic` on `Port` adds two ports, and 65535 plus 1 panics because the result is not a `Port`.
 
 ## M5: Standard library core
 
@@ -1056,7 +1073,7 @@ Done when:
 | [M5.8](#m58-console-environment-time-and-random) | Console, environment, time and random | `std` | M5.2 |
 | [M5.9](#m59-files-directories-and-paths) | Files, directories and paths | `std` | M5.8 |
 | [M5.10](#m510-json-values-parser-and-writer) | JSON values, parser and writer | `std` | M5.5 |
-| [M5.11](#m511-the-json-macro) | The `@Json` macro | `std` | M5.10, M4.9 |
+| [M5.11](#m511-the-json-macro) | The `@Json` macro | `std` | M5.10, M4.9, M3.21 |
 | [M5.12](#m512-testing-library-and-mora-test) | Testing library and `mora test` | `cli` | M5.7, M5.8, M5.11 |
 | [M5.13](#m513-signals-and-observable) | Signals and `@Observable` | `std` | M5.4, M2.10, M4.9 |
 | [M5.14](#m514-html-url-and-literal) | `Html`, `Url` and `Literal` | `std` | M5.2, M3.17 |
@@ -1183,14 +1200,15 @@ Done when:
 
 ### M5.11 The `@Json` macro
 
-Spec: [§16.3](docs/design/mora.md#163-json-stdjson), [§9.9](docs/design/mora.md#99-standard-library-macros). Crates: `std`. Blocked by: M5.10, M4.9.
+Spec: [§16.3](docs/design/mora.md#163-json-stdjson), [§9.9](docs/design/mora.md#99-standard-library-macros), [§6.12](docs/design/mora.md#612-newtypes). Crates: `std`. Blocked by: M5.10, M4.9, M3.21.
 
-`@Json`, `IJsonSerialize`, `IJsonDeserialize`, `Json.Serialize` and `Json.Deserialize` with every mapping row of §16.3, `@JsonName`, `@JsonIgnore`, `@JsonStrict` and `@JsonTag`.
+`@Json`, `IJsonSerialize`, `IJsonDeserialize`, `Json.Serialize` and `Json.Deserialize` with every mapping row of §16.3, `@JsonName`, `@JsonIgnore`, `@JsonStrict` and `@JsonTag`. A newtype maps as its underlying type, and deserializing one checks its refinement (§6.12).
 
 Done when:
 
 - Round-trip tests for each row of the §16.3 table.
 - A missing non-optional property fails with `missing property "name"`.
+- A `UserId` round-trips as a JSON number, and deserializing 70000 as a `Port` fails with a `JsonError` that names the refinement.
 
 ### M5.12 Testing library and `mora test`
 

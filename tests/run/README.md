@@ -15,6 +15,8 @@ The MIR is one function per body (`fn name(params) -> type { ... }`), each a lis
 
 A body that a later milestone of the roadmap lowers, such as a getter, a constructor or a function with a class type in its signature, is one line in place of its function: `// App.Point.Length: not lowered until M2.1`, the owner's name and the milestone.
 
+A constant is one line, `const App.Size: int = 8;`, with the value constant evaluation computed (§14.6); a struct or tuple value prints as the values of its fields. A read of a constant is that value.
+
 - `copy x` reads a place and leaves it usable. `move x` hands it over.
 - `&in x` and `&ref x` borrow a place, to read it or to change it. `(*x)` is the place a borrow `x` points to, so a parameter `n: int` is read as `copy (*n#0)`.
 - `(T)a` converts a number to `T` as the source wrote it. `(implicit T)a` is a conversion the compiler inserted because every value fits, such as `int` to `long`.

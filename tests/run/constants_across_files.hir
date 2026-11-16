@@ -1,0 +1,11 @@
+//@ file src/Limits.mr
+init App.Limit => 10 * 10{= 100};
+
+init App.Screen => new Size { Width = 3, Height = 4 };
+//@ file src/Program.mr
+top-level {
+    Console{external}.WriteLine{external}(Limit{value App.Limit});
+    let screen#0: Size = Screen{value App.Screen};
+    Console{external}.WriteLine{external}(screen#0.Width);
+    Console{external}.WriteLine{external}(screen#0.Height);
+}
