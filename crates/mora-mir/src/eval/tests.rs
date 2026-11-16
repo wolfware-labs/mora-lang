@@ -488,11 +488,7 @@ fn a_scan_names_each_unsupported_operation() {
             "X",
             "`this`",
         ),
-        (
-            "const A: int = Std.Math.Max(1, 2);\n",
-            "Std.Math.Max(1, 2)",
-            "a call",
-        ),
+        ("F(): int => 1;\nconst A: int = F();\n", "F()", "a call"),
     ];
     for (text, at, what) in cases {
         let source = unchecked(text);
@@ -1774,6 +1770,37 @@ fn an_initializer_a_walk_evaluates_early_keeps_its_first_result() {
         field: 0,
     };
     assert_eq!(outcome(source.evaluated(x)), "a `match` M3.3");
+}
+
+#[test]
+fn a_call_of_the_library_waits_for_its_signatures() {
+    // Whether a library function is generic is unknown until the library
+    // has signatures, so no library call is `MR0460` yet.
+    for call in [
+        "Math.Max(1, 2)",
+        "Math.Max<int>(1, 2)",
+        "List.Empty<int>()",
+        "Std.Math.Max(1, 2)",
+    ] {
+        let source = checked(&format!("const X: int = {call};\n"));
+        assert_eq!(
+            outcome(source.evaluated(source.constant("X"))),
+            "a value of the standard library M1.15",
+            "{call}"
+        );
+    }
+    let source = checked(
+        "F(): int => 1;\nMax<T>(a: T, b: T): T => a;\n\
+         const X: int = F();\nconst Y: int = Max(1, 2);\n",
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("X"))),
+        "unsupported a call"
+    );
+    assert_eq!(
+        outcome(source.evaluated(source.constant("Y"))),
+        "a call of a generic function M3.9"
+    );
 }
 
 #[test]

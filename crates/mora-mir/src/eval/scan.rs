@@ -11,7 +11,6 @@ use mora_hir::{
 use mora_span::{Db, Project, TextRange};
 
 use super::{ConstKey, const_read};
-use crate::lower::later::from_library;
 
 /// What the body of a [`ConstKey`] reads and the first operation in it
 /// that constant evaluation never runs.
@@ -113,12 +112,9 @@ impl Scanner<'_> {
     /// What `expr` is when §14.6 never allows it in a constant.
     fn unsupported(&self, expr: ExprId) -> Option<&'static str> {
         Some(match &self.hir.exprs[expr] {
-            Expr::Call { .. }
-                if self.inference.callee(expr).is_some()
-                    || from_library(self.hir, self.resolution, expr) =>
-            {
-                "a call"
-            }
+            // A call of the library has no callee until the library has
+            // signatures, and waits for them.
+            Expr::Call { .. } if self.inference.callee(expr).is_some() => "a call",
             Expr::Interpolated(_) => "an interpolated string",
             Expr::Lambda(_) => "a lambda",
             Expr::Assign { .. } => "an assignment",
