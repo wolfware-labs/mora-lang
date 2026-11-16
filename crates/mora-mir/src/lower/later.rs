@@ -1531,7 +1531,9 @@ fn owner_later(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOwner
 
 /// The milestone that lowers the body of `owner` for what it is alone, as
 /// a constant of a class or a field of a union, leaving out the types it
-/// declares; `None` when this one does.
+/// declares; `None` when this one does. A constant or a field initializer
+/// whose container waits is never scanned for constant evaluation
+/// (`const_scan`): it waits unread and unchecked (§14.6).
 pub(crate) fn container_later(
     db: &dyn Db,
     project: Project,
@@ -1542,7 +1544,7 @@ pub(crate) fn container_later(
 }
 
 /// Whether [`owner_later_by`] counts the types a body declares.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 enum DeclaredTypes {
     /// They decide too ([`owner_later`]).
     Counted,
@@ -1644,11 +1646,12 @@ fn owner_later_by(
             declared(),
         ),
     };
-    let types = types
-        .iter()
-        .filter(|_| types_decide == DeclaredTypes::Counted);
-    let typed =
-        types_later(db, types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")));
+    let typed = match types_decide {
+        DeclaredTypes::Counted => {
+            types_later(db, &types).and_then(|kind| kind.later(|ty| format!("{what} with {ty}")))
+        }
+        DeclaredTypes::Skipped => None,
+    };
     latest([own.map(|own| Later::new(what, own)), typed])
 }
 

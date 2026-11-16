@@ -15,7 +15,7 @@ use crate::lower::later::{ExprRules, container_later};
 
 /// What the body of a [`ConstKey`] reads and the first operation in it
 /// that constant evaluation never runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ConstScan {
     /// The first operation in pre-order that §14.6 never allows, and what
     /// it is.
@@ -39,38 +39,36 @@ pub(crate) struct ConstScan {
 /// unchecked ([`Scanner::list_held`]), so that a default value, whose
 /// milestone comes from the expressions listed, waits as late as a
 /// constant with the same expression.
+///
+/// A constant or an initializer whose owner waits for what it is
+/// ([`container_later`]), as a constant of a class or a union, is not
+/// scanned at all: it waits unread and unchecked, so it takes part in no
+/// cycle. A default value is scanned whatever its function waits for,
+/// since it is evaluated where it is declared.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn const_scan(db: &dyn Db, project: Project, key: ConstKey) -> ConstScan {
     let file = key.file();
     let owner = key.owner(db);
-    let hir = body(db, file, owner);
-    let mut scanner = Scanner {
-        db,
-        hir,
-        map: body_source_map(db, file, owner),
-        resolution: body_resolution(db, project, file, owner),
-        inference: infer(db, project, file, owner),
-        rules: ExprRules::new(db, project, file, owner),
-        scan: ConstScan {
-            unsupported: None,
-            reads: Vec::new(),
-            exprs: Vec::new(),
-        },
-    };
-    // A constant or an initializer whose owner waits, as a constant of a
-    // class, waits before anything in it is read or checked, so it reads
-    // nothing and takes part in no cycle. A default value is checked where
-    // it is declared, whatever its function waits for.
     let owner_waits = match key {
         ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
             container_later(db, project, file, owner).is_some()
         }
         ConstKey::Default { .. } => false,
     };
-    if let Some(root) = key.root(db).filter(|_| !owner_waits) {
-        // A scan that stops has recorded why.
-        let _ = scanner.visit(root);
-    }
+    let Some(root) = key.root(db).filter(|_| !owner_waits) else {
+        return ConstScan::default();
+    };
+    let mut scanner = Scanner {
+        db,
+        hir: body(db, file, owner),
+        map: body_source_map(db, file, owner),
+        resolution: body_resolution(db, project, file, owner),
+        inference: infer(db, project, file, owner),
+        rules: ExprRules::new(db, project, file, owner),
+        scan: ConstScan::default(),
+    };
+    // A scan that stops has recorded why.
+    let _ = scanner.visit(root);
     scanner.scan
 }
 
