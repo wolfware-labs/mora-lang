@@ -800,6 +800,7 @@ Done when:
 - Run tests for default methods and static abstract members in generic code.
 - A generic `Max<T>` over `IComparable<T>` compiles to a direct call (MIR snapshot).
 - `<`, `>`, `<=` and `>=` on two structs call the struct's `IComparable<T>` and are `MR0204` for a struct that does not implement it (§8.5).
+- `==` and `!=` on a struct that declares its own `Equals` call it instead of comparing field by field, in a function body and in a constant, and so does a tuple or struct that holds one (§8.5, §14.6).
 
 ### M3.11 Dynamic interface values
 
