@@ -2701,6 +2701,13 @@ mod tests {
         debug_validate(&fx.db, &missing_target(), true);
     }
 
+    #[test]
+    #[should_panic(expected = "invalid MIR")]
+    fn debug_validate_evaluation_panics_on_a_bad_body() {
+        let fx = fx();
+        debug_validate_evaluation(&fx.db, &missing_target(), true);
+    }
+
     // Storage markers.
 
     fn live(local: u32) -> Statement {

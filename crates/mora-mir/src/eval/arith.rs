@@ -718,6 +718,7 @@ mod tests {
         assert_eq!(binary(BinOp::Eq, &Const::Unit, &Const::Unit), Ok(t.clone()));
         assert_eq!(binary(BinOp::BitAnd, &t, &fl), Ok(fl.clone()));
         assert_eq!(binary(BinOp::BitOr, &t, &fl), Ok(t.clone()));
+        assert_eq!(binary(BinOp::BitOr, &t, &t), Ok(t.clone()));
         assert_eq!(binary(BinOp::BitXor, &t, &t), Ok(fl.clone()));
         assert_eq!(unary(UnOp::Not, &t), Ok(fl.clone()));
         assert_eq!(unary(UnOp::Not, &fl), Ok(t));
@@ -752,5 +753,11 @@ mod tests {
     #[should_panic(expected = "internal error evaluating App.K: cast of Int(1, Int) to `bool`")]
     fn a_cast_to_a_type_that_is_not_numeric_is_a_compiler_bug() {
         let _ = cast(&i(1), Primitive::Bool);
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error evaluating App.K: cast of Real(")]
+    fn a_cast_of_a_real_to_a_type_that_is_not_numeric_is_a_compiler_bug() {
+        let _ = cast(&d(1.0), Primitive::Char);
     }
 }

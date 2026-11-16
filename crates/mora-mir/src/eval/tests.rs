@@ -1804,6 +1804,46 @@ fn a_call_of_the_library_waits_for_its_signatures() {
 }
 
 #[test]
+fn a_cut_cycle_inside_a_walk_keeps_the_frames_before_the_cut() {
+    // The walk of `S` reaches the cycle `K -> K2 -> F's default -> K` at
+    // its third frame, and the cycle is cut at its second edge.
+    let text = "const S: int = match (true) { _ => G() };\nG(y: int = K): int => y;\n\
+                const K: int = K2;\nconst K2: int = match (true) { _ => F() };\n\
+                F(x: int = K): int => x;\n";
+    let names = [
+        "S",
+        "the default value of y in G",
+        "K",
+        "K2",
+        "the default value of x in F",
+    ];
+    assert_eq!(
+        outcomes(text, &names),
+        [
+            "a call that leaves out a default that needs evaluation M3.3",
+            "a constant M3.3",
+            "a constant M3.3",
+            "a `match` M3.3",
+            "a constant M3.3",
+        ]
+    );
+}
+
+#[test]
+fn an_unsupported_constant_runs_no_initializer_it_reads() {
+    let lib = util_struct("    public X: int = Zero();\n");
+    let (source, _) = using_util(&lib, "const C: int = new Util.P {}.X + Util.Zero();\n");
+    let reported: Vec<_> = crate::diagnostics(&source.db, source.project)
+        .iter()
+        .map(|diagnostic| (diagnostic.code.to_string(), diagnostic.primary.span.file))
+        .collect();
+    assert_eq!(
+        reported,
+        [("MR0460".to_owned(), source.file.id(&source.db))]
+    );
+}
+
+#[test]
 fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
     let source = checked(
         "const B: bool = true;\nstruct P {\n    public X: bool = B is true;\n}\n\
