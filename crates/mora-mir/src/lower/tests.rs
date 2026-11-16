@@ -3932,6 +3932,24 @@ fn later_error(text: &str, owner: impl FnOnce(&Lowered) -> BodyOwner) -> String 
 }
 
 #[test]
+fn a_call_that_converts_an_argument_to_an_option_waits_for_options() {
+    let what = "internal error lowering top-level: a conversion to an option type is not \
+                lowered until M3.5";
+    for text in [
+        "F(x: int?): int => 1;\nConsole.WriteLine(F(1));\n",
+        "F(x: int? = 1): int => 1;\nConsole.WriteLine(F());\n",
+        "F(x: (int, int?)): int => 1;\nConsole.WriteLine(F((1, 2)));\n",
+        "const S: string = \"a\";\nF(x: string? = S): int => 1;\nConsole.WriteLine(F());\n",
+        "F(x: string? = \"a\" + \"b\"): int => 1;\nConsole.WriteLine(F());\n",
+        "const S: string = \"a\";\nF(x: string?): int => 1;\nConsole.WriteLine(F(S));\n",
+        "F(x: string?): int => 1;\nConsole.WriteLine(F(\"a\"));\n",
+        "F(x: string? = \"a\"): int => 1;\nConsole.WriteLine(F());\n",
+    ] {
+        assert_eq!(later_error(text, |l| l.owner("top-level")), what, "{text}");
+    }
+}
+
+#[test]
 fn a_static_method_of_a_generic_struct_is_lowered() {
     let lowered = lowered("struct B<T> {\n    static F(): int => 1;\n}\n");
     assert_eq!(lowered.bodies("F"), ["UsersApi.B.F"]);
@@ -4453,6 +4471,20 @@ fn every_owner_lowered_later_names_its_milestone() {
             "struct P {\n    public X: int;\n}\nF(p: P, q: P): bool => p < q;\n",
             |l| l.owner("F"),
             "UsersApi.F: an ordering of structs is not lowered until M3.10",
+        ),
+        (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             F(p: P, q: P): bool => p != q;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a comparison that calls a declared `Equals` is not lowered until M3.10",
+        ),
+        (
+            "struct P : IEquatable<P> {\n    public X: int;\n    \
+             public Equals(in other: P): bool => X == other.X;\n}\n\
+             struct Q {\n    public p: P;\n}\nF(a: (Q, int), b: (Q, int)): bool => a == b;\n",
+            |l| l.owner("F"),
+            "UsersApi.F: a comparison that calls a declared `Equals` is not lowered until M3.10",
         ),
         (
             "let t: (byte, byte) = (1, 2);\nlet a = t == (1, 2);\n",

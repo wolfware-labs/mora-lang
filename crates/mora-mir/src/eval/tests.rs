@@ -1657,6 +1657,26 @@ fn a_constant_whose_code_comes_later_waits() {
 }
 
 #[test]
+fn a_comparison_that_calls_a_declared_equals_waits() {
+    let source = checked(
+        "struct P : IEquatable<P> {\n    public X: int = 1;\n    public Y: int = 2;\n    \
+         public Equals(in other: P): bool => X == other.X;\n}\n\
+         struct Q {\n    public p: P;\n}\n\
+         const S: bool = new P {} == new P { Y = 3 };\n\
+         const N: bool = new P {} != new P { Y = 3 };\n\
+         const T: bool = (new P {}, 1) == (new P { Y = 3 }, 1);\n\
+         const U: bool = new Q { p = new P {} } == new Q { p = new P { Y = 3 } };\n",
+    );
+    for name in ["S", "N", "T", "U"] {
+        assert_eq!(
+            outcome(source.evaluated(source.constant(name))),
+            "a comparison that calls a declared `Equals` M3.10",
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_constant_waits_for_the_latest_of_its_reads_the_first_on_a_tie() {
     let source = checked(
         "const B: bool = true;\nstruct P {\n    public X: bool = B is true;\n}\n\

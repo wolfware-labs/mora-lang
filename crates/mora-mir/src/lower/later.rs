@@ -610,6 +610,20 @@ fn expression_later(
                 return None;
             }
         }
+        // `==` and `!=` call the `Equals` a struct declares (§6.9), which
+        // comes with static dispatch, in constant evaluation too.
+        Expr::Binary {
+            op: BinaryOp::Eq | BinaryOp::Ne,
+            lhs,
+            rhs,
+        } if [lhs, rhs].iter().any(|operand| {
+            inference
+                .expr(**operand)
+                .is_some_and(|ty| calls_declared_equals(db, ty))
+        }) =>
+        {
+            ("a comparison that calls a declared `Equals`", INTERFACES)
+        }
         Expr::Binary {
             op: BinaryOp::Eq | BinaryOp::Ne,
             lhs,
@@ -655,6 +669,9 @@ fn expression_later(
                 "a call of the standard library with an argument mode",
                 STD_BOOTSTRAP,
             )
+        }
+        Expr::Call { args, .. } if converts_to_option(db, inference, id, args) => {
+            ("a conversion to an option type", OPTIONS)
         }
         Expr::Await(_) => ("`await`", ASYNC),
         Expr::As { .. } => ("`as`", DYNAMIC_INTERFACES),
@@ -733,6 +750,46 @@ fn mut_receiver(
         .as_function()
         .is_some_and(|function| function.receiver == Some(ParamMode::Ref))
         .then_some(receiver)
+}
+
+/// Whether the call `call` with `args` passes a value to a parameter whose
+/// type holds an option type, as `string?` or `(int, int?)`, from an
+/// argument of another type or from a default the call leaves out: the
+/// value converts to the option type, which comes with options. A local
+/// function with such a parameter waits for options already, and so does
+/// the body that declares it.
+fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId, args: &[Arg]) -> bool {
+    let (Some(Callee::Item(item)), Some(bound)) =
+        (inference.callee(call), inference.arguments(call))
+    else {
+        return false;
+    };
+    let Some(function) = signature(db, item).as_function() else {
+        return false;
+    };
+    function.params.iter().enumerate().any(|(index, param)| {
+        holds_option(&param.ty)
+            && bound
+                .iter()
+                .position(|&bound| bound == index)
+                .is_none_or(|arg| {
+                    args.get(arg)
+                        .is_none_or(|arg| inference.expr(arg.expr) != Some(&param.ty))
+                })
+    })
+}
+
+/// Whether `ty` is an option type or a tuple that holds one.
+fn holds_option(ty: &Ty) -> bool {
+    let mut stack = vec![ty];
+    while let Some(ty) = stack.pop() {
+        match ty {
+            Ty::Unsupported(ty) if ty.construct == Construct::Optional => return true,
+            Ty::Tuple(elems) => stack.extend(elems.iter().map(|elem| &elem.ty)),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether the call `call` of `callee` with `args` borrows an element or
@@ -1148,6 +1205,29 @@ fn extension_call_later(
 ) -> Option<Later> {
     undeclared_member(db, hir, inference, callee)
         .then(|| Later::new("a call of an extension member", SMALLER_EXPRESSIONS))
+}
+
+/// Whether `==` on two values of `ty` calls an `Equals` that a struct
+/// declares: `ty` is such a struct, or a struct or a tuple that holds one
+/// in a field or an element, at any depth, since the equality of a struct
+/// or a tuple compares each field or element with `==`. It keeps a stack
+/// rather than recursing, as [`TypeWalk`] does.
+fn calls_declared_equals(db: &dyn Db, ty: &Ty) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![ty];
+    while let Some(ty) = stack.pop() {
+        match ty {
+            Ty::Struct(item) if seen.insert(*item) => {
+                if instance_methods(db, *item, "Equals").next().is_some() {
+                    return true;
+                }
+                stack.extend(instance_fields(db, *item).map(|(_, field)| &field.ty));
+            }
+            Ty::Tuple(elems) => stack.extend(elems.iter().map(|elem| &elem.ty)),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `expr` is a member of a struct value that the struct does not
