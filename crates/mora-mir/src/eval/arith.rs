@@ -114,10 +114,10 @@ impl Width {
 }
 
 /// The integer type `ty` on each target it may have: two for `nint` and
-/// `nuint`, which are 32 or 64 bits wide, one for any other. `ty` is an
-/// integer type ([`Arith::on_every_target`] checks it).
-fn widths(ty: Primitive) -> &'static [Width] {
-    match ty {
+/// `nuint`, which are 32 or 64 bits wide, one for any other. `None` when
+/// `ty` is not an integer type.
+fn widths(ty: Primitive) -> Option<&'static [Width]> {
+    Some(match ty {
         Primitive::Byte => &[Width::U8],
         Primitive::SByte => &[Width::I8],
         Primitive::Short => &[Width::I16],
@@ -127,8 +127,9 @@ fn widths(ty: Primitive) -> &'static [Width] {
         Primitive::Long => &[Width::I64],
         Primitive::ULong => &[Width::U64],
         Primitive::NInt => &[Width::I32, Width::I64],
-        _ => &[Width::U32, Width::U64],
-    }
+        Primitive::NUInt => &[Width::U32, Width::U64],
+        Primitive::Bool | Primitive::Float | Primitive::Double | Primitive::Char => return None,
+    })
 }
 
 /// The arithmetic of the evaluation of one body, whose internal errors
@@ -153,8 +154,7 @@ impl Arith<'_> {
         compute: impl Fn(Width) -> Result<i128, ArithError>,
     ) -> Result<Const, ArithError> {
         let what = || format!("`{}` is not an integer type", ty.keyword());
-        self.check(ty.is_integer(), what);
-        let widths = widths(ty);
+        let widths = self.expect(widths(ty), what);
         let first = compute(widths[0]);
         if widths[1..].iter().all(|&width| compute(width) == first) {
             first.map(|value| Const::Int(value, ty))
@@ -281,7 +281,7 @@ impl Arith<'_> {
             (Const::Int(value, _), Primitive::Double) => {
                 Some(Ok(Const::Real((*value as f64).to_bits(), to)))
             }
-            (Const::Int(value, _), _) if to.is_integer() => {
+            (Const::Int(value, _), _) if widths(to).is_some() => {
                 Some(self.on_every_target(to, |width| Ok(width.wrap(*value))))
             }
             (Const::Real(bits, _), Primitive::Float) => Some(Ok(Const::Real(
@@ -289,7 +289,7 @@ impl Arith<'_> {
                 to,
             ))),
             (Const::Real(bits, _), Primitive::Double) => Some(Ok(Const::Real(*bits, to))),
-            (Const::Real(bits, _), _) if to.is_integer() => {
+            (Const::Real(bits, _), _) if widths(to).is_some() => {
                 // `as` truncates, saturates at the bounds of `i128` and maps NaN to 0.
                 let value = f64::from_bits(*bits) as i128;
                 Some(self.on_every_target(to, |width| Ok(value.clamp(width.min(), width.max()))))
@@ -299,12 +299,6 @@ impl Arith<'_> {
         self.expect(result, || {
             format!("cast of {value:?} to `{}`", to.keyword())
         })
-    }
-
-    /// Panics with an internal error that names the body unless `holds`:
-    /// an operation that only a compiler bug passes in.
-    fn check(&self, holds: bool, what: impl FnOnce() -> String) {
-        self.expect(holds.then_some(()), what);
     }
 
     /// `value`, or an internal error that names the body when it is
