@@ -11,6 +11,7 @@ use mora_hir::{
 use mora_span::{Db, Project, TextRange};
 
 use super::{ConstKey, const_read};
+use crate::lower::later::ExprRules;
 
 /// What the body of a [`ConstKey`] reads and the first operation in it
 /// that constant evaluation never runs.
@@ -29,8 +30,10 @@ pub(crate) struct ConstScan {
 /// Scans the expression of `key` in pre-order, up to its first operation
 /// that §14.6 never allows. A read of a constant, or of the initializer of
 /// a field that a memberwise creation leaves out, is recorded and not
-/// descended into. A `match` and a block are not descended into either:
-/// the milestones that lower them decide what they hold.
+/// descended into. Neither is a construct a later milestone lowers
+/// ([`ExprRules::construct_later`]), as a constructor call, `with`, `is`,
+/// a `match` or a call of a generic function, nor a block: the milestones
+/// that lower them decide what they hold.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn const_scan(db: &dyn Db, project: Project, key: ConstKey) -> ConstScan {
     let file = key.file();
@@ -42,6 +45,7 @@ pub(crate) fn const_scan(db: &dyn Db, project: Project, key: ConstKey) -> ConstS
         map: body_source_map(db, file, owner),
         resolution: body_resolution(db, project, file, owner),
         inference: infer(db, project, file, owner),
+        rules: ExprRules::new(db, project, file, owner),
         scan: ConstScan {
             unsupported: None,
             reads: Vec::new(),
@@ -67,6 +71,8 @@ struct Scanner<'a> {
     resolution: &'a BodyResolution,
     /// The types and records of the body.
     inference: &'a Inference,
+    /// What decides whether a construct of the body waits.
+    rules: ExprRules<'a>,
     /// What the scan has found so far.
     scan: ConstScan,
 }
@@ -79,6 +85,11 @@ impl Scanner<'_> {
         if let Some(what) = self.unsupported(expr) {
             self.scan.unsupported = Some((self.map.expr(expr), what));
             return ControlFlow::Break(());
+        }
+        // A construct a later milestone lowers decides what it holds, so
+        // what it holds is neither read nor checked (§14.6).
+        if self.rules.construct_later(expr).is_some() {
+            return ControlFlow::Continue(());
         }
         let hir = self.hir;
         let node = &hir.exprs[expr];
@@ -191,11 +202,19 @@ fn children(node: &Expr) -> Vec<ExprId> {
         | Expr::Sizeof(_)
         | Expr::Nameof(_)
         | Expr::Macro
-        | Expr::Match { .. }
         | Expr::Block(_)
-        | Expr::Lambda(_) => Vec::new(),
+        | Expr::Lambda(_)
+        // Constructs a later milestone lowers, which the scan stops at.
+        | Expr::Match { .. }
+        | Expr::Collection(_)
+        | Expr::Propagate(_)
+        | Expr::Await(_)
+        | Expr::Is { .. }
+        | Expr::As { .. }
+        | Expr::NewArray { .. }
+        | Expr::Range { .. }
+        | Expr::With { .. } => Vec::new(),
         Expr::Tuple(elements) => elements.iter().map(|&(_, element)| element).collect(),
-        Expr::Collection(elements) => elements.iter().map(|&(_, element)| element).collect(),
         Expr::Member { receiver, .. } => vec![*receiver],
         Expr::Call { callee, args } => std::iter::once(*callee)
             .chain(args.iter().map(|arg| arg.expr))
@@ -203,18 +222,8 @@ fn children(node: &Expr) -> Vec<ExprId> {
         Expr::Index { base, args, .. } => std::iter::once(*base)
             .chain(args.iter().map(|arg| arg.expr))
             .collect(),
-        Expr::Unary { expr, .. }
-        | Expr::Propagate(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::Await(expr)
-        | Expr::Is { expr, .. }
-        | Expr::As { expr, .. } => vec![*expr],
-        Expr::NewArray { size, .. } => vec![*size],
+        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => vec![*expr],
         Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
-        Expr::Range { start, end } => start.iter().chain(end).copied().collect(),
-        Expr::With { expr, inits } => std::iter::once(*expr)
-            .chain(inits.iter().map(|&(_, value)| value))
-            .collect(),
         Expr::Conditional {
             condition,
             then,

@@ -425,13 +425,8 @@ fn call_omitted_defaults(
 }
 
 /// The milestone that lowers the expressions `exprs` of the body of
-/// `owner`, the latest of them, by the rules that look at one expression at
-/// a time: those of [`expressions_later`], and the constructor calls, the
-/// operators on structs, the calls without a callee and the types of
-/// expressions that [`creations_later`], [`operators_later`],
-/// [`calls_later`] and [`body_types_later`] count. A read of a constant
-/// decides nothing, as for [`evaluation_later`]: its caller is constant
-/// evaluation. `None` when this one lowers them all.
+/// `owner`, the latest of them, by the rules of [`ExprRules`]. `None` when
+/// this one lowers them all.
 pub(crate) fn exprs_later(
     db: &dyn Db,
     project: Project,
@@ -439,24 +434,77 @@ pub(crate) fn exprs_later(
     owner: BodyOwner,
     exprs: &[ExprId],
 ) -> Option<Later> {
-    let hir = body(db, file, owner);
-    let inference = infer(db, project, file, owner);
-    let resolution = body_resolution(db, project, file, owner);
-    let uses = Uses::of(db, project, file, owner, hir, inference, resolution);
-    let mut walk = TypeWalk::new(db);
-    latest(exprs.iter().map(|&id| {
+    let mut rules = ExprRules::new(db, project, file, owner);
+    latest(exprs.iter().map(|&id| rules.later(id)))
+}
+
+/// The rules that look at one expression of a body at a time: those of
+/// [`expressions_later`], and the constructor calls, the operators on
+/// structs, the calls without a callee and the types of expressions that
+/// [`creations_later`], [`operators_later`], [`calls_later`] and
+/// [`body_types_later`] count. A read of a constant decides nothing, as for
+/// [`evaluation_later`]: their user is constant evaluation.
+pub(crate) struct ExprRules<'a> {
+    /// The database.
+    db: &'a dyn Db,
+    /// The body.
+    hir: &'a Body,
+    /// Its types and records.
+    inference: &'a Inference,
+    /// What its paths name.
+    resolution: &'a BodyResolution,
+    /// How its expressions are used.
+    uses: Uses,
+    /// The walk over the types of its expressions, which looks into each
+    /// struct once.
+    walk: TypeWalk<'a>,
+}
+
+impl<'a> ExprRules<'a> {
+    /// The rules for the body of `owner`, in `file` of `project`.
+    pub(crate) fn new(
+        db: &'a dyn Db,
+        project: Project,
+        file: SourceFile,
+        owner: BodyOwner,
+    ) -> Self {
+        let hir = body(db, file, owner);
+        let inference = infer(db, project, file, owner);
+        let resolution = body_resolution(db, project, file, owner);
+        let uses = Uses::of(db, project, file, owner, hir, inference, resolution);
+        Self {
+            db,
+            hir,
+            inference,
+            resolution,
+            uses,
+            walk: TypeWalk::new(db),
+        }
+    }
+
+    /// The milestone that lowers the expression `id`, `None` when this one
+    /// does: that of the construct it is ([`ExprRules::construct_later`]),
+    /// or that of its type, unless that type was looked into before.
+    pub(crate) fn later(&mut self, id: ExprId) -> Option<Later> {
+        let ty = self.inference.expr(id).and_then(|ty| self.walk.later(ty));
+        let ty = ty.and_then(|kind| kind.later(|what| format!("an expression with {what}")));
+        latest([self.construct_later(id), ty])
+    }
+
+    /// The milestone that lowers the construct the expression `id` is, by
+    /// the rules that do not look at its type, as a constructor call, `with`,
+    /// `match`, `is` or a call of a generic function; `None` when this one
+    /// lowers it.
+    pub(crate) fn construct_later(&self, id: ExprId) -> Option<Later> {
+        let (db, hir, inference, resolution) = (self.db, self.hir, self.inference, self.resolution);
         let expr = &hir.exprs[id];
-        let ty = inference
-            .expr(id)
-            .and_then(|ty| walk.later(ty))
-            .and_then(|kind| kind.later(|what| format!("an expression with {what}")));
         latest([
             expression_later(
                 db,
                 hir,
                 inference,
                 resolution,
-                &uses,
+                &self.uses,
                 ConstReads::Skipped,
                 id,
                 expr,
@@ -464,9 +512,8 @@ pub(crate) fn exprs_later(
             creation_later(db, inference, id, expr),
             operator_on_struct(inference, expr).then(operator_later),
             unresolved_call_later(db, hir, inference, resolution, id, expr),
-            ty,
         ])
-    }))
+    }
 }
 
 /// The milestone that lowers the body of `owner` for an expression or a

@@ -389,7 +389,8 @@ fn a_scan_descends_into_operations_and_values_but_not_into_types() {
         vec![(a, "A"), (b, "B"), (a, "A"), (b, "B")]
     );
     assert_eq!(source.reads(source.constant("M")), vec![(a, "A")]);
-    assert_eq!(source.reads(source.constant("N")), vec![(b, "B")]);
+    // The creation of a positional struct waits, and so does what it holds.
+    assert_eq!(source.reads(source.constant("N")), vec![]);
     // `P.S` names a static, which is not read, and `P` is not visited.
     assert_eq!(source.reads(source.constant("S2")), vec![]);
     assert_eq!(
@@ -399,16 +400,21 @@ fn a_scan_descends_into_operations_and_values_but_not_into_types() {
 }
 
 #[test]
-fn a_scan_reads_inside_constructs_a_later_milestone_lowers() {
+fn a_scan_stops_at_constructs_a_later_milestone_lowers() {
     let source = unchecked(
         "const A: int = 1;\nconst S: string = \"ab\";\nconst I: char = S[A];\n\
-         const R: int = Get(A)?;\nconst W: int = await Get(A);\nconst G: int = (A..A).Length;\n",
+         const R: int = Get(A)?;\nconst W: int = await Get(A);\nconst G: int = (A..A).Length;\n\
+         Arr(): int[] => Todo();\nconst X: int = Arr()[A];\n",
     );
-    let (a, s) = (source.constant("A"), source.constant("S"));
-    assert_eq!(source.reads(source.constant("I")), vec![(s, "S"), (a, "A")]);
-    assert_eq!(source.reads(source.constant("R")), vec![(a, "A")]);
-    assert_eq!(source.reads(source.constant("W")), vec![(a, "A")]);
-    assert_eq!(source.reads(source.constant("G")), vec![(a, "A"), (a, "A")]);
+    for name in ["I", "R", "W", "G"] {
+        let key = source.constant(name);
+        assert_eq!(source.reads(key), vec![], "{name}");
+        assert_eq!(source.unsupported(key), None, "{name}");
+    }
+    // An element of an array is no construct of its own: the scan goes on
+    // into its base.
+    let x = source.constant("X");
+    assert_eq!(source.unsupported(x), Some(("Arr()", "a call")));
 }
 
 #[test]
@@ -2687,4 +2693,79 @@ fn a_division_by_zero_names_the_division() {
             FAILED_NOTE,
         )]
     );
+}
+
+#[test]
+fn a_construct_that_waits_holds_no_error_and_no_read() {
+    let p =
+        "struct P {\n    public X: int;\n    public P(x: int) { X = x; }\n}\nZero(): int => 0;\n";
+    let q = "struct Q {\n    public X: int = 1;\n}\nZero(): int => 0;\n";
+    let generic = "Zero(): int => 0;\nMax<T>(a: T, b: T): T => a;\n";
+    let constructor = "a constructor call M2.1";
+    let cases: [(String, &[&str], &[&str]); 11] = [
+        (
+            format!("{p}const C: P = new P(Zero());\n"),
+            &["C"],
+            &[constructor],
+        ),
+        (
+            format!("{p}const C: P = new P(A);\nconst A: int = C.X;\n"),
+            &["C", "A"],
+            &[constructor, "a constant M2.1"],
+        ),
+        (
+            format!("{p}F(p: P = new P(Zero())): int => 1;\n"),
+            &["the default value of p in F"],
+            &[constructor],
+        ),
+        (
+            format!(
+                "{p}struct R {{\n    public p: P = new P(Zero());\n}}\nconst C: R = new R {{}};\n"
+            ),
+            &["C"],
+            &[constructor],
+        ),
+        (
+            format!(
+                "{p}struct R {{\n    public p: P = new P(C.p.X);\n}}\nconst C: R = new R {{}};\n"
+            ),
+            &["C"],
+            &[constructor],
+        ),
+        (
+            format!("{q}const O: Q = new Q {{}};\nconst C: Q = O with {{ X = Zero() }};\n"),
+            &["C"],
+            &["`with` M2.2"],
+        ),
+        (
+            format!(
+                "{q}const C: Q = O with {{ X = A }};\nconst O: Q = new Q {{}};\nconst A: int = C.X;\n"
+            ),
+            &["C", "A"],
+            &["`with` M2.2", "a constant M2.2"],
+        ),
+        (
+            "Zero(): int => 0;\nconst C: bool = Zero() is 0;\n".to_owned(),
+            &["C"],
+            &["an `is` test M3.3"],
+        ),
+        (
+            "const C: bool = A is 0;\nconst A: int = C ? 1 : 0;\n".to_owned(),
+            &["C", "A"],
+            &["an `is` test M3.3", "a constant M3.3"],
+        ),
+        (
+            format!("{generic}const C: int = Max(Zero(), 1);\n"),
+            &["C"],
+            &["a call of a generic function M3.9"],
+        ),
+        (
+            format!("{generic}const C: int = Max(A, 1);\nconst A: int = C;\n"),
+            &["C", "A"],
+            &["a call of a generic function M3.9", "a constant M3.9"],
+        ),
+    ];
+    for (text, names, expected) in cases {
+        waits_quietly(&text, names, expected);
+    }
 }
