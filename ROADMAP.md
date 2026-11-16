@@ -681,6 +681,7 @@ Done when:
 | [M3.18](#m318-effect-inference-and-uses-bounds) | Effect inference and `uses` bounds | `check` | M2.11, M3.11, M3.16, M3.17 |
 | [M3.19](#m319-let-with-a-refutable-pattern-and-else) | `let` with a refutable pattern and `else` | `syntax` | M3.3, M3.4 |
 | [M3.20](#m320-labeled-break-and-continue) | Labeled `break` and `continue` | `syntax` | M1.10 |
+| [M3.21](#m321-newtypes-and-refinements) | Newtypes and refinements | `hir` | M3.5, M3.6, M3.10 |
 
 ### M3.1 Unions
 
@@ -925,6 +926,18 @@ Done when:
 - Run tests for a labeled `break` and `continue` on each loop kind (`while`, `do`, `for`, `foreach`), from two levels of nesting.
 - UI tests: an unknown label, a label reused by a nested loop (no shadowing, as for locals under D-131) and a label named inside a lambda or local function within the loop each report a code the spec assigns.
 - UI tests: D-138 and §7.10 count `break outer` as leaving `outer`, so a `while outer (true)` that an inner `break outer` leaves does not end the path, and definite assignment follows the labeled exits.
+
+### M3.21 Newtypes and refinements
+
+Spec: [§6.12](docs/design/mora.md#612-newtypes), [§5.10](docs/design/mora.md#510-conversions), [§14.6](docs/design/mora.md#146-constant-evaluation). Crates: `mora-syntax`, `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6, M3.10.
+
+`newtype Name : T;` and `newtype Name : T is pattern;` (D-62): the declaration and its body, the layout of the underlying type, the implicit conversion to it through a generated `IFrom`, `From` and `Parse` (returning an option when there is a refinement), distinct types, members that read the underlying `value`, equality, hashing, ordering and printing from the underlying type, `IDefault` when the underlying default satisfies the refinement, and constant evaluation of refinements with `MR0260`. `@Arithmetic` comes with the standard-library macros of M4, and predicate refinements after the MVP (OQ-22).
+
+Done when:
+
+- Run tests for `UserId`, `Port` and `Slug` of §6.12: `From`, `Parse`, the implicit conversion to the underlying type and a member that reads `value`.
+- UI tests: `let port: Port = 70000;` is `MR0260` with the message of §6.12, a `UserId` passed where an `OrderId` is expected is a type mismatch, and `default(Port)` is `MR0190`.
+- Constant evaluation matches a constant against a refinement pattern (§14.6), and a constant that satisfies it becomes the wrapped value (MIR snapshot).
 
 ## M4: Macros
 
