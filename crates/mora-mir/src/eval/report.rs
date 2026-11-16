@@ -21,21 +21,16 @@ const UNSUPPORTED_NOTE: &str = "constant evaluation runs literals, operators, ca
 const FAILED_NOTE: &str = "a constant is computed when the program is compiled, where an operation that would panic at run time is an error in every build profile";
 
 /// The errors of constant evaluation in `project` (`MR0460`, `MR0461`,
-/// `MR0462`), in the order of the read graph. It runs on a program the
+/// `MR0462`), in the order of the read graph, from what its pass
+/// ([`const_values`](super::const_values)) gives. It runs on a program the
 /// front end accepted.
 ///
-/// The keys are evaluated from the last in the order back, so a key walks
-/// the keys it reads only when no key after it in the order reads it; the
-/// others are evaluated inside such a walk and walk nothing themselves. A
-/// key that fails because a key it reads has no value reports nothing, so
-/// each cause is reported once.
+/// A key that fails because a key it reads has no value reports nothing,
+/// so each cause is reported once.
 #[salsa::tracked(returns(ref))]
 pub fn diagnostics(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
-    let order = const_graph(db, project).order();
-    for &key in order.iter().rev() {
-        const_value(db, project, key);
-    }
-    order
+    const_graph(db, project)
+        .order()
         .iter()
         .filter_map(|&key| match const_value(db, project, key) {
             Evaluated::Failed(Some(error)) => Some(render(db, project, error)),

@@ -533,6 +533,10 @@ pub(crate) struct Owner<'a> {
     functions: Vec<local::LocalFn<'a>>,
     /// The type of `this`, in a method of a struct.
     this_ty: Option<Ty>,
+    /// Whether its bodies are lowered for constant evaluation, where a
+    /// read of a constant is an [`Operand::ConstRead`] instead of its
+    /// value.
+    evaluation: bool,
 }
 
 /// What a body is: its name, return type, receiver and parameters, and
@@ -565,6 +569,7 @@ impl<'a> Owner<'a> {
             inference: infer(db, project, file, owner),
             functions: Vec::new(),
             this_ty: None,
+            evaluation: false,
         };
         if let BodyOwner::Item(item) = owner {
             shared.this_ty = this_type(db, shared.item(item));

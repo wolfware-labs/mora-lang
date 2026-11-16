@@ -37,7 +37,7 @@ use mora_span::{Db, Project, SourceFile};
 
 use super::calls::{Declared, default_of};
 use super::expr::constant;
-use crate::eval::{Evaluated, const_read, const_target, const_value};
+use crate::eval::{ConstKey, Evaluated, const_read, const_target, const_value};
 
 /// A milestone of the roadmap, as `M3.9`. A later milestone compares
 /// greater.
@@ -272,30 +272,39 @@ pub(crate) fn lowered_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    later_with(db, project, file, owner, ConstReads::Evaluated)
+    let defaults = defaults_later(
+        &omitted_defaults(db, project, file, owner),
+        |project, key| const_value(db, project, key),
+    );
+    later_with(db, project, file, owner, ConstReads::Evaluated, defaults)
 }
 
 /// The milestone that lowers the body of `owner` for constant evaluation,
 /// which runs it: as [`lowered_later`], except that a read of a constant
-/// decides nothing, since evaluation follows each read itself. `None` when
-/// this one lowers it.
+/// decides nothing, since evaluation follows each read itself, and that
+/// the calls that leave out a default value wait for `defaults`, which
+/// evaluation gives from the values it has computed ([`defaults_later`]).
+/// `None` when this one lowers it.
 pub(crate) fn evaluation_later(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
     owner: BodyOwner,
+    defaults: Option<Later>,
 ) -> Option<Later> {
-    later_with(db, project, file, owner, ConstReads::Skipped)
+    later_with(db, project, file, owner, ConstReads::Skipped, defaults)
 }
 
 /// The milestone that lowers the body of `owner`, with constant reads
-/// treated as `reads` says.
+/// treated as `reads` says, and its calls that leave out a default value
+/// waiting for `defaults`.
 fn later_with(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
     owner: BodyOwner,
     reads: ConstReads,
+    defaults: Option<Later>,
 ) -> Option<Later> {
     latest([
         owner_later(db, project, file, owner),
@@ -306,29 +315,28 @@ fn later_with(
         operators_later(db, project, file, owner),
         lambdas_later(db, file, owner),
         calls_later(db, project, file, owner),
-        defaults_later(db, project, file, owner),
+        defaults,
         expressions_later(db, project, file, owner, reads),
     ])
 }
 
-/// The milestone that lowers the body of `owner` for a call of a function,
-/// a method or a local function that leaves out an argument whose default
-/// value waits for a later milestone: the latest of those the defaults
-/// that constant evaluation computes wait for ([`const_value`]). A
-/// literal default, or one constant evaluation gives a value or an error
-/// for, decides nothing. `None` when no call waits.
-fn defaults_later(
-    db: &dyn Db,
-    project: Project,
-    file: SourceFile,
-    owner: BodyOwner,
+/// The milestone that lowers a body for its calls of a function, a method
+/// or a local function that leave out an argument whose default value
+/// waits for a later milestone: the latest of those that `defaults`, as
+/// [`omitted_defaults`] lists them, wait for, the first on a tie, each
+/// evaluated by `value`. A default with a value or an error decides
+/// nothing. `None` when no call waits.
+pub(crate) fn defaults_later<'e>(
+    defaults: &[(Project, ConstKey)],
+    value: impl Fn(Project, ConstKey) -> &'e Evaluated,
 ) -> Option<Later> {
-    let here = Declared::of(db, project, file, owner);
     latest(
-        here.hir
-            .exprs
+        defaults
             .iter()
-            .map(|(id, _)| omitted_default_later(db, here, id)),
+            .map(|&(project, key)| match value(project, key) {
+                Evaluated::Later(later) => Some(later.clone()),
+                Evaluated::Value(_) | Evaluated::Failed(_) => None,
+            }),
     )
     .map(|later| {
         Later::new(
@@ -338,14 +346,37 @@ fn defaults_later(
     })
 }
 
-/// What the latest of the default values that `call` leaves out waits
-/// for, `call` being a call that inference checked in the body `here`. The
-/// callee's body is read only when the call leaves out an argument, so an
-/// edit inside it puts off only the callers that take a default.
-fn omitted_default_later(db: &dyn Db, here: Declared<'_>, call: ExprId) -> Option<Later> {
+/// The default values that constant evaluation computes and that the calls
+/// of the body of `owner` leave out, each with its project: the calls in
+/// the order of the expressions of the body, and the defaults of each in
+/// the order of its parameters. A literal default is not among them.
+pub(crate) fn omitted_defaults(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
+) -> Vec<(Project, ConstKey)> {
+    let here = Declared::of(db, project, file, owner);
+    here.hir
+        .exprs
+        .iter()
+        .flat_map(|(id, _)| call_omitted_defaults(db, here, id))
+        .collect()
+}
+
+/// The default values that constant evaluation computes and that `call`
+/// leaves out, `call` being a call that inference checked in the body
+/// `here`, in the order of the callee's parameters. The callee's body is
+/// read only when the call leaves out an argument, so an edit inside it
+/// puts off only the callers that take a default.
+fn call_omitted_defaults(
+    db: &dyn Db,
+    here: Declared<'_>,
+    call: ExprId,
+) -> Vec<(Project, ConstKey)> {
     let (hir, inference) = (here.hir, here.inference);
     let (Some(callee), Some(bound)) = (inference.callee(call), inference.arguments(call)) else {
-        return None;
+        return Vec::new();
     };
     let local = |local| {
         hir.stmts.iter().find_map(|(_, stmt)| match stmt {
@@ -361,7 +392,7 @@ fn omitted_default_later(db: &dyn Db, here: Declared<'_>, call: ExprId) -> Optio
         .filter(|index| !bound.contains(index))
         .collect();
     if omitted.is_empty() {
-        return None;
+        return Vec::new();
     }
     // The body that declares the defaults, and the callee's parameters
     // and their defaults.
@@ -375,7 +406,9 @@ fn omitted_default_later(db: &dyn Db, here: Declared<'_>, call: ExprId) -> Optio
             )
         }
         Callee::Local(id) => {
-            let function = local(id)?;
+            let Some(function) = local(id) else {
+                return Vec::new();
+            };
             (
                 here,
                 function.params.as_slice(),
@@ -383,19 +416,13 @@ fn omitted_default_later(db: &dyn Db, here: Declared<'_>, call: ExprId) -> Optio
             )
         }
     };
-    latest(
-        omitted
-            .iter()
-            .filter_map(|&index| params.get(index))
-            .filter_map(|&param| default_of(param, defaults))
-            .filter(|&default| constant(declared.hir, declared.inference, default).is_none())
-            .map(|default| {
-                match const_value(db, declared.project, declared.default_key(default)) {
-                    Evaluated::Later(later) => Some(later.clone()),
-                    Evaluated::Value(_) | Evaluated::Failed(_) => None,
-                }
-            }),
-    )
+    omitted
+        .iter()
+        .filter_map(|&index| params.get(index))
+        .filter_map(|&param| default_of(param, defaults))
+        .filter(|&default| constant(declared.hir, declared.inference, default).is_none())
+        .map(|default| (declared.project, declared.default_key(default)))
+        .collect()
 }
 
 /// The milestone that lowers the expressions `exprs` of the body of

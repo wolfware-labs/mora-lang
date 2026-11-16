@@ -5,11 +5,11 @@
 //! The lowering of such a body holds only what §14.6 allows, which the scan
 //! checks before anything runs, so any other form here is a compiler bug.
 
-use mora_hir::{ItemId, Ty, ty_name};
-use mora_span::{Db, TextRange};
+use mora_hir::{Ty, ty_name};
+use mora_span::{Db, Project, TextRange};
 
 use super::arith::{self, ArithError};
-use super::{ConstValue, fail_evaluating};
+use super::{ConstKey, ConstValue, fail_evaluating};
 use crate::dump::constant;
 use crate::{
     BinOp, BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection, Rvalue,
@@ -42,22 +42,25 @@ pub(crate) enum Stop {
 }
 
 /// Runs `body` from its entry block to `return` and gives the value of
-/// `_0`. An `Initializer` call takes its value from `initializer`; `None`
-/// stops with [`Stop::Dependency`].
+/// `_0`. A read of a constant ([`Operand::ConstRead`]) and an `Initializer`
+/// call take their values from `values`, by the key and its project; an
+/// initializer without one stops with [`Stop::Dependency`].
 ///
 /// # Panics
 ///
 /// On a form that a body constant evaluation runs never holds: a borrow, a
 /// dereference, an interpolated string, a call of anything but a field
-/// initializer, an unreachable block, or a read of a local without a value.
+/// initializer, an unreachable block, a read of a local without a value,
+/// or a read of a constant without one.
 pub(crate) fn run(
     db: &dyn Db,
     body: &Body,
-    initializer: &mut dyn FnMut(ItemId, u32) -> Option<ConstValue>,
+    values: &dyn Fn(Project, ConstKey) -> Option<ConstValue>,
 ) -> Result<ConstValue, Stop> {
     let mut machine = Machine {
         db,
         body,
+        values,
         locals: vec![None; body.locals.len()],
     };
     let mut block = BlockId::ENTRY;
@@ -100,7 +103,11 @@ pub(crate) fn run(
                 next,
                 ..
             } => {
-                let value = initializer(*item, *field).ok_or(Stop::Dependency)?;
+                let key = ConstKey::Initializer {
+                    item: *item,
+                    field: *field,
+                };
+                let value = values(item.project, key).ok_or(Stop::Dependency)?;
                 if let Some(dest) = dest {
                     machine.write(dest, value);
                 }
@@ -119,6 +126,7 @@ pub(crate) fn run(
 struct Machine<'a> {
     db: &'a dyn Db,
     body: &'a Body,
+    values: &'a dyn Fn(Project, ConstKey) -> Option<ConstValue>,
     locals: Vec<Option<ConstValue>>,
 }
 
@@ -212,6 +220,8 @@ impl Machine<'_> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
             Operand::Const(value) => ConstValue::Scalar(value.clone()),
+            Operand::ConstRead(read) => (self.values)(read.project, read.key)
+                .unwrap_or_else(|| self.internal("a read of a constant without a value")),
         }
     }
 

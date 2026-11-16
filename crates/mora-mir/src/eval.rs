@@ -13,8 +13,7 @@ pub(crate) mod interp;
 mod report;
 pub(crate) mod scan;
 
-use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub use self::report::diagnostics;
 
@@ -27,10 +26,10 @@ use mora_span::{Db, Project, SourceFile, TextRange, TextSize};
 use self::graph::const_graph;
 use self::interp::{Failure, Stop};
 use self::scan::const_scan;
-use crate::lower::consts::default_mir;
+use crate::lower::consts::eval_mir;
 use crate::lower::expr::constant;
-use crate::lower::later::{Later, evaluation_later, exprs_later};
-use crate::{AggregateKind, Const, mir};
+use crate::lower::later::{Later, defaults_later, evaluation_later, exprs_later, omitted_defaults};
+use crate::{AggregateKind, Const};
 
 /// A body that constant evaluation runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -292,157 +291,240 @@ pub(crate) enum ErrorKind {
     Cycle(Vec<ConstKey>),
 }
 
-/// The value of `key`, a key of `project`, each step in order: a key in a
-/// cycle of reads fails, with the error on the cycle's first member; then
-/// one with an operation §14.6 never allows; then the keys it reads are
-/// evaluated first ([`evaluate_reads_first`]); a key whose code a later
-/// milestone lowers, or that reads one that waits, waits for the latest of
-/// those milestones; a key that reads one without a value fails without an
-/// error of its own; and any other key runs its MIR in the interpreter.
+/// What evaluating every key of `project` gives: the keys of its read
+/// graph, and the initializers of other projects that their own read
+/// graphs never reach, which a key of `project` reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConstValues {
+    /// What each key gives. Only looked up, never iterated.
+    values: HashMap<ConstKey, Evaluated>,
+}
+
+impl ConstValues {
+    /// What `key` gives, when the pass evaluated it.
+    pub(crate) fn get(&self, key: ConstKey) -> Option<&Evaluated> {
+        self.values.get(&key)
+    }
+}
+
+/// Evaluates every key of `project` in one pass, in the order of its read
+/// graph, each after every key it needs, so each finds what those give
+/// already computed and none is evaluated inside another.
 ///
-/// The milestones are those of [`evaluation_later`], which leaves the reads
-/// to this step, so a key never asks for its own value. No body that a
-/// later milestone lowers is ever lowered or run. What runs
-/// is one expression, without a block, a `match` or a lambda, so the
-/// interpreter never sees a loop.
+/// Its dependencies do not grow with a chain of constants: the read graph,
+/// and for each key its scan, what decides whether it waits, and its MIR,
+/// in which a read of a constant is an [`Operand::ConstRead`] and not the
+/// value; and for each other project it reads, that project's pass. So
+/// checking it again after an edit goes one level deep per project, never
+/// one per constant.
+///
+/// [`Operand::ConstRead`]: crate::Operand::ConstRead
 #[salsa::tracked(returns(ref))]
-pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> Evaluated {
-    if let Some(cycle) = const_graph(db, project).cycle_of(key) {
-        if cycle.members.first() != Some(&key) {
-            return Evaluated::Failed(None);
-        }
-        let kind = ErrorKind::Cycle(cycle.members.clone());
-        return failed(key, cycle.read, kind);
-    }
-    let scan = const_scan(db, project, key);
-    if let Some((range, what)) = scan.unsupported {
-        return failed(key, range, ErrorKind::Unsupported(what));
-    }
-    evaluate_reads_first(db, project, key);
-    let file = key.file();
-    let owner = key.owner(db);
-    let later = match key {
-        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
-            evaluation_later(db, project, file, owner)
-        }
-        ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),
+pub(crate) fn const_values(db: &dyn Db, project: Project) -> ConstValues {
+    let mut pass = Pass {
+        db,
+        project,
+        values: HashMap::new(),
     };
-    // The key waits for the latest of its own milestone and those of its
-    // reads, its own first on a tie, then the reads in order; a constant it
-    // reads waits as `a constant`, an initializer for what it waits for.
-    let waits_itself = later.is_some();
-    let mut waits = later;
-    let mut read_failed = false;
-    for &(read_project, read, _) in &scan.reads {
-        match const_value(db, read_project, read) {
-            Evaluated::Value(_) => {}
-            Evaluated::Failed(_) => read_failed = true,
-            Evaluated::Later(later) => {
-                if waits
-                    .as_ref()
-                    .is_none_or(|latest| later.milestone > latest.milestone)
-                {
-                    waits = Some(match read {
-                        ConstKey::Constant { .. } => Later {
-                            what: "a constant".to_owned(),
-                            milestone: later.milestone,
-                        },
-                        ConstKey::Initializer { .. } | ConstKey::Default { .. } => later.clone(),
-                    });
+    for &key in const_graph(db, project).order() {
+        pass.ensure(project, key);
+    }
+    ConstValues {
+        values: pass.values,
+    }
+}
+
+/// What evaluating `key`, a key of the read graph of `project`, gives
+/// ([`const_values`]).
+///
+/// # Panics
+///
+/// When the read graph of `project` does not hold `key`, which only a
+/// compiler bug can cause.
+pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> &Evaluated {
+    match const_values(db, project).get(key) {
+        Some(evaluated) => evaluated,
+        None => fail_evaluating(&key.name(db, project), "a key outside the read graph"),
+    }
+}
+
+/// A pass of [`const_values`] in progress.
+struct Pass<'a> {
+    /// The database.
+    db: &'a dyn Db,
+    /// The project whose keys it evaluates.
+    project: Project,
+    /// What each key evaluated so far gives.
+    values: HashMap<ConstKey, Evaluated>,
+}
+
+impl Pass<'_> {
+    /// What `key`, a key of `project`, gives, when it is known: evaluated
+    /// by this pass, or by the pass of its own project.
+    fn known(&self, project: Project, key: ConstKey) -> Option<&Evaluated> {
+        if let Some(evaluated) = self.values.get(&key) {
+            return Some(evaluated);
+        }
+        if project == self.project {
+            return None;
+        }
+        const_values(self.db, project).get(key)
+    }
+
+    /// What `key`, a key of `project` that [`Pass::ensure`] has evaluated
+    /// or found, gives.
+    fn value(&self, project: Project, key: ConstKey) -> &Evaluated {
+        match self.known(project, key) {
+            Some(evaluated) => evaluated,
+            None => fail_evaluating(&key.name(self.db, project), "a key needed before it is"),
+        }
+    }
+
+    /// Evaluates `key`, a key of `project`, unless it is known, after each
+    /// key it needs ([`Pass::needs`]) that is not, each of those after the
+    /// keys it needs in turn. The walk keeps its own stack instead of
+    /// recursing.
+    ///
+    /// # Panics
+    ///
+    /// When a key needs itself without a cycle of the read graph: a call
+    /// that leaves out a default value reading the constant that calls,
+    /// or initializers of another project that read each other. Only an
+    /// input the read graph never sees leads there.
+    fn ensure(&mut self, project: Project, key: ConstKey) {
+        if self.known(project, key).is_some() {
+            return;
+        }
+        let mut open = HashSet::from([key]);
+        // Each frame is a key, the keys it needs and the position of the
+        // next one.
+        let mut walk = vec![(project, key, self.needs(project, key), 0)];
+        while let Some(frame) = walk.last_mut() {
+            if let Some(&(project, key)) = frame.2.get(frame.3) {
+                frame.3 += 1;
+                if self.known(project, key).is_none() {
+                    if !open.insert(key) {
+                        let name = key.name(self.db, project);
+                        fail_evaluating(&name, "it needs its own value outside a cycle of reads");
+                    }
+                    walk.push((project, key, self.needs(project, key), 0));
+                }
+                continue;
+            }
+            let Some((project, key, _, _)) = walk.pop() else {
+                break;
+            };
+            open.remove(&key);
+            let evaluated = self.evaluate(project, key);
+            self.values.insert(key, evaluated);
+        }
+    }
+
+    /// The keys whose results [`Pass::evaluate`] reads for `key`, a key of
+    /// `project`: those its scan reads, then, for a constant or an
+    /// initializer, the default values that its calls leave out. None for a
+    /// key that fails before its reads: one in a cycle, or with an
+    /// operation §14.6 never allows.
+    fn needs(&self, project: Project, key: ConstKey) -> Vec<(Project, ConstKey)> {
+        let db = self.db;
+        let scan = const_scan(db, project, key);
+        if const_graph(db, project).cycle_of(key).is_some() || scan.unsupported.is_some() {
+            return Vec::new();
+        }
+        let reads = scan.reads.iter().map(|&(project, read, _)| (project, read));
+        match key {
+            ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+                let defaults = omitted_defaults(db, project, key.file(), key.owner(db));
+                reads.chain(defaults).collect()
+            }
+            ConstKey::Default { .. } => reads.collect(),
+        }
+    }
+
+    /// What `key`, a key of `project` whose needs are known, gives, each
+    /// step in order: a key in a cycle of reads fails, with the error on
+    /// the cycle's first member; then one with an operation §14.6 never
+    /// allows; a key whose code a later milestone lowers, or that reads
+    /// one that waits, waits for the latest of those milestones; a key
+    /// that reads one without a value fails without an error of its own;
+    /// and any other key runs its MIR ([`eval_mir`]) in the interpreter.
+    ///
+    /// The milestones are those of [`evaluation_later`], which leaves the
+    /// reads to this step. No body that a later milestone lowers is ever
+    /// lowered or run. What runs is one expression, without a block, a
+    /// `match` or a lambda, so the interpreter never sees a loop.
+    fn evaluate(&self, project: Project, key: ConstKey) -> Evaluated {
+        let db = self.db;
+        if let Some(cycle) = const_graph(db, project).cycle_of(key) {
+            if cycle.members.first() != Some(&key) {
+                return Evaluated::Failed(None);
+            }
+            let kind = ErrorKind::Cycle(cycle.members.clone());
+            return failed(key, cycle.read, kind);
+        }
+        let scan = const_scan(db, project, key);
+        if let Some((range, what)) = scan.unsupported {
+            return failed(key, range, ErrorKind::Unsupported(what));
+        }
+        let file = key.file();
+        let owner = key.owner(db);
+        let later = match key {
+            ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
+                let defaults = omitted_defaults(db, project, file, owner);
+                let defaults = defaults_later(&defaults, |project, key| self.value(project, key));
+                evaluation_later(db, project, file, owner, defaults)
+            }
+            ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),
+        };
+        // The key waits for the latest of its own milestone and those of its
+        // reads, its own first on a tie, then the reads in order; a constant it
+        // reads waits as `a constant`, an initializer for what it waits for.
+        let waits_itself = later.is_some();
+        let mut waits = later;
+        let mut read_failed = false;
+        for &(read_project, read, _) in &scan.reads {
+            match self.value(read_project, read) {
+                Evaluated::Value(_) => {}
+                Evaluated::Failed(_) => read_failed = true,
+                Evaluated::Later(later) => {
+                    if waits
+                        .as_ref()
+                        .is_none_or(|latest| later.milestone > latest.milestone)
+                    {
+                        waits = Some(match read {
+                            ConstKey::Constant { .. } => Later {
+                                what: "a constant".to_owned(),
+                                milestone: later.milestone,
+                            },
+                            ConstKey::Initializer { .. } | ConstKey::Default { .. } => {
+                                later.clone()
+                            }
+                        });
+                    }
                 }
             }
         }
-    }
-    // A read without a value stops a key whose own code this milestone
-    // lowers; a key whose own code waits waits, whatever its reads give.
-    if read_failed && !waits_itself {
-        return Evaluated::Failed(None);
-    }
-    if let Some(later) = waits {
-        return Evaluated::Later(later);
-    }
-    let body = match key {
-        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
-            &mir(db, project, file, owner).bodies[0]
+        // A read without a value stops a key whose own code this milestone
+        // lowers; a key whose own code waits waits, whatever its reads give.
+        if read_failed && !waits_itself {
+            return Evaluated::Failed(None);
         }
-        ConstKey::Default { default, .. } => {
-            &default_mir(db, project, file, owner, default).bodies[0]
+        if let Some(later) = waits {
+            return Evaluated::Later(later);
         }
-    };
-    // Every initializer the body calls is a read of its scan, which has a
-    // value by now.
-    let without_value = || -> ! {
-        let name = key.name(db, project);
-        fail_evaluating(&name, "a field initializer without a value");
-    };
-    let mut initializer = |item: ItemId, field| {
-        let read = ConstKey::Initializer { item, field };
-        match const_value(db, item.project, read) {
+        // Every key the body reads, and every initializer it calls, is a
+        // read of its scan, which has a value by now.
+        let values = |project, key| match self.value(project, key) {
             Evaluated::Value(value) => Some(value.clone()),
-            Evaluated::Failed(_) | Evaluated::Later(_) => without_value(),
-        }
-    };
-    match interp::run(db, body, &mut initializer) {
-        Ok(value) => Evaluated::Value(value),
-        Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
-        Err(Stop::Dependency) => without_value(),
-    }
-}
-
-thread_local! {
-    /// Whether this thread is inside a walk of [`evaluate_reads_first`].
-    /// It decides only the order keys are evaluated in, never a value.
-    static WALKING: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// How many keys the walks of this thread have reached.
-    static REACHED: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Evaluates every key that `key`, a key of `project` outside any cycle,
-/// reads directly or through other keys, in any project, each after the
-/// keys it reads; inside another walk, nothing.
-///
-/// The evaluation of each of them, and then of `key`, finds the value of
-/// every key it reads already computed, so however long a chain of reads
-/// and whichever key is asked for first, evaluations never nest deeply.
-/// The walk keeps its own stack instead of recursing. None of the keys
-/// reads `key`: they are outside its component, which holds only `key`,
-/// and a project never reads a project that reads it.
-///
-/// A key evaluated inside a walk has had its own reads evaluated by it, so
-/// it walks nothing again, and evaluating a chain once costs its length.
-fn evaluate_reads_first(db: &dyn Db, project: Project, key: ConstKey) {
-    /// Ends the walk when dropped, also when an evaluation unwinds.
-    struct Walking;
-    impl Drop for Walking {
-        fn drop(&mut self) {
-            WALKING.set(false);
-        }
-    }
-    if WALKING.replace(true) {
-        return;
-    }
-    let _walking = Walking;
-    let mut reached = HashSet::from([(project, key)]);
-    let reads = |project, key| const_scan(db, project, key).reads.as_slice();
-    // Each frame is a key, its reads and the position of its next read.
-    let mut walk = vec![(project, key, reads(project, key), 0)];
-    while let Some(&mut (read_project, read, keys, ref mut next)) = walk.last_mut() {
-        if let Some(&(project, key, _)) = keys.get(*next) {
-            *next += 1;
-            if reached.insert((project, key)) {
-                #[cfg(test)]
-                REACHED.set(REACHED.get() + 1);
-                walk.push((project, key, reads(project, key), 0));
+            Evaluated::Failed(_) | Evaluated::Later(_) => None,
+        };
+        match interp::run(db, &eval_mir(db, project, key).bodies[0], &values) {
+            Ok(value) => Evaluated::Value(value),
+            Err(Stop::Failed(failure)) => failed(key, failure.range, ErrorKind::Failed(failure)),
+            Err(Stop::Dependency) => {
+                let name = key.name(db, project);
+                fail_evaluating(&name, "a field initializer without a value");
             }
-            continue;
-        }
-        walk.pop();
-        if !walk.is_empty() {
-            const_value(db, read_project, read);
         }
     }
 }

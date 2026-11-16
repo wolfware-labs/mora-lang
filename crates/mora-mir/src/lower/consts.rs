@@ -1,6 +1,8 @@
-//! The default values of parameters, each lowered as a body of its own
-//! that constant evaluation runs (§14.6). The initializer of a constant is
-//! the body of its owner, which [`super::mir`] lowers.
+//! The bodies that constant evaluation runs (§14.6), lowered with each
+//! read of a constant left for the interpreter: the initializer of a
+//! constant or of a field, and the default value of a parameter, lowered
+//! as a body of its own. And the values that evaluation computes, as the
+//! operands of the bodies that read them.
 
 use mora_hir::{
     BodyOwner, ExprId, Inference, ItemId, Ty, instance_fields, signature, struct_field,
@@ -9,7 +11,8 @@ use mora_span::{Db, Project, SourceFile, Span};
 
 use super::{BodyShape, Lowerer, Owner, fail_in, std_loaded};
 use crate::eval::{ConstKey, ConstValue, Evaluated, const_value};
-use crate::{LocalTy, Mir, Operand, Place, Rvalue, debug_validate};
+use crate::validate::debug_validate_evaluation;
+use crate::{LocalTy, Mir, Operand, Place, Rvalue};
 
 /// The type a default value is passed as: the conversion inference records
 /// on it, or its own type.
@@ -43,45 +46,47 @@ pub(crate) fn value_ty(
     }
 }
 
-/// The MIR of the default value `default` of a parameter declared in the
-/// body of `owner`: one body without parameters that returns it, converted
-/// to [`default_ty`]. Named `<owner name>: a default value`. It is checked
-/// by [`debug_validate`] before it is returned.
+/// The MIR that constant evaluation runs for `key`, a key of `project`:
+/// for a constant or a field initializer, the body of its owner, as
+/// [`super::mir`] lowers it; for a default value, one body without
+/// parameters that returns it, converted to [`default_ty`], named
+/// `<owner name>: a default value`. A read of another constant is an
+/// [`Operand::ConstRead`], so the MIR does not depend on the values of the
+/// constants it reads. It is checked by [`debug_validate_evaluation`]
+/// before it is returned.
 ///
 /// Unlike [`super::mir`], it does not check that this milestone lowers the
-/// default value: its caller does, with
-/// [`exprs_later`](super::later::exprs_later) over the expressions of the
-/// default, before it asks for it.
+/// body: constant evaluation does, with
+/// [`evaluation_later`](super::later::evaluation_later) or
+/// [`exprs_later`](super::later::exprs_later), before it asks for it.
 ///
 /// # Panics
 ///
-/// When the default value holds what lowering cannot handle, as
-/// [`super::mir`] does, a default value that a later milestone lowers
-/// among them.
+/// When the body holds what lowering cannot handle, as [`super::mir`]
+/// does, a body that a later milestone lowers among them.
 #[salsa::tracked(returns(ref))]
-pub(crate) fn default_mir(
-    db: &dyn Db,
-    project: Project,
-    file: SourceFile,
-    owner: BodyOwner,
-    default: ExprId,
-) -> Mir {
-    let shared = Owner::new(db, project, file, owner);
-    let ret = shared.expect(
-        default_ty(shared.inference, default),
-        "the default value has no type",
-    );
-    let shape = BodyShape {
-        name: format!("{}: a default value", shared.name),
-        ret,
-        this: None,
-        params: Vec::new(),
-        root: default,
+pub(crate) fn eval_mir(db: &dyn Db, project: Project, key: ConstKey) -> Mir {
+    let file = key.file();
+    let owner = key.owner(db);
+    let mut shared = Owner::new(db, project, file, owner);
+    shared.evaluation = true;
+    let shape = match key {
+        ConstKey::Constant { .. } | ConstKey::Initializer { .. } => shared.shape(owner),
+        ConstKey::Default { default, .. } => BodyShape {
+            name: format!("{}: a default value", shared.name),
+            ret: shared.expect(
+                default_ty(shared.inference, default),
+                "the default value has no type",
+            ),
+            this: None,
+            params: Vec::new(),
+            root: default,
+        },
     };
     let mir = Mir {
         bodies: vec![Lowerer::lower(&shared, &shape)],
     };
-    debug_validate(db, &mir, std_loaded(db, project));
+    debug_validate_evaluation(db, &mir, std_loaded(db, project));
     mir
 }
 

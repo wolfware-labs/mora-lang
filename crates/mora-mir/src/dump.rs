@@ -434,6 +434,7 @@ impl Printer<'_> {
             Operand::Copy(place) => format!("copy {}", self.place(place)),
             Operand::Move(place) => format!("move {}", self.place(place)),
             Operand::Const(value) => constant(value),
+            Operand::ConstRead(read) => format!("read {}", read.key.name(self.db, read.project)),
         }
     }
 

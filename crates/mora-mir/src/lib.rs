@@ -13,8 +13,8 @@ pub use dump::{write_body, write_body_in, write_const, write_mir};
 pub use eval::{ConstValue, diagnostics};
 pub use lower::{mir, mir_dump};
 pub use types::{
-    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
-    LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind, UnOp,
+    AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, ConstRead,
+    InterpPiece, LocalDecl, LocalId, LocalSource, LocalTy, Mir, Operand, Place, Projection, Rvalue,
+    Statement, StatementKind, Terminator, TerminatorKind, UnOp,
 };
 pub use validate::{debug_validate, validate};

@@ -3747,8 +3747,12 @@ fn a_default_value_lowers_to_a_body() {
     let [(_, default)] = hir.defaults[..] else {
         panic!("one default: {:?}", hir.defaults);
     };
-    let mir =
-        super::consts::default_mir(&lowered.db, lowered.project, lowered.file, owner, default);
+    let key = crate::eval::ConstKey::Default {
+        file: lowered.file,
+        owner,
+        default,
+    };
+    let mir = super::consts::eval_mir(&lowered.db, lowered.project, key);
     assert_eq!(validate(&lowered.db, mir, false), Ok(()));
     let mut out = String::new();
     write_mir(&mut out, &lowered.db, Some(lowered.file), mir);

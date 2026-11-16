@@ -14,10 +14,10 @@ use super::interp::{Failure, Stop, run};
 use super::report::failed_message;
 use super::scan::const_scan;
 use super::{
-    ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, REACHED, WALKING, const_read,
-    const_value, constants, defaults,
+    ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, const_read, const_value, constants,
+    defaults,
 };
-use crate::lower::consts::default_mir;
+use crate::lower::consts::eval_mir;
 use crate::{
     AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, InterpPiece,
     LocalDecl, LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement, StatementKind,
@@ -208,8 +208,12 @@ impl Source {
         initializer: &mut dyn FnMut(ItemId, u32) -> Option<ConstValue>,
     ) -> Result<ConstValue, Stop> {
         let owner = BodyOwner::Item(self.item(name).item);
-        let mir = crate::mir(&self.db, self.project, self.file, owner);
-        run(&self.db, &mir.bodies[0], initializer)
+        let key = ConstKey::Constant {
+            file: self.file,
+            owner,
+        };
+        let mir = eval_mir(&self.db, self.project, key);
+        run(&self.db, &mir.bodies[0], &initializers(initializer))
     }
 
     /// What a run of the initializer of the namespace-level constant
@@ -298,10 +302,22 @@ fn int_operand(value: i128) -> Operand {
     Operand::Const(Const::Int(value, Primitive::Int))
 }
 
+/// The values of a run that calls field initializers and reads no
+/// constant: each initializer from `initializer`.
+fn initializers(
+    initializer: &mut dyn FnMut(ItemId, u32) -> Option<ConstValue>,
+) -> impl Fn(Project, ConstKey) -> Option<ConstValue> + '_ {
+    let initializer = std::cell::RefCell::new(initializer);
+    move |_, key| match key {
+        ConstKey::Initializer { item, field } => (initializer.borrow_mut())(item, field),
+        ConstKey::Constant { .. } | ConstKey::Default { .. } => panic!("a read of {key:?}"),
+    }
+}
+
 /// What a run of a hand-built body gives, with no field initializer.
 fn run_hand_built(body: &Body) -> Result<ConstValue, Stop> {
     let db = TestDb::new();
-    run(&db, body, &mut |_, _| None)
+    run(&db, body, &|_, _| None)
 }
 
 #[test]
@@ -837,15 +853,35 @@ fn run_computes_arithmetic_and_casts() {
 }
 
 #[test]
+fn the_mir_evaluation_runs_reads_constants_without_their_values() {
+    let source = checked("const A: int = 1;\nconst B: int = A + 1;\nF(): int => B;\n");
+    let mut out = String::new();
+    let mir = eval_mir(&source.db, source.project, source.constant("B"));
+    crate::write_mir(&mut out, &source.db, Some(source.file), mir);
+    let code: Vec<&str> = out
+        .lines()
+        .filter_map(|line| line.split_once(" // "))
+        .map(|(code, _)| code.trim())
+        .collect();
+    assert_eq!(code, ["_0 = read A + 1;", "return;"]);
+    // An ordinary body reads the value.
+    assert_eq!(source.code("F"), ["_0 = 2;", "return;"]);
+}
+
+#[test]
 fn run_runs_a_default_value_with_its_conversion() {
     let source = checked("O(x: long = (int)((1L > 0L) ? 2 : 3)) {}\n");
     let ConstKey::Default { owner, default, .. } = source.only_default() else {
         panic!("a default value");
     };
-    let mir = default_mir(&source.db, source.project, source.file, owner, default);
-    let mut initializer = |_: ItemId, _: u32| None;
+    let key = ConstKey::Default {
+        file: source.file,
+        owner,
+        default,
+    };
+    let mir = eval_mir(&source.db, source.project, key);
     assert_eq!(
-        run(&source.db, &mir.bodies[0], &mut initializer),
+        run(&source.db, &mir.bodies[0], &|_, _| None),
         Ok(int(2, Primitive::Long))
     );
 }
@@ -1088,10 +1124,14 @@ fn run_writes_an_initializer_to_its_destination() {
     let p = source.item("P");
     let body = initializer_call(p, Some(local(1)), Some(BlockId(1)));
     let mut seen = Vec::new();
-    let value = run(&source.db, &body, &mut |item, field| {
-        seen.push((item, field));
-        Some(int(9, Primitive::Int))
-    });
+    let value = run(
+        &source.db,
+        &body,
+        &initializers(&mut |item, field| {
+            seen.push((item, field));
+            Some(int(9, Primitive::Int))
+        }),
+    );
     assert_eq!(seen, [(p, 3)]);
     assert_eq!(value, Ok(int(9, Primitive::Int)));
 }
@@ -1101,7 +1141,7 @@ fn run_writes_an_initializer_to_its_destination() {
 fn run_drops_an_initializer_without_a_destination() {
     let source = checked("struct P {}\n");
     let body = initializer_call(source.item("P"), None, Some(BlockId(1)));
-    let _ = run(&source.db, &body, &mut |_, _| Some(int(9, Primitive::Int)));
+    let _ = run(&source.db, &body, &|_, _| Some(int(9, Primitive::Int)));
 }
 
 #[test]
@@ -1109,7 +1149,7 @@ fn run_drops_an_initializer_without_a_destination() {
 fn run_panics_on_an_initializer_that_does_not_return() {
     let source = checked("struct P {}\n");
     let body = initializer_call(source.item("P"), Some(local(1)), None);
-    let _ = run(&source.db, &body, &mut |_, _| Some(int(9, Primitive::Int)));
+    let _ = run(&source.db, &body, &|_, _| Some(int(9, Primitive::Int)));
 }
 
 /// The place `_n` followed by `projections`.
@@ -2020,8 +2060,6 @@ fn a_long_chain_lowers_without_overflowing_the_stack() {
             source.evaluated(source.constant(&format!("C{}", CHAIN - 1))),
             &Evaluated::Value(int(2_000, Primitive::Int))
         );
-        // The last constant reaches the rest of the chain.
-        assert_walked(CHAIN - 1);
     });
 }
 
@@ -2037,8 +2075,6 @@ fn a_long_chain_in_another_project_lowers_without_overflowing_the_stack() {
             source.evaluated(source.constant("A")),
             &Evaluated::Value(int(2_001, Primitive::Int))
         );
-        // `A` reaches the whole chain.
-        assert_walked(CHAIN);
     });
 }
 
@@ -2053,18 +2089,59 @@ fn a_long_chain_of_constants_does_not_overflow_the_stack() {
             source.evaluated(source.constant(&format!("C{}", CHAIN - 1))),
             &Evaluated::Value(int(2_000, Primitive::Int))
         );
-        // The last constant reaches the rest of the chain.
-        assert_walked(CHAIN - 1);
     });
 }
 
-/// Checks that the walks of this thread reached `keys` keys, each key of
-/// the chain once, and that none is still going on. The count starts with
-/// the thread, so the test runs on a thread of its own
-/// ([`on_a_small_stack`]).
-fn assert_walked(keys: usize) {
-    assert_eq!(REACHED.get(), keys);
-    assert!(!WALKING.get());
+#[test]
+fn editing_a_file_keeps_reverification_shallow() {
+    use salsa::Setter;
+
+    on_a_small_stack(|| {
+        let db = TestDb::new();
+        let chain = reversed_chain("");
+        let files = [
+            ("src/Chain.mr", chain.as_str()),
+            ("src/Other.mr", "F(): int => 1;\n"),
+        ];
+        let project = app(&db, &files);
+        let file = file_named(&db, project, "src/Chain.mr");
+        let other = file_named(&db, project, "src/Other.mr");
+        let mut source = Source { db, project, file };
+        assert_eq!(source.reported(), []);
+        other
+            .set_text(&mut source.db)
+            .to("F(): int => 2;\n".to_owned());
+        // Every memo of the chain is checked again after the edit.
+        let middle = source.constant(&format!("C{}", CHAIN / 2));
+        assert_eq!(
+            source.evaluated(middle),
+            &Evaluated::Value(int(1_001, Primitive::Int))
+        );
+        let dump = crate::mir_dump(&source.db, source.project, source.file);
+        assert!(dump.contains("2000"), "{dump}");
+    });
+}
+
+#[test]
+fn editing_a_reader_of_another_project_keeps_reverification_shallow() {
+    use salsa::Setter;
+
+    on_a_small_stack(|| {
+        let program = "const A: int = Util.C1999 + 1;\n";
+        let (mut source, util) = using_util(&reversed_chain("public "), program);
+        assert_eq!(source.reported(), []);
+        source
+            .file
+            .set_text(&mut source.db)
+            .to("const A: int = Util.C1999 + 2;\n".to_owned());
+        assert_eq!(
+            source.evaluated(source.constant("A")),
+            &Evaluated::Value(int(2_002, Primitive::Int))
+        );
+        let lib = file_named(&source.db, util, "src/Lib.mr");
+        let dump = crate::mir_dump(&source.db, util, lib);
+        assert!(dump.contains("2000"), "{dump}");
+    });
 }
 
 #[test]

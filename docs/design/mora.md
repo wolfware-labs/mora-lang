@@ -2155,7 +2155,7 @@ MIR is a typed control-flow graph:
 Body       { params, return_ty, locals: [LocalDecl { ty, mutable, source }], blocks: [Block], drop_flags }
 Block      { statements: [Statement], terminator: Terminator }
 Place      { local, projections: [Field(n) | Deref | Index(local) | ConstIndex(n) | Case(n) | RawDeref] }
-Operand    = Copy(Place) | Move(Place) | Const(Value)
+Operand    = Copy(Place) | Move(Place) | Const(Value) | ConstRead(Constant)
 Rvalue     = Use(Operand) | Borrow(Mode, Place) | Binary(Op, Operand, Operand) | Unary(Op, Operand)
            | Aggregate(Kind, [Operand]) | Cast(Kind, Operand, Type) | Len(Place) | Discriminant(Place)
            | MakeClosure(Fn, [Operand]) | ToInterface(Operand, Interface)
@@ -2165,7 +2165,7 @@ Terminator = Goto(b) | Switch(Operand, [(value, b)], otherwise) | Return | Call 
            | Drop(Place, next) | Await(Operand, dest, resume) | Panic(PanicKind, args) | Unreachable
 ```
 
-Before monomorphization, types may contain type parameters. `Retain` and `Release` appear only after ARC insertion (§14.11); `Await` disappears in async lowering (§14.9). Every MIR statement carries a span for diagnostics and debug line tables. A textual MIR dump (`mora build --emit mir`) is stable enough to be used in snapshot tests.
+Before monomorphization, types may contain type parameters. `Retain` and `Release` appear only after ARC insertion (§14.11); `Await` disappears in async lowering (§14.9). `ConstRead` appears only in a body lowered for constant evaluation (§14.6), where the interpreter gives it the value it has computed for that constant; in any other body a read of a constant is its value, a `Const` or an `Aggregate` of them. Every MIR statement carries a span for diagnostics and debug line tables. A textual MIR dump (`mora build --emit mir`) is stable enough to be used in snapshot tests.
 
 **Numbering.** `Field(n)` counts the instance fields of a struct by declaration order, from zero: a `static` field and a constant belong to the type, not to its values, and are not counted. An aggregate of a struct takes one operand per instance field, in that order.
 
