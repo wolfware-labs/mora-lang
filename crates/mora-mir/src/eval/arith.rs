@@ -152,9 +152,8 @@ impl Arith<'_> {
         ty: Primitive,
         compute: impl Fn(Width) -> Result<i128, ArithError>,
     ) -> Result<Const, ArithError> {
-        self.check(ty.is_integer(), || {
-            format!("`{}` is not an integer type", ty.keyword())
-        });
+        let what = || format!("`{}` is not an integer type", ty.keyword());
+        self.check(ty.is_integer(), what);
         let widths = widths(ty);
         let first = compute(widths[0]);
         if widths[1..].iter().all(|&width| compute(width) == first) {

@@ -214,11 +214,9 @@ impl Tarjan<'_> {
         // The component is strongly connected, so a read of the path leads
         // back to `start` before the path runs out.
         loop {
-            let &mut (node, ref mut next, _) = expect_evaluating(
-                path.last_mut(),
-                || self.nodes[start].key.name(self.db, self.project),
-                || "no cycle leads back to it".to_owned(),
-            );
+            let name = || self.nodes[start].key.name(self.db, self.project);
+            let last = expect_evaluating(path.last_mut(), name, "no cycle leads back to it");
+            let &mut (node, ref mut next, _) = last;
             let Some(&(read, range)) = self.nodes[node].reads.get(*next) else {
                 path.pop();
                 continue;

@@ -80,11 +80,9 @@ impl ConstKey {
             ConstKey::Constant { owner, .. } | ConstKey::Default { owner, .. } => owner,
             ConstKey::Initializer { item, field } => {
                 let index = instance_fields(db, item).nth(field as usize);
-                let (index, _) = expect_evaluating(
-                    index,
-                    || item_tree(db, item.file).item(item.item).name.clone(),
-                    || format!("no instance field {field}"),
-                );
+                let name = || item_tree(db, item.file).item(item.item).name.clone();
+                let what = format!("no instance field {field}");
+                let (index, _) = expect_evaluating(index, name, &what);
                 BodyOwner::Value(item.item, index)
             }
         }
@@ -119,11 +117,8 @@ impl ConstKey {
             return short;
         };
         let hir = body(db, file, owner);
-        let param = expect_evaluating(
-            default_param(hir, default),
-            || format!("a default value in {short}"),
-            || "no parameter has it".to_owned(),
-        );
+        let name = || format!("a default value in {short}");
+        let param = expect_evaluating(default_param(hir, default), name, "no parameter has it");
         format!("the default value of {} in {short}", hir.locals[param].name)
     }
 
@@ -361,10 +356,11 @@ pub(crate) fn const_values(db: &dyn Db, project: Project) -> ConstValues {
 /// When the read graph of `project` does not hold `key`, which only a
 /// compiler bug can cause.
 pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> &Evaluated {
+    let name = || key.name(db, project);
     expect_evaluating(
         const_values(db, project).get(key),
-        || key.name(db, project),
-        || "a key outside the read graph".to_owned(),
+        name,
+        "a key outside the read graph",
     )
 }
 
@@ -475,11 +471,8 @@ impl Pass<'_> {
     /// What `key`, a key of `project` that [`Pass::ensure`] has evaluated
     /// or found, gives.
     fn value(&self, project: Project, key: ConstKey) -> &Evaluated {
-        expect_evaluating(
-            self.known(project, key),
-            || key.name(self.db, project),
-            || "a key needed before it is".to_owned(),
-        )
+        let name = || key.name(self.db, project);
+        expect_evaluating(self.known(project, key), name, "a key needed before it is")
     }
 
     /// Evaluates `key`, a key of `project` that is not known yet (the read
@@ -716,9 +709,9 @@ pub(crate) fn fail_evaluating(name: &str, what: &str) -> ! {
 pub(crate) fn expect_evaluating<T>(
     value: Option<T>,
     name: impl FnOnce() -> String,
-    what: impl FnOnce() -> String,
+    what: &str,
 ) -> T {
-    value.unwrap_or_else(|| fail_evaluating(&name(), &what()))
+    value.unwrap_or_else(|| fail_evaluating(&name(), what))
 }
 
 #[cfg(test)]
