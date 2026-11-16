@@ -180,8 +180,11 @@ impl Scanner<'_> {
 /// The expressions `node` holds that a scan descends into, in the order of
 /// the text: none for a `match` and a block, which are left to the
 /// milestones that lower them, for the operand of `nameof`, which is never
-/// evaluated, nor for what [`Scanner::unsupported`] stops at.
-fn children(node: &Expr) -> Vec<ExprId> {
+/// evaluated, nor for what [`Scanner::unsupported`] stops at. A construct
+/// that waits ([`ExprRules::construct_later`]) is stopped at before its
+/// parts are asked for, so the parts listed here are those the scan reads
+/// once its milestone lands.
+pub(super) fn children(node: &Expr) -> Vec<ExprId> {
     match node {
         Expr::Missing
         | Expr::Literal(_)
@@ -197,19 +200,11 @@ fn children(node: &Expr) -> Vec<ExprId> {
         | Expr::Sizeof(_)
         | Expr::Nameof(_)
         | Expr::Macro
-        | Expr::Block(_)
-        | Expr::Lambda(_)
-        // Constructs a later milestone lowers, which the scan stops at.
         | Expr::Match { .. }
-        | Expr::Collection(_)
-        | Expr::Propagate(_)
-        | Expr::Await(_)
-        | Expr::Is { .. }
-        | Expr::As { .. }
-        | Expr::NewArray { .. }
-        | Expr::Range { .. }
-        | Expr::With { .. } => Vec::new(),
+        | Expr::Block(_)
+        | Expr::Lambda(_) => Vec::new(),
         Expr::Tuple(elements) => elements.iter().map(|&(_, element)| element).collect(),
+        Expr::Collection(elements) => elements.iter().map(|&(_, element)| element).collect(),
         Expr::Member { receiver, .. } => vec![*receiver],
         Expr::Call { callee, args } => std::iter::once(*callee)
             .chain(args.iter().map(|arg| arg.expr))
@@ -217,8 +212,18 @@ fn children(node: &Expr) -> Vec<ExprId> {
         Expr::Index { base, args, .. } => std::iter::once(*base)
             .chain(args.iter().map(|arg| arg.expr))
             .collect(),
-        Expr::Unary { expr, .. } | Expr::Cast { expr, .. } => vec![*expr],
+        Expr::Unary { expr, .. }
+        | Expr::Propagate(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::Await(expr)
+        | Expr::Is { expr, .. }
+        | Expr::As { expr, .. } => vec![*expr],
+        Expr::NewArray { size, .. } => vec![*size],
         Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
+        Expr::Range { start, end } => start.iter().chain(end).copied().collect(),
+        Expr::With { expr, inits } => std::iter::once(*expr)
+            .chain(inits.iter().map(|&(_, value)| value))
+            .collect(),
         Expr::Conditional {
             condition,
             then,

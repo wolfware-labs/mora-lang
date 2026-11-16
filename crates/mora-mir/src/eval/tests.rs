@@ -12,7 +12,7 @@ use super::arith::{ArithError, MAX_STRING_BYTES};
 use super::graph::{ConstGraph, const_graph};
 use super::interp::{Failure, run};
 use super::report::failed_message;
-use super::scan::const_scan;
+use super::scan::{children, const_scan};
 use super::{
     ConstError, ConstKey, ConstValue, ErrorKind, Evaluated, const_read, const_value, constants,
     defaults,
@@ -415,6 +415,37 @@ fn a_scan_stops_at_constructs_a_later_milestone_lowers() {
     // into its base.
     let x = source.constant("X");
     assert_eq!(source.unsupported(x), Some(("Arr()", "a call")));
+}
+
+#[test]
+fn a_construct_that_waits_lists_the_parts_its_milestone_will_scan() {
+    let source = unchecked(
+        "const A: int = 1;\nconst B: int = 2;\nconst W: Q = O with { X = A };\n\
+         const I: bool = A is 0;\nconst S: J = A as J;\nconst T: int = await A;\n\
+         const R: int = A?;\nconst G: int = F(A..B);\nconst C: int[] = [A, B];\n\
+         const N: int[] = new int[B];\n",
+    );
+    let cases: [(&str, &str, &[&str]); 8] = [
+        ("W", "O with { X = A }", &["O", "A"]),
+        ("I", "A is 0", &["A"]),
+        ("S", "A as J", &["A"]),
+        ("T", "await A", &["A"]),
+        ("R", "A?", &["A"]),
+        ("G", "A..B", &["A", "B"]),
+        ("C", "[A, B]", &["A", "B"]),
+        ("N", "new int[B]", &["B"]),
+    ];
+    for (name, text, parts) in cases {
+        let owner = source.constant(name).owner(&source.db);
+        let hir = body(&source.db, source.file, owner);
+        let map = body_source_map(&source.db, source.file, owner);
+        let expr = source.expr_at(owner, source.range_in(text, text));
+        let found: Vec<&str> = children(&hir.exprs[expr])
+            .into_iter()
+            .map(|part| source.text(map.expr(part)))
+            .collect();
+        assert_eq!(found, parts, "{text}");
+    }
 }
 
 #[test]
