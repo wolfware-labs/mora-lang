@@ -1719,23 +1719,24 @@ fn an_equals_that_takes_its_struct_in_any_mode_waits() {
     );
 }
 
-/// What each key named in `names` gives in `text`, as [`outcome`] says,
-/// by the name the key's project gives it.
-fn outcomes(text: &str, names: &[&str]) -> Vec<String> {
-    let source = checked(text);
-    let mut keys = constants(&source.db, source.file);
-    keys.extend(defaults(&source.db, source.project, source.file));
-    names
-        .iter()
-        .map(|&name| {
-            let key = keys
-                .iter()
-                .copied()
-                .find(|key| key.name(&source.db, source.project) == name)
-                .unwrap_or_else(|| panic!("no key {name}"));
-            outcome(source.evaluated(key))
-        })
-        .collect()
+impl Source {
+    /// What each key of the file named in `names` gives, as [`outcome`]
+    /// says, by the name the key's project gives it.
+    fn outcomes(&self, names: &[&str]) -> Vec<String> {
+        let mut keys = constants(&self.db, self.file);
+        keys.extend(defaults(&self.db, self.project, self.file));
+        names
+            .iter()
+            .map(|&name| {
+                let key = keys
+                    .iter()
+                    .copied()
+                    .find(|key| key.name(&self.db, self.project) == name)
+                    .unwrap_or_else(|| panic!("no key {name}"));
+                outcome(self.evaluated(key))
+            })
+            .collect()
+    }
 }
 
 #[test]
@@ -1746,14 +1747,14 @@ fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
                 F(x: int = C + E): int => x;\nG(y: int = C): int => y;\n";
     let names = ["C", "the default value of y in G"];
     let expected = ["a `match` M3.3", "a constant M3.3"];
-    assert_eq!(outcomes(rest, &names), expected);
+    assert_eq!(checked(rest).outcomes(&names), expected);
     let with_s = format!("const S: int = match (true) {{ _ => G() }};\n{rest}");
-    assert_eq!(outcomes(&with_s, &names), expected);
+    assert_eq!(checked(&with_s).outcomes(&names), expected);
     // The same when the default of `F` reads `C` alone.
     let plain = "const S: int = match (true) { _ => G() };\n\
                  const C: int = match (true) { _ => F() };\n\
                  F(x: int = C): int => x;\nG(y: int = C): int => y;\n";
-    assert_eq!(outcomes(plain, &names), expected);
+    assert_eq!(checked(plain).outcomes(&names), expected);
 }
 
 #[test]
@@ -1818,7 +1819,7 @@ fn a_cut_cycle_inside_a_walk_keeps_the_frames_before_the_cut() {
         "the default value of x in F",
     ];
     assert_eq!(
-        outcomes(text, &names),
+        checked(text).outcomes(&names),
         [
             "a call that leaves out a default that needs evaluation M3.3",
             "a constant M3.3",
@@ -1846,13 +1847,9 @@ fn an_unsupported_constant_runs_no_initializer_it_reads() {
 /// Checks that each key in `names` of `text` gives what `expected` says,
 /// as [`outcome`] writes it, and that evaluation reports nothing.
 fn waits_quietly(text: &str, names: &[&str], expected: &[&str]) {
-    assert_eq!(outcomes(text, names), expected, "{text}");
     let source = checked(text);
-    assert_eq!(
-        crate::diagnostics(&source.db, source.project),
-        &[],
-        "{text}"
-    );
+    assert_eq!(source.outcomes(names), expected, "{text}");
+    assert_eq!(source.reported(), [], "{text}");
 }
 
 #[test]
@@ -1882,7 +1879,7 @@ fn a_read_of_a_constant_of_a_library_class_waits_in_both_projects() {
         outcome(source.evaluated(source.constant("A"))),
         "a constant M2.1"
     );
-    assert_eq!(crate::diagnostics(&source.db, source.project), &[]);
+    assert_eq!(source.reported(), []);
     assert_eq!(crate::diagnostics(&source.db, util), &[]);
 }
 
