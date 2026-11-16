@@ -1753,7 +1753,7 @@ fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
     assert_eq!(outcomes(rest, &names), expected);
     let with_s = format!("const S: int = match (true) {{ _ => G() }};\n{rest}");
     assert_eq!(outcomes(&with_s, &names), expected);
-    // Only `C` in the defaults.
+    // The same when the default of `F` reads `C` alone.
     let plain = "const S: int = match (true) { _ => G() };\n\
                  const C: int = match (true) { _ => F() };\n\
                  F(x: int = C): int => x;\nG(y: int = C): int => y;\n";
@@ -1762,6 +1762,8 @@ fn a_key_a_walk_evaluates_early_keeps_its_first_result() {
 
 #[test]
 fn an_initializer_a_walk_evaluates_early_keeps_its_first_result() {
+    // `A` reaches `P.X` through the default of `G` before the turn of
+    // `P.X`, while the default of `F` that `P.X` leaves out is not known yet.
     let text = "const A: int = match (true) { _ => G() };\n\
                 G(y: int = new P {}.X): int => y;\n\
                 struct P {\n    public X: int = match (true) { _ => F() };\n}\n\
