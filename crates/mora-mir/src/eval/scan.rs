@@ -87,8 +87,10 @@ impl Scanner<'_> {
             return ControlFlow::Break(());
         }
         // A construct a later milestone lowers decides what it holds, so
-        // what it holds is neither read nor checked (§14.6).
+        // what it holds is neither read nor checked (§14.6). It is listed,
+        // so that the milestone of the key is the latest of them all.
         if self.rules.construct_later(expr).is_some() {
+            self.list_held(expr);
             return ControlFlow::Continue(());
         }
         let hir = self.hir;
@@ -113,6 +115,17 @@ impl Scanner<'_> {
             self.visit(child)?;
         }
         ControlFlow::Continue(())
+    }
+
+    /// Adds what `expr` holds, at any depth, to the expressions of the scan,
+    /// without reading or checking any of it. It keeps a stack rather than
+    /// recursing.
+    fn list_held(&mut self, expr: ExprId) {
+        let mut stack = children(&self.hir.exprs[expr]);
+        while let Some(held) = stack.pop() {
+            self.scan.exprs.push(held);
+            stack.extend(children(&self.hir.exprs[held]));
+        }
     }
 
     /// What `expr` is when §14.6 never allows it in a constant.

@@ -493,10 +493,11 @@ impl<'a> ExprRules<'a> {
         latest([self.construct_later(id), ty])
     }
 
-    /// The milestone that lowers the construct the expression `id` is, by
-    /// the rules that do not look at its type, as a constructor call, `with`,
-    /// `match`, `is` or a call of a generic function; `None` when this one
-    /// lowers it.
+    /// The milestone that lowers the construct the expression `id` is, as a
+    /// constructor call, `with`, `match`, `is`, a call of a generic function
+    /// or a creation of a type a later milestone lowers
+    /// ([`ExprRules::creation_type_later`]); `None` when this one lowers it.
+    /// The type of any other expression decides nothing here.
     pub(crate) fn construct_later(&self, id: ExprId) -> Option<Later> {
         let (db, hir, inference, resolution) = (self.db, self.hir, self.inference, self.resolution);
         let expr = &hir.exprs[id];
@@ -514,7 +515,31 @@ impl<'a> ExprRules<'a> {
             creation_later(db, inference, id, expr),
             operator_on_struct(inference, expr).then(operator_later),
             unresolved_call_later(db, hir, inference, resolution, id, expr),
+            self.creation_type_later(id),
         ])
+    }
+
+    /// The milestone that lowers what the expression `id` creates, when it
+    /// is a creation: for `new` in any form, that of the created type, by
+    /// the rule of the types of expressions; for a call of a union case,
+    /// which inference does not type yet, that of the case it calls. `None`
+    /// for any other expression, and for what this milestone lowers.
+    fn creation_type_later(&self, id: ExprId) -> Option<Later> {
+        match &self.hir.exprs[id] {
+            Expr::New { .. } => {
+                let ty = self.inference.expr(id)?;
+                types_later(self.db, [ty])?.later(|what| format!("an expression with {what}"))
+            }
+            Expr::Call { callee, .. }
+                if self
+                    .resolution
+                    .value_member(self.db, *callee)
+                    .is_some_and(|member| member.kind == ValueKind::UnionCase) =>
+            {
+                self.construct_later(*callee)
+            }
+            _ => None,
+        }
     }
 }
 

@@ -391,11 +391,12 @@ fn a_scan_descends_into_operations_and_values_but_not_into_types() {
     assert_eq!(source.reads(source.constant("M")), vec![(a, "A")]);
     // The creation of a positional struct waits, and so does what it holds.
     assert_eq!(source.reads(source.constant("N")), vec![]);
-    // `P.S` names a static, which is not read, and `P` is not visited.
+    // `P.S` names a static, which waits and is not read; `P`, which it
+    // holds, is listed without being checked.
     assert_eq!(source.reads(source.constant("S2")), vec![]);
     assert_eq!(
         source.visited(source.constant("S2")),
-        vec!["P.S + 1", "P.S", "1"]
+        vec!["P.S + 1", "P.S", "P", "1"]
     );
 }
 
@@ -2798,5 +2799,96 @@ fn a_construct_that_waits_holds_no_error_and_no_read() {
     ];
     for (text, names, expected) in cases {
         waits_quietly(&text, names, expected);
+    }
+}
+
+#[test]
+fn a_creation_of_a_type_that_waits_holds_no_error_and_no_read() {
+    let cl =
+        "class Cl {\n    public X: int;\n    public Cl(x: int) { X = x; }\n}\nZero(): int => 0;\n";
+    let un = "union Shape {\n    Circle(r: int),\n    Square(s: int),\n}\nZero(): int => 0;\n";
+    let bx = "struct Box<T> {\n    public V: T;\n    public Box(v: T) { V = v; }\n}\nZero(): int => 0;\n";
+    let bm = "struct Box<T> {\n    public V: T;\n}\nZero(): int => 0;\n";
+    let po = "struct Po {\n    public X: int;\n    public Y: int?;\n}\nZero(): int => 0;\n";
+    let class = "an expression with a class type M2.1";
+    let generic = "an expression with a generic type M3.9";
+    let fc = "the default value of c in F";
+    let cases: [(String, &str, &str); 11] = [
+        (
+            format!("{cl}const T: int = new Cl(Zero()).X;\n"),
+            "T",
+            class,
+        ),
+        (
+            format!("{cl}F(c: Cl = new Cl(Zero())): int => 1;\n"),
+            fc,
+            class,
+        ),
+        (format!("{cl}const T: int = new Cl(T).X;\n"), "T", class),
+        (
+            format!("{cl}const T: int = new Cl {{ X = Zero() }}.X;\n"),
+            "T",
+            class,
+        ),
+        (
+            format!("{cl}F(c: Cl = new Cl {{ X = Zero() }}): int => 1;\n"),
+            fc,
+            class,
+        ),
+        (
+            format!("{un}const T: Shape = Shape.Circle(Zero());\n"),
+            "T",
+            "the initializer of a constant with a union type M3.1",
+        ),
+        (
+            format!("{un}F(s: Shape = Shape.Circle(Zero())): int => 1;\n"),
+            "the default value of s in F",
+            "a union case M3.1",
+        ),
+        (
+            format!("{bx}const T: int = new Box<int>(Zero()).V;\n"),
+            "T",
+            generic,
+        ),
+        (
+            format!("{bm}const T: int = new Box<int> {{ V = Zero() }}.V;\n"),
+            "T",
+            generic,
+        ),
+        (
+            format!("{po}const T: int = new Po {{ X = Zero(), Y = none }}.X;\n"),
+            "T",
+            "an expression with an option type M3.5",
+        ),
+        (
+            format!("{po}F(x: int = new Po {{ X = Zero(), Y = none }}.X): int => 1;\n"),
+            "the default value of x in F",
+            "an expression with an option type M3.5",
+        ),
+    ];
+    for (text, name, expected) in cases {
+        waits_quietly(&text, &[name], &[expected]);
+    }
+}
+
+#[test]
+fn a_default_waits_as_late_as_a_constant_with_its_expression() {
+    let decls = "struct P {\n    public X: int;\n    public P(x: int) { X = x; }\n}\n\
+                 G<T>(t: T): int => 1;\nMax<T>(a: T, b: T): T => a;\n\
+                 struct S {\n    public static V: int = 1;\n}\nenum E { A }\n";
+    for value in [
+        "new P(G(1))",
+        "new P(Max(1, 2))",
+        "new P(S.V)",
+        "new P((int)E.A)",
+    ] {
+        let text = format!(
+            "{decls}F(p: P = {value}): int => 1;\nH(): int => F();\nconst K: P = {value};\n"
+        );
+        let source = checked(&text);
+        let found = source.outcomes(&["the default value of p in F", "K"]);
+        assert_eq!(found[0], found[1], "{value}");
+        assert_ne!(found[0], "a constructor call M2.1", "{value}");
+        assert_eq!(source.reported(), [], "{value}");
     }
 }
