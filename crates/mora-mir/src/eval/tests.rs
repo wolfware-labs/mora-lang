@@ -2064,46 +2064,37 @@ fn an_initializer_two_projects_run_is_reported_by_the_one_the_other_depends_on()
         &[("src/Lib.mr", &lib)],
         Vec::new(),
     );
-    let on_util = || Dependency {
-        name: "Util".to_owned(),
-        project: util,
+    let on = |name: &str, project| Dependency {
+        name: name.to_owned(),
+        project,
     };
     let middle = db.project(
         "middle",
         ProjectKind::Lib,
         &[("src/Middle.mr", "public const D: Util.P = new Util.P {};\n")],
-        vec![on_util()],
+        vec![on("Util", util)],
     );
-    let on = |name: &str, project| Dependency {
-        name: name.to_owned(),
-        project,
-    };
     // `Top` runs nothing; the app reaches `Middle` through it.
     let top = db.project(
         "top",
         ProjectKind::Lib,
         &[("src/Top.mr", "public const T: int = 1;\n")],
-        vec![on_util(), on("Middle", middle)],
+        vec![on("Util", util), on("Middle", middle)],
     );
     let program = "const C: Util.P = new Util.P {};\n";
     let direct = db.project(
         "users-api",
         ProjectKind::App,
         &[("src/Program.mr", program)],
-        vec![on_util(), on("Middle", middle)],
+        vec![on("Util", util), on("Middle", middle)],
     );
     let through_top = db.project(
         "other-api",
         ProjectKind::App,
         &[("src/Program.mr", program)],
-        vec![on_util(), on("Top", top)],
+        vec![on("Util", util), on("Top", top)],
     );
-    let codes_of = |project| -> Vec<String> {
-        crate::diagnostics(&db, project)
-            .iter()
-            .map(|diagnostic| diagnostic.code.to_string())
-            .collect()
-    };
+    let codes_of = |project| codes(crate::diagnostics(&db, project));
     assert_eq!(codes_of(middle), ["MR0460"]);
     assert_eq!(codes_of(direct), Vec::<String>::new());
     assert_eq!(codes_of(through_top), Vec::<String>::new());

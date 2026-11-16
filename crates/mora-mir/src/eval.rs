@@ -369,7 +369,7 @@ pub(crate) fn const_value(db: &dyn Db, project: Project, key: ConstKey) -> &Eval
 /// The projects that `project` depends on, directly or through others,
 /// each once: depth first, each project's dependencies in their order
 /// after it.
-fn dependencies(db: &dyn Db, project: Project) -> Vec<Project> {
+fn transitive_dependencies(db: &dyn Db, project: Project) -> Vec<Project> {
     let mut found = Vec::new();
     let mut seen = HashSet::new();
     let mut walk: Vec<Project> = project
@@ -448,8 +448,8 @@ impl Pass<'_> {
 
     /// Whether `key`, a key of `project`, is known, after taking what it
     /// gives from the pass of the first project this one depends on,
-    /// directly or not, that has it ([`dependencies`]), when neither this
-    /// pass nor that of its own project does.
+    /// directly or not, that has it ([`transitive_dependencies`]), when
+    /// neither this pass nor that of its own project does.
     fn resolve(&mut self, project: Project, key: ConstKey) -> bool {
         if self.known(project, key).is_some() {
             return true;
@@ -458,7 +458,7 @@ impl Pass<'_> {
             return false;
         }
         let db = self.db;
-        let taken = dependencies(db, self.project)
+        let taken = transitive_dependencies(db, self.project)
             .into_iter()
             .find_map(|dependency| const_values(db, dependency).get(key));
         match taken {
@@ -506,7 +506,7 @@ impl Pass<'_> {
                 let Some(frame) = walk.pop() else {
                     break;
                 };
-                let evaluated = self.evaluate(frame.project, frame.key);
+                let evaluated = self.evaluate(frame.project, frame.key, &frame.needs);
                 if frame.project != self.project {
                     self.extras.push(frame.key);
                 }
@@ -527,26 +527,24 @@ impl Pass<'_> {
                         next: 0,
                     });
                 }
-                Some(start) => self.close_cycle(&mut walk, start, need),
+                Some(start) => self.close_cycle(&mut walk, start),
             }
         }
     }
 
     /// Closes the cycle from the frame `start` of `walk` to its last
-    /// frame, whose need `need` leads back to `start`. When a default value
+    /// frame, whose last need leads back to `start`. When a default value
     /// is on it, the walk returns to the last frame that needs one, which
     /// goes on without it. Otherwise its members fail: the first of them by
     /// `sort_key`, with the error of the cycle in the order of its reads
     /// from there; the others without one.
-    fn close_cycle(&mut self, walk: &mut Vec<Frame>, start: usize, need: Need) {
-        // The edge out of each frame of the cycle, in order.
+    fn close_cycle(&mut self, walk: &mut Vec<Frame>, start: usize) {
+        // The edge out of each frame of the cycle, in order: the need it
+        // looked at last, which leads to the next frame, and from the last
+        // frame back to `start`.
         let edges: Vec<Need> = walk[start..]
             .iter()
-            .enumerate()
-            .map(|(at, frame)| match walk.get(start + at + 1) {
-                Some(_) => frame.needs[frame.next - 1],
-                None => need,
-            })
+            .map(|frame| frame.needs[frame.next - 1])
             .collect();
         if let Some(cut) = edges.iter().rposition(|edge| edge.read.is_none()) {
             walk.truncate(start + cut + 1);
@@ -608,19 +606,20 @@ impl Pass<'_> {
         }
     }
 
-    /// What `key`, a key of `project` whose needs are known, gives, each
-    /// step in order: a key in a cycle of reads fails, with the error on
-    /// the cycle's first member; then one with an operation §14.6 never
-    /// allows; a key whose code a later milestone lowers, or that reads
-    /// one that waits, waits for the latest of those milestones; a key
-    /// that reads one without a value fails without an error of its own;
-    /// and any other key runs its MIR ([`eval_mir`]) in the interpreter.
+    /// What `key`, a key of `project` whose needs `needs` ([`Pass::needs`])
+    /// are known, gives, each step in order: a key in a cycle of reads
+    /// fails, with the error on the cycle's first member; then one with an
+    /// operation §14.6 never allows; a key whose code a later milestone
+    /// lowers, or that reads one that waits, waits for the latest of those
+    /// milestones; a key that reads one without a value fails without an
+    /// error of its own; and any other key runs its MIR ([`eval_mir`]) in
+    /// the interpreter.
     ///
     /// The milestones are those of [`evaluation_later`], which leaves the
     /// reads to this step. No body that a later milestone lowers is ever
     /// lowered or run. What runs is one expression, without a block, a
     /// `match` or a lambda, so the interpreter never sees a loop.
-    fn evaluate(&self, project: Project, key: ConstKey) -> Evaluated {
+    fn evaluate(&self, project: Project, key: ConstKey, needs: &[Need]) -> Evaluated {
         let db = self.db;
         if let Some(cycle) = const_graph(db, project).cycle_of(key) {
             if cycle.members.first() != Some(&key) {
@@ -637,10 +636,13 @@ impl Pass<'_> {
         let owner = key.owner(db);
         let later = match key {
             ConstKey::Constant { .. } | ConstKey::Initializer { .. } => {
-                let defaults = omitted_defaults(db, project, file, owner);
-                // A default that a cycle cut is not known, and decides
-                // nothing.
-                let defaults = defaults_later(&defaults, |project, key| self.known(project, key));
+                // The defaults are the needs without a read. One that a
+                // cycle cut is not known, and decides nothing.
+                let defaults = needs
+                    .iter()
+                    .filter(|need| need.read.is_none())
+                    .map(|need| (need.project, need.key));
+                let defaults = defaults_later(defaults, |project, key| self.known(project, key));
                 evaluation_later(db, project, file, owner, defaults)
             }
             ConstKey::Default { .. } => exprs_later(db, project, file, owner, &scan.exprs),

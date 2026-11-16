@@ -30,7 +30,7 @@ use crate::{
 /// An [`Operand::ConstRead`] is a problem too: only a body lowered for
 /// constant evaluation holds one.
 pub fn validate(db: &dyn Db, mir: &Mir, std_loaded: bool) -> Result<(), Vec<String>> {
-    check(db, mir, std_loaded, false)
+    check(db, mir, std_loaded, LoweredFor::Program)
 }
 
 /// Runs [`validate`] and panics with every problem in debug builds; does
@@ -40,7 +40,7 @@ pub fn validate(db: &dyn Db, mir: &Mir, std_loaded: bool) -> Result<(), Vec<Stri
 ///
 /// In a debug build, when the MIR is invalid.
 pub fn debug_validate(db: &dyn Db, mir: &Mir, std_loaded: bool) {
-    debug_check(db, mir, std_loaded, false);
+    debug_check(db, mir, std_loaded, LoweredFor::Program);
 }
 
 /// [`debug_validate`] for the MIR of a body lowered for constant
@@ -50,12 +50,22 @@ pub fn debug_validate(db: &dyn Db, mir: &Mir, std_loaded: bool) {
 ///
 /// In a debug build, when the MIR is invalid.
 pub(crate) fn debug_validate_evaluation(db: &dyn Db, mir: &Mir, std_loaded: bool) {
-    debug_check(db, mir, std_loaded, true);
+    debug_check(db, mir, std_loaded, LoweredFor::Evaluation);
 }
 
-/// The checks of [`validate`], where `evaluation` says whether
-/// [`Operand::ConstRead`] is valid.
-fn check(db: &dyn Db, mir: &Mir, std_loaded: bool, evaluation: bool) -> Result<(), Vec<String>> {
+/// What the bodies of a MIR are lowered for, which decides whether an
+/// [`Operand::ConstRead`] is valid in them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoweredFor {
+    /// The program, where a read of a constant is its value.
+    Program,
+    /// Constant evaluation, where a read of a constant may be an
+    /// [`Operand::ConstRead`].
+    Evaluation,
+}
+
+/// The checks of [`validate`], for bodies lowered as `lowered` says.
+fn check(db: &dyn Db, mir: &Mir, std_loaded: bool, lowered: LoweredFor) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     for body in &mir.bodies {
         Checker {
@@ -63,7 +73,7 @@ fn check(db: &dyn Db, mir: &Mir, std_loaded: bool, evaluation: bool) -> Result<(
             mir,
             body,
             std_loaded,
-            evaluation,
+            lowered,
             errors: &mut errors,
         }
         .body();
@@ -77,9 +87,9 @@ fn check(db: &dyn Db, mir: &Mir, std_loaded: bool, evaluation: bool) -> Result<(
 
 /// Runs [`check`] and panics with every problem in debug builds; does
 /// nothing in release builds.
-fn debug_check(db: &dyn Db, mir: &Mir, std_loaded: bool, evaluation: bool) {
+fn debug_check(db: &dyn Db, mir: &Mir, std_loaded: bool, lowered: LoweredFor) {
     if cfg!(debug_assertions)
-        && let Err(problems) = check(db, mir, std_loaded, evaluation)
+        && let Err(problems) = check(db, mir, std_loaded, lowered)
     {
         panic!("invalid MIR:\n{}", problems.join("\n"));
     }
@@ -91,7 +101,7 @@ struct Checker<'a> {
     mir: &'a Mir,
     body: &'a Body,
     std_loaded: bool,
-    evaluation: bool,
+    lowered: LoweredFor,
     errors: &'a mut Vec<String>,
 }
 
@@ -364,7 +374,7 @@ impl Checker<'_> {
     /// The type of the value `read` reads, after reporting the read in a
     /// body that is not lowered for constant evaluation.
     fn const_read(&mut self, at: &str, read: &ConstRead) -> Ty {
-        if !self.evaluation {
+        if self.lowered == LoweredFor::Program {
             self.error(at, "a read of a constant outside constant evaluation");
         }
         read.ty.clone()
@@ -901,7 +911,7 @@ mod tests {
     use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
-    use super::{Checker, check, debug_validate, debug_validate_evaluation, validate};
+    use super::{Checker, LoweredFor, check, debug_validate, debug_validate_evaluation, validate};
     use crate::eval::ConstKey;
     use crate::{
         AggregateKind, BinOp, Block, BlockId, Body, BorrowMode, Callee, CastKind, Const, ConstRead,
@@ -1233,7 +1243,7 @@ mod tests {
             errors(&fx, &mir, true),
             ["fn F bb0[0]: a read of a constant outside constant evaluation"]
         );
-        assert_eq!(check(&fx.db, &mir, true, true), Ok(()));
+        assert_eq!(check(&fx.db, &mir, true, LoweredFor::Evaluation), Ok(()));
         debug_validate_evaluation(&fx.db, &mir, true);
     }
 
@@ -1249,7 +1259,8 @@ mod tests {
             ty: boolean(),
         }));
         let mir = with_stmt(assign(place(2), Rvalue::Use(read)));
-        let found = check(&fx.db, &mir, true, true).expect_err("the body is invalid");
+        let found =
+            check(&fx.db, &mir, true, LoweredFor::Evaluation).expect_err("the body is invalid");
         assert_eq!(found.len(), 1, "{found:?}");
     }
 
@@ -2871,7 +2882,7 @@ mod tests {
             mir: &mir,
             body: &mir.bodies[0],
             std_loaded: true,
-            evaluation: false,
+            lowered: LoweredFor::Program,
             errors: &mut Vec::new(),
         };
         let mut problems = Vec::new();

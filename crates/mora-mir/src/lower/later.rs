@@ -273,7 +273,7 @@ pub(crate) fn lowered_later(
     owner: BodyOwner,
 ) -> Option<Later> {
     let defaults = defaults_later(
-        &omitted_defaults(db, project, file, owner),
+        omitted_defaults(db, project, file, owner),
         |project, key| Some(const_value(db, project, key)),
     );
     later_with(db, project, file, owner, ConstReads::Evaluated, defaults)
@@ -327,13 +327,13 @@ fn later_with(
 /// evaluated by `value`. A default with a value or an error, or that
 /// `value` does not give, decides nothing. `None` when no call waits.
 pub(crate) fn defaults_later<'e>(
-    defaults: &[(Project, ConstKey)],
+    defaults: impl IntoIterator<Item = (Project, ConstKey)>,
     value: impl Fn(Project, ConstKey) -> Option<&'e Evaluated>,
 ) -> Option<Later> {
     latest(
         defaults
-            .iter()
-            .map(|&(project, key)| match value(project, key) {
+            .into_iter()
+            .map(|(project, key)| match value(project, key) {
                 Some(Evaluated::Later(later)) => Some(later.clone()),
                 Some(Evaluated::Value(_) | Evaluated::Failed(_)) | None => None,
             }),
