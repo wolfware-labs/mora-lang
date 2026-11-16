@@ -297,7 +297,9 @@ pub(crate) fn evaluation_later(
 
 /// The milestone that lowers the body of `owner`, with constant reads
 /// treated as `reads` says, and its calls that leave out a default value
-/// waiting for `defaults`.
+/// waiting for `defaults`. A rule that looks at one expression at a time
+/// is also one of [`ExprRules`], which constant evaluation asks per
+/// expression.
 fn later_with(
     db: &dyn Db,
     project: Project,
@@ -1766,7 +1768,7 @@ impl<'a> TypeWalk<'a> {
                 Ty::Struct(item) => {
                     if self.seen.insert(*item) {
                         if in_generic_type(self.db, *item) {
-                            let generic = construct_later(Construct::Generic);
+                            let generic = type_construct_later(Construct::Generic);
                             found = latest([found, Some(generic)]);
                         }
                         let fields = instance_fields(self.db, *item);
@@ -1775,7 +1777,7 @@ impl<'a> TypeWalk<'a> {
                 }
                 Ty::Tuple(elems) => self.stack.extend(elems.iter().map(|elem| &elem.ty)),
                 Ty::Unsupported(ty) => {
-                    found = latest([found, Some(construct_later(ty.construct))]);
+                    found = latest([found, Some(type_construct_later(ty.construct))]);
                     self.stack.extend(&ty.parts);
                 }
             }
@@ -1788,7 +1790,7 @@ impl<'a> TypeWalk<'a> {
 }
 
 /// The milestone that lowers a type made with `construct`.
-fn construct_later(construct: Construct) -> Kind {
+fn type_construct_later(construct: Construct) -> Kind {
     let milestone = match construct {
         Construct::Array => SHARED_OBJECTS,
         Construct::External => STD_BOOTSTRAP,
