@@ -651,7 +651,7 @@ fn expression_later(
         ),
         // Before the parameter modes too: a call that also has a `ref`
         // argument that is not a place waits for options.
-        Expr::Call { args, .. } if converts_to_option(db, inference, id, args) => {
+        Expr::Call { .. } if converts_to_option(db, inference, id) => {
             ("a conversion to an option type", OPTIONS)
         }
         Expr::Call { args, .. }
@@ -759,35 +759,19 @@ fn mut_receiver(
         .then_some(receiver)
 }
 
-/// Whether the call `call` with `args` passes a value to a parameter whose
-/// type holds an option type, as `string?` or `(int, int?)`, from an
-/// argument of another type or from a default the call leaves out: the
-/// value converts to the option type, which comes with options. A local
-/// function with such a parameter waits for options already, and so does
-/// the body that declares it.
-fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId, args: &[Arg]) -> bool {
-    let (Some(Callee::Item(item)), Some(bound)) =
-        (inference.callee(call), inference.arguments(call))
-    else {
+/// Whether the call `call` passes a value to a parameter whose type holds
+/// an option type, as `string?` or `(int, int?)`: an argument of another
+/// type, or a default the call leaves out, converts to the option type,
+/// which comes with options. An argument that has the option type already
+/// puts the body there by its own type, so only the parameter decides. A
+/// local function with such a parameter waits for options already, and so
+/// does the body that declares it.
+fn converts_to_option(db: &dyn Db, inference: &Inference, call: ExprId) -> bool {
+    let Some(Callee::Item(item)) = inference.callee(call) else {
         return false;
     };
     let function = signature(db, item).as_function();
-    function.is_some_and(|function| {
-        function.params.iter().enumerate().any(|(index, param)| {
-            if !holds_option(&param.ty) {
-                return false;
-            }
-            let arg = bound
-                .iter()
-                .position(|&to| to == index)
-                .and_then(|position| args.get(position));
-            arg.is_none_or(|arg| {
-                inference
-                    .expr(arg.expr)
-                    .is_none_or(|ty| !same(ty, &param.ty))
-            })
-        })
-    })
+    function.is_some_and(|function| function.params.iter().any(|param| holds_option(&param.ty)))
 }
 
 /// Whether `ty` is an option type or a tuple that holds one.
@@ -861,7 +845,9 @@ fn named_value_later(
         }
         Target::Item(Resolved::Item(item)) => {
             let data = item_tree(db, item.file).item(item.item);
-            (data.kind == ItemKind::Field && data.is_static).then_some(("a static", STATICS))
+            // Constants returned above, so a field at namespace level here is
+            // a static.
+            (data.kind == ItemKind::Field).then_some(("a static", STATICS))
         }
         _ => None,
     }
