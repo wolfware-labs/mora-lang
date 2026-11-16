@@ -430,23 +430,13 @@ struct Frame {
 }
 
 impl Pass<'_> {
-    /// What `key`, a key of `project`, gives, when it is known: evaluated
-    /// or taken by this pass, or evaluated by the pass of its own project.
-    fn known(&self, project: Project, key: ConstKey) -> Option<&Evaluated> {
-        // A key of this project is known once this pass has evaluated it,
-        // which the order of its read graph ensures before any read of it;
-        // the pass of its own project is this one, never asked for itself.
-        let theirs = || (project != self.project).then(|| const_values(self.db, project).get(key));
-        self.values.get(&key).or_else(|| theirs().flatten())
-    }
-
-    /// Whether `key`, a key of `project`, is known, after taking what it
-    /// gives from the pass of the first project this one depends on,
-    /// directly or not, that has it ([`transitive_dependencies`]), when
-    /// neither this pass nor that of its own project does. Only a key of
-    /// another project can be unknown here.
-    fn resolve(&mut self, project: Project, key: ConstKey) -> bool {
-        if self.known(project, key).is_some() {
+    /// Whether `key` is known, after taking what it gives from the pass of
+    /// the first project this one depends on, directly or not, that has it
+    /// ([`transitive_dependencies`]), when this pass does not. Only a key of
+    /// another project can be unknown here: the order of the read graph
+    /// evaluates each key of this project before any read of it.
+    fn resolve(&mut self, key: ConstKey) -> bool {
+        if self.values.contains_key(&key) {
             return true;
         }
         let db = self.db;
@@ -462,11 +452,11 @@ impl Pass<'_> {
         }
     }
 
-    /// What `key`, a key of `project` that [`Pass::ensure`] has evaluated
-    /// or found, gives.
+    /// What `key`, a key of `project` that this pass has evaluated or
+    /// taken ([`Pass::ensure`], [`Pass::resolve`]), gives.
     fn value(&self, project: Project, key: ConstKey) -> &Evaluated {
         let name = || key.name(self.db, project);
-        expect_evaluating(self.known(project, key), name, "a key needed before it is")
+        expect_evaluating(self.values.get(&key), name, "a key needed before it is")
     }
 
     /// Evaluates `key`, a key of `project`, after each key it reads
@@ -499,7 +489,7 @@ impl Pass<'_> {
             };
             frame.next += 1;
             walk.push(frame);
-            if self.resolve(need.project, need.key) {
+            if self.resolve(need.key) {
                 continue;
             }
             match walk.iter().position(|frame| frame.key == need.key) {
