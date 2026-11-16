@@ -434,7 +434,8 @@ impl Pass<'_> {
     /// or taken by this pass, or evaluated by the pass of its own project.
     fn known(&self, project: Project, key: ConstKey) -> Option<&Evaluated> {
         // A key of this project is known once this pass has evaluated it,
-        // which the order of its read graph ensures before any read of it.
+        // which the order of its read graph ensures before any read of it;
+        // the pass of its own project is this one, never asked for itself.
         let theirs = || (project != self.project).then(|| const_values(self.db, project).get(key));
         self.values.get(&key).or_else(|| theirs().flatten())
     }
@@ -573,8 +574,8 @@ impl Pass<'_> {
             .collect()
     }
 
-    /// What `key`, a key of `project` whose needs `needs` ([`Pass::needs`])
-    /// are known, gives, each step in order: a key in a cycle of reads
+    /// What `key`, a key of `project` whose needs ([`Pass::needs`]) are
+    /// known, gives, each step in order: a key in a cycle of reads
     /// fails, with the error on the cycle's first member; then one with an
     /// operation §14.6 never allows; a key whose code a later milestone
     /// lowers, or that reads one that waits, waits for the latest of those

@@ -278,10 +278,7 @@ pub(crate) fn lowered_later(
     file: SourceFile,
     owner: BodyOwner,
 ) -> Option<Later> {
-    let defaults = defaults_later(
-        omitted_defaults(db, project, file, owner),
-        |project, key| Some(const_value(db, project, key)),
-    );
+    let defaults = defaults_later(db, project, file, owner);
     later_with(db, project, file, owner, ConstReads::Evaluated, defaults)
 }
 
@@ -327,22 +324,25 @@ fn later_with(
     ])
 }
 
-/// The milestone that lowers a body for its calls of a function, a method
-/// or a local function that leave out an argument whose default value
-/// waits for a later milestone: the latest of those that `defaults`, as
-/// [`omitted_defaults`] lists them, wait for, the first on a tie, each
-/// evaluated by `value`. A default with a value or an error, or that
-/// `value` does not give, decides nothing. `None` when no call waits.
-pub(crate) fn defaults_later<'e>(
-    defaults: impl IntoIterator<Item = (Project, ConstKey)>,
-    value: impl Fn(Project, ConstKey) -> Option<&'e Evaluated>,
+/// The milestone that lowers the body of `owner` for its calls of a
+/// function, a method or a local function that leave out an argument whose
+/// default value waits for a later milestone: the latest of those that the
+/// defaults [`omitted_defaults`] lists wait for, the first on a tie. A
+/// default with a value or an error decides nothing. `None` when no call
+/// waits.
+fn defaults_later(
+    db: &dyn Db,
+    project: Project,
+    file: SourceFile,
+    owner: BodyOwner,
 ) -> Option<Later> {
+    let defaults = omitted_defaults(db, project, file, owner);
     latest(
         defaults
             .into_iter()
-            .map(|(project, key)| match value(project, key) {
-                Some(Evaluated::Later(later)) => Some(later.clone()),
-                Some(Evaluated::Value(_) | Evaluated::Failed(_)) | None => None,
+            .map(|(project, key)| match const_value(db, project, key) {
+                Evaluated::Later(later) => Some(later.clone()),
+                Evaluated::Value(_) | Evaluated::Failed(_) => None,
             }),
     )
     .map(|later| {
@@ -357,7 +357,7 @@ pub(crate) fn defaults_later<'e>(
 /// of the body of `owner` leave out, each with its project: the calls in
 /// the order of the expressions of the body, and the defaults of each in
 /// the order of its parameters. A literal default is not among them.
-pub(crate) fn omitted_defaults(
+fn omitted_defaults(
     db: &dyn Db,
     project: Project,
     file: SourceFile,
