@@ -1,6 +1,8 @@
 //! The data types of MIR (§14.7): a control-flow graph of basic blocks per
 //! body, over typed locals and places.
 
+use std::sync::Arc;
+
 use mora_hir::{ItemId, ParamMode, Primitive, Signature, Ty, instance_fields, signature};
 use mora_span::{Db, Project, Span};
 
@@ -228,8 +230,8 @@ pub enum Const {
     Bool(bool),
     /// A `char`.
     Char(char),
-    /// A `string`.
-    String(String),
+    /// A `string`, its text shared by every copy.
+    String(Arc<str>),
     /// The unit value `()`.
     Unit,
 }

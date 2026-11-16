@@ -8,12 +8,12 @@
 use mora_hir::{Ty, ty_name};
 use mora_span::{Db, Project, TextRange};
 
-use super::arith::{self, ArithError};
+use super::arith::{self, Arith, ArithError};
 use super::{ConstKey, ConstValue, fail_evaluating};
 use crate::dump::constant;
 use crate::{
-    BinOp, BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection, Rvalue,
-    StatementKind, TerminatorKind,
+    AggregateKind, BinOp, BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection,
+    Rvalue, StatementKind, TerminatorKind,
 };
 
 /// An operation that failed: where, why, in which type, and its operands
@@ -144,7 +144,8 @@ impl Machine<'_> {
             }
             Rvalue::Unary(op, operand) => {
                 let value = self.scalar(operand);
-                arith::unary(*op, &value)
+                self.arith()
+                    .unary(*op, &value)
                     .map_err(|error| (error, format!("{}({})", op.text(), constant(&value))))?
             }
             Rvalue::Cast(_, operand, ty) => {
@@ -152,11 +153,14 @@ impl Machine<'_> {
                 let Ty::Primitive(to) = ty else {
                     self.internal(&format!("a cast to {}", ty_name(self.db, ty)));
                 };
-                arith::cast(&value, *to).map_err(|error| {
+                self.arith().cast(&value, *to).map_err(|error| {
                     let text = format!("({}){}", ty_name(self.db, ty), constant(&value));
                     (error, text)
                 })?
             }
+            // `()` has one value, whether lowering wrote it as an empty
+            // tuple or as the constant a body that returns `()` gives.
+            Rvalue::Aggregate(AggregateKind::Tuple, parts) if parts.is_empty() => Const::Unit,
             Rvalue::Aggregate(kind, parts) => {
                 let parts = parts.iter().map(|part| self.operand(part)).collect();
                 return Ok(ConstValue::Aggregate(*kind, parts));
@@ -176,7 +180,9 @@ impl Machine<'_> {
         right: &ConstValue,
     ) -> Result<ConstValue, Failed> {
         match (left, right) {
-            (ConstValue::Scalar(left), ConstValue::Scalar(right)) => arith::binary(op, left, right)
+            (ConstValue::Scalar(left), ConstValue::Scalar(right)) => self
+                .arith()
+                .binary(op, left, right)
                 .map(ConstValue::Scalar)
                 .map_err(|error| {
                     let text = match (error, left, right) {
@@ -285,6 +291,13 @@ impl Machine<'_> {
         match self.locals.get_mut(local.index()) {
             Some(slot) => slot,
             None => no_local(&self.body.name, local),
+        }
+    }
+
+    /// The arithmetic of the run, whose internal errors name the body.
+    fn arith(&self) -> Arith<'_> {
+        Arith {
+            name: &self.body.name,
         }
     }
 

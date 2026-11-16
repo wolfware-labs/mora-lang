@@ -507,7 +507,7 @@ pub(crate) fn constant(hir: &mora_hir::Body, inference: &Inference, expr: ExprId
         Expr::Literal(Literal::Bool(value)) => Some(Const::Bool(*value)),
         Expr::Literal(Literal::Char(text)) => char_value(text).map(Const::Char),
         Expr::Literal(Literal::String(text)) => {
-            string_value(text).map(|(value, _)| Const::String(value))
+            string_value(text).map(|(value, _)| Const::String(value.into()))
         }
         _ => None,
     }

@@ -840,7 +840,7 @@ fn run_computes_arithmetic_and_casts() {
     assert_eq!(source.run("C"), Ok(int(44, Primitive::Byte)));
     assert_eq!(
         source.run("S"),
-        Ok(ConstValue::Scalar(Const::String("abcd".to_owned())))
+        Ok(ConstValue::Scalar(Const::String("abcd".into())))
     );
     assert_eq!(source.run("N"), Ok(int(-10, Primitive::Long)));
     assert_eq!(
@@ -929,13 +929,13 @@ fn run_builds_structs_and_tuples() {
             AggregateKind::Tuple,
             vec![
                 int(1, Primitive::Int),
-                ConstValue::Scalar(Const::String("a".to_owned()))
+                ConstValue::Scalar(Const::String("a".into()))
             ]
         ))
     );
     assert_eq!(
         source.run("U"),
-        Ok(ConstValue::Scalar(Const::String("b".to_owned())))
+        Ok(ConstValue::Scalar(Const::String("b".into())))
     );
 }
 
@@ -1076,6 +1076,19 @@ fn run_panics_on_a_return_without_a_value() {
     let _ = run_hand_built(&hand_built(
         1,
         vec![block(Vec::new(), TerminatorKind::Return)],
+    ));
+}
+
+#[test]
+#[should_panic(expected = "internal error evaluating Hand: `+` on")]
+fn run_names_its_body_when_an_operation_takes_mismatched_types() {
+    let long = Operand::Const(Const::Int(1, Primitive::Long));
+    let _ = run_hand_built(&hand_built(
+        1,
+        vec![block(
+            vec![to_return(Rvalue::Binary(BinOp::Add, int_operand(1), long))],
+            TerminatorKind::Return,
+        )],
     ));
 }
 
@@ -1330,9 +1343,68 @@ fn run_compares_aggregates_with_eq_and_ne() {
 }
 
 #[test]
+fn the_unit_value_compares_equal_however_it_is_written() {
+    let cases = [
+        "const U: () = ();\nconst B: bool = U == ();\n",
+        "const U: () = ();\nconst T: ((), int) = (U, 1);\nconst B: bool = T == ((), 1);\n",
+        "struct P {\n    public X: () = ();\n}\nconst Q: P = new P {};\n\
+         const B: bool = Q == new P { X = () };\n",
+    ];
+    for text in cases {
+        let source = checked(text);
+        assert_eq!(
+            source.evaluated(source.constant("B")),
+            &Evaluated::Value(boolean(true)),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_unit_value_is_one_scalar() {
+    let source = checked("const U: () = ();\nconst T: ((), int) = ((), 1);\n");
+    let unit = ConstValue::Scalar(Const::Unit);
+    assert_eq!(
+        source.evaluated(source.constant("U")),
+        &Evaluated::Value(unit.clone())
+    );
+    assert_eq!(
+        source.evaluated(source.constant("T")),
+        &Evaluated::Value(ConstValue::Aggregate(
+            AggregateKind::Tuple,
+            vec![unit, int(1, Primitive::Int)]
+        ))
+    );
+}
+
+#[test]
+fn copies_of_a_string_constant_share_its_text() {
+    let mut text = String::from("const A0: string = \"a\";\n");
+    for n in 1..=20 {
+        let m = n - 1;
+        text.push_str(&format!("const A{n}: string = A{m} + A{m};\n"));
+    }
+    for n in 0..200 {
+        text.push_str(&format!("const B{n}: string = A20;\n"));
+    }
+    let source = checked(&text);
+    let data = |name: &str| match source.evaluated(source.constant(name)) {
+        Evaluated::Value(ConstValue::Scalar(Const::String(text))) => {
+            assert_eq!(text.len(), 1 << 20);
+            text.as_ptr()
+        }
+        other => panic!("{name} gives {other:?}"),
+    };
+    let shared = data("A20");
+    for n in 0..200 {
+        assert_eq!(data(&format!("B{n}")), shared, "B{n}");
+    }
+}
+
+#[test]
 fn run_gives_the_lengths_of_a_concatenation_too_long_to_keep() {
     let long = "a".repeat(MAX_STRING_BYTES - 1);
-    let string = |text: &str| Operand::Const(Const::String(text.to_owned()));
+    let string = |text: &str| Operand::Const(Const::String(text.into()));
     let body = hand_built(
         1,
         vec![block(

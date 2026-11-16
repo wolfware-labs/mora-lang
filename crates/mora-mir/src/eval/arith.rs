@@ -100,141 +100,231 @@ impl Width {
     }
 }
 
-/// The integer type `ty` on each target it may have: two for `nint` and
-/// `nuint`, which are 32 or 64 bits wide, one for any other.
-fn widths(ty: Primitive) -> &'static [Width] {
-    match ty {
-        Primitive::Byte => &[Width::U8],
-        Primitive::SByte => &[Width::I8],
-        Primitive::Short => &[Width::I16],
-        Primitive::UShort => &[Width::U16],
-        Primitive::Int => &[Width::I32],
-        Primitive::UInt => &[Width::U32],
-        Primitive::Long => &[Width::I64],
-        Primitive::ULong => &[Width::U64],
-        Primitive::NInt => &[Width::I32, Width::I64],
-        Primitive::NUInt => &[Width::U32, Width::U64],
-        Primitive::Bool | Primitive::Float | Primitive::Double | Primitive::Char => {
-            internal(&format!("`{}` is not an integer type", ty.keyword()))
-        }
-    }
+/// The arithmetic of the evaluation of one body, whose internal errors
+/// name the body.
+#[derive(Clone, Copy)]
+pub(crate) struct Arith<'a> {
+    /// The name of the body, as `App.B`.
+    pub(crate) name: &'a str,
 }
 
-/// The integer of type `ty` that `compute` gives on every target: the
-/// value or the error they all give, and `TargetDependent` when they
-/// differ.
-fn on_every_target(
-    ty: Primitive,
-    compute: impl Fn(Width) -> Result<i128, ArithError>,
-) -> Result<Const, ArithError> {
-    let widths = widths(ty);
-    let first = compute(widths[0]);
-    if widths[1..].iter().all(|&width| compute(width) == first) {
-        first.map(|value| Const::Int(value, ty))
-    } else {
-        Err(ArithError::TargetDependent)
+impl Arith<'_> {
+    /// The integer type `ty` on each target it may have: two for `nint` and
+    /// `nuint`, which are 32 or 64 bits wide, one for any other.
+    fn widths(&self, ty: Primitive) -> &'static [Width] {
+        match ty {
+            Primitive::Byte => &[Width::U8],
+            Primitive::SByte => &[Width::I8],
+            Primitive::Short => &[Width::I16],
+            Primitive::UShort => &[Width::U16],
+            Primitive::Int => &[Width::I32],
+            Primitive::UInt => &[Width::U32],
+            Primitive::Long => &[Width::I64],
+            Primitive::ULong => &[Width::U64],
+            Primitive::NInt => &[Width::I32, Width::I64],
+            Primitive::NUInt => &[Width::U32, Width::U64],
+            Primitive::Bool | Primitive::Float | Primitive::Double | Primitive::Char => {
+                self.internal(&format!("`{}` is not an integer type", ty.keyword()))
+            }
+        }
     }
-}
 
-/// The result of the binary operation `op` on two scalars, as the program
-/// computes it at run time with every checked operation checked (§7.12).
-/// Both operands have one type, except for a shift, whose count is an
-/// `int`.
-pub(crate) fn binary(op: BinOp, left: &Const, right: &Const) -> Result<Const, ArithError> {
-    match (left, right) {
-        (Const::Int(value, ty), Const::Int(count, _)) if op.is_shift() => {
-            shift(op, *value, *ty, *count)
+    /// The integer of type `ty` that `compute` gives on every target: the
+    /// value or the error they all give, and `TargetDependent` when they
+    /// differ.
+    fn on_every_target(
+        &self,
+        ty: Primitive,
+        compute: impl Fn(Width) -> Result<i128, ArithError>,
+    ) -> Result<Const, ArithError> {
+        let widths = self.widths(ty);
+        let first = compute(widths[0]);
+        if widths[1..].iter().all(|&width| compute(width) == first) {
+            first.map(|value| Const::Int(value, ty))
+        } else {
+            Err(ArithError::TargetDependent)
         }
-        (Const::Int(left, ty), Const::Int(right, right_ty)) if ty == right_ty => {
-            integer(op, *left, *right, *ty)
-        }
-        (Const::Real(left, ty), Const::Real(right, right_ty)) if ty == right_ty => {
-            real(op, *left, *right, *ty)
-        }
-        (Const::Char(left), Const::Char(right)) => {
-            comparison(op, left, right).unwrap_or_else(|| unsupported(op, "`char`"))
-        }
-        (Const::Bool(left), Const::Bool(right)) => match op {
-            BinOp::BitAnd => Ok(Const::Bool(left & right)),
-            BinOp::BitOr => Ok(Const::Bool(left | right)),
-            BinOp::BitXor => Ok(Const::Bool(left ^ right)),
-            _ => equality(op, left == right).unwrap_or_else(|| unsupported(op, "`bool`")),
-        },
-        (Const::String(left), Const::String(right)) => match op {
-            BinOp::Add => concatenate(left, right),
-            _ => equality(op, left == right).unwrap_or_else(|| unsupported(op, "`string`")),
-        },
-        (Const::Unit, Const::Unit) => equality(op, true).unwrap_or_else(|| unsupported(op, "`()`")),
-        _ => internal(&format!("`{}` on {left:?} and {right:?}", op.text())),
     }
-}
 
-/// `op` on two integers of type `ty`.
-fn integer(op: BinOp, left: i128, right: i128, ty: Primitive) -> Result<Const, ArithError> {
-    if let Some(result) = comparison(op, &left, &right) {
-        return result;
+    /// The result of the binary operation `op` on two scalars, as the program
+    /// computes it at run time with every checked operation checked (§7.12).
+    /// Both operands have one type, except for a shift, whose count is an
+    /// `int`.
+    pub(crate) fn binary(
+        &self,
+        op: BinOp,
+        left: &Const,
+        right: &Const,
+    ) -> Result<Const, ArithError> {
+        match (left, right) {
+            (Const::Int(value, ty), Const::Int(count, _)) if op.is_shift() => {
+                self.shift(op, *value, *ty, *count)
+            }
+            (Const::Int(left, ty), Const::Int(right, right_ty)) if ty == right_ty => {
+                self.integer(op, *left, *right, *ty)
+            }
+            (Const::Real(left, ty), Const::Real(right, right_ty)) if ty == right_ty => {
+                self.real(op, *left, *right, *ty)
+            }
+            (Const::Char(left), Const::Char(right)) => {
+                comparison(op, left, right).unwrap_or_else(|| self.unsupported(op, "`char`"))
+            }
+            (Const::Bool(left), Const::Bool(right)) => match op {
+                BinOp::BitAnd => Ok(Const::Bool(left & right)),
+                BinOp::BitOr => Ok(Const::Bool(left | right)),
+                BinOp::BitXor => Ok(Const::Bool(left ^ right)),
+                _ => equality(op, left == right).unwrap_or_else(|| self.unsupported(op, "`bool`")),
+            },
+            (Const::String(left), Const::String(right)) => match op {
+                BinOp::Add => concatenate(left, right),
+                _ => {
+                    equality(op, left == right).unwrap_or_else(|| self.unsupported(op, "`string`"))
+                }
+            },
+            (Const::Unit, Const::Unit) => {
+                equality(op, true).unwrap_or_else(|| self.unsupported(op, "`()`"))
+            }
+            _ => self.internal(&format!("`{}` on {left:?} and {right:?}", op.text())),
+        }
     }
-    on_every_target(ty, |width| match op {
-        BinOp::Add => width.check(left.checked_add(right)),
-        BinOp::Sub => width.check(left.checked_sub(right)),
-        BinOp::Mul => width.check(left.checked_mul(right)),
-        BinOp::Div if right == 0 => Err(ArithError::DivisionByZero),
-        BinOp::Div => width.check(Some(left / right)),
-        BinOp::Rem if right == 0 => Err(ArithError::RemainderByZero),
-        // The quotient `MinValue / -1` overflows, so the remainder does too.
-        BinOp::Rem if left == width.min() && right == -1 => Err(ArithError::Overflow),
-        BinOp::Rem => Ok(left % right),
-        BinOp::WrappingAdd => Ok(width.wrap(left.wrapping_add(right))),
-        BinOp::WrappingSub => Ok(width.wrap(left.wrapping_sub(right))),
-        BinOp::WrappingMul => Ok(width.wrap(left.wrapping_mul(right))),
-        BinOp::BitAnd => Ok(left & right),
-        BinOp::BitOr => Ok(left | right),
-        BinOp::BitXor => Ok(left ^ right),
-        _ => unsupported(op, "integers"),
-    })
-}
 
-/// A shift of `value`, of type `ty`, by `count`, masked to the width of
-/// `ty`: `count & 31` for a 32-bit type, `count & 63` for a 64-bit one.
-fn shift(op: BinOp, value: i128, ty: Primitive, count: i128) -> Result<Const, ArithError> {
-    on_every_target(ty, |width| {
-        // At most 63, so the cast keeps the value.
-        let count = (count & i128::from(width.bits.max(32) - 1)) as u32;
-        Ok(match op {
-            BinOp::Shl => width.wrap(value << count),
-            BinOp::Shr => value >> count,
-            _ => width.wrap((value & width.mask()) >> count),
+    /// `op` on two integers of type `ty`.
+    fn integer(
+        &self,
+        op: BinOp,
+        left: i128,
+        right: i128,
+        ty: Primitive,
+    ) -> Result<Const, ArithError> {
+        if let Some(result) = comparison(op, &left, &right) {
+            return result;
+        }
+        self.on_every_target(ty, |width| match op {
+            BinOp::Add => width.check(left.checked_add(right)),
+            BinOp::Sub => width.check(left.checked_sub(right)),
+            BinOp::Mul => width.check(left.checked_mul(right)),
+            BinOp::Div if right == 0 => Err(ArithError::DivisionByZero),
+            BinOp::Div => width.check(Some(left / right)),
+            BinOp::Rem if right == 0 => Err(ArithError::RemainderByZero),
+            // The quotient `MinValue / -1` overflows, so the remainder does too.
+            BinOp::Rem if left == width.min() && right == -1 => Err(ArithError::Overflow),
+            BinOp::Rem => Ok(left % right),
+            BinOp::WrappingAdd => Ok(width.wrap(left.wrapping_add(right))),
+            BinOp::WrappingSub => Ok(width.wrap(left.wrapping_sub(right))),
+            BinOp::WrappingMul => Ok(width.wrap(left.wrapping_mul(right))),
+            BinOp::BitAnd => Ok(left & right),
+            BinOp::BitOr => Ok(left | right),
+            BinOp::BitXor => Ok(left ^ right),
+            _ => self.unsupported(op, "integers"),
         })
-    })
-}
-
-/// `op` on two floating-point numbers of type `ty`, given as the bits of
-/// `double` values; a `float` operation rounds in single precision.
-fn real(op: BinOp, left: u64, right: u64, ty: Primitive) -> Result<Const, ArithError> {
-    let (left, right) = (f64::from_bits(left), f64::from_bits(right));
-    if let Some(result) = comparison(op, &left, &right) {
-        return result;
     }
-    let bits = match ty {
-        Primitive::Float => f64::from(floating(op, left as f32, right as f32)).to_bits(),
-        _ => floating(op, left, right).to_bits(),
-    };
-    Ok(Const::Real(bits, ty))
-}
 
-/// An arithmetic operation in the floating-point type `T`, which has no
-/// traps: `%` is the remainder of the truncated quotient.
-fn floating<T>(op: BinOp, left: T, right: T) -> T
-where
-    T: Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Rem<Output = T>,
-{
-    match op {
-        BinOp::Add => left + right,
-        BinOp::Sub => left - right,
-        BinOp::Mul => left * right,
-        BinOp::Div => left / right,
-        BinOp::Rem => left % right,
-        _ => unsupported(op, "floating-point numbers"),
+    /// A shift of `value`, of type `ty`, by `count`, masked to the width of
+    /// `ty`: `count & 31` for a 32-bit type, `count & 63` for a 64-bit one.
+    fn shift(
+        &self,
+        op: BinOp,
+        value: i128,
+        ty: Primitive,
+        count: i128,
+    ) -> Result<Const, ArithError> {
+        self.on_every_target(ty, |width| {
+            // At most 63, so the cast keeps the value.
+            let count = (count & i128::from(width.bits.max(32) - 1)) as u32;
+            Ok(match op {
+                BinOp::Shl => width.wrap(value << count),
+                BinOp::Shr => value >> count,
+                _ => width.wrap((value & width.mask()) >> count),
+            })
+        })
+    }
+
+    /// `op` on two floating-point numbers of type `ty`, given as the bits of
+    /// `double` values; a `float` operation rounds in single precision.
+    fn real(&self, op: BinOp, left: u64, right: u64, ty: Primitive) -> Result<Const, ArithError> {
+        let (left, right) = (f64::from_bits(left), f64::from_bits(right));
+        if let Some(result) = comparison(op, &left, &right) {
+            return result;
+        }
+        let bits = match ty {
+            Primitive::Float => f64::from(self.floating(op, left as f32, right as f32)).to_bits(),
+            _ => self.floating(op, left, right).to_bits(),
+        };
+        Ok(Const::Real(bits, ty))
+    }
+
+    /// An arithmetic operation in the floating-point type `T`, which has no
+    /// traps: `%` is the remainder of the truncated quotient.
+    fn floating<T>(&self, op: BinOp, left: T, right: T) -> T
+    where
+        T: Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Rem<Output = T>,
+    {
+        match op {
+            BinOp::Add => left + right,
+            BinOp::Sub => left - right,
+            BinOp::Mul => left * right,
+            BinOp::Div => left / right,
+            BinOp::Rem => left % right,
+            _ => self.unsupported(op, "floating-point numbers"),
+        }
+    }
+
+    /// The result of the unary operation `op` on a scalar (§7.12).
+    pub(crate) fn unary(&self, op: UnOp, value: &Const) -> Result<Const, ArithError> {
+        match (op, value) {
+            (UnOp::Neg, Const::Int(value, ty)) => {
+                self.on_every_target(*ty, |width| width.check(value.checked_neg()))
+            }
+            // A `float` value negated is still exact as a `double`.
+            (UnOp::Neg, Const::Real(bits, ty)) => {
+                Ok(Const::Real((-f64::from_bits(*bits)).to_bits(), *ty))
+            }
+            (UnOp::BitNot, Const::Int(value, ty)) => {
+                self.on_every_target(*ty, |width| Ok(width.wrap(!value)))
+            }
+            (UnOp::Not, Const::Bool(value)) => Ok(Const::Bool(!value)),
+            _ => self.internal(&format!("`{}` on {value:?}", op.text())),
+        }
+    }
+
+    /// `value` converted to the numeric type `to` (§5.10): an integer
+    /// truncates and wraps, a floating-point number rounds to nearest, and a
+    /// floating-point number converted to an integer type saturates, with NaN
+    /// giving 0.
+    pub(crate) fn cast(&self, value: &Const, to: Primitive) -> Result<Const, ArithError> {
+        match (value, to) {
+            // Each rounds once, from the integer itself.
+            (Const::Int(value, _), Primitive::Float) => {
+                Ok(Const::Real(f64::from(*value as f32).to_bits(), to))
+            }
+            (Const::Int(value, _), Primitive::Double) => {
+                Ok(Const::Real((*value as f64).to_bits(), to))
+            }
+            (Const::Int(value, _), _) => self.on_every_target(to, |width| Ok(width.wrap(*value))),
+            (Const::Real(bits, _), Primitive::Float) => Ok(Const::Real(
+                f64::from(f64::from_bits(*bits) as f32).to_bits(),
+                to,
+            )),
+            (Const::Real(bits, _), Primitive::Double) => Ok(Const::Real(*bits, to)),
+            (Const::Real(bits, _), _) => {
+                // `as` truncates, saturates at the bounds of `i128` and maps NaN to 0.
+                let value = f64::from_bits(*bits) as i128;
+                self.on_every_target(to, |width| Ok(value.clamp(width.min(), width.max())))
+            }
+            _ => self.internal(&format!("cast of {value:?} to `{}`", to.keyword())),
+        }
+    }
+
+    /// Panics on an operation that the operands' type does not have, which
+    /// typing rules out.
+    fn unsupported(&self, op: BinOp, operands: &str) -> ! {
+        self.internal(&format!("`{}` on {operands}", op.text()))
+    }
+
+    /// Panics with an internal error that names the body: the operation
+    /// is one that only a compiler bug passes in.
+    fn internal(&self, what: &str) -> ! {
+        fail_evaluating(self.name, what)
     }
 }
 
@@ -269,51 +359,7 @@ fn concatenate(left: &str, right: &str) -> Result<Const, ArithError> {
     if len > MAX_STRING_BYTES {
         return Err(ArithError::TooLong(len));
     }
-    Ok(Const::String([left, right].concat()))
-}
-
-/// The result of the unary operation `op` on a scalar (§7.12).
-pub(crate) fn unary(op: UnOp, value: &Const) -> Result<Const, ArithError> {
-    match (op, value) {
-        (UnOp::Neg, Const::Int(value, ty)) => {
-            on_every_target(*ty, |width| width.check(value.checked_neg()))
-        }
-        // A `float` value negated is still exact as a `double`.
-        (UnOp::Neg, Const::Real(bits, ty)) => {
-            Ok(Const::Real((-f64::from_bits(*bits)).to_bits(), *ty))
-        }
-        (UnOp::BitNot, Const::Int(value, ty)) => {
-            on_every_target(*ty, |width| Ok(width.wrap(!value)))
-        }
-        (UnOp::Not, Const::Bool(value)) => Ok(Const::Bool(!value)),
-        _ => internal(&format!("`{}` on {value:?}", op.text())),
-    }
-}
-
-/// `value` converted to the numeric type `to` (§5.10): an integer
-/// truncates and wraps, a floating-point number rounds to nearest, and a
-/// floating-point number converted to an integer type saturates, with NaN
-/// giving 0.
-pub(crate) fn cast(value: &Const, to: Primitive) -> Result<Const, ArithError> {
-    match (value, to) {
-        // Each rounds once, from the integer itself.
-        (Const::Int(value, _), Primitive::Float) => {
-            Ok(Const::Real(f64::from(*value as f32).to_bits(), to))
-        }
-        (Const::Int(value, _), Primitive::Double) => Ok(Const::Real((*value as f64).to_bits(), to)),
-        (Const::Int(value, _), _) => on_every_target(to, |width| Ok(width.wrap(*value))),
-        (Const::Real(bits, _), Primitive::Float) => Ok(Const::Real(
-            f64::from(f64::from_bits(*bits) as f32).to_bits(),
-            to,
-        )),
-        (Const::Real(bits, _), Primitive::Double) => Ok(Const::Real(*bits, to)),
-        (Const::Real(bits, _), _) => {
-            // `as` truncates, saturates at the bounds of `i128` and maps NaN to 0.
-            let value = f64::from_bits(*bits) as i128;
-            on_every_target(to, |width| Ok(value.clamp(width.min(), width.max())))
-        }
-        _ => internal(&format!("cast of {value:?} to `{}`", to.keyword())),
-    }
+    Ok(Const::String([left, right].concat().into()))
 }
 
 /// `==` on two scalars of one type: by value for numbers (so -0.0 equals
@@ -327,25 +373,28 @@ pub(crate) fn equal(left: &Const, right: &Const) -> bool {
     }
 }
 
-/// Panics on an operation that the operands' type does not have, which
-/// typing rules out.
-fn unsupported(op: BinOp, operands: &str) -> ! {
-    internal(&format!("`{}` on {operands}", op.text()))
-}
-
-/// Panics with an internal error: the operation is one that only a
-/// compiler bug passes in.
-fn internal(what: &str) -> ! {
-    fail_evaluating("a constant", what)
-}
-
 #[cfg(test)]
 mod tests {
     use mora_hir::Primitive::{self, Byte, Double, Float, Int, Long, NInt, NUInt, UInt, ULong};
 
     use super::ArithError::{DivisionByZero, Overflow, RemainderByZero, TargetDependent, TooLong};
-    use super::{MAX_STRING_BYTES, binary, cast, equal, unary};
+    use super::{Arith, ArithError, MAX_STRING_BYTES, equal};
     use crate::{BinOp, Const, UnOp};
+
+    /// The arithmetic of a constant named `App.K`.
+    const ARITH: Arith<'static> = Arith { name: "App.K" };
+
+    fn binary(op: BinOp, left: &Const, right: &Const) -> Result<Const, ArithError> {
+        ARITH.binary(op, left, right)
+    }
+
+    fn unary(op: UnOp, value: &Const) -> Result<Const, ArithError> {
+        ARITH.unary(op, value)
+    }
+
+    fn cast(value: &Const, to: Primitive) -> Result<Const, ArithError> {
+        ARITH.cast(value, to)
+    }
 
     fn n(value: i128, ty: Primitive) -> Const {
         Const::Int(value, ty)
@@ -364,7 +413,7 @@ mod tests {
     }
 
     fn s(text: &str) -> Const {
-        Const::String(text.to_owned())
+        Const::String(text.into())
     }
 
     #[test]
@@ -557,10 +606,10 @@ mod tests {
     #[test]
     fn strings_concatenate_up_to_the_limit() {
         assert_eq!(binary(BinOp::Add, &s("ab"), &s("cd")), Ok(s("abcd")));
-        let full = Const::String("a".repeat(MAX_STRING_BYTES - 1));
+        let full = Const::String("a".repeat(MAX_STRING_BYTES - 1).into());
         let at_limit = binary(BinOp::Add, &full, &s("x"));
         assert!(matches!(at_limit, Ok(Const::String(ref text)) if text.len() == MAX_STRING_BYTES));
-        let over = Const::String("a".repeat(MAX_STRING_BYTES));
+        let over = Const::String("a".repeat(MAX_STRING_BYTES).into());
         assert_eq!(
             binary(BinOp::Add, &over, &s("x")),
             Err(TooLong(MAX_STRING_BYTES + 1))
@@ -640,13 +689,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "internal error evaluating a constant")]
+    #[should_panic(expected = "internal error evaluating App.K: `+` on")]
     fn operands_of_different_types_are_a_compiler_bug() {
         let _ = binary(BinOp::Add, &i(1), &n(1, Long));
     }
 
     #[test]
-    #[should_panic(expected = "internal error evaluating a constant")]
+    #[should_panic(expected = "internal error evaluating App.K: `+` on")]
     fn floating_operands_of_different_types_are_a_compiler_bug() {
         let _ = binary(BinOp::Add, &f(1.0), &d(1.0));
     }
