@@ -507,7 +507,7 @@ Done when:
 
 ### M2.3 Shared objects and reference counts in the runtime
 
-Spec: [§13.3](docs/design/mora.md#133-shared-objects), [§13.4](docs/design/mora.md#134-strings-and-arrays). Crates: `mora-rt`, `mora-codegen`. Blocked by: M2.1.
+Spec: [§13.3](docs/design/mora.md#133-shared-objects), [§13.4](docs/design/mora.md#134-strings-and-arrays). Crates: `mora-mir`, `mora-rt`, `mora-codegen`. Blocked by: M2.1.
 
 The object header of §13.3, inline retain and release sequences, `mora_rt_drop` with the iterative release work list, weak count handling, immortal objects, `T[]` layout and allocation, and reference-count overflow abort.
 
