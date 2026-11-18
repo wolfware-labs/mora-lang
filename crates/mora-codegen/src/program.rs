@@ -42,6 +42,7 @@ pub struct Program<'db> {
     db: &'db dyn Db,
     functions: Vec<Function<'db>>,
     index: HashMap<BodyKey, FunctionId>,
+    entry: FunctionId,
 }
 
 /// The name of the body of the top-level statements.
@@ -69,6 +70,7 @@ impl<'db> Program<'db> {
             db,
             functions: Vec::new(),
             index: HashMap::new(),
+            entry: FunctionId(0),
         };
         let mut pending = vec![entry];
         program.add(entry, root);
@@ -114,6 +116,7 @@ impl<'db> Program<'db> {
                 symbol: mangle([body.name.as_str()]),
             }],
             index,
+            entry: FunctionId(0),
         }
     }
 
@@ -122,7 +125,7 @@ impl<'db> Program<'db> {
         let Some(body) = owner_mir.bodies.get(key.local) else {
             panic!("codegen: `{:?}` has no body {}", key.owner, key.local);
         };
-        let id = FunctionId(u32::try_from(self.functions.len()).unwrap_or(u32::MAX));
+        let id = function_id(self.functions.len());
         self.index.insert(key, id);
         self.functions.push(Function {
             key,
@@ -142,9 +145,8 @@ impl<'db> Program<'db> {
     }
 
     /// The entry point.
-    #[allow(clippy::unused_self)]
     pub fn entry(&self) -> FunctionId {
-        FunctionId(0)
+        self.entry
     }
 
     /// The function `caller` reaches through `callee`; `None` for a function
@@ -154,6 +156,18 @@ impl<'db> Program<'db> {
         let target = target_key(self.db, from, callee)?;
         self.index.get(&target).copied()
     }
+}
+
+/// The id of the function at position `position`.
+///
+/// # Panics
+///
+/// When there are more functions than ids.
+fn function_id(position: usize) -> FunctionId {
+    let Ok(id) = u32::try_from(position) else {
+        panic!("codegen: a program cannot have {position} functions");
+    };
+    FunctionId(id)
 }
 
 fn item_key(item: ItemId) -> BodyKey {
@@ -322,5 +336,70 @@ mod tests {
         let single = Program::from_body(&db, f.key.project, f.key.file, f.body);
         assert_eq!(single.functions()[0].symbol, mangle([f.body.name.as_str()]));
         assert_eq!(single.entry(), FunctionId(0));
+    }
+
+    #[test]
+    fn callee_resolves_local_functions_and_initializers() {
+        let db = TestDb::default();
+        let project = app_of(
+            &db,
+            "struct P { public X: int = 4; public Y: int; }\nOuter(y: int): int { Inner(): int => 3; let p = new P { Y = y }; return Inner() + p.X; }\nOuter(1);\n",
+        );
+        let program = Program::collect(&db, project).unwrap();
+        let outer = program
+            .functions()
+            .iter()
+            .position(|f| f.symbol == symbol("Outer"))
+            .unwrap();
+        let outer_id = FunctionId(u32::try_from(outer).unwrap());
+        let mut resolved = Vec::new();
+        for block in &program.functions()[outer].body.blocks {
+            if let TerminatorKind::Call { callee, .. } = &block.terminator.kind {
+                let id = program.callee(outer_id, callee).unwrap();
+                resolved.push(program.functions()[id.0 as usize].symbol.clone());
+            }
+        }
+        assert!(
+            resolved.contains(&mangle(["UsersApi", "Outer", "Inner"])),
+            "{resolved:?}"
+        );
+        assert!(
+            resolved.contains(&mangle(["UsersApi", "P", "X"])),
+            "{resolved:?}"
+        );
+        assert_eq!(program.callee(FunctionId(999), &Callee::Local(0)), None);
+        assert_eq!(program.callee(outer_id, &Callee::Local(0)), Some(outer_id));
+    }
+
+    #[test]
+    fn symbols_prefix_a_dotted_root_namespace() {
+        assert_eq!(
+            symbol_of("top-level.Helper", "Acme.Users"),
+            mangle(["Acme", "Users", "top-level", "Helper"])
+        );
+        assert_eq!(
+            symbol_of("top-level", "Acme.Users"),
+            mangle(["Acme", "Users", "top-level"])
+        );
+        assert_eq!(symbol_of("A.B.C", "Acme.Users"), mangle(["A", "B", "C"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "has no body 99")]
+    fn a_missing_local_body_is_an_internal_error() {
+        let db = TestDb::default();
+        let project = app_of(&db, "Main(): int { return 7; }\n");
+        let mut program = Program::collect(&db, project).unwrap();
+        let key = BodyKey {
+            local: 99,
+            ..program.functions()[0].key
+        };
+        program.add(key, "UsersApi");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot have")]
+    fn too_many_functions_is_an_internal_error() {
+        function_id(usize::MAX);
     }
 }
