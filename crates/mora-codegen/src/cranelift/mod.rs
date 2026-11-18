@@ -6,7 +6,9 @@ mod function;
 use std::fmt;
 use std::str::FromStr;
 
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature, UserFuncName, types};
+use cranelift_codegen::ir::{
+    AbiParam, FuncRef, Function, InstBuilder, Signature, UserFuncName, types,
+};
 use cranelift_codegen::isa::{self, CallConv as IsaCallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -14,7 +16,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
-use mora_mir::{Body, LocalId, LocalTy};
+use mora_mir::{Body, LocalId, LocalTy, TerminatorKind};
 use mora_target::{CallConv, ObjectFormat, Target};
 use target_lexicon::Triple;
 
@@ -22,7 +24,7 @@ use crate::abi::FnAbi;
 use crate::error::CodegenError;
 use crate::jit::JitProgram;
 use crate::layout::Layouts;
-use crate::program::Program;
+use crate::program::{FunctionId, Program};
 use crate::{Backend, JitBackend, Profile};
 
 /// The symbol of the function the runtime's `main` calls (§13.8).
@@ -218,15 +220,25 @@ fn define_functions<M: Module>(
     }
     let mut context = module.make_context();
     let mut function_context = FunctionBuilderContext::new();
-    for (function, (id, signature)) in program.functions().iter().zip(&declared) {
+    for (caller, (function, (id, signature))) in
+        (0u32..).zip(program.functions().iter().zip(&declared))
+    {
         context.func.signature = signature.clone();
         context.func.name = UserFuncName::user(0, id.as_u32());
+        let calls = call_targets(
+            module,
+            program,
+            FunctionId(caller),
+            &declared,
+            &mut context.func,
+        );
         function::lower(
             &mut context.func,
             &mut function_context,
             function.body,
             layouts,
             module.isa().frontend_config(),
+            &calls,
         );
         module
             .define_function(*id, &mut context)
@@ -234,6 +246,30 @@ fn define_functions<M: Module>(
         module.clear_context(&mut context);
     }
     Ok(declared.into_iter().map(|(id, _)| id).collect())
+}
+
+/// The function each block of `caller` calls, declared in `func`: `None`
+/// for a block that ends in no call, or calls a function of the standard
+/// library or one outside `program`. `declared` holds the id of each
+/// function of `program`.
+fn call_targets<M: Module>(
+    module: &mut M,
+    program: &Program<'_>,
+    caller: FunctionId,
+    declared: &[(FuncId, Signature)],
+    func: &mut Function,
+) -> Vec<Option<FuncRef>> {
+    program.functions()[caller.0 as usize]
+        .body
+        .blocks
+        .iter()
+        .map(|block| match &block.terminator.kind {
+            TerminatorKind::Call { callee, .. } => program
+                .callee(caller, callee)
+                .map(|target| module.declare_func_in_func(declared[target.0 as usize].0, func)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What `__mora_main` returns.
