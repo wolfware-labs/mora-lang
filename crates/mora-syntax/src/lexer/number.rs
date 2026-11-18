@@ -253,10 +253,12 @@ fn split(text: &str) -> Option<Parts<'_>> {
 fn separators(digits: &str, radix: u32) -> Option<String> {
     let bytes = digits.as_bytes();
     let is_digit = |b: Option<&u8>| b.is_some_and(|&b| char::from(b).is_digit(radix));
+    // Both searches skip separators, so the forward one may start at the
+    // separator itself.
     let misplaced = bytes.iter().enumerate().any(|(i, &b)| {
         b == b'_'
             && !(is_digit(bytes[..i].iter().rev().find(|&&b| b != b'_'))
-                && is_digit(bytes[i + 1..].iter().find(|&&b| b != b'_')))
+                && is_digit(bytes[i..].iter().find(|&&b| b != b'_')))
     });
     misplaced.then(|| "a `_` separator must sit between two digits".into())
 }
