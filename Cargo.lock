@@ -667,6 +667,13 @@ dependencies = [
 [[package]]
 name = "mora-codegen"
 version = "0.0.0"
+dependencies = [
+ "mora-diag",
+ "mora-hir",
+ "mora-mir",
+ "mora-span",
+ "mora-target",
+]
 
 [[package]]
 name = "mora-diag"
