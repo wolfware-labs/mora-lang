@@ -671,6 +671,7 @@ dependencies = [
  "mora-diag",
  "mora-hir",
  "mora-mir",
+ "mora-rt-core",
  "mora-span",
  "mora-target",
 ]

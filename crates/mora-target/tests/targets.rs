@@ -200,3 +200,23 @@ fn a_bad_file_names_its_path() {
     );
     assert!(message.contains("pointer-width"), "{message}");
 }
+
+#[test]
+fn every_builtin_is_found_by_its_arch_and_os() {
+    for name in builtin_names() {
+        let t = Target::builtin(name).unwrap();
+        assert_eq!(Target::for_platform(&t.arch, &t.os).unwrap(), t);
+    }
+}
+
+#[test]
+fn an_unknown_platform_is_an_error() {
+    assert!(
+        matches!(Target::for_platform("sparc", "linux"), Err(Error::Unknown(n)) if n == "sparc-linux")
+    );
+}
+
+#[test]
+fn the_host_is_a_builtin() {
+    assert_eq!(Target::host().unwrap().arch, std::env::consts::ARCH);
+}

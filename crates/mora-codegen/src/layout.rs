@@ -10,10 +10,6 @@ use mora_mir::LocalTy;
 use mora_span::Db;
 use mora_target::Target;
 
-/// The size of a `string` value in bytes. Task 2 replaces it with the
-/// runtime's own constant.
-const STRING_SIZE: u32 = 16;
-
 /// How a value of a type is stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
@@ -107,7 +103,7 @@ impl<'db> Layouts<'db> {
         match ty {
             Ty::Primitive(primitive) => self.primitive(*primitive),
             Ty::String => Layout {
-                size: STRING_SIZE,
+                size: mora_rt_core::string::SIZE as u32,
                 align: self.target.align.pointer,
                 shape: Shape::String,
             },

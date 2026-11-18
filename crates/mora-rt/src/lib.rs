@@ -4,7 +4,7 @@
 
 mod pal;
 // Left out of this crate's unit tests, whose harness has its own `main`.
-#[cfg(not(test))]
+#[cfg(all(feature = "start", not(test)))]
 mod start;
 
 pub use mora_rt_core::DEBUG;

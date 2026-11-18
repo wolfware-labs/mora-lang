@@ -122,9 +122,14 @@ mod tests {
         static WRITTEN: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     }
 
+    /// Hands out real blocks; a request the allocator cannot take is null.
     #[unsafe(no_mangle)]
-    extern "C" fn mora_pal_alloc(_: usize, _: usize) -> *mut u8 {
-        core::ptr::null_mut()
+    unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
+        match std::alloc::Layout::from_size_align(size, align) {
+            // SAFETY: the caller guarantees a non-zero size.
+            Ok(layout) => unsafe { std::alloc::alloc(layout) },
+            Err(_) => core::ptr::null_mut(),
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -133,7 +138,12 @@ mod tests {
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn mora_pal_free(_: *mut u8, _: usize, _: usize) {}
+    unsafe extern "C" fn mora_pal_free(ptr: *mut u8, size: usize, align: usize) {
+        if let Ok(layout) = std::alloc::Layout::from_size_align(size, align) {
+            // SAFETY: the caller passes the block's own size and alignment.
+            unsafe { std::alloc::dealloc(ptr, layout) }
+        }
+    }
 
     #[unsafe(no_mangle)]
     extern "C" fn mora_pal_abort() -> ! {

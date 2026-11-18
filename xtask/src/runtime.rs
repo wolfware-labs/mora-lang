@@ -28,11 +28,11 @@ pub struct Variant {
 pub const VARIANTS: [Variant; 2] = [
     Variant {
         file: "libmora_rt.a",
-        features: "",
+        features: "start",
     },
     Variant {
         file: "libmora_rt_debug.a",
-        features: "debug",
+        features: "start,debug",
     },
 ];
 
