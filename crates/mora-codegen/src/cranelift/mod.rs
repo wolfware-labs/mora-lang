@@ -4,6 +4,7 @@
 mod function;
 
 use std::fmt;
+use std::str::FromStr;
 
 use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature, UserFuncName, types};
 use cranelift_codegen::isa::{self, CallConv as IsaCallConv, OwnedTargetIsa};
@@ -15,6 +16,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, LocalTy};
 use mora_target::{CallConv, ObjectFormat, Target};
+use target_lexicon::Triple;
 
 use crate::abi::FnAbi;
 use crate::error::CodegenError;
@@ -122,7 +124,13 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
     flags
         .enable("enable_multi_ret_implicit_sret")
         .map_err(cranelift_error)?;
-    let isa = isa::lookup_by_name(&target.triple)
+    let triple = Triple::from_str(&target.triple).map_err(|error| {
+        unsupported(
+            target,
+            format!("`{}` is not a target triple: {error}", target.triple),
+        )
+    })?;
+    let isa = isa::lookup(triple)
         .map_err(|error| unsupported(target, error))?
         .finish(settings::Flags::new(flags))
         .map_err(cranelift_error)?;
@@ -371,6 +379,14 @@ mod tests {
     }
 
     #[test]
+    fn a_negative_exit_code_keeps_its_value() {
+        assert_eq!(
+            jit("Main(): int { return -1; }\n", Profile::Debug).run_main(),
+            -1
+        );
+    }
+
+    #[test]
     fn top_level_statements_exit_with_zero() {
         assert_eq!(jit("let x = 1;\n", Profile::Debug).run_main(), 0);
     }
@@ -469,6 +485,12 @@ mod tests {
         is_unsupported(
             isa(&disabled, Profile::Debug, true),
             "Support for this target is disabled",
+        );
+        let mut garbage = x86_64_linux();
+        garbage.triple = "not a triple".into();
+        is_unsupported(
+            isa(&garbage, Profile::Debug, true),
+            "`not a triple` is not a target triple: Unrecognized architecture: not a triple",
         );
         let mut mismatch = x86_64_linux();
         mismatch.call_conv = CallConv::Win64;

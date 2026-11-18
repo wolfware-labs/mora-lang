@@ -24,6 +24,7 @@ mora-rt.workspace = true
 mora-rt-core.workspace = true
 mora-span.workspace = true
 mora-target.workspace = true
+target-lexicon.workspace = true
 
 [dev-dependencies]
 mora-diag.workspace = true

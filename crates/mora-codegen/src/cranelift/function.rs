@@ -408,6 +408,18 @@ mod tests {
     }
 
     #[test]
+    fn negative_constants_keep_their_values() {
+        let jit = jit_one("F(): int => -1;\n", "F");
+        assert_eq!(func::<extern "C" fn() -> i32>(&jit, "F")(), -1);
+        let jit = jit_one("F(): short => -30000;\n", "F");
+        assert_eq!(func::<extern "C" fn() -> i16>(&jit, "F")(), -30000);
+        let jit = jit_one("F(): sbyte => -128;\n", "F");
+        assert_eq!(func::<extern "C" fn() -> i8>(&jit, "F")(), -128);
+        let jit = jit_one("F(): long => -5000000000;\n", "F");
+        assert_eq!(func::<extern "C" fn() -> i64>(&jit, "F")(), -5_000_000_000);
+    }
+
+    #[test]
     fn blocks_run_in_order_and_locals_hold_values() {
         let jit = jit_one("F(): int { while true { return 1; } return 2; }\n", "F");
         assert_eq!(func::<extern "C" fn() -> i32>(&jit, "F")(), 1);

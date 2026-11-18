@@ -979,6 +979,7 @@ dependencies = [
  "mora-span",
  "mora-target",
  "object",
+ "target-lexicon",
 ]
 
 [[package]]
