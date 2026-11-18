@@ -191,7 +191,7 @@ pub(super) fn lower(
 
 /// Panics with an internal error in `body`: `what` is not lowered until
 /// `milestone`.
-fn fail(body: &Body, what: &str, milestone: &str) -> ! {
+pub(super) fn fail(body: &Body, what: &str, milestone: &str) -> ! {
     panic!(
         "internal error generating code for {}: {what} is not lowered until {milestone}",
         body.name
@@ -200,7 +200,7 @@ fn fail(body: &Body, what: &str, milestone: &str) -> ! {
 
 /// Panics with an internal error in `body`: the MIR breaks an invariant
 /// that `what` describes, which no MIR lowering produces.
-fn broken(body: &Body, what: &str) -> ! {
+pub(super) fn broken(body: &Body, what: &str) -> ! {
     panic!(
         "internal error generating code for {}: invalid MIR: {what}",
         body.name
@@ -209,7 +209,7 @@ fn broken(body: &Body, what: &str) -> ! {
 
 /// What an operand reads.
 #[derive(Clone, Copy)]
-enum Source<'o> {
+pub(super) enum Source<'o> {
     /// The value at a place.
     Place(&'o Place),
     /// A constant.
@@ -217,11 +217,11 @@ enum Source<'o> {
 }
 
 /// The lowering of one body.
-struct Lowering<'a, 'f> {
-    body: &'a Body,
-    layouts: &'a Layouts<'a>,
-    pointer: Type,
-    builder: FunctionBuilder<'f>,
+pub(super) struct Lowering<'a, 'f> {
+    pub(super) body: &'a Body,
+    pub(super) layouts: &'a Layouts<'a>,
+    pub(super) pointer: Type,
+    pub(super) builder: FunctionBuilder<'f>,
     variables: Vec<Option<Variable>>,
     slots: Vec<Option<StackSlot>>,
     blocks: Vec<ir::Block>,
@@ -251,6 +251,18 @@ impl Lowering<'_, '_> {
             StatementKind::Assign(place, Rvalue::Borrow(_, borrowed)) => {
                 let address = self.place_address(borrowed);
                 self.write(place, Some(address));
+            }
+            StatementKind::Assign(place, Rvalue::Binary(op, left, right)) => {
+                let value = self.binary(*op, left, right);
+                self.write(place, Some(value));
+            }
+            StatementKind::Assign(place, Rvalue::Unary(op, operand)) => {
+                let value = self.unary(*op, operand);
+                self.write(place, Some(value));
+            }
+            StatementKind::Assign(place, Rvalue::Cast(_, operand, ty)) => {
+                let value = self.cast(operand, ty);
+                self.write(place, Some(value));
             }
             other => fail(self.body, &format!("the statement `{other:?}`"), "M1.12"),
         }
@@ -384,7 +396,7 @@ impl Lowering<'_, '_> {
     ///
     /// With an internal error for the read of another constant, which only
     /// a body lowered for constant evaluation holds.
-    fn source<'o>(&self, operand: &'o Operand) -> Source<'o> {
+    pub(super) fn source<'o>(&self, operand: &'o Operand) -> Source<'o> {
         let place = match operand {
             Operand::Copy(place) | Operand::Move(place) => Some(place),
             _ => None,
@@ -400,7 +412,7 @@ impl Lowering<'_, '_> {
     }
 
     /// The layout of the value `source` reads.
-    fn source_layout(&self, source: Source<'_>) -> Layout {
+    pub(super) fn source_layout(&self, source: Source<'_>) -> Layout {
         match source {
             Source::Place(place) => self.place_layout(place),
             Source::Const(constant) => self.layouts.of(&constant.ty()),
@@ -408,7 +420,7 @@ impl Lowering<'_, '_> {
     }
 
     /// The value `source` reads; `None` for a zero-sized one.
-    fn source_value(&mut self, source: Source<'_>) -> Option<Value> {
+    pub(super) fn source_value(&mut self, source: Source<'_>) -> Option<Value> {
         match source {
             Source::Place(place) => self.read(place),
             Source::Const(constant) => self.constant(constant),
@@ -517,7 +529,7 @@ impl Lowering<'_, '_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::cranelift) mod tests {
     use cranelift_codegen::ir::{
         ArgumentExtension, ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName,
     };
@@ -549,13 +561,17 @@ mod tests {
     }
 
     /// The function `name` of the app of `text`, alone, compiled by the JIT.
-    fn jit_one(text: &str, name: &str) -> JitProgram {
+    pub(in crate::cranelift) fn jit_one(text: &str, name: &str) -> JitProgram {
         jit_one_with(text, name, |_| {})
     }
 
     /// The function `name` of the app of `text`, alone, compiled by the JIT
     /// after `edit` changes its MIR.
-    fn jit_one_with(text: &str, name: &str, edit: impl FnOnce(&mut Body)) -> JitProgram {
+    pub(in crate::cranelift) fn jit_one_with(
+        text: &str,
+        name: &str,
+        edit: impl FnOnce(&mut Body),
+    ) -> JitProgram {
         let db = TestDb::default();
         let project = app_of(&db, text);
         let file = file_named(&db, project, "src/Program.mr");

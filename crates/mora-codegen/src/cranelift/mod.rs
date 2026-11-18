@@ -2,6 +2,7 @@
 //! and the JIT on the host.
 
 mod function;
+mod ops;
 
 use std::fmt;
 use std::str::FromStr;
