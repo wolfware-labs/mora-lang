@@ -27,7 +27,8 @@ pub(super) enum Storage {
     Variable(Type),
     /// In a stack slot.
     Slot {
-        /// The size in bytes, a multiple of the pointer size.
+        /// The size in bytes, a multiple of the pointer size; 0 for a
+        /// zero-sized local whose address is taken.
         size: u32,
         /// The alignment in bytes.
         align: u32,
@@ -35,8 +36,9 @@ pub(super) enum Storage {
 }
 
 /// Where each local of `body` lives, in the order of `Body::locals`: a
-/// scalar whose address is never taken is a variable, any other local with
-/// a non-zero size is a stack slot.
+/// scalar whose address is never taken is a variable, a local whose address
+/// is taken or any other local with a non-zero size is a stack slot, and a
+/// zero-sized local whose address is never taken is nowhere.
 pub(super) fn storage(body: &Body, layouts: &Layouts<'_>, pointer: Type) -> Vec<Storage> {
     let borrowed = borrowed_locals(body);
     body.locals
@@ -45,7 +47,7 @@ pub(super) fn storage(body: &Body, layouts: &Layouts<'_>, pointer: Type) -> Vec<
         .map(|(decl, borrowed)| {
             let layout = layouts.of_local(&decl.ty);
             match layout.shape {
-                _ if layout.size == 0 => Storage::None,
+                _ if layout.size == 0 && !borrowed => Storage::None,
                 Shape::Scalar(scalar) if !borrowed => {
                     Storage::Variable(scalar_type(scalar, pointer))
                 }
@@ -91,7 +93,7 @@ pub(super) fn scalar_type(scalar: Scalar, pointer: Type) -> Type {
 /// # Panics
 ///
 /// With an internal error for a value passed in words or by pointer, which
-/// is not lowered yet.
+/// is not lowered until M1.12.
 pub(super) fn signature(body: &Body, abi: &FnAbi, call_conv: CallConv, pointer: Type) -> Signature {
     let mut signature = Signature::new(call_conv);
     for &mode in &abi.params {
@@ -109,7 +111,7 @@ fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
         PassMode::Ignore => return None,
         PassMode::Direct(scalar) => scalar,
         PassMode::Words(_) | PassMode::Indirect => {
-            fail(body, &format!("a value passed as {mode:?}"))
+            fail(body, &format!("a value passed as {mode:?}"), "M1.12")
         }
     };
     let param = AbiParam::new(scalar_type(scalar, pointer));
@@ -126,28 +128,41 @@ fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
     })
 }
 
-/// Lowers `body` into `func`, whose signature is already set. `calls` has
+/// Lowers `body` into `func`, whose signature is already set from `abi`.
+/// `calls` has
 /// one entry per block of `body`: the function its call terminator reaches,
 /// `None` for a block that ends in no call, or calls a function of the
 /// standard library or one outside the program.
 ///
 /// # Panics
 ///
-/// With an internal error for MIR that is not lowered yet.
+/// With an internal error for MIR that is not lowered until M1.12.
 pub(super) fn lower(
     func: &mut ir::Function,
     context: &mut FunctionBuilderContext,
     body: &Body,
     layouts: &Layouts<'_>,
+    abi: &FnAbi,
     config: TargetFrontendConfig,
     calls: &[Option<FuncRef>],
 ) {
     let pointer = config.pointer_type();
     let mut builder = FunctionBuilder::new(func, context);
-    let homes = storage(body, layouts, pointer)
+    let (variables, slots) = storage(body, layouts, pointer)
         .into_iter()
-        .map(|storage| Home::new(&mut builder, storage))
-        .collect();
+        .map(|storage| match storage {
+            Storage::None => (None, None),
+            Storage::Variable(ty) => (Some(builder.declare_var(ty)), None),
+            Storage::Slot { size, align } => (
+                None,
+                Some(builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    size,
+                    align.trailing_zeros() as u8,
+                ))),
+            ),
+        })
+        .unzip();
     let blocks: Vec<ir::Block> = body.blocks.iter().map(|_| builder.create_block()).collect();
     builder.append_block_params_for_function_params(blocks[BlockId::ENTRY.index()]);
     let mut lowering = Lowering {
@@ -155,14 +170,15 @@ pub(super) fn lower(
         layouts,
         pointer,
         builder,
-        homes,
+        variables,
+        slots,
         blocks,
         calls,
     };
     for (index, block) in body.blocks.iter().enumerate() {
         lowering.builder.switch_to_block(lowering.blocks[index]);
         if index == BlockId::ENTRY.index() {
-            lowering.parameters();
+            lowering.parameters(abi);
         }
         for statement in &block.statements {
             lowering.statement(statement);
@@ -173,36 +189,31 @@ pub(super) fn lower(
     lowering.builder.finalize(config);
 }
 
-/// Panics with an internal error in `body`: `what` is not lowered yet.
-fn fail(body: &Body, what: &str) -> ! {
+/// Panics with an internal error in `body`: `what` is not lowered until
+/// `milestone`.
+fn fail(body: &Body, what: &str, milestone: &str) -> ! {
     panic!(
-        "internal error generating code for {}: {what} is not lowered yet",
+        "internal error generating code for {}: {what} is not lowered until {milestone}",
         body.name
     )
 }
 
-/// The Cranelift home of a local.
-#[derive(Clone, Copy, Debug)]
-enum Home {
-    None,
-    Variable(Variable),
-    Slot(StackSlot),
+/// Panics with an internal error in `body`: the MIR breaks an invariant
+/// that `what` describes, which no MIR lowering produces.
+fn broken(body: &Body, what: &str) -> ! {
+    panic!(
+        "internal error generating code for {}: invalid MIR: {what}",
+        body.name
+    )
 }
 
-impl Home {
-    fn new(builder: &mut FunctionBuilder<'_>, storage: Storage) -> Home {
-        match storage {
-            Storage::None => Home::None,
-            Storage::Variable(ty) => Home::Variable(builder.declare_var(ty)),
-            Storage::Slot { size, align } => {
-                Home::Slot(builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    size,
-                    align.trailing_zeros() as u8,
-                )))
-            }
-        }
-    }
+/// What an operand reads.
+#[derive(Clone, Copy)]
+enum Source<'o> {
+    /// The value at a place.
+    Place(&'o Place),
+    /// A constant.
+    Const(&'o Const),
 }
 
 /// The lowering of one body.
@@ -211,19 +222,19 @@ struct Lowering<'a, 'f> {
     layouts: &'a Layouts<'a>,
     pointer: Type,
     builder: FunctionBuilder<'f>,
-    homes: Vec<Home>,
+    variables: Vec<Option<Variable>>,
+    slots: Vec<Option<StackSlot>>,
     blocks: Vec<ir::Block>,
     calls: &'a [Option<FuncRef>],
 }
 
 impl Lowering<'_, '_> {
     /// Stores the parameters, which the entry block receives, in their
-    /// locals.
-    fn parameters(&mut self) {
+    /// locals; `abi` passes them.
+    fn parameters(&mut self, abi: &FnAbi) {
         let entry = self.blocks[BlockId::ENTRY.index()];
         let mut values = self.builder.block_params(entry).to_vec().into_iter();
-        let abi = FnAbi::of(self.body, self.layouts);
-        for (local, mode) in self.body.param_ids().zip(abi.params) {
+        for (local, &mode) in self.body.param_ids().zip(&abi.params) {
             if mode != PassMode::Ignore {
                 self.write(&Place::local(local), values.next());
             }
@@ -241,7 +252,7 @@ impl Lowering<'_, '_> {
                 let address = self.place_address(borrowed);
                 self.write(place, Some(address));
             }
-            other => fail(self.body, &format!("the statement `{other:?}`")),
+            other => fail(self.body, &format!("the statement `{other:?}`"), "M1.12"),
         }
     }
 
@@ -280,16 +291,19 @@ impl Lowering<'_, '_> {
     /// With an internal error when `discr` is not a `bool`, an integer or a
     /// `char`, or a constant is not one either.
     fn switch(&mut self, discr: &Operand, targets: &[(Const, BlockId)], otherwise: BlockId) {
-        let layout = self.operand_layout(discr);
-        let (Some(value), Shape::Scalar(Scalar::Int { .. } | Scalar::Bool | Scalar::Char)) =
-            (self.operand(discr), layout.shape)
+        let source = self.source(discr);
+        let Shape::Scalar(Scalar::Int { .. } | Scalar::Bool | Scalar::Char) =
+            self.source_layout(source).shape
         else {
-            panic!(
-                "internal error generating code for {}: a switch on `{discr:?}`, which is \
-                 not a bool, an integer or a char",
-                self.body.name
+            broken(
+                self.body,
+                &format!("a switch on `{discr:?}`, which is not a bool, an integer or a char"),
             )
         };
+        // Such a scalar is never zero-sized.
+        let value = self
+            .source_value(source)
+            .unwrap_or_else(|| broken(self.body, &format!("a switch on `{discr:?}`")));
         // A constant's bits, cut to the width of the discriminant: the
         // switch compares them unsigned.
         let bits = self.builder.func.dfg.value_type(value).bits();
@@ -300,9 +314,11 @@ impl Lowering<'_, '_> {
                 Const::Int(value, _) => *value as u128,
                 Const::Bool(value) => u128::from(*value),
                 Const::Char(value) => u128::from(u32::from(*value)),
-                other => panic!(
-                    "internal error generating code for {}: a switch case on `{other:?}`",
-                    self.body.name
+                other => broken(
+                    self.body,
+                    &format!(
+                        "a switch case on `{other:?}`, which is not a bool, an integer or a char"
+                    ),
                 ),
             };
             switch.set_entry(entry & mask, self.blocks[target.index()]);
@@ -328,16 +344,14 @@ impl Lowering<'_, '_> {
     ) {
         let Some(target) = target else {
             match callee {
-                Callee::External(path) => panic!(
-                    "internal error generating code for {}: a call to `{}` of the standard \
-                     library is not lowered until M1.15",
-                    self.body.name,
-                    path.join(".")
+                Callee::External(path) => fail(
+                    self.body,
+                    &format!("a call to `{}` of the standard library", path.join(".")),
+                    "M1.15",
                 ),
-                other => panic!(
-                    "internal error generating code for {}: the callee `{other:?}` is not in \
-                     the program",
-                    self.body.name
+                other => broken(
+                    self.body,
+                    &format!("the callee `{other:?}` is not in the program"),
                 ),
             }
         };
@@ -360,20 +374,44 @@ impl Lowering<'_, '_> {
 
     /// The value of `operand`; `None` for a zero-sized one.
     fn operand(&mut self, operand: &Operand) -> Option<Value> {
-        match operand {
-            Operand::Copy(place) | Operand::Move(place) => self.read(place),
-            Operand::Const(constant) => self.constant(constant),
-            // Only a body lowered for constant evaluation holds one.
-            Operand::ConstRead(read) => fail(self.body, &format!("the read `{read:?}`")),
+        let source = self.source(operand);
+        self.source_value(source)
+    }
+
+    /// What `operand` reads.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error for the read of another constant, which only
+    /// a body lowered for constant evaluation holds.
+    fn source<'o>(&self, operand: &'o Operand) -> Source<'o> {
+        let place = match operand {
+            Operand::Copy(place) | Operand::Move(place) => Some(place),
+            _ => None,
+        };
+        let constant = match operand {
+            Operand::Const(constant) => Some(constant),
+            _ => None,
+        };
+        if let Some(place) = place {
+            return Source::Place(place);
+        }
+        Source::Const(constant.unwrap_or_else(|| broken(self.body, "a read of another constant")))
+    }
+
+    /// The layout of the value `source` reads.
+    fn source_layout(&self, source: Source<'_>) -> Layout {
+        match source {
+            Source::Place(place) => self.place_layout(place),
+            Source::Const(constant) => self.layouts.of(&constant.ty()),
         }
     }
 
-    /// The layout of the value of `operand`.
-    fn operand_layout(&self, operand: &Operand) -> Layout {
-        match operand {
-            Operand::Copy(place) | Operand::Move(place) => self.place_layout(place),
-            Operand::Const(constant) => self.layouts.of(&constant.ty()),
-            Operand::ConstRead(read) => self.layouts.of(&read.ty),
+    /// The value `source` reads; `None` for a zero-sized one.
+    fn source_value(&mut self, source: Source<'_>) -> Option<Value> {
+        match source {
+            Source::Place(place) => self.read(place),
+            Source::Const(constant) => self.constant(constant),
         }
     }
 
@@ -383,7 +421,7 @@ impl Lowering<'_, '_> {
         match place.projections.as_slice() {
             [] => self.layouts.of_local(ty),
             [Projection::Deref] => self.layouts.of(ty.ty()),
-            _ => fail(self.body, &format!("the place `{place:?}`")),
+            _ => fail(self.body, &format!("the place `{place:?}`"), "M1.12"),
         }
     }
 
@@ -393,17 +431,22 @@ impl Lowering<'_, '_> {
         match layout.shape {
             _ if layout.size == 0 => None,
             Shape::Scalar(scalar) => Some(scalar_type(scalar, self.pointer)),
-            ref shape => fail(self.body, &format!("a value of shape {shape:?}")),
+            ref shape => fail(self.body, &format!("a value of shape {shape:?}"), "M1.12"),
+        }
+    }
+
+    /// The variable of `place`: the whole of a local that has one.
+    fn variable(&self, place: &Place) -> Option<Variable> {
+        match place.projections.as_slice() {
+            [] => self.variables[place.local.index()],
+            _ => None,
         }
     }
 
     /// The value at `place`; `None` for a zero-sized one.
     fn read(&mut self, place: &Place) -> Option<Value> {
         let ty = self.value_type(&self.place_layout(place))?;
-        if let (true, Home::Variable(variable)) = (
-            place.projections.is_empty(),
-            self.homes[place.local.index()],
-        ) {
+        if let Some(variable) = self.variable(place) {
             return Some(self.builder.use_var(variable));
         }
         let address = self.place_address(place);
@@ -419,10 +462,7 @@ impl Lowering<'_, '_> {
         let Some(value) = value else {
             return;
         };
-        if let (true, Home::Variable(variable)) = (
-            place.projections.is_empty(),
-            self.homes[place.local.index()],
-        ) {
+        if let Some(variable) = self.variable(place) {
             self.builder.def_var(variable, value);
             return;
         }
@@ -436,31 +476,19 @@ impl Lowering<'_, '_> {
     /// or the value a borrow refers to.
     fn place_address(&mut self, place: &Place) -> Value {
         match place.projections.as_slice() {
-            [] => self.local_address(place.local),
-            // A borrow is a pointer, never zero-sized.
-            [Projection::Deref] => self
-                .read(&Place::local(place.local))
-                .unwrap_or_else(|| fail(self.body, &format!("the place `{place:?}`"))),
-            _ => fail(self.body, &format!("the place `{place:?}`")),
-        }
-    }
-
-    /// The address of `local`. A zero-sized local has no memory, and its
-    /// address is its alignment: never null, and never read through.
-    fn local_address(&mut self, local: LocalId) -> Value {
-        match self.homes[local.index()] {
-            Home::Slot(slot) => self.builder.ins().stack_addr(self.pointer, slot, 0),
-            Home::None => {
-                let align = self
-                    .layouts
-                    .of_local(&self.body.locals[local.index()].ty)
-                    .align;
-                self.builder.ins().iconst(self.pointer, i64::from(align))
+            [] => {
+                // A local whose address is taken, or that is in no variable
+                // and has a value, has a slot (`storage`).
+                let slot = self.slots[place.local.index()];
+                let slot = slot.unwrap_or_else(|| broken(self.body, "a local with no slot"));
+                self.builder.ins().stack_addr(self.pointer, slot, 0)
             }
-            home @ Home::Variable(_) => fail(
-                self.body,
-                &format!("the address of _{} in {home:?}", local.0),
-            ),
+            // A borrow is a pointer, never zero-sized.
+            [Projection::Deref] => {
+                let pointer = self.read(&Place::local(place.local));
+                pointer.unwrap_or_else(|| broken(self.body, "a zero-sized dereference"))
+            }
+            _ => fail(self.body, &format!("the place `{place:?}`"), "M1.12"),
         }
     }
 
@@ -474,7 +502,7 @@ impl Lowering<'_, '_> {
             Const::Bool(value) => i64::from(*value),
             Const::Char(value) => i64::from(u32::from(*value)),
             Const::Unit => return None,
-            Const::String(_) => fail(self.body, "a string constant"),
+            Const::String(_) => fail(self.body, "a string constant", "M1.12"),
         };
         let ty = self.value_type(&self.layouts.of(&constant.ty()))?;
         let ins = self.builder.ins();
@@ -693,6 +721,7 @@ mod tests {
             &mut FunctionBuilderContext::new(),
             &body,
             &layouts,
+            &abi,
             isa.frontend_config(),
             &calls,
         );
@@ -725,12 +754,12 @@ mod tests {
             "G(move a: int): int => a;\nF(move a: int): int => G(a);\n",
             "F",
             |body| {
-                let TerminatorKind::Call { next, .. } =
+                // F calls G first; the IR has no trap when it does not.
+                if let TerminatorKind::Call { next, .. } =
                     &mut body.blocks[BlockId::ENTRY.index()].terminator.kind
-                else {
-                    panic!("F calls G first");
-                };
-                *next = None;
+                {
+                    *next = None;
+                }
             },
         );
         let call = text.find("call fn0").expect(&text);
@@ -763,9 +792,21 @@ mod tests {
             .iter()
             .map(|param| param.extension)
             .collect();
-        use ArgumentExtension::{None, Sext, Uext};
-        assert_eq!(extensions, [Sext, Sext, Uext, Uext, None, None, Uext, None]);
-        assert_eq!(signature.returns[0].extension, Sext);
+        use ArgumentExtension as Ext;
+        assert_eq!(
+            extensions,
+            [
+                Ext::Sext,
+                Ext::Sext,
+                Ext::Uext,
+                Ext::Uext,
+                Ext::None,
+                Ext::None,
+                Ext::Uext,
+                Ext::None
+            ]
+        );
+        assert_eq!(signature.returns[0].extension, Ext::Sext);
     }
 
     #[test]
@@ -774,12 +815,12 @@ mod tests {
             "Pick(c: bool): int { if c { return 1; } return 2; }\n",
             "Pick",
             |body| {
-                let TerminatorKind::Switch { discr, .. } =
+                // Pick switches first; it returns 1 for `true` when it does not.
+                if let TerminatorKind::Switch { discr, .. } =
                     &mut body.blocks[BlockId::ENTRY.index()].terminator.kind
-                else {
-                    panic!("Pick switches first");
-                };
-                *discr = Operand::Const(Const::Bool(false));
+                {
+                    *discr = Operand::Const(Const::Bool(false));
+                }
             },
         );
         assert_eq!(
@@ -789,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_borrow_of_a_zero_sized_local_is_its_alignment() {
+    fn a_borrowed_zero_sized_local_has_an_empty_slot() {
         let text = lowered_with("F(): int => 1;\n", "F", |body| {
             body.locals.push(LocalDecl {
                 ty: LocalTy::Value(Ty::UNIT),
@@ -808,12 +849,13 @@ mod tests {
             );
             body.blocks[0].statements.insert(0, borrow);
         });
-        assert!(text.contains("iconst.i64 1"), "{text}");
+        assert!(text.contains("ss0 = explicit_slot 0"), "{text}");
+        assert!(text.contains("= stack_addr.i64 ss0"), "{text}");
     }
 
     #[test]
     #[should_panic(expected = "UsersApi.F: the place `Place { local: LocalId(0), \
-                               projections: [Field(0)] }` is not lowered yet")]
+                               projections: [Field(0)] }` is not lowered until M1.12")]
     fn a_store_to_a_field_is_an_internal_error() {
         lowered_with("F(): int { return 7; }\n", "F", |body| {
             body.blocks[0].statements[0] = assign(
@@ -829,7 +871,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "UsersApi.F: the place `Place { local: LocalId(0), \
-                               projections: [Field(0)] }` is not lowered yet")]
+                               projections: [Field(0)] }` is not lowered until M1.12")]
     fn a_read_of_a_field_is_an_internal_error() {
         lowered_with("F(): int { return 7; }\n", "F", |body| {
             body.blocks[0].statements[0] = assign(
@@ -844,8 +886,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UsersApi.F: the place `Place { local: LocalId(0), \
-                               projections: [Deref] }` is not lowered yet")]
+    #[should_panic(
+        expected = "internal error generating code for UsersApi.F: invalid MIR: \
+                               a zero-sized dereference"
+    )]
     fn a_dereference_of_a_zero_sized_value_is_an_internal_error() {
         lowered_with("F() {}\n", "F", |body| {
             let borrow = assign(
@@ -864,7 +908,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UsersApi.F: a value of shape Aggregate([0, 4]) is not lowered yet")]
+    #[should_panic(
+        expected = "UsersApi.F: a value of shape Aggregate([0, 4]) is not lowered until M1.12"
+    )]
     fn a_copy_of_an_aggregate_is_an_internal_error() {
         lowered_with("F(): int { let t = (1, 2); return 1; }\n", "F", |body| {
             for statement in body
@@ -883,20 +929,21 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "internal error generating code for UsersApi.F: a switch on \
-                               `Copy(Place { local: LocalId(1), projections: [] })`, which is \
-                               not a bool, an integer or a char"
+        expected = "internal error generating code for UsersApi.F: invalid MIR: a switch on \
+                    `Copy(Place { local: LocalId(1), projections: [] })`, which is not a bool, \
+                    an integer or a char"
     )]
     fn a_switch_on_a_real_is_an_internal_error() {
         lowered_with("F(move a: double): int => 1;\n", "F", |body| {
-            switch_on_parameter(body, [Const::Real(0, Primitive::Double), Const::Unit]);
+            let real = || Const::Real(0, Primitive::Double);
+            switch_on_parameter(body, [real(), real()]);
         });
     }
 
     #[test]
     #[should_panic(
-        expected = "internal error generating code for UsersApi.F: a switch case on \
-                               `Real(0, Double)`"
+        expected = "internal error generating code for UsersApi.F: invalid MIR: a switch case \
+                    on `Real(0, Double)`, which is not a bool, an integer or a char"
     )]
     fn a_switch_case_on_a_real_is_an_internal_error() {
         lowered_with("F(move a: int): int => 1;\n", "F", |body| {
@@ -912,8 +959,8 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "internal error generating code for UsersApi.Outer: the callee \
-                               `Local(1)` is not in the program"
+        expected = "internal error generating code for UsersApi.Outer: invalid MIR: the \
+                    callee `Local(1)` is not in the program"
     )]
     fn a_callee_outside_the_program_is_an_internal_error() {
         jit_one(
@@ -924,14 +971,14 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "internal error generating code for UsersApi.F: \
-                               a value passed as Words(1) is not lowered yet")]
+                               a value passed as Words(1) is not lowered until M1.12")]
     fn a_result_in_words_is_an_internal_error() {
         jit_one("F(): (int, int) => (1, 2);\n", "F");
     }
 
     #[test]
     #[should_panic(expected = "internal error generating code for UsersApi.F: \
-                               a value passed as Indirect is not lowered yet")]
+                               a value passed as Indirect is not lowered until M1.12")]
     fn a_parameter_passed_by_pointer_is_an_internal_error() {
         jit_one("F(move t: (long, long, long)): int => 1;\n", "F");
     }
@@ -943,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UsersApi.F: a string constant is not lowered yet")]
+    #[should_panic(expected = "UsersApi.F: a string constant is not lowered until M1.12")]
     fn a_string_constant_is_an_internal_error() {
         jit_one("F() { let s = \"a\"; }\n", "F");
     }

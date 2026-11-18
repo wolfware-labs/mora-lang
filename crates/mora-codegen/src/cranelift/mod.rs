@@ -216,11 +216,12 @@ fn define_functions<M: Module>(
         let id = module
             .declare_function(&function.symbol, Linkage::Local, &signature)
             .map_err(cranelift_error)?;
-        declared.push((id, signature));
+        declared.push((id, signature, abi));
     }
     let mut context = module.make_context();
     let mut function_context = FunctionBuilderContext::new();
-    for (caller, (function, (id, signature))) in
+    let ids: Vec<FuncId> = declared.iter().map(|(id, ..)| *id).collect();
+    for (caller, (function, (id, signature, abi))) in
         (0u32..).zip(program.functions().iter().zip(&declared))
     {
         context.func.signature = signature.clone();
@@ -228,8 +229,8 @@ fn define_functions<M: Module>(
         let calls = call_targets(
             module,
             program,
-            FunctionId(caller),
-            &declared,
+            (FunctionId(caller), function.body),
+            &ids,
             &mut context.func,
         );
         function::lower(
@@ -237,6 +238,7 @@ fn define_functions<M: Module>(
             &mut function_context,
             function.body,
             layouts,
+            abi,
             module.isa().frontend_config(),
             &calls,
         );
@@ -245,28 +247,26 @@ fn define_functions<M: Module>(
             .map_err(cranelift_error)?;
         module.clear_context(&mut context);
     }
-    Ok(declared.into_iter().map(|(id, _)| id).collect())
+    Ok(ids)
 }
 
-/// The function each block of `caller` calls, declared in `func`: `None`
-/// for a block that ends in no call, or calls a function of the standard
-/// library or one outside `program`. `declared` holds the id of each
-/// function of `program`.
+/// The function each block of `caller`, a function of `program` and its
+/// body, calls, declared in `func`: `None` for a block that ends in no
+/// call, or calls a function of the standard library or one outside
+/// `program`. `ids` holds the id of each function of `program`.
 fn call_targets<M: Module>(
     module: &mut M,
     program: &Program<'_>,
-    caller: FunctionId,
-    declared: &[(FuncId, Signature)],
+    (caller, body): (FunctionId, &Body),
+    ids: &[FuncId],
     func: &mut Function,
 ) -> Vec<Option<FuncRef>> {
-    program.functions()[caller.0 as usize]
-        .body
-        .blocks
+    body.blocks
         .iter()
         .map(|block| match &block.terminator.kind {
             TerminatorKind::Call { callee, .. } => program
                 .callee(caller, callee)
-                .map(|target| module.declare_func_in_func(declared[target.0 as usize].0, func)),
+                .map(|target| module.declare_func_in_func(ids[target.0 as usize], func)),
             _ => None,
         })
         .collect()
