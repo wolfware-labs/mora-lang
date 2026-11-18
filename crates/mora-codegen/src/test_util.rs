@@ -21,3 +21,9 @@ pub(crate) fn app_of(db: &TestDb, text: &str) -> Project {
     assert_eq!(errors, Vec::<String>::new(), "{text}");
     project
 }
+
+/// The symbol of the function `name` of the app `app_of` builds, which is named
+/// `users-api`.
+pub(crate) fn symbol(name: &str) -> String {
+    crate::mangle(["UsersApi", name])
+}

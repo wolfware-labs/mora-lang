@@ -3,9 +3,15 @@
 #![allow(unsafe_code)]
 
 mod abi;
+mod error;
 mod layout;
+mod mangle;
+mod program;
 #[cfg(test)]
 mod test_util;
 
 pub use abi::{FnAbi, PassMode};
+pub use error::CodegenError;
 pub use layout::{Layout, Layouts, Scalar, Shape};
+pub use mangle::mangle;
+pub use program::{BodyKey, Function, FunctionId, Program};
