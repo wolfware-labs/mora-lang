@@ -113,7 +113,7 @@ impl<'db> Program<'db> {
             functions: vec![Function {
                 key,
                 body,
-                symbol: mangle([body.name.as_str()]),
+                symbol: symbol_of(&body.name, project.root_namespace(db)),
             }],
             index,
             entry: FunctionId(0),
@@ -334,7 +334,7 @@ mod tests {
         let full = Program::collect(&db, project).unwrap();
         let f = &full.functions()[0];
         let single = Program::from_body(&db, f.key.project, f.key.file, f.body);
-        assert_eq!(single.functions()[0].symbol, mangle([f.body.name.as_str()]));
+        assert_eq!(single.functions()[0].symbol, symbol("Main"));
         assert_eq!(single.entry(), FunctionId(0));
     }
 

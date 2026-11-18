@@ -12,8 +12,15 @@ publish = false
 workspace = true
 
 [dependencies]
+# The instruction sets of the built-in targets (§19.1).
+cranelift-codegen = { workspace = true, features = ["x86", "arm64", "riscv64"] }
+cranelift-frontend.workspace = true
+cranelift-jit.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
 mora-hir.workspace = true
 mora-mir.workspace = true
+mora-rt.workspace = true
 mora-rt-core.workspace = true
 mora-span.workspace = true
 mora-target.workspace = true
@@ -21,3 +28,4 @@ mora-target.workspace = true
 [dev-dependencies]
 mora-diag.workspace = true
 mora-hir = { workspace = true, features = ["test-support"] }
+object.workspace = true
