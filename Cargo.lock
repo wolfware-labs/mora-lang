@@ -966,6 +966,7 @@ dependencies = [
 name = "mora-codegen"
 version = "0.0.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",

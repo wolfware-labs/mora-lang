@@ -29,4 +29,9 @@ target-lexicon.workspace = true
 
 [dev-dependencies]
 mora-hir = { workspace = true, features = ["test-support"] }
+criterion.workspace = true
 object.workspace = true
+
+[[bench]]
+name = "codegen"
+harness = false
