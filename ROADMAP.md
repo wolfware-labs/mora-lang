@@ -613,7 +613,7 @@ Done when:
 
 Spec: [§5.9](docs/design/mora.md#59-views), [§6.9](docs/design/mora.md#69-members), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
 
-`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : allows ref struct` constraint (§8.2), and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9). To settle in the spec: the definition of `stackalloc`: element types, the largest length, a negative length (the rule being considered is a panic) and whether the memory is zeroed (§5.9, §10.6).
+`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : allows ref struct` constraint (§8.2), and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9). To settle in the spec: the definition of `stackalloc`: element types, the largest length, a negative length (the rule being considered is a panic), whether the memory is zeroed (§5.9, §10.6), and how the memory it returns is probed when its length is known only at run time (§13.10).
 
 Done when:
 
