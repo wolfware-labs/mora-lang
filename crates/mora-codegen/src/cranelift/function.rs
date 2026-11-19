@@ -2,18 +2,19 @@
 
 use cranelift_codegen::ir::immediates::{Ieee32, Ieee64};
 use cranelift_codegen::ir::{
-    self, AbiParam, FuncRef, InstBuilder, MemFlagsData, Signature, StackSlot, StackSlotData,
-    StackSlotKind, TrapCode, Type, Value, types,
+    self, AbiParam, ArgumentPurpose, InstBuilder, MemFlagsData, Signature, StackSlot,
+    StackSlotData, StackSlotKind, TrapCode, Type, Value, types,
 };
 use cranelift_codegen::isa::{CallConv, TargetFrontendConfig};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
+use mora_hir::Ty;
 use mora_mir::{
-    BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection, Rvalue, Statement,
+    BlockId, Body, Callee, Const, LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind,
 };
 use mora_span::Span;
 
-use super::runtime::Env;
+use super::runtime::{Call, Env};
 use crate::abi::{FnAbi, PassMode};
 use crate::layout::{Layout, Layouts, Scalar, Shape};
 
@@ -90,34 +91,36 @@ pub(super) fn scalar_type(scalar: Scalar, pointer: Type) -> Type {
     }
 }
 
-/// The Cranelift signature of `body` under `abi`.
-///
-/// # Panics
-///
-/// With an internal error for a value passed in words or by pointer, which
-/// is not lowered until M1.12.
-pub(super) fn signature(body: &Body, abi: &FnAbi, call_conv: CallConv, pointer: Type) -> Signature {
+/// The Cranelift signature of a function that passes its values as `abi`
+/// says: a result too large for registers is written through a pointer that
+/// comes first among the parameters.
+pub(super) fn signature(abi: &FnAbi, call_conv: CallConv, pointer: Type) -> Signature {
     let mut signature = Signature::new(call_conv);
-    for &mode in &abi.params {
-        signature.params.extend(abi_param(body, mode, pointer));
+    match abi.ret {
+        PassMode::Indirect => signature
+            .params
+            .push(AbiParam::special(pointer, ArgumentPurpose::StructReturn)),
+        mode => signature.returns.extend(abi_params(mode, pointer)),
     }
-    signature.returns.extend(abi_param(body, abi.ret, pointer));
+    for &mode in &abi.params {
+        signature.params.extend(abi_params(mode, pointer));
+    }
     signature
 }
 
-/// How a value passed in `mode` crosses a call; `None` for nothing. An
-/// integer narrower than 32 bits is extended by its signedness and a `bool`
-/// is zero-extended, as the C conventions of the targets expect.
-fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
+/// How a value passed in `mode` crosses a call: nothing, a scalar, one
+/// integer for each word, or a pointer. An integer narrower than 32 bits is
+/// extended by its signedness and a `bool` is zero-extended, as the C
+/// conventions of the targets expect.
+fn abi_params(mode: PassMode, pointer: Type) -> Vec<AbiParam> {
     let scalar = match mode {
-        PassMode::Ignore => return None,
+        PassMode::Ignore => return Vec::new(),
         PassMode::Direct(scalar) => scalar,
-        PassMode::Words(_) | PassMode::Indirect => {
-            fail(body, &format!("a value passed as {mode:?}"), "M1.12")
-        }
+        PassMode::Words(count) => return vec![AbiParam::new(pointer); usize::from(count)],
+        PassMode::Indirect => return vec![AbiParam::new(pointer)],
     };
     let param = AbiParam::new(scalar_type(scalar, pointer));
-    Some(match scalar {
+    vec![match scalar {
         Scalar::Int { bytes, signed } if bytes < 4 => {
             if signed {
                 param.sext()
@@ -127,7 +130,7 @@ fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
         }
         Scalar::Bool => param.uext(),
         _ => param,
-    })
+    }]
 }
 
 /// Lowers `body` into `func`, whose signature is already set from `abi`.
@@ -136,7 +139,7 @@ fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
 ///
 /// # Panics
 ///
-/// With an internal error for MIR that is not lowered until M1.12.
+/// With an internal error for MIR that is not lowered until M1.12: a string.
 pub(super) fn lower(
     func: &mut ir::Function,
     context: &mut FunctionBuilderContext,
@@ -150,9 +153,12 @@ pub(super) fn lower(
     let mut builder = FunctionBuilder::new(func, context);
     let (variables, slots) = storage(body, layouts, pointer)
         .into_iter()
-        .map(|storage| match storage {
+        .enumerate()
+        .map(|(local, storage)| match storage {
             Storage::None => (None, None),
             Storage::Variable(ty) => (Some(builder.declare_var(ty)), None),
+            // The caller owns the memory of this local.
+            Storage::Slot { .. } if in_caller_memory(abi, local) => (None, None),
             Storage::Slot { size, align } => (
                 None,
                 Some(builder.create_sized_stack_slot(StackSlotData::new(
@@ -169,6 +175,8 @@ pub(super) fn lower(
         body,
         layouts,
         pointer,
+        config,
+        indirect: vec![None; body.locals.len()],
         builder,
         variables,
         slots,
@@ -190,6 +198,17 @@ pub(super) fn lower(
     lowering.builder.finalize(config);
 }
 
+/// Whether the local at `index` of a body that passes its values as `abi` is
+/// in memory the caller provides: the result, or a parameter, passed by
+/// pointer.
+fn in_caller_memory(abi: &FnAbi, index: usize) -> bool {
+    let mode = match index {
+        0 => Some(abi.ret),
+        parameter => abi.params.get(parameter - 1).copied(),
+    };
+    mode == Some(PassMode::Indirect)
+}
+
 /// Panics with an internal error in `body`: `what` is not lowered until
 /// `milestone`.
 pub(super) fn fail(body: &Body, what: &str, milestone: &str) -> ! {
@@ -208,6 +227,18 @@ pub(super) fn broken(body: &Body, what: &str) -> ! {
     )
 }
 
+/// Where a place is.
+struct Located {
+    /// Whether it is in the value the local borrows, not in the local.
+    deref: bool,
+    /// Its offset in bytes from the start of that value.
+    offset: u32,
+    /// The type of the value at it; `None` for the pointer of a borrow.
+    ty: Option<Ty>,
+    /// The layout of the value at it.
+    layout: Layout,
+}
+
 /// What an operand reads.
 #[derive(Clone, Copy)]
 pub(super) enum Source<'o> {
@@ -222,6 +253,11 @@ pub(super) struct Lowering<'a, 'f> {
     pub(super) body: &'a Body,
     pub(super) layouts: &'a Layouts<'a>,
     pub(super) pointer: Type,
+    /// What the target's frontend needs to copy memory.
+    pub(super) config: TargetFrontendConfig,
+    /// The address of each local in memory the caller provides, once the
+    /// entry block has read it.
+    indirect: Vec<Option<Value>>,
     pub(super) builder: FunctionBuilder<'f>,
     variables: Vec<Option<Variable>>,
     slots: Vec<Option<StackSlot>>,
@@ -233,13 +269,24 @@ pub(super) struct Lowering<'a, 'f> {
 
 impl Lowering<'_, '_> {
     /// Stores the parameters, which the entry block receives, in their
-    /// locals; `abi` passes them.
+    /// locals, and takes the address of the result and of each parameter
+    /// passed by pointer; `abi` passes them.
     fn parameters(&mut self, abi: &FnAbi) {
         let entry = self.blocks[BlockId::ENTRY.index()];
         let mut values = self.builder.block_params(entry).to_vec().into_iter();
+        if abi.ret == PassMode::Indirect {
+            self.indirect[LocalId::RETURN.index()] = values.next();
+        }
         for (local, &mode) in self.body.param_ids().zip(&abi.params) {
-            if mode != PassMode::Ignore {
-                self.write(&Place::local(local), values.next());
+            match mode {
+                PassMode::Ignore => {}
+                PassMode::Direct(_) => self.write(&Place::local(local), values.next()),
+                PassMode::Words(count) => {
+                    let words: Vec<Value> = values.by_ref().take(usize::from(count)).collect();
+                    let address = self.place_address(&Place::local(local));
+                    self.store_words(address, &words);
+                }
+                PassMode::Indirect => self.indirect[local.index()] = values.next(),
             }
         }
     }
@@ -249,8 +296,21 @@ impl Lowering<'_, '_> {
         match &statement.kind {
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop => {}
             StatementKind::Assign(place, Rvalue::Use(operand)) => {
-                let value = self.operand(operand);
-                self.write(place, value);
+                let source = self.source(operand);
+                let layout = self.place_layout(place);
+                match layout.shape {
+                    // A zero-sized aggregate has no value to copy.
+                    Shape::Aggregate(_) if layout.size > 0 => {
+                        self.assign_aggregate(place, source, &layout);
+                    }
+                    _ => {
+                        let value = self.source_value(source);
+                        self.write(place, value);
+                    }
+                }
+            }
+            StatementKind::Assign(place, Rvalue::Aggregate(_, operands)) => {
+                self.build_aggregate(place, operands);
             }
             StatementKind::Assign(place, Rvalue::Borrow(_, borrowed)) => {
                 let address = self.place_address(borrowed);
@@ -284,15 +344,21 @@ impl Lowering<'_, '_> {
                 otherwise,
             } => self.switch(discr, targets, *otherwise),
             TerminatorKind::Return => {
-                let result = self.read(&Place::local(LocalId::RETURN));
-                self.builder.ins().return_(result.as_slice());
+                let result = self.result();
+                self.builder.ins().return_(&result);
             }
             TerminatorKind::Call {
                 callee,
                 args,
                 dest,
                 next,
-            } => self.call(self.env.calls[index], callee, args, dest.as_ref(), *next),
+            } => self.call(
+                self.env.calls[index].as_ref(),
+                callee,
+                args,
+                dest.as_ref(),
+                *next,
+            ),
             TerminatorKind::Unreachable => {
                 self.builder.ins().trap(UNREACHABLE);
             }
@@ -342,9 +408,25 @@ impl Lowering<'_, '_> {
         switch.emit(&mut self.builder, value, self.blocks[otherwise.index()]);
     }
 
+    /// The values the function returns in registers: the scalar in `_0`, or
+    /// its words; none when the result is zero-sized or written through the
+    /// pointer the caller provides.
+    fn result(&mut self) -> Vec<Value> {
+        let result = Place::local(LocalId::RETURN);
+        match self.pass_mode(&self.place_layout(&result)) {
+            PassMode::Ignore | PassMode::Indirect => Vec::new(),
+            PassMode::Direct(_) => self.read(&result).into_iter().collect(),
+            PassMode::Words(count) => {
+                let address = self.place_address(&result);
+                self.load_words(address, count)
+            }
+        }
+    }
+
     /// Calls `target`, the function `callee` names, writes its result to
     /// `dest` once it returns, and continues in `next`; traps when the call
-    /// returns although it has no `next`.
+    /// returns although it has no `next`. Each argument is passed as its
+    /// layout says (`PassMode`).
     ///
     /// # Panics
     ///
@@ -352,7 +434,7 @@ impl Lowering<'_, '_> {
     /// M1.15 brings, or a function outside the program.
     fn call(
         &mut self,
-        target: Option<FuncRef>,
+        target: Option<&Call>,
         callee: &Callee,
         args: &[Operand],
         dest: Option<&Place>,
@@ -371,12 +453,31 @@ impl Lowering<'_, '_> {
                 ),
             }
         };
-        // A zero-sized argument has no value, and its parameter none either.
-        let args: Vec<Value> = args.iter().filter_map(|arg| self.operand(arg)).collect();
-        let call = self.builder.ins().call(target, &args);
-        let result = self.builder.inst_results(call).first().copied();
+        let mode = self.pass_mode(&target.result);
+        let mut values = Vec::new();
+        // The result of a large value is written to a slot of the caller's.
+        let sret = (mode == PassMode::Indirect).then(|| self.temporary(&target.result));
+        values.extend(sret);
+        for arg in args {
+            self.argument(arg, &mut values);
+        }
+        let call = self.builder.ins().call(target.func, &values);
+        let results = self.builder.inst_results(call).to_vec();
         if let Some(dest) = dest {
-            self.write(dest, result);
+            match mode {
+                PassMode::Ignore => {}
+                PassMode::Direct(_) => self.write(dest, results.first().copied()),
+                PassMode::Words(_) => {
+                    let from = self.temporary(&target.result);
+                    self.store_words(from, &results);
+                    self.copy_to_place(dest, from, &target.result);
+                }
+                PassMode::Indirect => {
+                    if let Some(from) = sret {
+                        self.copy_to_place(dest, from, &target.result);
+                    }
+                }
+            }
         }
         match next {
             Some(next) => {
@@ -388,10 +489,26 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// The value of `operand`; `None` for a zero-sized one.
-    fn operand(&mut self, operand: &Operand) -> Option<Value> {
-        let source = self.source(operand);
-        self.source_value(source)
+    /// Adds to `values` what passes `arg` to a call: nothing for a
+    /// zero-sized value, the scalar, the words of a copy of the value, or
+    /// the address of a copy the callee owns.
+    fn argument(&mut self, arg: &Operand, values: &mut Vec<Value>) {
+        let source = self.source(arg);
+        let layout = self.source_layout(source);
+        match self.pass_mode(&layout) {
+            PassMode::Ignore => {}
+            PassMode::Direct(_) => values.extend(self.source_value(source)),
+            PassMode::Words(count) => {
+                let copy = self.temporary(&layout);
+                self.store_source(copy, source);
+                values.extend(self.load_words(copy, count));
+            }
+            PassMode::Indirect => {
+                let copy = self.temporary(&layout);
+                self.store_source(copy, source);
+                values.push(copy);
+            }
+        }
     }
 
     /// What `operand` reads.
@@ -415,6 +532,15 @@ impl Lowering<'_, '_> {
         Source::Const(constant.unwrap_or_else(|| broken(self.body, "a read of another constant")))
     }
 
+    /// The type of the value `source` reads; `None` for the pointer of a
+    /// borrow.
+    pub(super) fn source_ty(&self, source: Source<'_>) -> Option<Ty> {
+        match source {
+            Source::Place(place) => self.locate(place).ty,
+            Source::Const(constant) => Some(constant.ty()),
+        }
+    }
+
     /// The layout of the value `source` reads.
     pub(super) fn source_layout(&self, source: Source<'_>) -> Layout {
         match source {
@@ -431,14 +557,59 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// The layout of the value at `place`.
-    fn place_layout(&self, place: &Place) -> Layout {
-        let ty = &self.body.locals[place.local.index()].ty;
-        match place.projections.as_slice() {
-            [] => self.layouts.of_local(ty),
-            [Projection::Deref] => self.layouts.of(ty.ty()),
-            _ => fail(self.body, &format!("the place `{place:?}`"), "M1.12"),
+    /// Where `place` is: the layout and type of its value, and its offset
+    /// from the start of the local, or of the value the local borrows.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error for a place MIR validation rules out: a
+    /// dereference after a field, or a field the type does not have.
+    fn locate(&self, place: &Place) -> Located {
+        let local = &self.body.locals[place.local.index()].ty;
+        let (deref, fields) = match place.projections.as_slice() {
+            [Projection::Deref, fields @ ..] => (true, fields),
+            fields => (false, fields),
+        };
+        // The type of the value: `None` for the pointer of a borrow.
+        let mut ty = match local {
+            LocalTy::Borrow(..) if !deref => None,
+            local => Some(local.ty().clone()),
+        };
+        let mut offset = 0;
+        for projection in fields {
+            let Projection::Field(index) = projection else {
+                broken(self.body, &format!("a dereference inside `{place:?}`"));
+            };
+            let field = ty.and_then(|ty| self.layouts.field(&ty, *index));
+            let Some((at, field)) = field else {
+                broken(
+                    self.body,
+                    &format!("a field that `{place:?}` does not have"),
+                );
+            };
+            offset += at;
+            ty = Some(field);
         }
+        let layout = match &ty {
+            Some(ty) => self.layouts.of(ty),
+            None => self.layouts.of_local(local),
+        };
+        Located {
+            deref,
+            offset,
+            ty,
+            layout,
+        }
+    }
+
+    /// The layout of the value at `place`.
+    pub(super) fn place_layout(&self, place: &Place) -> Layout {
+        self.locate(place).layout
+    }
+
+    /// How a value of `layout` is passed.
+    pub(super) fn pass_mode(&self, layout: &Layout) -> PassMode {
+        PassMode::of(layout, self.layouts.pointer_bytes())
     }
 
     /// The Cranelift type of a value of `layout`; `None` for a zero-sized
@@ -488,23 +659,36 @@ impl Lowering<'_, '_> {
             .store(MemFlagsData::trusted(), value, address, 0);
     }
 
-    /// The address of `place`, which is in memory: a local in a stack slot,
-    /// or the value a borrow refers to.
-    fn place_address(&mut self, place: &Place) -> Value {
-        match place.projections.as_slice() {
-            [] => {
-                // A local whose address is taken, or that is in no variable
-                // and has a value, has a slot (`storage`).
-                let slot = self.slots[place.local.index()];
-                let slot = slot.unwrap_or_else(|| broken(self.body, "a local with no slot"));
-                self.builder.ins().stack_addr(self.pointer, slot, 0)
-            }
+    /// The address of `place`, which is in memory: a local in a stack slot
+    /// or in memory the caller provides, or the value a borrow refers to,
+    /// and the offset of a field in it.
+    pub(super) fn place_address(&mut self, place: &Place) -> Value {
+        let located = self.locate(place);
+        let base = if located.deref {
             // A borrow is a pointer, never zero-sized.
-            [Projection::Deref] => {
-                let pointer = self.read(&Place::local(place.local));
-                pointer.unwrap_or_else(|| broken(self.body, "a zero-sized dereference"))
+            let pointer = self.read(&Place::local(place.local));
+            pointer.unwrap_or_else(|| broken(self.body, "a zero-sized dereference"))
+        } else {
+            // A local whose address is taken, or that is in no variable and
+            // has a value, has a slot (`storage`), unless the caller
+            // provides its memory.
+            match (
+                self.slots[place.local.index()],
+                self.indirect[place.local.index()],
+            ) {
+                (Some(slot), _) => self.builder.ins().stack_addr(self.pointer, slot, 0),
+                (None, Some(address)) => address,
+                (None, None) => broken(self.body, "a local with no slot"),
             }
-            _ => fail(self.body, &format!("the place `{place:?}`"), "M1.12"),
+        };
+        self.offset(base, located.offset)
+    }
+
+    /// `address` moved on by `offset` bytes.
+    pub(super) fn offset(&mut self, address: Value, offset: u32) -> Value {
+        match offset {
+            0 => address,
+            offset => self.builder.ins().iadd_imm_u(address, i64::from(offset)),
         }
     }
 
@@ -747,7 +931,7 @@ pub(in crate::cranelift) mod tests {
         let abi = FnAbi::of(&body, &layouts);
         let mut func = Function::with_name_signature(
             UserFuncName::user(0, 0),
-            signature(&body, &abi, isa.default_call_conv(), isa.pointer_type()),
+            signature(&abi, isa.default_call_conv(), isa.pointer_type()),
         );
         let import = |func: &mut Function, signature: Signature, index: u32| {
             let signature = func.import_signature(signature);
@@ -759,13 +943,17 @@ pub(in crate::cranelift) mod tests {
                 patchable: false,
             })
         };
-        let calls: Vec<Option<FuncRef>> = body
+        let result = layouts.of_local(&body.locals[LocalId::RETURN.index()].ty);
+        let calls: Vec<Option<Call>> = body
             .blocks
             .iter()
             .map(|block| {
                 matches!(block.terminator.kind, TerminatorKind::Call { .. }).then(|| {
                     let signature = func.signature.clone();
-                    import(&mut func, signature, 0)
+                    Call {
+                        func: import(&mut func, signature, 0),
+                        result: result.clone(),
+                    }
                 })
             })
             .collect();
@@ -852,8 +1040,6 @@ pub(in crate::cranelift) mod tests {
 
     #[test]
     fn narrow_integers_and_bools_are_extended() {
-        let db = TestDb::default();
-        let body = body_of(&db, "F() {}\n", Some("F"));
         let int = |bytes, signed| PassMode::Direct(Scalar::Int { bytes, signed });
         let abi = FnAbi {
             params: vec![
@@ -869,7 +1055,7 @@ pub(in crate::cranelift) mod tests {
             ],
             ret: int(2, true),
         };
-        let signature = signature(&body, &abi, CallConv::SystemV, types::I64);
+        let signature = signature(&abi, CallConv::SystemV, types::I64);
         let extensions: Vec<ArgumentExtension> = signature
             .params
             .iter()
@@ -937,38 +1123,6 @@ pub(in crate::cranelift) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UsersApi.F: the place `Place { local: LocalId(0), \
-                               projections: [Field(0)] }` is not lowered until M1.12")]
-    fn a_store_to_a_field_is_an_internal_error() {
-        lowered_with("F(): int { return 7; }\n", "F", |body| {
-            body.blocks[0].statements[0] = assign(
-                body,
-                Place {
-                    local: LocalId::RETURN,
-                    projections: vec![Projection::Field(0)],
-                },
-                Rvalue::Use(Operand::Const(Const::Int(7, Primitive::Int))),
-            );
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "UsersApi.F: the place `Place { local: LocalId(0), \
-                               projections: [Field(0)] }` is not lowered until M1.12")]
-    fn a_read_of_a_field_is_an_internal_error() {
-        lowered_with("F(): int { return 7; }\n", "F", |body| {
-            body.blocks[0].statements[0] = assign(
-                body,
-                Place::local(LocalId::RETURN),
-                Rvalue::Use(Operand::Copy(Place {
-                    local: LocalId::RETURN,
-                    projections: vec![Projection::Field(0)],
-                })),
-            );
-        });
-    }
-
-    #[test]
     #[should_panic(
         expected = "internal error generating code for UsersApi.F: invalid MIR: \
                                a zero-sized dereference"
@@ -987,26 +1141,6 @@ pub(in crate::cranelift) mod tests {
                 ),
             );
             body.blocks[0].statements.insert(0, borrow);
-        });
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "UsersApi.F: a value of shape Aggregate([0, 4]) is not lowered until M1.12"
-    )]
-    fn a_copy_of_an_aggregate_is_an_internal_error() {
-        lowered_with("F(): int { let t = (1, 2); return 1; }\n", "F", |body| {
-            for statement in body
-                .blocks
-                .iter_mut()
-                .flat_map(|block| &mut block.statements)
-            {
-                if let StatementKind::Assign(place, rvalue @ Rvalue::Aggregate(..)) =
-                    &mut statement.kind
-                {
-                    *rvalue = Rvalue::Use(Operand::Copy(place.clone()));
-                }
-            }
         });
     }
 
@@ -1050,26 +1184,6 @@ pub(in crate::cranelift) mod tests {
             "Outer(): int { Inner(): int => 3; return Inner(); }\n",
             "Outer",
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "internal error generating code for UsersApi.F: \
-                               a value passed as Words(1) is not lowered until M1.12")]
-    fn a_result_in_words_is_an_internal_error() {
-        jit_one("F(): (int, int) => (1, 2);\n", "F");
-    }
-
-    #[test]
-    #[should_panic(expected = "internal error generating code for UsersApi.F: \
-                               a value passed as Indirect is not lowered until M1.12")]
-    fn a_parameter_passed_by_pointer_is_an_internal_error() {
-        jit_one("F(move t: (long, long, long)): int => 1;\n", "F");
-    }
-
-    #[test]
-    #[should_panic(expected = "UsersApi.F: the statement `Assign(")]
-    fn an_aggregate_is_an_internal_error() {
-        jit_one("F(): int { let t = (1, 2); return 1; }\n", "F");
     }
 
     #[test]

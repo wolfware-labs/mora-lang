@@ -3,12 +3,12 @@
 //! that a checked operation wraps here.
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{InstBuilder, Type, Value, types};
+use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Type, Value, types};
 use mora_hir::Ty;
 use mora_mir::{BinOp, Operand, UnOp};
 
 use super::checks::Arith;
-use super::function::{Lowering, broken, fail, scalar_type};
+use super::function::{Lowering, Source, broken, fail, scalar_type};
 use crate::Profile;
 use crate::layout::{Scalar, Shape};
 
@@ -24,10 +24,17 @@ struct Conditions {
 }
 
 impl Conditions {
+    /// The codes of `==`.
+    const EQUAL: Conditions = Conditions {
+        signed: IntCC::Equal,
+        unsigned: IntCC::Equal,
+        float: FloatCC::Equal,
+    };
+
     /// The codes of `op`; `None` when it is not a comparison.
     fn of(op: BinOp) -> Option<Conditions> {
         let (signed, unsigned, float) = match op {
-            BinOp::Eq => (IntCC::Equal, IntCC::Equal, FloatCC::Equal),
+            BinOp::Eq => return Some(Conditions::EQUAL),
             // Not equal is true for NaN.
             BinOp::Ne => (IntCC::NotEqual, IntCC::NotEqual, FloatCC::NotEqual),
             BinOp::Lt => (
@@ -65,8 +72,9 @@ impl Lowering<'_, '_> {
     ///
     /// # Panics
     ///
-    /// With an internal error when it is not a scalar: strings and
-    /// aggregates are not lowered until M1.12.
+    /// With an internal error when it is not a scalar: strings are not
+    /// lowered until M1.12, and an aggregate has no operator but `==` and
+    /// `!=`.
     fn scalar(&mut self, operand: &Operand) -> (Scalar, Value) {
         let source = self.source(operand);
         let Shape::Scalar(scalar) = self.source_layout(source).shape else {
@@ -90,6 +98,12 @@ impl Lowering<'_, '_> {
     ///
     /// With an internal error for operands `op` does not take.
     pub(super) fn binary(&mut self, op: BinOp, left: &Operand, right: &Operand) -> Value {
+        if let BinOp::Eq | BinOp::Ne = op
+            && let Some(ty) = self.source_ty(self.source(left))
+            && let Shape::Aggregate(_) = self.layouts.of(&ty).shape
+        {
+            return self.aggregates_compare(op, &ty, left, right);
+        }
         let (scalar, left) = self.scalar(left);
         let (count, right) = self.scalar(right);
         if matches!(op, BinOp::Div | BinOp::Rem) {
@@ -130,6 +144,67 @@ impl Lowering<'_, '_> {
             }
             _ => broken(self.body, &format!("`{}` on a {scalar:?}", op.text())),
         }
+    }
+
+    /// The `bool` of `==` or `!=` on two values of the struct or tuple type
+    /// `ty`: equal when every field is equal.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error when an operand is a constant.
+    fn aggregates_compare(&mut self, op: BinOp, ty: &Ty, left: &Operand, right: &Operand) -> Value {
+        let equal = if self.layouts.of(ty).size == 0 {
+            self.builder.ins().iconst(types::I8, 1)
+        } else {
+            let left = self.aggregate_address(left);
+            let right = self.aggregate_address(right);
+            self.fields_equal(ty, left, right)
+        };
+        match op {
+            BinOp::Eq => equal,
+            _ => self.builder.ins().icmp_imm_u(IntCC::Equal, equal, 0),
+        }
+    }
+
+    /// The address of the aggregate `operand` reads.
+    fn aggregate_address(&mut self, operand: &Operand) -> Value {
+        let Source::Place(place) = self.source(operand) else {
+            broken(
+                self.body,
+                &format!("the comparison of `{operand:?}`, a constant aggregate"),
+            );
+        };
+        self.place_address(place)
+    }
+
+    /// Whether the values of the struct or tuple type `ty` at `left` and
+    /// `right` are equal, field by field and inside nested aggregates. A
+    /// floating-point field compares as `==` does: `-0.0` equals `0.0`, and
+    /// NaN equals nothing.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error for a string field, which M1.12 brings.
+    fn fields_equal(&mut self, ty: &Ty, left: Value, right: Value) -> Value {
+        let mut equal = self.builder.ins().iconst(types::I8, 1);
+        for (offset, field) in (0..).map_while(|index| self.layouts.field(ty, index)) {
+            let layout = self.layouts.of(&field);
+            let (left, right) = (self.offset(left, offset), self.offset(right, offset));
+            let same = match layout.shape {
+                _ if layout.size == 0 => continue,
+                Shape::Scalar(scalar) => {
+                    let ty = scalar_type(scalar, self.pointer);
+                    let flags = MemFlagsData::trusted();
+                    let a = self.builder.ins().load(ty, flags, left, 0);
+                    let b = self.builder.ins().load(ty, flags, right, 0);
+                    self.compare(&Conditions::EQUAL, scalar, a, b)
+                }
+                Shape::Aggregate(_) => self.fields_equal(&field, left, right),
+                Shape::String => fail(self.body, "the equality of a string field", "M1.12"),
+            };
+            equal = self.builder.ins().band(equal, same);
+        }
+        equal
     }
 
     /// The `bool` of a comparison of two `scalar`s.
@@ -1061,10 +1136,96 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_equality_compares_fields() {
+        let program = jit(
+            "struct V {\n    public X: int;\n    public Y: double;\n    public Z: byte;\n}\n\
+             Tup(a: int, b: int): bool => (a, 2.0) == (b, -0.0 + 2.0);\n\
+             Zero(a: int): bool => (a, 0.0) == (a, -0.0);\n\
+             Same(a: int, b: int): bool => \
+             new V { X = a, Y = 1.5, Z = 3 } == new V { X = b, Y = 1.5, Z = 3 };\n\
+             Differs(a: int, b: int): bool => \
+             new V { X = a, Y = 1.5, Z = 3 } != new V { X = b, Y = 1.5, Z = 3 };\n\
+             Middle(a: double, b: double): bool => \
+             new V { X = 1, Y = a, Z = 3 } == new V { X = 1, Y = b, Z = 3 };\n\
+             Last(a: byte, b: byte): bool => \
+             new V { X = 1, Y = 1.5, Z = a } == new V { X = 1, Y = 1.5, Z = b };\n\
+             Nan(d: double): bool => (d, 1) == (d, 1);\n\
+             NanNe(d: double): bool => (d, 1) != (d, 1);\n\
+             Nested(a: int, b: int): bool => ((a, true), 2.5) == ((b, true), 2.5);\n\
+             Flags(a: bool, b: bool): bool => (a, 'x', 1.5f) == (b, 'x', 1.5f);\n\
+             Tup(1, 2);\nZero(1);\nSame(1, 2);\nDiffers(1, 2);\nMiddle(1.0, 2.0);\n\
+             Last(1, 2);\nNan(1.0);\nNanNe(1.0);\nNested(1, 2);\nFlags(true, false);\n",
+            Profile::Debug,
+        );
+        let ints = |name| func::<extern "C" fn(&i32, &i32) -> bool>(&program, name);
+        assert!(ints("Tup")(&3, &3));
+        assert!(!ints("Tup")(&3, &4));
+        assert!(func::<extern "C" fn(&i32) -> bool>(&program, "Zero")(&3));
+        assert!(ints("Same")(&5, &5));
+        assert!(!ints("Same")(&5, &6));
+        assert!(!ints("Differs")(&5, &5));
+        assert!(ints("Differs")(&5, &6));
+        let doubles = func::<extern "C" fn(&f64, &f64) -> bool>(&program, "Middle");
+        assert!(doubles(&1.5, &1.5));
+        assert!(!doubles(&1.5, &2.5));
+        let bytes = func::<extern "C" fn(&u8, &u8) -> bool>(&program, "Last");
+        assert!(bytes(&9, &9));
+        assert!(!bytes(&9, &8));
+        // NaN equals nothing, itself included.
+        let nan = func::<extern "C" fn(&f64) -> bool>(&program, "Nan");
+        assert!(nan(&1.0));
+        assert!(!nan(&f64::NAN));
+        let nan_ne = func::<extern "C" fn(&f64) -> bool>(&program, "NanNe");
+        assert!(!nan_ne(&1.0));
+        assert!(nan_ne(&f64::NAN));
+        assert!(ints("Nested")(&2, &2));
+        assert!(!ints("Nested")(&2, &3));
+        let flags = func::<extern "C" fn(&bool, &bool) -> bool>(&program, "Flags");
+        assert!(flags(&true, &true));
+        assert!(!flags(&true, &false));
+    }
+
+    #[test]
+    fn a_comparison_may_start_with_a_constant() {
+        let program = jit(
+            "Left(a: int): bool => 1 == a;\nUnits(): bool => () == ();\nLeft(1);\nUnits();\n",
+            Profile::Debug,
+        );
+        let left = func::<extern "C" fn(&i32) -> bool>(&program, "Left");
+        assert!(left(&1));
+        assert!(!left(&2));
+        assert!(func::<extern "C" fn() -> bool>(&program, "Units")());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid MIR: the comparison of `Const(Unit)`, a constant aggregate")]
+    fn an_aggregate_compared_with_a_constant_is_an_internal_error() {
+        with_rvalue(
+            "F(move a: (int, int), move b: (int, int)): bool => a == b;\n",
+            |rvalue| {
+                if let Rvalue::Binary(_, _, right) = rvalue {
+                    *right = Operand::Const(Const::Unit);
+                }
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "UsersApi.F: the equality of a string field is not lowered until M1.12"
+    )]
+    fn the_equality_of_a_string_field_waits() {
+        jit_one(
+            "F(move a: (string, int), move b: (string, int)): bool => a == b;\n",
+            "F",
+        );
+    }
+
+    #[test]
     #[should_panic(
         expected = "an operator on `Const(Unit)`, which is not a scalar is not lowered until M1.12"
     )]
-    fn operators_on_aggregates_wait() {
+    fn an_operator_on_a_unit_is_an_internal_error() {
         with_rvalue("F(move a: int, move b: int): bool => a == b;\n", |rvalue| {
             if let Rvalue::Binary(_, _, right) = rvalue {
                 *right = Operand::Const(Const::Unit);

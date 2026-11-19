@@ -15,6 +15,7 @@ use mora_span::{Db, LineIndex, SourceFile, Span, line_index};
 use super::cranelift_error;
 use crate::Profile;
 use crate::error::CodegenError;
+use crate::layout::Layout;
 use crate::program::{Function as ProgramFunction, Program};
 
 /// The message of a division or remainder by zero.
@@ -168,7 +169,7 @@ impl Runtime {
         function: &ProgramFunction<'_>,
         func: &mut Function,
         profile: Profile,
-        calls: Vec<Option<FuncRef>>,
+        calls: Vec<Option<Call>>,
     ) -> Env<'a> {
         let file = &self.files[&function.key.file];
         let pic = module.isa().flags().is_pic();
@@ -226,6 +227,15 @@ fn data_symbol(func: &mut Function, id: DataId, colocated: bool) -> GlobalValue 
     })
 }
 
+/// A function a call terminator reaches.
+pub(super) struct Call {
+    /// The function, declared in the caller.
+    pub(super) func: FuncRef,
+    /// The layout of its result, which says how the result comes back even
+    /// when the call drops it.
+    pub(super) result: Layout,
+}
+
 /// What the lowering of one function reaches.
 pub(super) struct Env<'a> {
     /// How the code is generated.
@@ -233,7 +243,7 @@ pub(super) struct Env<'a> {
     /// The function each block calls, `None` for a block that ends in no
     /// call, or calls a function of the standard library or one outside the
     /// program.
-    pub(super) calls: Vec<Option<FuncRef>>,
+    pub(super) calls: Vec<Option<Call>>,
     /// The runtime entry points, in the order of [`RuntimeFn::ALL`].
     pub(super) functions: Vec<FuncRef>,
     /// The bytes of [`DIVISION_BY_ZERO`].

@@ -91,6 +91,30 @@ impl<'db> Layouts<'db> {
         layout
     }
 
+    /// The offset of field `index` of the struct or tuple type `ty` from the
+    /// start of the value, and the type of the field; `None` when `ty` is
+    /// not an aggregate or has no such field.
+    pub fn field(&self, ty: &Ty, index: u32) -> Option<(u32, Ty)> {
+        let Shape::Aggregate(offsets) = self.of(ty).shape else {
+            return None;
+        };
+        let index = index as usize;
+        Some((*offsets.get(index)?, self.field_tys(ty).get(index)?.clone()))
+    }
+
+    /// The types of the fields of `ty` in declaration order: the instance
+    /// fields of a struct or the elements of a tuple; none for any other
+    /// type.
+    fn field_tys(&self, ty: &Ty) -> Vec<Ty> {
+        match ty {
+            Ty::Tuple(elems) => elems.iter().map(|elem| elem.ty.clone()).collect(),
+            Ty::Struct(item) => instance_fields(self.db, *item)
+                .map(|(_, field)| field.ty.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The layout of a local: a borrow is a pointer.
     pub fn of_local(&self, ty: &LocalTy) -> Layout {
         match ty {
@@ -107,15 +131,9 @@ impl<'db> Layouts<'db> {
                 align: self.target.align.pointer,
                 shape: Shape::String,
             },
-            Ty::Tuple(elems) => {
-                self.aggregate(elems.iter().map(|elem| self.of(&elem.ty)).collect())
+            Ty::Tuple(_) | Ty::Struct(_) | Ty::Never => {
+                self.aggregate(self.field_tys(ty).iter().map(|ty| self.of(ty)).collect())
             }
-            Ty::Struct(item) => self.aggregate(
-                instance_fields(self.db, *item)
-                    .map(|(_, field)| self.of(&field.ty))
-                    .collect(),
-            ),
-            Ty::Never => self.aggregate(Vec::new()),
             Ty::Unsupported(_) | Ty::Error => {
                 panic!("internal error computing a layout: {ty:?} has none")
             }
@@ -424,6 +442,26 @@ mod tests {
             scalar(8, 8, Scalar::Pointer)
         );
         assert_eq!(layouts.of_local(&LocalTy::Value(int)), int_layout(4, true));
+    }
+
+    #[test]
+    fn a_field_has_its_offset_and_type() {
+        let db = TestDb::new();
+        let layouts = Layouts::new(&db, &x86_64());
+        let ty = struct_ty(
+            &db,
+            "struct S {\n    public A: byte;\n    public B: long;\n    public C: int;\n}\n",
+            "S",
+        );
+        assert_eq!(layouts.field(&ty, 0), Some((12, prim(Primitive::Byte))));
+        assert_eq!(layouts.field(&ty, 1), Some((0, prim(Primitive::Long))));
+        assert_eq!(layouts.field(&ty, 2), Some((8, prim(Primitive::Int))));
+        assert_eq!(layouts.field(&ty, 3), None);
+        let pair = tuple(vec![prim(Primitive::Bool), prim(Primitive::Int)]);
+        assert_eq!(layouts.field(&pair, 0), Some((4, prim(Primitive::Bool))));
+        assert_eq!(layouts.field(&pair, 1), Some((0, prim(Primitive::Int))));
+        assert_eq!(layouts.field(&prim(Primitive::Int), 0), None);
+        assert_eq!(layouts.field(&Ty::Never, 0), None);
     }
 
     #[test]

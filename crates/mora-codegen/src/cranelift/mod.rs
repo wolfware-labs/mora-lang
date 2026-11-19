@@ -1,6 +1,7 @@
 //! The Cranelift backend (§14.13): object files for every built-in target,
 //! and the JIT on the host.
 
+mod aggregates;
 mod checks;
 mod function;
 mod ops;
@@ -9,9 +10,7 @@ mod runtime;
 use std::fmt;
 use std::str::FromStr;
 
-use cranelift_codegen::ir::{
-    AbiParam, FuncRef, Function, InstBuilder, Signature, UserFuncName, types,
-};
+use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, Signature, UserFuncName, types};
 use cranelift_codegen::isa::{self, CallConv as IsaCallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -23,7 +22,7 @@ use mora_mir::{Body, LocalId, LocalTy, TerminatorKind};
 use mora_target::{CallConv, ObjectFormat, Target};
 use target_lexicon::Triple;
 
-use self::runtime::Runtime;
+use self::runtime::{Call, Runtime};
 use crate::abi::FnAbi;
 use crate::error::CodegenError;
 use crate::jit::JitProgram;
@@ -225,7 +224,7 @@ fn define_functions<M: Module>(
     let mut declared = Vec::with_capacity(program.functions().len());
     for function in program.functions() {
         let abi = FnAbi::of(function.body, layouts);
-        let signature = function::signature(function.body, &abi, call_conv, pointer);
+        let signature = function::signature(&abi, call_conv, pointer);
         let id = module
             .declare_function(&function.symbol, Linkage::Local, &signature)
             .map_err(cranelift_error)?;
@@ -244,6 +243,7 @@ fn define_functions<M: Module>(
             program,
             (FunctionId(caller), function.body),
             &ids,
+            layouts,
             &mut context.func,
         );
         let env = runtime.env(module, program, function, &mut context.func, profile, calls);
@@ -265,22 +265,31 @@ fn define_functions<M: Module>(
 }
 
 /// The function each block of `caller`, a function of `program` and its
-/// body, calls, declared in `func`: `None` for a block that ends in no
-/// call, or calls a function of the standard library or one outside
-/// `program`. `ids` holds the id of each function of `program`.
+/// body, calls, declared in `func`, with the layout of its result: `None` for
+/// a block that ends in no call, or calls a function of the standard library
+/// or one outside `program`. `ids` holds the id of each function of
+/// `program`.
 fn call_targets<M: Module>(
     module: &mut M,
     program: &Program<'_>,
     (caller, body): (FunctionId, &Body),
     ids: &[FuncId],
+    layouts: &Layouts<'_>,
     func: &mut Function,
-) -> Vec<Option<FuncRef>> {
+) -> Vec<Option<Call>> {
     body.blocks
         .iter()
         .map(|block| match &block.terminator.kind {
-            TerminatorKind::Call { callee, .. } => program
-                .callee(caller, callee)
-                .map(|target| module.declare_func_in_func(ids[target.0 as usize], func)),
+            TerminatorKind::Call { callee, .. } => {
+                program.callee(caller, callee).map(|target| Call {
+                    func: module.declare_func_in_func(ids[target.0 as usize], func),
+                    result: layouts.of_local(
+                        &program.functions()[target.0 as usize].body.locals
+                            [LocalId::RETURN.index()]
+                        .ty,
+                    ),
+                })
+            }
             _ => None,
         })
         .collect()
@@ -469,6 +478,20 @@ mod tests {
         for (name, format, architecture) in expected {
             let target = Target::builtin(name).unwrap();
             let bytes = object_of("Main(): int { return 7; }\n", &target, Profile::Debug);
+            // A pair comes back in two words and a triple of `long`s
+            // through a pointer, on every target.
+            let aggregates = object_of(
+                "struct P {\n    public X: long;\n    public Y: int;\n}\n\
+                 struct Big {\n    public A: long;\n    public B: long;\n    public C: long;\n}\n\
+                 MakeP(a: long): P => new P { X = a, Y = 1 };\n\
+                 MakeBig(a: long): Big => new Big { A = a, B = a, C = a };\n\
+                 Take(move p: P, move b: Big): long => p.X + b.C;\n\
+                 Main(): int { return Take(MakeP(1), MakeBig(2)) == 3 ? 0 : 1; }\n",
+                &target,
+                Profile::Debug,
+            );
+            let wide = object::File::parse(&*aggregates).unwrap();
+            assert_eq!(wide.architecture(), architecture, "{name}");
             let file = object::File::parse(&*bytes).unwrap();
             assert_eq!(file.format(), format, "{name}");
             assert_eq!(file.architecture(), architecture, "{name}");
