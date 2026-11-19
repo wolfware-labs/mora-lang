@@ -457,3 +457,37 @@ fn nothing_chains_after_propagation() {
     );
     assert_eq!(stmts("@A\n@B\nstatic X: int;"), ["FieldDecl"]);
 }
+
+fn codes_of(text: &str) -> Vec<String> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| error.code.to_string())
+        .collect()
+}
+
+#[test]
+fn a_curly_quoted_argument_reports_only_the_rejected_characters() {
+    assert_eq!(
+        codes_of("Console.WriteLine(\u{201c}Hello\u{201d});\n"),
+        ["MR0017", "MR0017"]
+    );
+}
+
+#[test]
+fn an_unclosed_string_reports_no_missing_semicolon() {
+    assert_eq!(
+        codes_of("let greeting = \"Hello;\nConsole.WriteLine(greeting);\n"),
+        ["MR0012"]
+    );
+}
+
+#[test]
+fn a_stray_character_at_the_start_of_a_statement_reports_once() {
+    assert_eq!(codes_of("\\\nlet a = 1;\n"), ["MR0017"]);
+}
+
+#[test]
+fn a_missing_semicolon_without_a_lexer_error_still_reports() {
+    assert_eq!(codes_of("let a = 1\nlet b = 2;\n"), ["MR0110"]);
+}

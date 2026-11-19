@@ -274,6 +274,16 @@ impl Sink<'_> {
     /// something is missing.
     /// A `fix` replaces the token the error wraps; without one, it is
     /// dropped.
+    /// Whether the lexer already reported an error that touches `range`:
+    /// a token it rejected, or the end of a string it found unclosed. The
+    /// parser then adds no second error for the same cause.
+    fn lexer_reported(&self, range: TextRange) -> bool {
+        self.lexed
+            .errors
+            .iter()
+            .any(|error| error.range.start() <= range.start() && range.start() <= error.range.end())
+    }
+
     fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps_token: bool) {
         let next = self.next_significant();
         let wrapped = if wraps_token {
@@ -291,6 +301,9 @@ impl Sink<'_> {
                 .map_or(TextSize::new(0), |token| token.range.end());
             TextRange::empty(end)
         };
+        if code == SYNTAX_ERROR && self.lexer_reported(range) {
+            return;
+        }
         let mut error = SyntaxError::new(code, range, message);
         if let (Some(range), Some(fix)) = (wrapped, fix) {
             error = error.with_fix(SyntaxFix {

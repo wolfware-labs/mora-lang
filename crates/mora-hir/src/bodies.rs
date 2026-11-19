@@ -1335,6 +1335,14 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_character_in_an_argument_reports_no_unknown_name() {
+        assert_eq!(
+            reported("Console.WriteLine(\u{201c}Hello\u{201d});\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn a_generic_local_function_sees_its_type_parameters() {
         assert_eq!(
             reported("F() {\n    Id<T>(x: T): T => x;\n    let y: T = 1;\n}\n"),

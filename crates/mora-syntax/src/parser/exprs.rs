@@ -738,8 +738,23 @@ fn arg_inner(p: &mut Parser<'_>) {
     if p.at_any(&[K::RefKw, K::InKw, K::MoveKw]) {
         p.bump_any();
     }
-    expr(p);
+    if p.at(K::Unknown) {
+        skip_rejected(p);
+    } else {
+        expr(p);
+    }
     m.complete(p, K::Arg);
+}
+
+/// Skips an argument that starts with a token the lexer rejected, up to the
+/// `,` or the closing token that ends it. The lexer reported the token, so
+/// the argument is one `Error` node and the parser reports nothing more.
+fn skip_rejected(p: &mut Parser<'_>) {
+    let e = p.start();
+    while !p.at_end() && !p.at_any(&[K::Comma, K::RParen, K::Semicolon, K::RBrace]) {
+        p.bump_any();
+    }
+    e.complete(p, K::Error);
 }
 
 /// `(e)`, `()`, `(a, b)`, `(Id: 1, Name: "a")`. A parenthesized
