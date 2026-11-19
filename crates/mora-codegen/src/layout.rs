@@ -76,6 +76,12 @@ impl<'db> Layouts<'db> {
         self.target.pointer_bytes()
     }
 
+    /// The size of `layout` rounded up to whole words of the target, which
+    /// is what a slot needs so that a load of words stays inside it.
+    pub fn word_size(&self, layout: &Layout) -> u32 {
+        layout.size.next_multiple_of(self.pointer_bytes())
+    }
+
     /// The layout of a value of `ty`.
     ///
     /// # Panics
@@ -462,6 +468,22 @@ mod tests {
         assert_eq!(layouts.field(&pair, 1), Some((0, prim(Primitive::Int))));
         assert_eq!(layouts.field(&prim(Primitive::Int), 0), None);
         assert_eq!(layouts.field(&Ty::Never, 0), None);
+    }
+
+    #[test]
+    fn sizes_round_up_to_whole_words() {
+        let db = TestDb::new();
+        let layouts = Layouts::new(&db, &x86_64());
+        let size = |ty: &Ty| layouts.word_size(&layouts.of(ty));
+        assert_eq!(size(&Ty::UNIT), 0);
+        assert_eq!(size(&prim(Primitive::Byte)), 8);
+        assert_eq!(size(&tuple(vec![prim(Primitive::Int); 3])), 16);
+        assert_eq!(size(&prim(Primitive::Long)), 8);
+        let mut narrow = x86_64();
+        narrow.pointer_width = 32;
+        narrow.align.pointer = 4;
+        let layouts = Layouts::new(&db, &narrow);
+        assert_eq!(layouts.word_size(&layouts.of(&prim(Primitive::Short))), 4);
     }
 
     #[test]

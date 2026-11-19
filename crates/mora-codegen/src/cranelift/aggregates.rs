@@ -15,7 +15,7 @@ impl Lowering<'_, '_> {
     /// The address of a new slot that holds a value of `layout`, a whole
     /// number of words in size so that a load of words stays inside it.
     pub(super) fn temporary(&mut self, layout: &Layout) -> Value {
-        let size = layout.size.next_multiple_of(self.layouts.pointer_bytes());
+        let size = self.layouts.word_size(layout);
         let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             size,

@@ -55,7 +55,7 @@ pub(super) fn storage(body: &Body, layouts: &Layouts<'_>, pointer: Type) -> Vec<
                     Storage::Variable(scalar_type(scalar, pointer))
                 }
                 _ => Storage::Slot {
-                    size: layout.size.next_multiple_of(layouts.pointer_bytes()),
+                    size: layouts.word_size(&layout),
                     align: layout.align,
                 },
             }
@@ -250,18 +250,26 @@ pub(super) enum Source<'o> {
 
 /// The lowering of one body.
 pub(super) struct Lowering<'a, 'f> {
+    /// The body being lowered.
     pub(super) body: &'a Body,
+    /// The layouts of its types.
     pub(super) layouts: &'a Layouts<'a>,
+    /// The Cranelift type of a pointer.
     pub(super) pointer: Type,
     /// What the target's frontend needs to copy memory.
     pub(super) config: TargetFrontendConfig,
     /// The address of each local in memory the caller provides, once the
     /// entry block has read it.
     indirect: Vec<Option<Value>>,
+    /// The builder of the function.
     pub(super) builder: FunctionBuilder<'f>,
+    /// The variable of each local that lives in one.
     variables: Vec<Option<Variable>>,
+    /// The stack slot of each local that lives in one.
     slots: Vec<Option<StackSlot>>,
+    /// The Cranelift block of each MIR block.
     blocks: Vec<ir::Block>,
+    /// What the code reaches outside the function.
     pub(super) env: &'a Env<'a>,
     /// The source of the statement being lowered.
     pub(super) span: Span,
