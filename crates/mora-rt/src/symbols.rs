@@ -1,4 +1,5 @@
 //! The entry points compiled code calls, by name, for the JIT.
+//! The temporary output and formatting stand-ins among them go with M1.15 (#43).
 
 use mora_rt_core::float::{mora_rt_fmod, mora_rt_fmodf};
 

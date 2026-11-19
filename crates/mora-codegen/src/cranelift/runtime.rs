@@ -1,6 +1,7 @@
 //! What generated code reaches outside its own functions: the runtime's
 //! entry points, and the read-only data a panic names its location and
-//! message with.
+//! message with. It includes the calls to the temporary output and formatting
+//! stand-ins, which M1.15 (#43) removes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
