@@ -666,7 +666,7 @@ The six passes of §14.12: last-use moves, retain/release pair cancellation, bor
 
 Done when:
 
-- One MIR snapshot test per guarantee of §10.13 with zero `Retain`/`Release` statements.
+- One MIR snapshot test per guarantee of §10.13 with no `Retain`/`Release` statements beyond the ones that guarantee itself requires (release at last use keeps its release).
 - The M2 run tests still pass and stay leak-free.
 - A MIR snapshot of a recursive function that passes a list it no longer needs shows the release before the recursive call, and a 100,000-deep run test stays leak-free, with the peak live heap held by the list and the objects it reaches independent of the depth (stack frames are not counted).
 - Summaries are conservative where the compiler cannot see the callee: a call through an escaping function value, through an `any I` value, of an `extern` function, or of a function in a call-graph cycle whose fixed point is not reached, counts as writing every field and releasing every type. MIR snapshots show the snapshot, the root keep-alive and the retain/release pair kept in each of these cases, and kept when the callee writes the field or releases the type through a function it calls.
@@ -1690,7 +1690,7 @@ Done when:
 
 Spec: [§19.2](docs/design/mora.md#192-toolchain-archive), [§19.3](docs/design/mora.md#193-installation). Crates: `.github/workflows`, `xtask`. Blocked by: M0.11, M6.8.
 
-`cargo xtask dist` building the archive of §19.2 per host, the release workflow on tags producing archives, SHA-256 checksums and Sigstore signatures through GitHub OIDC, and GitHub Releases with notes. Jobs are split by what they may do: build jobs have a read-only token, no OIDC permission and no secrets; one signing job has the OIDC permission and runs no repository code beyond `cosign` on the built archives; one publishing job holds the release, tap, winget and extension-store credentials and runs after the signatures verify. To settle in the spec (§19.3): who may create a version tag (a tag ruleset on `v*` limited to maintainers, from a commit on `main`).
+`cargo xtask dist` building the archive of §19.2 per host, the release workflow on tags producing archives, SHA-256 checksums and Sigstore signatures through GitHub OIDC, and GitHub Releases with notes. Jobs are split by what they may do: build jobs have a read-only token, no OIDC permission and no secrets; one signing job has the OIDC permission and runs no repository code beyond `cosign` on the built archives; one publishing job holds the release, tap, winget and extension-store credentials and runs after the signatures verify; it checks out nothing and runs no code from the tagged source, and uses only the verified archives and pinned automation. To settle in the spec (§19.3): who may create a version tag (a tag ruleset on `v*` limited to maintainers, from a commit on `main`).
 
 Done when:
 
