@@ -911,14 +911,14 @@ Done when:
 
 Spec: [§4.4](docs/design/mora.md#44-dependencies), [§17.2](docs/design/mora.md#172-manifest). Crates: `mora-driver`, `mora-pkg`, `mora-hir`. Blocked by: M3.10.
 
-`kind = "lib"`, root namespaces, `[dependencies]` path entries whose keys bind each dependency's root namespace (D-96), `MR0122`, `MR0501`, the dependency-cycle check `MR0502`, and `mora.lock` with path entries. To settle in the spec: whether `path` may be absolute (§4.4), and where the output of a path dependency goes (§17.3).
+`kind = "lib"`, root namespaces, `[dependencies]` path entries whose keys bind each dependency's root namespace (D-96), `MR0122`, `MR0501`, the dependency-cycle check `MR0502`, and `mora.lock` with path entries. To settle in the spec: what identifies a project reached through different spellings of its path or through a symbolic link, whether `path` may be absolute (§4.4), and where the output of a path dependency goes (§17.3).
 
 Done when:
 
 - A two-project example (app plus library) builds and runs.
 - A remote dependency source reports `MR0122`.
 - Two path dependencies that depend on each other report `MR0502`.
-- A project is identified by the resolved location of its manifest: a test reaches one library through two spellings of its path and through a symbolic link and gets one project, one set of types and one copy of its code, and `MR0502` is reported for a cycle written with different spellings.
+- A project is identified as the spec then states (§4.4; the proposal is the resolved location of its manifest): a test reaches one library through two spellings of its path and through a symbolic link and gets one project, one set of types and one copy of its code, and `MR0502` is reported for a cycle written with different spellings.
 - Building, `mora fmt` and `mora fix` write nothing inside a dependency's folder: its output and caches go under the root project's `target/`, and `mora.lock` is written at the root project only (CLI test with a read-only dependency folder).
 - `mora.lock` records each path as written, relative to the manifest, never an absolute path of the machine; an absolute `path` in `mora.toml` follows the rule the spec gives.
 
