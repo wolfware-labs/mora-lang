@@ -2,7 +2,7 @@
 //! entry points, and the read-only data a panic names its location and
 //! message with.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use cranelift_codegen::ir::{
     AbiParam, ExternalName, FuncRef, Function, GlobalValue, GlobalValueData, Signature, Type,
@@ -132,12 +132,13 @@ impl Runtime {
             .collect::<Result<Vec<_>, _>>()?;
         let zero_message = define_bytes(module, DIVISION_BY_ZERO.as_bytes())?;
         let mut files = HashMap::new();
-        let sources: HashSet<SourceFile> = program
-            .functions()
-            .iter()
-            .map(|function| function.key.file)
-            .collect();
-        for file in sources {
+        // In the order of the functions, so that the object does not depend
+        // on the order a hash table iterates in.
+        for function in program.functions() {
+            let file = function.key.file;
+            if files.contains_key(&file) {
+                continue;
+            }
             let path = file.path(program.db());
             let data = FileData {
                 path: define_bytes(module, path.as_bytes())?,
@@ -265,6 +266,47 @@ impl Env<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_data_of_each_file_is_defined_in_function_order() {
+        use cranelift_jit::JITModule;
+        use mora_hir::test_support::{TestDb, app};
+        use mora_target::Target;
+
+        use crate::cranelift::{isa, jit_builder};
+        let text = [
+            (
+                "src/Program.mr",
+                "Main(): int { return F() + G(); }\nG(): int => 2;\n",
+            ),
+            ("src/Lib.mr", "F(): int => 1;\n"),
+            ("src/Other.mr", "H(): int => 3;\n"),
+        ];
+        // A hash table iterates in another order each time it is made.
+        for _ in 0..20 {
+            let db = TestDb::default();
+            let project = app(&db, &text);
+            let program = Program::collect(&db, project).unwrap();
+            let target = Target::host().unwrap();
+            let mut module =
+                JITModule::new(jit_builder(isa(&target, Profile::Debug, false).unwrap()));
+            let runtime = Runtime::define(&mut module, &program).unwrap();
+            let mut seen: Vec<SourceFile> = Vec::new();
+            for function in program.functions() {
+                if !seen.contains(&function.key.file) {
+                    seen.push(function.key.file);
+                }
+            }
+            let ids: Vec<u32> = seen
+                .iter()
+                .map(|file| runtime.files[file].path.as_u32())
+                .collect();
+            // After the runtime's message, one object per file, in order.
+            let first = runtime.zero_message.as_u32() + 1;
+            assert_eq!(seen.len(), 2);
+            assert_eq!(ids, [first, first + 1]);
+        }
+    }
 
     #[test]
     fn the_discriminants_are_the_positions() {
