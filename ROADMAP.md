@@ -1504,7 +1504,7 @@ Done when:
 - Pipelined requests on one connection are answered in order.
 - Protocol tests over raw TCP for each framing case the spec then lists. In every case the bytes after the rejected request are never answered as a second request, and the connection is closed.
 - A chunked body of more than the body limit gets 413 once the limit is passed, with at most the limit plus one 64 KiB step reserved; a `Content-Length` above the limit gets 413 before any of the body is read.
-- 64 clients that send a head with `Content-Length: 1048576` and then nothing do not stop a 65th client's request with a body from being served once the body read timeout passes, also with `RequestTimeout` set to `none`.
+- 64 clients that send a head with `Content-Length: 1048576` and then nothing do not stop a 65th client's request with a body from being served once the body read timeout the spec then gives has passed, also with `RequestTimeout` set to `none`.
 - A request line or header value with bytes that are not valid UTF-8 gets the response the spec then states, and no `string` reached from `Request` holds invalid UTF-8 (checked with `FromUtf8` on its bytes).
 - `cargo fuzz` target over the connection state machine: arbitrary bytes on a connection never panic the server, never grow memory past the head limit plus the body budget, and never produce a response to bytes that are part of an earlier request's body.
 
