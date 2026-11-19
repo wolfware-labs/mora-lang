@@ -491,3 +491,25 @@ fn a_stray_character_at_the_start_of_a_statement_reports_once() {
 fn a_missing_semicolon_without_a_lexer_error_still_reports() {
     assert_eq!(codes_of("let a = 1\nlet b = 2;\n"), ["MR0110"]);
 }
+
+#[test]
+fn a_usable_token_with_a_lexer_error_still_gets_its_missing_semicolon() {
+    assert_eq!(
+        codes_of("let a = 1e400\nlet b = 2;\n"),
+        ["MR0010", "MR0110"]
+    );
+    assert_eq!(codes_of("let a = 0xZ\nlet b = 2;\n"), ["MR0014", "MR0110"]);
+    assert_eq!(
+        codes_of("let a = \"a\\qb\"\nlet b = 2;\n"),
+        ["MR0013", "MR0110"]
+    );
+}
+
+#[test]
+fn a_token_after_a_rejected_one_is_still_checked() {
+    // The stray `)` is not part of the rejected argument and is reported.
+    assert_eq!(
+        codes_of("F(\u{201c}G(a, b)\u{201d});\n"),
+        ["MR0017", "MR0110", "MR0017", "MR0110"]
+    );
+}

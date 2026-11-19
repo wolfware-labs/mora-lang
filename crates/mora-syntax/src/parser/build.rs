@@ -269,28 +269,39 @@ impl Sink<'_> {
         self.raw = last;
     }
 
+    /// Whether the lexer already reported the cause of a syntax error at
+    /// `range`: the error wraps a token it rejected (`MR0017`), or it marks
+    /// something missing at the end of a string or character literal it
+    /// found unclosed (`MR0012`), where the closing quote swallowed the
+    /// token that was meant to follow.
+    fn lexer_reported(
+        &self,
+        range: TextRange,
+        wraps: bool,
+        wrapped_kind: Option<SyntaxKind>,
+    ) -> bool {
+        if wraps {
+            return wrapped_kind == Some(K::Unknown);
+        }
+        self.lexed
+            .errors
+            .iter()
+            .any(|error| error.code == codes::MR0012 && error.range.end() == range.start())
+    }
+
     /// Reports `code`: on the token that follows, when the error wraps it
     /// in an `Error` node; otherwise just after the last token taken, where
     /// something is missing.
     /// A `fix` replaces the token the error wraps; without one, it is
     /// dropped.
-    /// Whether the lexer already reported an error that touches `range`:
-    /// a token it rejected, or the end of a string it found unclosed. The
-    /// parser then adds no second error for the same cause.
-    fn lexer_reported(&self, range: TextRange) -> bool {
-        self.lexed
-            .errors
-            .iter()
-            .any(|error| error.range.start() <= range.start() && range.start() <= error.range.end())
-    }
-
     fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps_token: bool) {
         let next = self.next_significant();
-        let wrapped = if wraps_token {
-            self.lexed.tokens.get(next).map(|token| token.range)
+        let wrapped_token = if wraps_token {
+            self.lexed.tokens.get(next)
         } else {
             None
         };
+        let wrapped = wrapped_token.map(|token| token.range);
         let range = if let Some(range) = wrapped {
             range
         } else {
@@ -301,7 +312,13 @@ impl Sink<'_> {
                 .map_or(TextSize::new(0), |token| token.range.end());
             TextRange::empty(end)
         };
-        if code == SYNTAX_ERROR && self.lexer_reported(range) {
+        if code == SYNTAX_ERROR
+            && self.lexer_reported(
+                range,
+                wrapped.is_some(),
+                wrapped_token.map(|token| token.kind),
+            )
+        {
             return;
         }
         let mut error = SyntaxError::new(code, range, message);
