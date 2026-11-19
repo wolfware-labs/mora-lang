@@ -1113,7 +1113,7 @@ Done when:
 - Editing a method body does not rerun any macro (counter in `--verbose`).
 - Editing a field reruns only the macros on that type.
 - Editing a helper function a macro calls reruns that macro.
-- A cached expansion is used only when the build can show it was written by this toolchain for this key. A hash stored beside the entry does not show that, so the check is one the project's own files cannot forge, as §14.15 then states (for example a cache outside the project, or an entry the toolchain authenticates). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler. The key is a BLAKE3 hash (as §13.6 uses), not a shorter one.
+- A cached expansion is used only when the build can show it was written by this toolchain for this key. A hash stored beside the entry does not show that, so the check is one the project's own files cannot forge, as §14.15 then states (for example a cache outside the project, or an entry the toolchain authenticates). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler. The key is a cryptographic hash such as the BLAKE3 hash §13.6 uses, not a shorter or non-cryptographic one.
 - The key covers every input: editing a constant or a static initializer the macro reads, an attribute argument, a helper attribute on a member (§9.9), the `@Cfg` values in force, and the text of the type as the model shows it each rerun the macro; a change to the toolchain version discards every entry.
 - The diagnostics and the console output of a cached expansion are replayed, so a warning from `Warn` is reported on every build.
 
@@ -1700,7 +1700,7 @@ Done when:
 - The workflow file declares `permissions: {}` at the top and grants each job only what the scope gives it; every third-party action is pinned by commit SHA (§20.5); the build jobs run with `--locked`.
 - `SHA256SUMS` is produced from the archives after they are built and before signing, and is signed like an archive.
 - `cosign verify-blob` with the identity of §19.3 fails on an archive signed by the same workflow run from a branch, and on one signed by another workflow of this repository.
-- A ruleset on `v*` tags is in place and a push of such a tag by an account outside it is refused (recorded in the issue).
+- The tag rule the spec then gives (§19.3) is in place as a ruleset on `v*` tags, and a push of such a tag by an account outside it is refused (recorded in the issue).
 
 ### M7.11 Installers and self update
 
