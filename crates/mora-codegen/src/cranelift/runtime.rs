@@ -48,7 +48,8 @@ pub(crate) enum RuntimeFn {
     Format(StandinKind),
 }
 
-/// The type of the value a stand-in takes.
+/// The type of the value a stand-in takes. M1.15 (#43) removes it with the
+/// stand-ins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandinKind {
     /// A signed integer, extended to 64 bits.

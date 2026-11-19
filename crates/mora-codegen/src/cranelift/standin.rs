@@ -16,7 +16,7 @@ use crate::layout::{Scalar, Shape};
 impl Lowering<'_, '_> {
     /// Lowers the call of the standard library function `path` with `args`:
     /// `Console.WriteLine` of one primitive or string is a call of the
-    /// runtime's stand-in.
+    /// runtime's stand-in. M1.15 (#43) removes this stand-in.
     ///
     /// # Panics
     ///
@@ -66,13 +66,14 @@ impl Lowering<'_, '_> {
 
     /// Builds in `place` the string an interpolation describes: each text is
     /// a literal part, a string hole is a part as it is, and any other hole
-    /// is formatted into a part. One call joins the parts.
+    /// is formatted into a part. One call joins the parts. M1.15 (#43)
+    /// removes this stand-in.
     ///
     /// # Panics
     ///
     /// With an internal error when `place` is not a string, for a hole with
-    /// an alignment or a format, which M1.15 brings, and for a hole of a
-    /// type that has no text.
+    /// an alignment or a format, and for a hole of a type that is not a
+    /// primitive or a string, which M1.15 brings.
     pub(super) fn interpolate(&mut self, place: &Place, pieces: &[InterpPiece]) {
         let layout = self.place_layout(place);
         if layout.shape != Shape::String {
@@ -120,9 +121,10 @@ impl Lowering<'_, '_> {
                 let format = self.env.function(RuntimeFn::Format(kind));
                 self.builder.ins().call(format, &[value, part]);
             }
-            None => broken(
+            None => fail(
                 self.body,
-                &format!("a hole `{value:?}` of a type that has no text"),
+                "a hole of a type that is not a primitive or a string",
+                "M1.15",
             ),
         }
     }
@@ -317,8 +319,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UsersApi.F: invalid MIR: a hole `")]
-    fn a_hole_of_a_struct_is_an_internal_error() {
+    #[should_panic(
+        expected = "UsersApi.F: a hole of a type that is not a primitive or a string is not \
+                    lowered until M1.15"
+    )]
+    fn a_hole_of_a_struct_waits_for_the_standard_library() {
         let text = "struct P {\n    public X: int;\n}\n\
                     F(move p: P): string => $\"{p}\";\n";
         jit_one_with(text, "F", |_| {});
