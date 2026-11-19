@@ -520,7 +520,20 @@ impl Check<'_> {
     fn stmt(&mut self, stmt: StmtId) {
         let body = self.body;
         match &body.stmts[stmt] {
-            Stmt::Missing | Stmt::Break | Stmt::Continue | Stmt::Return(None) => {}
+            Stmt::Missing | Stmt::Break | Stmt::Continue => {}
+            // In the top-level statements, `return;` gives the generated
+            // `Main` the type `()`, as a `return` with a value gives it
+            // that value's type (§4.6).
+            Stmt::Return(None) if self.entry && self.ret.is_none() => {
+                match self.entry_ret.clone() {
+                    None => self.entry_ret = Some(Ty::UNIT),
+                    Some(expected) if is_known(&expected) && !same(&expected, &Ty::UNIT) => {
+                        self.errors.push(TypeError::MissingValue { stmt, expected });
+                    }
+                    Some(_) => {}
+                }
+            }
+            Stmt::Return(None) => {}
             Stmt::Expr(expr) => self.statement(*expr, self.block_stmt == Some(stmt)),
             Stmt::Local { local, init } => {
                 let Some(init) = *init else { return };

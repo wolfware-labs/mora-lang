@@ -1,0 +1,7 @@
+error[MR0203]: mismatched types: expected `int`, found `()`
+ --> tests/ui/entry/return_value_then_none.mr:7:1
+  |
+7 | return; //~ ERROR MR0203
+  | ^^^^^^^ this returns no value
+  |
+  = note: an earlier `return` of the top-level statements gives the generated `Main` the return type `int`

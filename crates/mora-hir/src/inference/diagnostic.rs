@@ -16,7 +16,7 @@ use mora_span::{Db, SourceFile, Span};
 use super::{
     Context, InstanceMember, InstanceUse, NotAPlace, TypeError, constant, numeric, ty_name,
 };
-use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
+use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, StmtId, UnaryOp};
 use crate::items::ItemKind;
 use crate::report::{Declared, full_name, kind_name};
 use crate::resolve::{Resolved, item_data};
@@ -145,6 +145,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             found,
             context,
         } => mismatch(source, *expr, expected, found, *context),
+        TypeError::MissingValue { stmt, expected } => missing_value(source, *stmt, expected),
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
         TypeError::Binary {
             expr,
@@ -442,6 +443,24 @@ fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty
 }
 
 /// `MR0203`: a value whose type does not convert to the expected one.
+/// `MR0203`: the `return;` statement `stmt` gives no value where the
+/// generated `Main` returns `expected`.
+fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic {
+    let e = source.name(expected);
+    let range = source.map.stmts.get(&stmt).copied().unwrap_or_default();
+    Diagnostic::error(
+        codes::MR0203,
+        format!("mismatched types: expected `{e}`, found `()`"),
+        Label::new(
+            Span::new(source.file.id(source.db), range),
+            "this returns no value",
+        ),
+    )
+    .with_note(format!(
+        "an earlier `return` of the top-level statements gives the generated `Main` the return type `{e}`"
+    ))
+}
+
 fn mismatch(
     source: &Source<'_>,
     expr: ExprId,

@@ -25,7 +25,7 @@ use mora_span::{Db, Project, SourceFile};
 use rustc_hash::FxHashMap;
 
 use crate::arena::arena_index;
-use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, TypeId, UnaryOp};
+use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeId, UnaryOp};
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
@@ -315,6 +315,10 @@ pub(crate) enum TypeError {
         found: Ty,
         context: Context,
     },
+    /// The `return;` statement `stmt` gives no value where the generated
+    /// `Main` of top-level statements returns `expected`, which an earlier
+    /// `return` gave it (`MR0203`).
+    MissingValue { stmt: StmtId, expected: Ty },
     /// The literal `expr`, a negated literal or an expression made only of
     /// literals, does not fit `ty`, or no integer type when `ty` is `None`
     /// (`MR0010`).
@@ -729,6 +733,53 @@ mod tests {
     #[test]
     fn a_return_in_a_local_function_does_not_type_the_generated_main() {
         assert_eq!(entry_return("F(): int { return 3; }\nlet x = F();\n"), None);
+    }
+
+    #[test]
+    fn a_return_in_a_lambda_does_not_type_the_generated_main() {
+        assert_eq!(
+            entry_return("let f = (a: int) => { return a + 1; };\n"),
+            None
+        );
+        // Nor does a `return;` there, which would give it `()`.
+        assert_eq!(
+            entry_return("let f = (a: int) => { return; };\nreturn 3;\n"),
+            Some("int".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_return_without_a_value_types_the_generated_main_as_unit() {
+        assert_eq!(entry_return("return;\n"), Some("()".to_owned()));
+        assert_eq!(
+            reported("let x = 1;\nif (x == 1) { return; }\nreturn;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_return_with_and_one_without_a_value_mismatch_in_either_order() {
+        let unit_first = diagnostics_of("let x = 1;\nif (x == 1) { return; }\nreturn 3;\n");
+        assert_eq!(codes(&unit_first), ["MR0203"]);
+        assert_eq!(
+            messages(&unit_first),
+            ["mismatched types: expected `()`, found `int`"]
+        );
+        let int_first = diagnostics_of("let x = 1;\nif (x == 1) { return 3; }\nreturn;\n");
+        assert_eq!(codes(&int_first), ["MR0203"]);
+        assert_eq!(
+            messages(&int_first),
+            ["mismatched types: expected `int`, found `()`"]
+        );
+        assert_eq!(
+            int_first[0].primary.span.range,
+            mora_span::TextRange::new(37.into(), 44.into())
+        );
+        // A local function's `return;` is checked against its own type.
+        assert_eq!(
+            reported("F() { return; }\nF();\nreturn 3;\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

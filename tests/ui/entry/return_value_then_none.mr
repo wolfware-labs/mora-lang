@@ -1,0 +1,7 @@
+// The first `return` gives the generated `Main` its return type, `int`, and a
+// later `return;` gives no value of it.
+let x = 1;
+if (x == 1) {
+    return 3;
+}
+return; //~ ERROR MR0203
