@@ -443,6 +443,17 @@ fn parentheses_do_not_split_a_concatenation() {
 }
 
 #[test]
+fn literals_in_a_chain_are_parts_of_their_own() {
+    // Nothing folds `"x" + "y"` outside constant evaluation: each literal
+    // is a part of the one concatenation.
+    let lowered = lowered("F(a: string): string => a + (\"x\" + \"y\");\n");
+    assert_eq!(
+        concats(&lowered, "F"),
+        ["_0 = concat(copy (*a#0), \"x\", \"y\");"]
+    );
+}
+
+#[test]
 fn a_call_in_a_chain_runs_before_the_concatenation_in_order() {
     let lowered = lowered(
         "Id(s: string): string => s;\n\

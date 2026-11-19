@@ -610,6 +610,16 @@ impl Checker<'_> {
                 }
                 false
             }
+            // A program joins strings with one `Concat`; only constant
+            // evaluation adds two of them.
+            BinOp::Add if left == Ty::String && self.lowered == LoweredFor::Program => {
+                self.error(
+                    at,
+                    "an addition of strings outside constant evaluation, \
+                     where a concatenation joins them",
+                );
+                return None;
+            }
             BinOp::Add => is_numeric(&left) || left == Ty::String,
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                 is_integer(&left) || left == Ty::Primitive(Primitive::Bool)
@@ -1941,6 +1951,25 @@ mod tests {
     }
 
     #[test]
+    fn adds_strings_only_for_constant_evaluation() {
+        let fx = fx();
+        let mut mir = with_stmt(assign(
+            place(2),
+            Rvalue::Binary(BinOp::Add, copy(1), copy(1)),
+        ));
+        mir.bodies[0].locals[1] = val(Ty::String);
+        mir.bodies[0].locals[2] = val(Ty::String);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            [
+                "fn F bb0[0]: an addition of strings outside constant evaluation, where a \
+              concatenation joins them"
+            ]
+        );
+        assert_eq!(check(&fx.db, &mir, true, LoweredFor::Evaluation), Ok(()));
+    }
+
+    #[test]
     fn a_concatenation_of_strings_is_a_string() {
         let fx = fx();
         let text = Operand::Const(Const::String("x".into()));
@@ -2645,8 +2674,10 @@ mod tests {
             validate(&fx.db, &into(ty, Rvalue::Binary(op, l, r)), true)
         };
         let double = Ty::Primitive(Primitive::Double);
-        // Arithmetic: numeric, and string only for Add.
-        assert_eq!(bin(BinOp::Add, s(), s(), Ty::String), Ok(()));
+        // Arithmetic: numeric, and string only for Add, in constant
+        // evaluation.
+        let add = into(Ty::String, Rvalue::Binary(BinOp::Add, s(), s()));
+        assert_eq!(check(&fx.db, &add, true, LoweredFor::Evaluation), Ok(()));
         assert_eq!(bin(BinOp::Mul, f(), f(), double.clone()), Ok(()));
         for op in [
             BinOp::Sub,

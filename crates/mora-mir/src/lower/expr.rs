@@ -373,24 +373,24 @@ impl Lowerer<'_> {
     }
 
     /// Whether `expr`, a `+`, is a concatenation that lowers to a
-    /// [`Rvalue::Concat`]: it is a string, and not a constant, which
-    /// evaluation folds, nor a body lowered for evaluation, whose
-    /// interpreter joins two strings itself.
+    /// [`Rvalue::Concat`]: it is a string, in a body that is not lowered for
+    /// evaluation, whose interpreter joins two strings itself. A string
+    /// never converts to another type (§5.10), and no string `+` is a
+    /// constant outside evaluation, so neither needs a check here.
     fn joins_strings(&self, expr: ExprId) -> bool {
-        !self.owner.evaluation && self.constant(expr).is_none() && self.ty(expr) == Ty::String
+        !self.owner.evaluation && self.ty(expr) == Ty::String
     }
 
     /// Adds to `leaves` the expressions that `expr`, an operand of a
     /// concatenation, joins: the leaves of a `+` of strings inside it,
-    /// parentheses included, and `expr` itself otherwise. A `+` the
-    /// inference converts is a leaf, as it has a value of its own.
+    /// parentheses included, and `expr` itself otherwise.
     fn concat_leaves(&self, expr: ExprId, leaves: &mut Vec<ExprId>) {
         match &self.owner.hir.exprs[expr] {
             Expr::Binary {
                 op: BinaryOp::Add,
                 lhs,
                 rhs,
-            } if self.joins_strings(expr) && self.owner.inference.conversion(expr).is_none() => {
+            } if self.joins_strings(expr) => {
                 self.concat_leaves(*lhs, leaves);
                 self.concat_leaves(*rhs, leaves);
             }
