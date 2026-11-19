@@ -11,12 +11,14 @@ use mora_mir::{
     BlockId, Body, Callee, Const, LocalId, Operand, Place, Projection, Rvalue, Statement,
     StatementKind, Terminator, TerminatorKind,
 };
+use mora_span::Span;
 
+use super::runtime::Env;
 use crate::abi::{FnAbi, PassMode};
 use crate::layout::{Layout, Layouts, Scalar, Shape};
 
-/// The trap code of `Unreachable`.
-const UNREACHABLE: TrapCode = TrapCode::unwrap_user(1);
+/// The trap code of `Unreachable`, and of the end of a block that panics.
+pub(super) const UNREACHABLE: TrapCode = TrapCode::unwrap_user(1);
 
 /// Where a local lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,10 +131,8 @@ fn abi_param(body: &Body, mode: PassMode, pointer: Type) -> Option<AbiParam> {
 }
 
 /// Lowers `body` into `func`, whose signature is already set from `abi`.
-/// `calls` has
-/// one entry per block of `body`: the function its call terminator reaches,
-/// `None` for a block that ends in no call, or calls a function of the
-/// standard library or one outside the program.
+/// `env` holds what the code reaches outside the function: the function
+/// each call terminator reaches, and the runtime.
 ///
 /// # Panics
 ///
@@ -144,7 +144,7 @@ pub(super) fn lower(
     layouts: &Layouts<'_>,
     abi: &FnAbi,
     config: TargetFrontendConfig,
-    calls: &[Option<FuncRef>],
+    env: &Env<'_>,
 ) {
     let pointer = config.pointer_type();
     let mut builder = FunctionBuilder::new(func, context);
@@ -173,7 +173,8 @@ pub(super) fn lower(
         variables,
         slots,
         blocks,
-        calls,
+        env,
+        span: body.span,
     };
     for (index, block) in body.blocks.iter().enumerate() {
         lowering.builder.switch_to_block(lowering.blocks[index]);
@@ -225,7 +226,9 @@ pub(super) struct Lowering<'a, 'f> {
     variables: Vec<Option<Variable>>,
     slots: Vec<Option<StackSlot>>,
     blocks: Vec<ir::Block>,
-    calls: &'a [Option<FuncRef>],
+    pub(super) env: &'a Env<'a>,
+    /// The source of the statement being lowered.
+    pub(super) span: Span,
 }
 
 impl Lowering<'_, '_> {
@@ -242,6 +245,7 @@ impl Lowering<'_, '_> {
     }
 
     fn statement(&mut self, statement: &Statement) {
+        self.span = statement.span;
         match &statement.kind {
             StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop => {}
             StatementKind::Assign(place, Rvalue::Use(operand)) => {
@@ -288,7 +292,7 @@ impl Lowering<'_, '_> {
                 args,
                 dest,
                 next,
-            } => self.call(self.calls[index], callee, args, dest.as_ref(), *next),
+            } => self.call(self.env.calls[index], callee, args, dest.as_ref(), *next),
             TerminatorKind::Unreachable => {
                 self.builder.ins().trap(UNREACHABLE);
             }
@@ -531,10 +535,10 @@ impl Lowering<'_, '_> {
 #[cfg(test)]
 pub(in crate::cranelift) mod tests {
     use cranelift_codegen::ir::{
-        ArgumentExtension, ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName,
+        ArgumentExtension, ExtFuncData, ExternalName, Function, GlobalValueData, UserExternalName,
+        UserFuncName,
     };
-    use cranelift_jit::{JITBuilder, JITModule};
-    use cranelift_module::default_libcall_names;
+    use cranelift_jit::JITModule;
     use mora_hir::BodyOwner;
     use mora_hir::test_support::{TestDb, file_named, item_named};
     use mora_hir::{Primitive, Ty};
@@ -544,7 +548,8 @@ pub(in crate::cranelift) mod tests {
     use super::*;
     use crate::Profile;
     use crate::abi::FnAbi;
-    use crate::cranelift::{define_functions, isa};
+    use crate::cranelift::runtime::RuntimeFn;
+    use crate::cranelift::{define_functions, isa, jit_builder};
     use crate::jit::JitProgram;
     use crate::program::Program;
     use crate::test_util::{app_of, func, jit};
@@ -562,7 +567,13 @@ pub(in crate::cranelift) mod tests {
 
     /// The function `name` of the app of `text`, alone, compiled by the JIT.
     pub(in crate::cranelift) fn jit_one(text: &str, name: &str) -> JitProgram {
-        jit_one_with(text, name, |_| {})
+        jit_one_in(text, name, Profile::Debug)
+    }
+
+    /// The function `name` of the app of `text`, alone, compiled by the JIT
+    /// for `profile`.
+    pub(in crate::cranelift) fn jit_one_in(text: &str, name: &str, profile: Profile) -> JitProgram {
+        jit_one_with_in(text, name, profile, |_| {})
     }
 
     /// The function `name` of the app of `text`, alone, compiled by the JIT
@@ -572,6 +583,17 @@ pub(in crate::cranelift) mod tests {
         name: &str,
         edit: impl FnOnce(&mut Body),
     ) -> JitProgram {
+        jit_one_with_in(text, name, Profile::Debug, edit)
+    }
+
+    /// The function `name` of the app of `text`, alone, compiled by the JIT
+    /// for `profile` after `edit` changes its MIR.
+    pub(in crate::cranelift) fn jit_one_with_in(
+        text: &str,
+        name: &str,
+        profile: Profile,
+        edit: impl FnOnce(&mut Body),
+    ) -> JitProgram {
         let db = TestDb::default();
         let project = app_of(&db, text);
         let file = file_named(&db, project, "src/Program.mr");
@@ -579,13 +601,10 @@ pub(in crate::cranelift) mod tests {
         edit(&mut body);
         let program = Program::from_body(&db, project, file, &body);
         let target = Target::host().unwrap();
-        let isa = isa(&target, Profile::Debug, false).unwrap();
-        let mut jit = JitProgram::new(JITModule::new(JITBuilder::with_isa(
-            isa,
-            default_libcall_names(),
-        )));
+        let isa = isa(&target, profile, false).unwrap();
+        let mut jit = JitProgram::new(JITModule::new(jit_builder(isa)));
         let layouts = Layouts::new(&db, &target);
-        define_functions(jit.module_mut(), &program, &layouts).unwrap();
+        define_functions(jit.module_mut(), &program, &layouts, profile).unwrap();
         jit.module_mut().finalize_definitions().unwrap();
         jit
     }
@@ -704,34 +723,82 @@ pub(in crate::cranelift) mod tests {
     /// The Cranelift IR of the function `name` of the app of `text`, after
     /// `edit` changes its MIR. Every call in it calls the function itself.
     fn lowered_with(text: &str, name: &str, edit: impl FnOnce(&mut Body)) -> String {
+        lowered_in(text, name, Profile::Debug, edit)
+    }
+
+    /// The Cranelift IR of the function `name` of the app of `text` for
+    /// `profile`, after `edit` changes its MIR. Every call in it calls the
+    /// function itself, and every runtime function and data object is a
+    /// symbol of its own.
+    pub(in crate::cranelift) fn lowered_in(
+        text: &str,
+        name: &str,
+        profile: Profile,
+        edit: impl FnOnce(&mut Body),
+    ) -> String {
         let db = TestDb::default();
+        let project = app_of(&db, text);
+        let file = file_named(&db, project, "src/Program.mr");
         let mut body = body_of(&db, text, Some(name));
         edit(&mut body);
         let target = Target::builtin("x86_64-linux").unwrap();
         let layouts = Layouts::new(&db, &target);
-        let isa = isa(&target, Profile::Debug, false).unwrap();
+        let isa = isa(&target, profile, false).unwrap();
         let abi = FnAbi::of(&body, &layouts);
         let mut func = Function::with_name_signature(
             UserFuncName::user(0, 0),
             signature(&body, &abi, isa.default_call_conv(), isa.pointer_type()),
         );
+        let import = |func: &mut Function, signature: Signature, index: u32| {
+            let signature = func.import_signature(signature);
+            let name = func.declare_imported_user_function(UserExternalName::new(0, index));
+            func.import_function(ExtFuncData {
+                name: ExternalName::user(name),
+                signature,
+                colocated: true,
+                patchable: false,
+            })
+        };
         let calls: Vec<Option<FuncRef>> = body
             .blocks
             .iter()
             .map(|block| {
                 matches!(block.terminator.kind, TerminatorKind::Call { .. }).then(|| {
                     let signature = func.signature.clone();
-                    let signature = func.import_signature(signature);
-                    let name = func.declare_imported_user_function(UserExternalName::new(0, 0));
-                    func.import_function(ExtFuncData {
-                        name: ExternalName::user(name),
-                        signature,
-                        colocated: true,
-                        patchable: false,
-                    })
+                    import(&mut func, signature, 0)
                 })
             })
             .collect();
+        let pointer = isa.pointer_type();
+        let functions = (1..)
+            .zip(RuntimeFn::ALL)
+            .map(|(index, function)| {
+                let signature = function.signature(pointer, isa.default_call_conv());
+                import(&mut func, signature, index)
+            })
+            .collect();
+        let mut data = |index: u32| {
+            let name = func.declare_imported_user_function(UserExternalName::new(1, index));
+            func.create_global_value(GlobalValueData::Symbol {
+                name: ExternalName::user(name),
+                offset: 0.into(),
+                colocated: true,
+                tls: false,
+            })
+        };
+        let (zero_message, path) = (data(0), data(1));
+        let lines = mora_span::line_index(&db, file);
+        let env = Env {
+            profile,
+            calls,
+            functions,
+            zero_message,
+            path,
+            path_len: "src/Program.mr".len(),
+            file,
+            lines,
+            db: &db,
+        };
         lower(
             &mut func,
             &mut FunctionBuilderContext::new(),
@@ -739,7 +806,7 @@ pub(in crate::cranelift) mod tests {
             &layouts,
             &abi,
             isa.frontend_config(),
-            &calls,
+            &env,
         );
         func.display().to_string()
     }

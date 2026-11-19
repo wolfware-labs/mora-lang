@@ -57,3 +57,42 @@ pub(crate) fn object_of(text: &str, target: &Target, profile: Profile) -> Vec<u8
     let program = Program::collect(&db, project).unwrap();
     Cranelift.object(&program, target, profile).unwrap()
 }
+
+/// Set in the child process of a test that ends the process, as a panic of
+/// generated code does.
+pub(crate) const CHILD_ENV: &str = "MORA_CODEGEN_CHILD";
+
+/// Runs `body` in the child process of [`child`] only, so that the test that
+/// holds it returns at once when it runs on its own.
+pub(crate) fn only_in_child(body: impl FnOnce()) {
+    if std::env::var_os(CHILD_ENV).is_some() {
+        body();
+    }
+}
+
+/// Runs the ignored test `test` of this crate in a child process, and
+/// returns what it wrote and how it ended. The child test returns at once
+/// unless [`in_child`].
+pub(crate) fn child(test: &str) -> std::process::Output {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            test,
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ENV, "1")
+        .output()
+        .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_body_does_not_run_in_the_parent() {
+        only_in_child(|| panic!("ran outside a child process"));
+    }
+}

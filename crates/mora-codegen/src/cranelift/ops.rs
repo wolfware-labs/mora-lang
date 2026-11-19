@@ -7,7 +7,9 @@ use cranelift_codegen::ir::{InstBuilder, Type, Value, types};
 use mora_hir::Ty;
 use mora_mir::{BinOp, Operand, UnOp};
 
+use super::checks::Arith;
 use super::function::{Lowering, broken, fail, scalar_type};
+use crate::Profile;
 use crate::layout::{Scalar, Shape};
 
 /// The condition codes of a comparison.
@@ -82,18 +84,22 @@ impl Lowering<'_, '_> {
     }
 
     /// The value of the binary operation `op`. A checked `+`, `-` and `*`
-    /// wrap.
+    /// panic on overflow in a debug build and wrap in a release build.
     ///
     /// # Panics
     ///
-    /// With an internal error for `/` and `%`, which M1.12 lowers with the
-    /// checks of a debug build, or for operands `op` does not take.
+    /// With an internal error for operands `op` does not take.
     pub(super) fn binary(&mut self, op: BinOp, left: &Operand, right: &Operand) -> Value {
-        if matches!(op, BinOp::Div | BinOp::Rem) {
-            fail(self.body, &format!("the operator `{}`", op.text()), "M1.12");
-        }
         let (scalar, left) = self.scalar(left);
         let (count, right) = self.scalar(right);
+        if matches!(op, BinOp::Div | BinOp::Rem) {
+            return self.divide(op, scalar, left, right);
+        }
+        if self.env.profile == Profile::Debug
+            && let (Some(arith), Scalar::Int { signed, .. }) = (Arith::of(op), scalar)
+        {
+            return self.checked(arith, signed, left, right);
+        }
         if let Some(conditions) = Conditions::of(op) {
             return self.compare(&conditions, scalar, left, right);
         }
@@ -186,7 +192,8 @@ impl Lowering<'_, '_> {
         self.resize(shifted, ty, false)
     }
 
-    /// The value of the unary operation `op`. A checked `-` wraps.
+    /// The value of the unary operation `op`. A checked `-` panics on
+    /// overflow in a debug build and wraps in a release build.
     ///
     /// # Panics
     ///
@@ -194,6 +201,11 @@ impl Lowering<'_, '_> {
     pub(super) fn unary(&mut self, op: UnOp, operand: &Operand) -> Value {
         let (scalar, value) = self.scalar(operand);
         match (op, scalar) {
+            (UnOp::Neg, Scalar::Int { signed, .. }) if self.env.profile == Profile::Debug => {
+                let ty = self.builder.func.dfg.value_type(value);
+                let zero = self.builder.ins().iconst(ty, 0);
+                self.checked(Arith::Neg, signed, value, zero)
+            }
             (UnOp::Neg, Scalar::Int { .. }) => self.builder.ins().ineg(value),
             (UnOp::Neg, Scalar::Float | Scalar::Double) => self.builder.ins().fneg(value),
             (UnOp::BitNot, Scalar::Int { .. }) => self.builder.ins().bnot(value),
@@ -247,7 +259,7 @@ impl Lowering<'_, '_> {
 
     /// The integer `value` as an integer of type `to`: extended by its
     /// signedness `signed` when `to` is wider, reduced when narrower.
-    fn resize(&mut self, value: Value, to: Type, signed: bool) -> Value {
+    pub(super) fn resize(&mut self, value: Value, to: Type, signed: bool) -> Value {
         let from = self.builder.func.dfg.value_type(value);
         match from.bits().cmp(&to.bits()) {
             std::cmp::Ordering::Less if signed => self.builder.ins().sextend(to, value),
@@ -750,8 +762,8 @@ mod tests {
         assert_eq!(program.get::<extern "C" fn(i32) -> i32>("Not")(0), -1);
         assert_eq!(program.get::<extern "C" fn(u32) -> u32>("NotU")(5), !5u32);
         assert_eq!(
-            program.get::<extern "C" fn(i64) -> i64>("Neg")(i64::MIN),
-            i64::MIN
+            program.get::<extern "C" fn(i64) -> i64>("Neg")(i64::MAX),
+            -i64::MAX
         );
         let bang = program.get::<extern "C" fn(bool) -> bool>("Bang");
         assert_eq!((bang(true), bang(false)), (false, true));
@@ -1046,22 +1058,6 @@ mod tests {
                 edit(rvalue);
             }
         })
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "internal error generating code for UsersApi.F: the operator `/` is not lowered until M1.12"
-    )]
-    fn division_waits_for_its_checks() {
-        jit_one("F(move a: int, move b: int): int => a / b;\n", "F");
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "internal error generating code for UsersApi.F: the operator `%` is not lowered until M1.12"
-    )]
-    fn remainder_waits_for_its_checks() {
-        jit_one("F(move a: int, move b: int): int => a % b;\n", "F");
     }
 
     #[test]

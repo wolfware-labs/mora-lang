@@ -1,8 +1,10 @@
 //! The Cranelift backend (§14.13): object files for every built-in target,
 //! and the JIT on the host.
 
+mod checks;
 mod function;
 mod ops;
+mod runtime;
 
 use std::fmt;
 use std::str::FromStr;
@@ -21,6 +23,7 @@ use mora_mir::{Body, LocalId, LocalTy, TerminatorKind};
 use mora_target::{CallConv, ObjectFormat, Target};
 use target_lexicon::Triple;
 
+use self::runtime::Runtime;
 use crate::abi::FnAbi;
 use crate::error::CodegenError;
 use crate::jit::JitProgram;
@@ -41,7 +44,9 @@ impl Backend for Cranelift {
         target: &Target,
         profile: Profile,
     ) -> Result<Vec<u8>, CodegenError> {
-        let isa = isa(target, profile, true)?;
+        // COFF has no position-independent code: the linker adjusts the
+        // addresses an image holds.
+        let isa = isa(target, profile, target.object_format != ObjectFormat::Coff)?;
         let builder =
             ObjectBuilder::new(isa, "mora", default_libcall_names()).map_err(cranelift_error)?;
         let mut module = ObjectModule::new(builder);
@@ -55,10 +60,7 @@ impl JitBackend for Cranelift {
     fn jit(&self, program: &Program<'_>, profile: Profile) -> Result<JitProgram, CodegenError> {
         let target = Target::host().map_err(unsupported_host)?;
         let isa = isa(&target, profile, false)?;
-        let mut jit = JitProgram::new(JITModule::new(JITBuilder::with_isa(
-            isa,
-            default_libcall_names(),
-        )));
+        let mut jit = JitProgram::new(JITModule::new(jit_builder(isa)));
         let layouts = Layouts::new(program.db(), &target);
         define_program(jit.module_mut(), program, &layouts, profile)?;
         jit.module_mut()
@@ -66,6 +68,16 @@ impl JitBackend for Cranelift {
             .map_err(cranelift_error)?;
         Ok(jit)
     }
+}
+
+/// A JIT that resolves the runtime's entry points to the ones linked into this
+/// process.
+fn jit_builder(isa: OwnedTargetIsa) -> JITBuilder {
+    let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+    for (name, address) in mora_rt::jit_symbols() {
+        builder.symbol(name, address);
+    }
+    builder
 }
 
 /// The Cranelift calling convention of `target`'s C convention (§13.7).
@@ -166,13 +178,11 @@ fn define_program<M: Module>(
     module: &mut M,
     program: &Program<'_>,
     layouts: &Layouts<'_>,
-    // Later lowering rules depend on the profile; the optimization level is
-    // the ISA's.
-    _profile: Profile,
+    profile: Profile,
 ) -> Result<FuncId, CodegenError> {
     let entry = program.functions()[program.entry().0 as usize].body;
     let exit = Exit::of(entry, layouts);
-    let ids = define_functions(module, program, layouts)?;
+    let ids = define_functions(module, program, layouts, profile)?;
     let call_conv = module.isa().default_call_conv();
     let mut signature = Signature::new(call_conv);
     signature.returns.push(AbiParam::new(types::I32));
@@ -207,7 +217,9 @@ fn define_functions<M: Module>(
     module: &mut M,
     program: &Program<'_>,
     layouts: &Layouts<'_>,
+    profile: Profile,
 ) -> Result<Vec<FuncId>, CodegenError> {
+    let runtime = Runtime::define(module, program)?;
     let call_conv = module.isa().default_call_conv();
     let pointer = module.isa().pointer_type();
     let mut declared = Vec::with_capacity(program.functions().len());
@@ -234,6 +246,7 @@ fn define_functions<M: Module>(
             &ids,
             &mut context.func,
         );
+        let env = runtime.env(module, program, function, &mut context.func, profile, calls);
         function::lower(
             &mut context.func,
             &mut function_context,
@@ -241,7 +254,7 @@ fn define_functions<M: Module>(
             layouts,
             abi,
             module.isa().frontend_config(),
-            &calls,
+            &env,
         );
         module
             .define_function(*id, &mut context)
@@ -386,10 +399,7 @@ mod tests {
     fn dropping_a_program_frees_its_memory() {
         let freed = Arc::new(AtomicBool::new(false));
         let target = Target::host().unwrap();
-        let mut builder = JITBuilder::with_isa(
-            isa(&target, Profile::Debug, false).unwrap(),
-            default_libcall_names(),
-        );
+        let mut builder = jit_builder(isa(&target, Profile::Debug, false).unwrap());
         builder.memory_provider(Box::new(Recording {
             memory: cranelift_jit::SystemMemoryProvider::new(),
             freed: Arc::clone(&freed),

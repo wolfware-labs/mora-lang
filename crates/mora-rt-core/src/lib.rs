@@ -5,6 +5,7 @@
 #![allow(unsafe_code)]
 
 pub mod alloc;
+pub mod float;
 pub mod pal;
 pub mod string;
 

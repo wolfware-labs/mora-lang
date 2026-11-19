@@ -18,6 +18,7 @@ cranelift-frontend.workspace = true
 cranelift-jit.workspace = true
 cranelift-module.workspace = true
 cranelift-object.workspace = true
+mora-diag.workspace = true
 mora-hir.workspace = true
 mora-mir.workspace = true
 mora-rt.workspace = true
@@ -27,6 +28,5 @@ mora-target.workspace = true
 target-lexicon.workspace = true
 
 [dev-dependencies]
-mora-diag.workspace = true
 mora-hir = { workspace = true, features = ["test-support"] }
 object.workspace = true
