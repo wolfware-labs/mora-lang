@@ -725,7 +725,7 @@ Done when:
 | [M3.17](#m317-interpolation-handlers) | Interpolation handlers | `hir` | M3.10 |
 | [M3.18](#m318-effect-inference-and-uses-bounds) | Effect inference and `uses` bounds | `check` | M2.11, M3.11, M3.16, M3.17, M3.13 |
 | [M3.19](#m319-let-with-a-refutable-pattern-and-else) | `let` with a refutable pattern and `else` | `syntax` | M3.3, M3.4 |
-| [M3.20](#m320-labeled-break-and-continue) | Labeled `break` and `continue` | `syntax` | M1.10 |
+| [M3.20](#m320-labeled-break-and-continue) | Labeled `break` and `continue` | `syntax` | M1.10, M2.15 |
 | [M3.21](#m321-newtypes-and-refinements) | Newtypes and refinements | `hir` | M3.5, M3.6, M3.10 |
 
 ### M3.1 Unions
@@ -766,7 +766,7 @@ Done when:
 - Bindings in `is` are usable exactly where the `is` expression is known to be true (§7.8).
 - A benchmark rebuilds an `indirect` union tree with `match` and counts allocations per node, the baseline for deciding whether general reuse (D-71, v0.4) comes earlier.
 - A `match` and an `is` on a value with a move-only field, and on a union with a move-only case field, follow the rule the spec states for bindings; under the debug runtime every destructor runs exactly once on each arm, guard failures included.
-- A `rest` binding of a list pattern over an array, a span and a `List<T>` follows the view rules of §10.6 and §10.10: a UI test stores it past its scope, and a run test changes the list while it is live.
+- A `rest` binding of a list pattern over an array, a span and a `List<T>` (the test stub list until M5.4) follows the view rules of §10.6 and §10.10: a UI test stores it past its scope, and a run test changes the list while it is live.
 - A `match` that reaches no arm at run time (a value the checker did not expect) traps; it never continues into the next block.
 
 ### M3.4 Exhaustiveness and reachability
@@ -1012,7 +1012,7 @@ Done when:
 
 ### M3.20 Labeled `break` and `continue`
 
-Spec: [§7.11](docs/design/mora.md#711-statements), [§7.10](docs/design/mora.md#710-locals). Crates: `mora-syntax`, `mora-hir`, `mora-check`, `mora-mir`. Blocked by: M1.10.
+Spec: [§7.11](docs/design/mora.md#711-statements), [§7.10](docs/design/mora.md#710-locals). Crates: `mora-syntax`, `mora-hir`, `mora-check`, `mora-mir`. Blocked by: M1.10, M2.15.
 
 A loop may carry a label between its keyword and `(`, as in `foreach records (let line in lines)`, and `break records;` or `continue records;` act on that loop instead of the innermost one, so leaving an outer loop from an inner one no longer takes a flag variable and a second test. The label position parses without types (D-115). The other spellings clash with existing rules: `records: foreach` reads as a name and its type (D-58), `'records` as a character literal (§3.5) and `@records` as an attribute (§6.11). A lambda or a local function still does not see the loops around it, and labeled blocks that produce a value are not part of this: §7.7 asks for a function instead. To settle in the spec: where the label goes on `do`/`while`.
 
@@ -1203,7 +1203,7 @@ Done when:
 
 - Using `unsafe` in a user project reports `MR0107`.
 - A test-only `std` module moves values through raw storage with no leak.
-- UI test: a project whose root namespace is `Std`, besides the error of M1.15, still reports `MR0107` for `unsafe` and `RawPtr<T>` and cannot declare an `extern` function with `@Import(Lib = "mora_rt")`; `@Cheap` in it is `MR0254` as M3.18 states.
+- UI test: a project whose root namespace is `Std`, besides the error of M1.15, still reports `MR0107` for `unsafe` and `RawPtr<T>` and cannot declare an `extern` function with `@Import(Lib = "mora_rt")`.
 - Run test in `dev` and in `release`: a test-only `std` module that asks `Alloc`, `Realloc`, `Offset` or `Add` for a size or offset that overflows panics before any memory is allocated or written.
 - Each hand-written summary of a `Std` `unsafe` function is compared with what the debug runtime observes (§14.12).
 
