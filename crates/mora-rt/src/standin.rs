@@ -170,34 +170,8 @@ pub unsafe extern "C" fn __mora_standin_format_char(v: u32, out: *mut MoraString
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Output};
-
     use super::*;
-
-    /// Set in the child process of a test that writes to stdout.
-    const CHILD_ENV: &str = "MORA_RT_CHILD";
-
-    /// Runs the ignored test `test` of this crate in a child process.
-    fn child(test: &str) -> Output {
-        Command::new(std::env::current_exe().unwrap())
-            .args([
-                test,
-                "--exact",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .unwrap()
-    }
-
-    /// Runs `body` in the child process of [`child`] only.
-    fn only_in_child(body: impl FnOnce()) {
-        if std::env::var_os(CHILD_ENV).is_some() {
-            body();
-        }
-    }
+    use crate::test_util::{child, only_in_child};
 
     /// The text of `string`.
     fn text(string: &MoraString) -> String {
@@ -274,10 +248,5 @@ mod tests {
             // SAFETY: `name` is an inline string.
             unsafe { __mora_standin_write_line_string(&name) };
         });
-    }
-
-    #[test]
-    fn a_child_body_does_not_run_in_the_parent() {
-        only_in_child(|| panic!("ran outside a child process"));
     }
 }

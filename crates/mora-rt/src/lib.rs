@@ -11,6 +11,8 @@ pub mod string;
 mod start;
 
 pub mod symbols;
+#[cfg(test)]
+mod test_util;
 
 pub use mora_rt_core::DEBUG;
 pub use symbols::jit_symbols;

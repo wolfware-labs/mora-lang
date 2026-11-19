@@ -37,6 +37,9 @@ pub const BYTES_OFFSET: usize = 12;
 pub const OBJECT_ALIGN: usize = 4;
 /// The strong count of an object that is never retained or released.
 pub const IMMORTAL: u32 = 1 << 31;
+/// The most bytes a string holds, `int.MaxValue`, which also bounds a heap
+/// object's capacity (§13.4).
+pub const MAX_LEN: usize = i32::MAX as usize;
 
 /// A `u32` as the bytes a target of the byte order `big_endian` says stores.
 fn u32_bytes(value: u32, big_endian: bool) -> [u8; 4] {

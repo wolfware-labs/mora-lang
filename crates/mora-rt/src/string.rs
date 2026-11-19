@@ -4,19 +4,11 @@
 use core::slice;
 
 use mora_rt_core::alloc::mora_rt_alloc;
-use mora_rt_core::string::{BYTES_OFFSET, INLINE_MAX, MoraString, OBJECT_ALIGN, object_header};
+use mora_rt_core::string::{
+    BYTES_OFFSET, INLINE_MAX, MAX_LEN, MoraString, OBJECT_ALIGN, object_header,
+};
 
-use crate::panic::mora_rt_panic;
-
-/// The most bytes a string holds (§13.4).
-const MAX_LEN: usize = i32::MAX as usize;
-
-/// Panics with `message`, which has no source location.
-fn raise(message: &str) -> ! {
-    // SAFETY: the message pointer and length come from a live string; a file
-    // of length 0 is not read.
-    unsafe { mora_rt_panic(core::ptr::null(), 0, 0, 0, message.as_ptr(), message.len()) }
-}
+use crate::panic::panic_without_location;
 
 /// The total length of strings of the lengths `lens`, or `None` when it is
 /// above `i32::MAX`, which `concat` and `new_string` report as a panic.
@@ -28,14 +20,15 @@ pub fn concat_len(lens: impl IntoIterator<Item = usize>) -> Option<usize> {
 
 /// The total of `lens`; a string that would be too long panics.
 fn total_len(lens: impl IntoIterator<Item = usize>) -> usize {
-    concat_len(lens).unwrap_or_else(|| raise("string too long"))
+    concat_len(lens).unwrap_or_else(|| panic_without_location(format_args!("string too long")))
 }
 
 /// `object`, which `mora_rt_alloc` returned for `size` bytes; a null one
-/// panics: the program is out of memory.
+/// panics: the program is out of memory, so the message is written as it is
+/// formatted, with no allocation.
 fn checked(object: *mut u8, size: usize) -> *mut u8 {
     if object.is_null() {
-        raise(&format!("out of memory allocating {size} bytes"));
+        panic_without_location(format_args!("out of memory allocating {size} bytes"));
     }
     object
 }
@@ -122,38 +115,12 @@ pub unsafe extern "C" fn mora_rt_string_eq(a: *const MoraString, b: *const MoraS
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Output};
-
     use mora_rt_core::string::{
         BYTES_OFFSET, CAPACITY_OFFSET, IMMORTAL, MoraString, STRONG_OFFSET, WEAK_OFFSET,
     };
 
     use super::*;
-
-    /// Set in the child process of a test that exits the process.
-    const CHILD_ENV: &str = "MORA_RT_CHILD";
-
-    /// Runs the ignored test `test` of this crate in a child process.
-    fn child(test: &str) -> Output {
-        Command::new(std::env::current_exe().unwrap())
-            .args([
-                test,
-                "--exact",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .unwrap()
-    }
-
-    /// Runs `body` in the child process of [`child`] only.
-    fn only_in_child(body: impl FnOnce()) {
-        if std::env::var_os(CHILD_ENV).is_some() {
-            body();
-        }
-    }
+    use crate::test_util::{child, only_in_child};
 
     /// What a process that ends in the panic `test` runs prints.
     fn panics_with(test: &str, message: &str) {

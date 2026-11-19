@@ -1,7 +1,7 @@
 //! Panics (§11.4): the entry points compiled code calls when it must stop.
 
 use std::io::Write;
-use std::{process, slice};
+use std::{fmt, process, slice};
 
 /// The exit code of a panic (§11.4, D-26).
 pub const PANIC_EXIT_CODE: i32 = 101;
@@ -75,6 +75,18 @@ fn raise(text: &str) -> ! {
     process::exit(PANIC_EXIT_CODE)
 }
 
+/// Panics with `message`, which has no source location: flushes stdout,
+/// prints `panic: <message>` to stderr as `message` is formatted, building
+/// nothing on the heap, so that it works when memory has run out, and ends
+/// the process with [`PANIC_EXIT_CODE`].
+pub(crate) fn panic_without_location(message: fmt::Arguments<'_>) -> ! {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr()
+        .lock()
+        .write_fmt(format_args!("panic: {message}\n"));
+    process::exit(PANIC_EXIT_CODE)
+}
+
 /// The text of `len` bytes at `ptr`; an invalid sequence becomes U+FFFD.
 ///
 /// # Safety
@@ -134,39 +146,8 @@ pub unsafe extern "C" fn mora_rt_panic_overflow(
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Command, Output};
-
     use super::*;
-
-    /// Set in the child process of a test that exits the process.
-    const CHILD_ENV: &str = "MORA_RT_CHILD";
-
-    /// Runs the ignored test `test` of this crate in a child process.
-    fn child(test: &str) -> Output {
-        Command::new(std::env::current_exe().unwrap())
-            .args([
-                test,
-                "--exact",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .unwrap()
-    }
-
-    /// Runs `body` in the child process of [`child`] only.
-    fn only_in_child(body: impl FnOnce()) {
-        if std::env::var_os(CHILD_ENV).is_some() {
-            body();
-        }
-    }
-
-    #[test]
-    fn a_child_body_does_not_run_in_the_parent() {
-        only_in_child(|| panic!("ran outside a child process"));
-    }
+    use crate::test_util::{child, only_in_child};
 
     #[test]
     fn panic_text_names_the_location() {
