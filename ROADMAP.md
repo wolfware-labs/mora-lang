@@ -425,7 +425,7 @@ Done when:
 
 - A panic backtrace in a debug build shows `UsersApi.Program.Main` style names with `src/Program.mr:LINE`.
 - `gdb` or `lldb` stops at a breakpoint set by `file:line` (manual check recorded in the pull request).
-- Symbols are unique per build: a test with two path dependencies that have the same root namespace and declare the same function path links and calls each one correctly, and code generation fails with an internal error, never emits both, when two different bodies get one symbol.
+- Symbols are unique per build, following the project-identity rule the spec then gives for mangled names (§13.7, §4.4): a test with two path dependencies that have the same root namespace and declare the same function path links and calls each one correctly, and code generation fails with an internal error, never emits both, when two different bodies get one symbol.
 - `mora demangle` and the backtrace printer return a symbol unchanged when it is not a valid mangled name: a property test feeds lengths past the end, lengths that overflow, non-UTF-8 bytes and empty segments, with no panic and no read past the input. The printer does not allocate after a stack overflow or an out-of-memory panic.
 - A `@Export` name is checked against the names the runtime and the C library define; see the spec.
 
@@ -849,7 +849,7 @@ Done when:
 - A program using `List<int>` and `List<string>` (stub list in tests) emits two instantiations.
 - UI test for polymorphic recursion.
 - The polymorphic-recursion test includes a function that calls itself with `(T, T)` and one that calls itself with `T[]`: each reports `MR0220` once, in bounded time and memory, and no layout of a type that does not fit the address space is computed (with the checked layout arithmetic of M1.12).
-- Instantiations are keyed by item and canonical type arguments, the project that declares each type included, so two types with one name from two projects give two instantiations.
+- Instantiations are keyed by item and canonical type arguments, the project that declares each type included (identified as the spec then states, §13.6), so two types with one name from two projects give two instantiations.
 
 ### M3.10 Interfaces and static dispatch
 
@@ -876,7 +876,7 @@ Done when:
 - A failing `(C)i` cast panics with the message of §11.4.
 - UI tests for the boxing and interface-value rows of §5.10.
 - Run tests: `x as T` on an `any I` value gives `T?`, the value when its run-time type is `T` and `none` otherwise (D-153).
-- A run test with two path dependencies whose own root namespaces and type names are equal, bound under two keys: `is`, `as` and a checked cast tell the two types apart, and one library reached through two keys gives one type.
+- A run test, following the project-identity rule the spec then gives for canonical type names (§13.6, §4.4), with two path dependencies whose own root namespaces and type names are equal, bound under two keys: `is`, `as` and a checked cast tell the two types apart, and one library reached through two keys gives one type.
 - The compiler knows every type used as a dynamic value in the build, so it fails the build with an internal error when two different types get one type id; a unit test forces a collision.
 - A value boxed as `any I` keeps the drop function, size and alignment of its own type: a run test drops a boxed struct with a destructor through an interface value, once, under the debug runtime.
 
