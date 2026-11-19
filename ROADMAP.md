@@ -360,7 +360,7 @@ Done when:
 
 Spec: [§13.1](docs/design/mora.md#131-the-runtime-library), [§13.8](docs/design/mora.md#138-startup-and-process-exit), [§11.4](docs/design/mora.md#114-panics). Crates: `mora-rt`. Blocked by: M0.10.
 
-Process entry, argument collection, buffered stdout and stderr, panic message formatting (`panic at file:line:col: message`), backtraces when `MORA_BACKTRACE=1` or in the debug runtime, abort with exit code 101, stack overflow detection of §13.10, and immortal string literal objects.
+Process entry, argument collection, buffered stdout and stderr, panic message formatting (`panic at file:line:col: message`), backtraces when `MORA_BACKTRACE=1` or in the debug runtime, abort with exit code 101, stack overflow detection of §13.10, and immortal string literal objects. To settle in the spec: what the program receives for a process argument that is not valid UTF-8 (§13.8, §15.6).
 
 Done when:
 
