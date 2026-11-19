@@ -148,7 +148,9 @@ impl RuntimeFn {
     }
 
     /// The Cranelift signature, in the C convention `call_conv` of a target
-    /// whose pointers have the type `pointer`. The panics never return.
+    /// whose pointers have the type `pointer`. The panics never return. A
+    /// 32-bit parameter is sign-extended, as riscv64's convention expects of
+    /// every 32-bit value, signed or not, and the others ignore.
     pub(crate) fn signature(self, pointer: Type, call_conv: CallConv) -> Signature {
         let mut signature = Signature::new(call_conv);
         let (params, returns): (&[Type], &[Type]) = match self {
@@ -187,9 +189,10 @@ impl RuntimeFn {
             // The value, and the address to write the text to.
             RuntimeFn::Format(kind) => (&[kind.param(pointer), pointer], &[]),
         };
-        signature
-            .params
-            .extend(params.iter().copied().map(AbiParam::new));
+        signature.params.extend(params.iter().map(|&ty| match ty {
+            types::I32 => AbiParam::new(ty).sext(),
+            ty => AbiParam::new(ty),
+        }));
         signature
             .returns
             .extend(returns.iter().copied().map(AbiParam::new));
@@ -533,6 +536,24 @@ mod tests {
         ] {
             assert_eq!(signature(RuntimeFn::WriteLine(kind)), (vec![value], vec![]));
             assert_eq!(signature(RuntimeFn::Format(kind)), (vec![value, p], vec![]));
+        }
+        // Every 32-bit parameter is sign-extended, and nothing else is.
+        use cranelift_codegen::ir::ArgumentExtension;
+        for function in [
+            RuntimeFn::Panic,
+            RuntimeFn::PanicOverflow,
+            RuntimeFn::WriteLine(Bool),
+            RuntimeFn::Format(Char),
+            RuntimeFn::WriteLine(I64),
+        ] {
+            for param in function.signature(p, CallConv::SystemV).params {
+                let expected = if param.value_type == n {
+                    ArgumentExtension::Sext
+                } else {
+                    ArgumentExtension::None
+                };
+                assert_eq!(param.extension, expected, "{function:?}");
+            }
         }
         // A string crosses by address, which is as wide as a pointer.
         let narrow = RuntimeFn::WriteLine(String).signature(types::I32, CallConv::SystemV);
