@@ -1363,7 +1363,7 @@ Done when:
 - Attribute names are matched without regard to case: a hole in `ONCLICK`, `OnLoad`, `STYLE` and `SrcDoc` panics, and `HREF`, `Src` and `FormAction` get the URL rule.
 - A hole value holding `"`, `'`, `<`, `>`, `&` and a backtick cannot end a double-quoted or a single-quoted attribute value or start a tag in element text (the output is parsed back and holds one element and one attribute).
 - A hole inside a comment, inside `<textarea>` or `<title>` markup that the literal leaves open, and directly after `<` panics with the context.
-- In a URL attribute, a hole after the literal `JavaScript:` or `data:` panics, and a hole after `/` cannot produce a value that starts with `//` or `/\`.
+- In a URL attribute, a hole after the literal `JavaScript:` or `data:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2). To settle in the spec: whether a value that starts with `/\` is refused too, since a browser reads it as `//`.
 
 ### M5.15 Logging and tracing
 
