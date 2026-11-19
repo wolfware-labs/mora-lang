@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mora_codegen::{Cranelift, JitBackend, Profile, Program};
+use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
 
 use crate::compiler::{FrontEnd, Output, has_error};
 
@@ -27,21 +27,33 @@ pub const INTERNAL_ERROR_EXIT: i32 = 70;
 pub const INTERNAL_ERROR_PREFIX: &str = "jit-runner: internal error: ";
 
 /// Runs the program of the case on standard input, shown as the path in the
-/// first argument, and exits with its exit code.
+/// first argument, and exits with its exit code. Without the argument it
+/// exits with a usage error.
 pub fn main() -> ! {
-    let path = std::env::args().nth(1).unwrap_or_default();
+    let Some(path) = std::env::args().nth(1) else {
+        fail("usage: jit-runner <path>, with the program on standard input")
+    };
     let mut text = String::new();
-    let read = std::io::stdin().read_to_string(&mut text);
-    // The reason is written once, by `fail`; the default hook would repeat it.
-    std::panic::set_hook(Box::new(|_| {}));
-    let code = match read {
-        Ok(_) => build_and_run(&path, &text),
+    let built = match std::io::stdin().read_to_string(&mut text) {
+        Ok(_) => build_quietly(&path, &text),
         Err(error) => Err(format!("cannot read the program: {error}")),
     };
-    match code {
-        Ok(code) => std::process::exit(code),
+    match built {
+        Ok(jit) => std::process::exit(jit.run_main()),
         Err(reason) => fail(&reason),
     }
+}
+
+/// [`build`] with the panic hook silent: the reason a build fails is written
+/// once, by `fail`, and the default hook would repeat it. The hook comes
+/// back before the program runs, so a panic of the runtime's own code
+/// prints its message.
+fn build_quietly(path: &str, text: &str) -> Result<JitProgram, String> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let jit = build(path, text);
+    std::panic::set_hook(hook);
+    jit
 }
 
 /// Reports `reason` as an internal error and exits.
@@ -55,8 +67,15 @@ fn fail(reason: &str) -> ! {
 
 /// Analyzes `text` as `path`, compiles it with the debug profile and runs it,
 /// returning its exit code. A panic of the compiler is an error, not a crash.
-pub(crate) fn build_and_run(path: &str, text: &str) -> Result<i32, String> {
-    let jit = catch_unwind(AssertUnwindSafe(|| {
+#[cfg(test)]
+fn build_and_run(path: &str, text: &str) -> Result<i32, String> {
+    Ok(build(path, text)?.run_main())
+}
+
+/// Analyzes `text` as `path` and compiles it with the debug profile. A panic
+/// of the compiler is an error, not a crash.
+fn build(path: &str, text: &str) -> Result<JitProgram, String> {
+    catch_unwind(AssertUnwindSafe(|| {
         let analysis = FrontEnd::new().analyze(path, text);
         if has_error(&analysis.checked.diagnostics) {
             return Err("the program has errors".to_owned());
@@ -67,8 +86,7 @@ pub(crate) fn build_and_run(path: &str, text: &str) -> Result<i32, String> {
             .jit(&program, Profile::Debug)
             .map_err(|error| error.to_string())
     }))
-    .map_err(|payload| message_of(payload.as_ref()))??;
-    Ok(jit.run_main())
+    .map_err(|payload| message_of(payload.as_ref()))?
 }
 
 /// The message of a panic.
@@ -211,6 +229,19 @@ mod tests {
     #[test]
     fn a_program_without_an_entry_point_is_an_error() {
         assert!(build_and_run("a.mr", "").is_err());
+    }
+
+    #[test]
+    fn a_quiet_build_gives_the_hook_back() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| CALLED.store(true, Ordering::SeqCst)));
+        assert!(build_quietly("a.mr", "return 3;\n").is_ok());
+        assert!(build_quietly("a.mr", "").is_err());
+        let _ = catch_unwind(|| panic!("after the build"));
+        std::panic::set_hook(original);
+        assert!(CALLED.load(Ordering::SeqCst));
     }
 
     #[test]

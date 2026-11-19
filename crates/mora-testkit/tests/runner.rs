@@ -94,3 +94,16 @@ fn input_that_is_not_text_is_an_internal_error() {
         "{stderr}"
     );
 }
+
+#[test]
+fn a_runner_without_a_path_is_a_usage_error() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_jit-runner"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(70));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "jit-runner: internal error: usage: jit-runner <path>, with the program on standard input\n"
+    );
+}

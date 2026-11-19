@@ -22,8 +22,8 @@ A constant is one line, `const App.Size: int = 8;`, with the value constant eval
 - `(T)a` converts a number to `T` as the source wrote it. `(implicit T)a` is a conversion the compiler inserted because every value fits, such as `int` to `long`.
 - `call f(args) -> bbN;` calls `f` and continues in `bbN`; `x = call ...` stores the result. `-> !` marks a call that does not return.
 - `App.Point{struct App.Point}(a, b)` builds a struct from the values of its instance fields, in the order they are declared; `(a, b)` builds a tuple. `App.Point{struct App.Point}.Y{init}` is the initializer of the field `Y`, called for a field that `new` leaves out.
-- `Console.WriteLine{external}` is a function of the standard library, which is not loaded yet, called by the path as written. It is the only external callee here, and it runs through a temporary runtime stand-in until M1.15.
-- `$"text{a}"` builds an interpolated string. It stands in until the standard library formats values (M1.15), and runs through a temporary runtime stand-in until then.
+- `Console.WriteLine{external}` is a function of the standard library, which is not loaded yet, called by the path as written. It is the only external callee here, and it runs through a temporary runtime stand-in until M1.15 (#43).
+- `$"text{a}"` builds an interpolated string. It stands in until the standard library formats values (M1.15, #43), and runs through a temporary runtime stand-in until then.
 - A local function is named after its owner, `Owner.Local`. When one owner has several local functions with the same name, the second is `Owner.Local#2`, the third `Owner.Local#3`, in the order of the text.
 
 After a change to the HIR or the MIR, update the snapshots and review the diff:
