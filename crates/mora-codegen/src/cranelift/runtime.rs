@@ -173,8 +173,8 @@ impl Runtime {
         let mut strings = HashMap::new();
         // In the order the literals first appear in, as the files are.
         for text in long_literals(program) {
-            let id = define_literal(module, text, big_endian)?;
-            strings.insert(Arc::clone(text), id);
+            let id = define_literal(module, &text, big_endian)?;
+            strings.insert(text, id);
         }
         Ok(Runtime {
             functions,

@@ -121,6 +121,18 @@ impl<'db> Layouts<'db> {
         }
     }
 
+    /// The layout of `count` values of `element`, one after another: an
+    /// aggregate whose fields are the elements, and the offset of each.
+    pub fn array(&self, element: &Layout, count: u32) -> (Layout, Vec<u32>) {
+        let offsets: Vec<u32> = (0..count).map(|index| index * element.size).collect();
+        let layout = Layout {
+            size: element.size * count,
+            align: element.align,
+            shape: Shape::Aggregate(offsets.clone()),
+        };
+        (layout, offsets)
+    }
+
     /// The layout of a local: a borrow is a pointer.
     pub fn of_local(&self, ty: &LocalTy) -> Layout {
         match ty {
@@ -408,6 +420,20 @@ mod tests {
                 shape: Shape::String
             }
         );
+    }
+
+    #[test]
+    fn an_array_repeats_its_element() {
+        let db = TestDb::new();
+        let layouts = Layouts::new(&db, &x86_64());
+        let string = layouts.of(&Ty::String);
+        let (three, offsets) = layouts.array(&string, 3);
+        assert_eq!(offsets, [0, 16, 32]);
+        assert_eq!(three.size, 48);
+        assert_eq!(three.align, string.align);
+        assert_eq!(three.shape, Shape::Aggregate(vec![0, 16, 32]));
+        let (none, offsets) = layouts.array(&string, 0);
+        assert_eq!((none.size, offsets.len()), (0, 0));
     }
 
     #[test]
