@@ -1806,7 +1806,7 @@ A panic happens on:
 | Out of memory | `out of memory allocating N bytes` |
 | A string that would be longer than `int.MaxValue` bytes (§13.4) | `string too long` |
 
-A panic prints `panic at src/Store.mr:42:17: <message>` to stderr and, in debug builds or when `MORA_BACKTRACE=1`, a symbolized backtrace. The runtime flushes stdout first, so the message, the location and the `panic at` line follow every line the program wrote; compiled code reaches the runtime through its `mora_rt_panic` entry points, which take the location from the source of the failing operation. A panic the runtime raises without a source location prints `panic: <message>`. It then **aborts** the process with exit code 101 (D-26). Nothing unwinds: destructors do not run, and buffered stdout is flushed by the runtime before the abort. A panic inside a destructor, or a second panic while printing the first, aborts at once.
+A panic prints `panic at src/Store.mr:42:17: <message>` to stderr and, in debug builds or when `MORA_BACKTRACE=1`, a symbolized backtrace. The runtime flushes buffered stdout first, so the `panic at` line follows every line the program wrote; compiled code reaches the runtime through its `mora_rt_panic` entry points, which take the location from the source of the failing operation. A panic the runtime raises without a source location prints `panic: <message>`. It then **exits** the process with code 101 without unwinding (D-26): destructors do not run. A panic inside a destructor, or a second panic while printing the first, ends the process at once.
 
 `panic`, `Unreachable` and `Todo` are expressions of the never type, which converts to any type, so `let x = cond ? 1 : panic("no");` compiles. The never type cannot be named in source.
 
