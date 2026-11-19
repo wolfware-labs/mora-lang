@@ -412,7 +412,7 @@ Done when:
 - A build of several projects reports a diagnostic once when two of them report the same one, as two sibling projects that run one library field initializer do (§14.6).
 - A cache entry is never trusted because it is there: a test replaces, truncates and bit-flips the files under `target/mora/cache/` and the build either rebuilds them or fails with an error, never loads them, and reading a damaged entry never panics.
 - CLI tests: a `[project] name` outside lowercase letters, digits and `-`, or one that starts with `-`, and an `entry` that is absolute or leaves the project folder through `..`, are errors before any file is written; nothing is ever written outside the project's `target/`.
-- Source discovery reads only regular files below `src/`. A test with a symbolic link that leaves the project, a link cycle and a FIFO named `X.mr` ends with a diagnostic and does not hang; the 4 GiB check of `MR0003` reads the size before the content.
+- Source discovery reads only regular files below `src/`: a special file such as a FIFO named `X.mr` is never opened and is reported with a diagnostic. Tests with such a FIFO and with a link cycle end without hanging, and a symbolic link that leaves the project follows the rule the spec gives (§17.3); the 4 GiB check of `MR0003` reads the size before the content.
 - A text that is not valid UTF-8 is `MR0001` and a text of 4 GiB or more is `MR0003`, both reported before any lexing, through one checked entry point that the driver, the language server and the test kit all use; `LineIndex::new` returns an error instead of panicking on an oversized text.
 
 ### M1.17 Debug information and symbol names
@@ -793,7 +793,7 @@ Done when:
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
 - UI tests: `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
-- UI tests: narrowing applies only to a place nothing else can write between the check and the use. A `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow and at the end of the branch the check guards, and at a loop back edge that can reach an assignment.
+- UI tests, with the places and the ends of narrowing as §5.6 then states them: narrowing applies only to a place nothing else can write between the check and the use. A `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow and at the end of the branch the check guards, and at a loop back edge that can reach an assignment.
 - A run test under the debug runtime for each of those: the code compiles only with `?.`, `??` or a new `is` test, and reads no payload of a `none`.
 
 ### M3.6 Operators, conversions and indexers
@@ -1099,7 +1099,7 @@ Spec: [§9.2](docs/design/mora.md#92-declaring-macros), [§9.5](docs/design/mora
 Done when:
 
 - A user-written expression macro that turns `#Twice(x)` into `x + x` runs.
-- An expression macro whose result contains a call of itself, directly or through another macro, is reported once with the code the spec assigns, at the outermost use, and the compiler neither hangs nor overflows its stack; the nesting limit of §3.1 (`MR0018`) applies to the expanded expression.
+- An expression macro whose result contains a call of itself, directly or through another macro, is reported once with the code the spec assigns, at the outermost use, and the compiler neither hangs nor overflows its stack; the nesting limit of §3.1 (`MR0018`) or the expansion limit the spec gives applies to the expanded expression.
 - A constant argument and an `Expr` argument reach the macro as values of the model: text in a string argument is never parsed as code, and an `Expr` spliced into the result keeps the names it had at the call site (§9.4).
 
 ### M4.6 Expansion cache
@@ -1240,7 +1240,7 @@ Done when:
 - Iteration order equals insertion order after removals and re-insertions.
 - `Add` of a present key returns `false` and changes nothing; assigning `none` through the indexer removes the key.
 - UI test: a getter that reads `dict[key]` passes the getter check, and `@Cheap` on a function outside `Std` is `MR0254`.
-- Two runs of one program outside `mora test` hash the same string to different values, and two runs under `mora test` with one seed hash it to the same value.
+- Over 16 runs of one program outside `mora test`, the hash of one string takes more than one value (all 16 agreeing by chance is negligible), and two runs under `mora test` with one seed hash it to the same value.
 - A run test inserts 100,000 keys built to collide under the default hash with a known key, into a `Dictionary` made with a fresh random key, and the number of probes stays within a constant factor of the same test with random keys. As a control, the same keys inserted into a `Dictionary` that uses that known key do collide and the probe count grows, which shows the set is a real collision set.
 - OQ-24 is closed in §24 with the measured cost of each hasher.
 
@@ -1715,7 +1715,7 @@ Done when:
 - `mora self update` refuses, each in its own test and before unpacking any file: an archive whose checksum differs; an archive with no signature; a valid Sigstore signature from another repository; one from another workflow of `wolfware-labs/mora-lang`; one from the release workflow run on a branch; a certificate whose OIDC issuer is not GitHub Actions; and a signature with no transparency-log entry. After each refusal `mora --version` and the files under `~/.mora` are unchanged.
 - An update interrupted while it replaces files leaves a toolchain that runs: either the old one or the new one.
 - Unpacking refuses an entry with an absolute path, a `..` segment or a link that points outside the install directory.
-- `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS, and a redirect to plain HTTP.
+- `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS, a redirect to plain HTTP, and a redirect to a host outside the list the spec gives.
 - `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short (for example one that takes a fixed trailing argument). A test truncates the script at every byte. The same for `install.ps1`.
 
 ### M7.12 Benchmarks and budgets
