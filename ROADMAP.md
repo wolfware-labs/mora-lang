@@ -346,14 +346,14 @@ Done when:
 
 Spec: [§13.5](docs/design/mora.md#135-value-layouts), [§13.7](docs/design/mora.md#137-calling-convention-and-symbols), [§14.13](docs/design/mora.md#1413-cranelift-lowering). Crates: `mora-codegen`. Blocked by: M1.10, M0.13.
 
-A `Backend` trait taking optimized MIR and a target description, and its Cranelift implementation: lowering of MIR for scalars, structs, tuples, calls, control flow, overflow-checked arithmetic and panics as `noreturn` runtime calls; object files through `cranelift-object`; in-process execution through `cranelift-jit`; struct layout of §13.5 computed from the target description and the calling convention of §13.7. To settle in the spec: §13.10 says how a frame larger than the guard page is probed, and §13.5 gives the largest size a type may have and the error for one that exceeds it. To settle in the spec: the panic message for `int.MinValue / -1` and `int.MinValue % -1` in release builds (§11.4).
+A `Backend` trait taking optimized MIR and a target description, and its Cranelift implementation: lowering of MIR for scalars, structs, tuples, calls, control flow, overflow-checked arithmetic and panics as `noreturn` runtime calls; object files through `cranelift-object`; in-process execution through `cranelift-jit`; struct layout of §13.5 computed from the target description and the calling convention of §13.7. To settle in the spec: §13.10 says how a frame larger than the guard page is probed (the rule being considered is that every page of the frame is touched on entry, in order from the top of the frame down, so that no probe can land past the guard page), and §13.5 gives the largest size a type may have and the error for one that exceeds it. To settle in the spec: the panic message for `int.MinValue / -1` and `int.MinValue % -1` in release builds (§11.4).
 
 Done when:
 
 - The run harness executes every M1 run test through the JIT and through an object file linked by M1.14, and compares outputs.
 - Overflow in a debug build panics with the message of §11.4.
 - Run tests in both profiles, through the JIT and the object file: division and remainder by zero, `int.MinValue / -1` and `int.MinValue % -1` panic with the message of §11.4 and exit code 101, never with a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
-- A function whose frame is larger than the guard page touches every page of it on entry (stack probes): a unit test on the generated code for a function with a multi-megabyte struct local shows every page of the frame touched on entry, in order from the top of the frame down, before any other access to the frame; the run test that shows `stack overflow` is in M1.14.
+- A function whose frame is larger than the guard page probes it on entry as §13.10 then states: a unit test on the generated code for a function with a multi-megabyte struct local shows the probes that rule requires, before any other access to the frame; the run test that shows `stack overflow` is in M1.14.
 - Layout arithmetic is checked: a struct or tuple whose size does not fit the target's address space is reported as an error, never wrapped (unit test against the 32-bit test description).
 
 ### M1.13 Runtime: startup, output and panics
