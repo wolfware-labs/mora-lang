@@ -350,7 +350,7 @@ pub fn load(root: &Path) -> io::Result<Repo> {
 mod tests {
     use mora_diag::{Diagnostic, Files, Label};
     use mora_span::{Span, TextRange};
-    use mora_testkit::{Backend, Checked, Output, Unbuilt};
+    use mora_testkit::{Backend, Checked, FrontEnd, Output, Unbuilt};
 
     use super::*;
 
@@ -610,7 +610,8 @@ F();
         let repo = load(&crate::paths::root()).unwrap();
         assert!(repo.examples.len() > 1);
         assert!(repo.deliverables.contains(&"M1.4".to_owned()));
-        let outcome = check(&repo, mora_testkit::compiler());
+        let runner = crate::runner::build(&crate::paths::root()).unwrap();
+        let outcome = check(&repo, &FrontEnd::with_runner(runner));
         assert_eq!(outcome.problems, []);
     }
 }
