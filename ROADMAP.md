@@ -466,7 +466,7 @@ Done when:
 - Two runs of `mora check --message-format json` on the same project print the same bytes.
 - A watch-mode test edits a file and receives a new round that ends with the summary object.
 - CLI tests: a `safe` fix whose edit lies in the standard library, or in a file reached through a symbolic link that leaves the project is not applied and the file is unchanged; `mora fix` writes no file other than `.mr` files under the project's `src/` and `tests/`.
-- A file is written only when its content is still what the check read, and it is replaced in one step (write beside it, then rename), so an interrupted run leaves no half-written source file. A test with a writer that edits the file between the check and the replacement finds that edit kept and the fix reported as not applied, through a held lock or an atomic compare-and-replace on each platform.
+- A file is written only when its content is still what the check read, and it is replaced in one step (write beside it, then rename), so an interrupted run leaves no half-written source file. A test with a writer that edits the file between the check and the replacement finds that edit kept and the fix reported as not applied (the test replaces the file and overwrites it in place), through a held lock or an atomic compare-and-replace on each platform.
 - An edit whose span is outside its file or splits a character is refused, never clamped (the renderer clamps, §17.6; a writer must not); `placeholder` fixes are never applied, whatever the flags; the run stops after four rounds.
 - The JSON objects escape control characters in messages, labels and file names, and the human format does not pass terminal control sequences from source text or file names through to the terminal.
 
@@ -1733,8 +1733,10 @@ Done when:
 - `mora self update` from a release candidate to the next one, and refusal of an archive whose signature identity does not match.
 - `mora self update` refuses, each in its own test and before unpacking any file: an archive whose checksum differs; an archive with no signature; a valid Sigstore signature from another repository; one from another workflow of `wolfware-labs/mora-lang`; one from the release workflow run on a branch; a certificate whose OIDC issuer is not GitHub Actions; and a signature with no transparency-log entry. After each refusal `mora --version` and the files under `~/.mora` are unchanged.
 - An update interrupted while it replaces files leaves a toolchain that runs: either the old one or the new one.
+- The archive that passes verification is the one unpacked: it is downloaded into a new folder that only the current user can write, verified there and unpacked from there, and a test that replaces it, and one that overwrites it in place, between verification and unpacking ends with the installed toolchain unchanged.
 - Unpacking refuses an entry with an absolute path, a `..` segment or a link that points outside the install directory.
 - `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS or is outside the host list the spec gives, a redirect to plain HTTP, and a redirect to a host outside that list.
+- The scripts download into a new folder that only the current user can write and unpack the file they verified, not one fetched or named again.
 - `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short. A test truncates the script at every byte. The same for `install.ps1`.
 
 ### M7.12 Benchmarks and budgets
