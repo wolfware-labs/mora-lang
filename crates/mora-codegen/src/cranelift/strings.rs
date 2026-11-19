@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 use cranelift_codegen::ir::{InstBuilder, Value};
 use cranelift_module::{DataDescription, DataId, Module};
-use mora_hir::Ty;
-use mora_mir::{
-    BinOp, Body, Const, InterpPiece, LocalTy, Operand, Place, Rvalue, StatementKind, TerminatorKind,
-};
+use mora_mir::{Body, Const, InterpPiece, Operand, Place, Rvalue, StatementKind, TerminatorKind};
 use mora_rt_core::string::{IMMORTAL, INLINE_MAX, MoraString, heap_template, object_header};
 
 use super::cranelift_error;
@@ -26,17 +23,12 @@ const OBJECT_ALIGN: u64 = mora_rt_core::string::OBJECT_ALIGN as u64;
 
 /// What a walk of a body reports to.
 struct Walker<'f> {
-    /// Called for every place the body mentions.
-    place: &'f mut dyn FnMut(&Place),
     /// Called for every operand the body reads.
     operand: &'f mut dyn FnMut(&Operand),
 }
 
 impl Walker<'_> {
     fn operand(&mut self, operand: &Operand) {
-        if let Operand::Copy(place) | Operand::Move(place) = operand {
-            (self.place)(place);
-        }
         (self.operand)(operand);
     }
 
@@ -56,7 +48,8 @@ impl Walker<'_> {
                 self.operand(right);
             }
             Rvalue::Aggregate(_, values) => self.operands(values),
-            Rvalue::Borrow(_, borrowed) => (self.place)(borrowed),
+            Rvalue::Borrow(..) => {}
+            Rvalue::Concat(values) => self.operands(values),
             Rvalue::Interpolate(pieces) => {
                 for piece in pieces {
                     if let InterpPiece::Operand {
@@ -80,10 +73,7 @@ impl Walker<'_> {
         for block in &body.blocks {
             for statement in &block.statements {
                 match &statement.kind {
-                    StatementKind::Assign(place, rvalue) => {
-                        (self.place)(place);
-                        self.rvalue(rvalue);
-                    }
+                    StatementKind::Assign(_, rvalue) => self.rvalue(rvalue),
                     StatementKind::StorageLive(_)
                     | StatementKind::StorageDead(_)
                     | StatementKind::Nop => {}
@@ -91,12 +81,7 @@ impl Walker<'_> {
             }
             match &block.terminator.kind {
                 TerminatorKind::Switch { discr, .. } => self.operand(discr),
-                TerminatorKind::Call { args, dest, .. } => {
-                    self.operands(args);
-                    if let Some(dest) = dest {
-                        (self.place)(dest);
-                    }
-                }
+                TerminatorKind::Call { args, .. } => self.operands(args),
                 TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {}
             }
         }
@@ -111,7 +96,6 @@ pub(super) fn long_literals(program: &Program<'_>) -> Vec<Arc<str>> {
     let mut found = Vec::new();
     for function in program.functions() {
         Walker {
-            place: &mut |_| {},
             operand: &mut |operand| {
                 if let Operand::Const(Const::String(text)) = operand
                     && text.len() > INLINE_MAX
@@ -124,95 +108,6 @@ pub(super) fn long_literals(program: &Program<'_>) -> Vec<Arc<str>> {
         .body(function.body);
     }
     found
-}
-
-/// Which concatenations of a body fold into the one that reads their result:
-/// `a + b + c` is one call over three parts, not two calls and an
-/// intermediate string that is never released. A string a concatenation
-/// writes into a temporary that nothing else mentions, and the very next
-/// concatenation reads, is folded: nothing can change a part between the
-/// two.
-pub(super) struct Chains {
-    /// How many times each local is mentioned: as a place written, read or
-    /// borrowed.
-    mentions: Vec<usize>,
-    /// The concatenations, as (block, statement), that are not lowered
-    /// because the one that reads them takes their parts.
-    skipped: HashSet<(usize, usize)>,
-}
-
-impl Chains {
-    /// The folds of `body`.
-    pub(super) fn of(body: &Body) -> Chains {
-        let mut mentions = vec![0; body.locals.len()];
-        Walker {
-            place: &mut |place| mentions[place.local.index()] += 1,
-            operand: &mut |_| {},
-        }
-        .body(body);
-        let mut chains = Chains {
-            mentions,
-            skipped: HashSet::new(),
-        };
-        for (block, data) in body.blocks.iter().enumerate() {
-            for (at, statement) in data.statements.iter().enumerate() {
-                if let StatementKind::Assign(_, Rvalue::Binary(BinOp::Add, left, right)) =
-                    &statement.kind
-                {
-                    for operand in [left, right] {
-                        if let Some((definer, ..)) = chains.definer(body, block, at, operand) {
-                            chains.skipped.insert((block, definer));
-                        }
-                    }
-                }
-            }
-        }
-        chains
-    }
-
-    /// Whether the statement `at` of `block` is folded into another.
-    pub(super) fn skips(&self, block: usize, at: usize) -> bool {
-        self.skipped.contains(&(block, at))
-    }
-
-    /// The concatenation that `operand`, read by the statement before which
-    /// `before` stands in `block`, is the result of, when it folds: its
-    /// statement and its two operands.
-    fn definer<'b>(
-        &self,
-        body: &'b Body,
-        block: usize,
-        before: usize,
-        operand: &Operand,
-    ) -> Option<(usize, &'b Operand, &'b Operand)> {
-        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
-            return None;
-        };
-        let local = place.local.index();
-        // A temporary that holds a string, which the statement that defines
-        // it and the one that reads it alone mention.
-        let temporary = local > body.params
-            && body.locals[local].source.is_none()
-            && body.locals[local].ty == LocalTy::Value(Ty::String);
-        if !place.projections.is_empty() || !temporary || self.mentions[local] != 2 {
-            return None;
-        }
-        let statements = &body.blocks[block].statements;
-        let last = statements[..before].iter().rposition(|statement| {
-            !matches!(
-                statement.kind,
-                StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop
-            )
-        })?;
-        match &statements[last].kind {
-            StatementKind::Assign(dest, Rvalue::Binary(BinOp::Add, left, right))
-                if *dest == Place::local(place.local) =>
-            {
-                Some((last, left, right))
-            }
-            _ => None,
-        }
-    }
 }
 
 /// Defines the immortal heap object of the literal `text` as read-only data
@@ -320,34 +215,15 @@ impl Lowering<'_, '_> {
         self.store_words(address, &words);
     }
 
-    /// Adds to `parts` the operands whose strings `operand`, read before the
-    /// statement `before` of `block`, is the concatenation of: itself, or the
-    /// parts of the concatenation it folds.
-    fn collect_parts(
-        &self,
-        block: usize,
-        before: usize,
-        operand: &Operand,
-        parts: &mut Vec<Operand>,
-    ) {
-        match self.chains.definer(self.body, block, before, operand) {
-            Some((definer, left, right)) => {
-                self.collect_parts(block, definer, left, parts);
-                self.collect_parts(block, definer, right, parts);
-            }
-            None => parts.push(operand.clone()),
-        }
-    }
-
-    /// Builds in `place` the concatenation of the strings `left` and `right`
-    /// read, and of the parts of the concatenations they fold (`Chains`),
-    /// with one call that takes the parts in an array. A heap string is
-    /// never released: counting references is M2's.
+    /// Builds in `place` the concatenation of the strings `operands` read,
+    /// with one call that takes them in an array: a whole chain of `+` is
+    /// one `Concat` (mora-mir), so it allocates at most once. A heap string
+    /// is never released: counting references is M2's.
     ///
     /// # Panics
     ///
     /// With an internal error when `place` or an operand is not a string.
-    pub(super) fn concatenate(&mut self, place: &Place, left: &Operand, right: &Operand) {
+    pub(super) fn concatenate(&mut self, place: &Place, operands: &[Operand]) {
         let layout = self.place_layout(place);
         if layout.shape != Shape::String {
             broken(
@@ -355,10 +231,6 @@ impl Lowering<'_, '_> {
                 &format!("a concatenation into `{place:?}`, which is not a string"),
             );
         }
-        let (block, at) = self.at;
-        let mut operands = Vec::new();
-        self.collect_parts(block, at, left, &mut operands);
-        self.collect_parts(block, at, right, &mut operands);
         let (parts, offsets) = self.layouts.array(&layout, operands.len() as u32);
         let array = self.temporary(&parts);
         for (operand, offset) in operands.iter().zip(offsets) {
@@ -401,7 +273,7 @@ impl Lowering<'_, '_> {
 #[cfg(test)]
 mod tests {
     use mora_hir::{Primitive, Ty};
-    use mora_mir::{Const, LocalId, LocalTy, Operand, Place, Rvalue, Statement, StatementKind};
+    use mora_mir::{BinOp, Const, LocalId, LocalTy, Operand, Place, Rvalue, StatementKind};
     use mora_rt::string::new_string;
     use mora_rt_core::string::{
         BYTES_OFFSET, CAPACITY_OFFSET, HEAP_TAG, IMMORTAL, INLINE_MAX, LEN_OFFSET, MoraString,
@@ -409,6 +281,7 @@ mod tests {
     };
 
     use super::super::function::tests::{jit_one_with, lowered_in};
+    use super::super::runtime::RuntimeFn;
 
     use super::*;
     use crate::Profile;
@@ -718,54 +591,27 @@ mod tests {
         }
     }
 
-    /// How many calls the lowering of `F` makes.
-    fn calls(text: &str) -> usize {
-        ir(text).matches("call fn").count()
-    }
-
     /// The text `F`, a function of `text` of three strings and a `ref`
     /// string, writes into the `ref` string.
-    fn concatenated3(text: &str, args: [&[u8]; 3]) -> Vec<u8> {
-        let program = jit(text, Profile::Debug);
+    fn concatenated3(source: &str, args: [&[u8]; 3]) -> Vec<u8> {
+        let program = jit(source, Profile::Debug);
         let [a, b, c] = args.map(new_string);
         let mut out = blank();
         func::<extern "C" fn(&MoraString, &MoraString, &MoraString, &mut MoraString)>(
             &program, "F",
         )(&a, &b, &c, &mut out);
-        text_of(&out)
+        text(&out)
     }
 
     /// The same for four strings.
-    fn concatenated4(text: &str, args: [&[u8]; 4]) -> Vec<u8> {
-        let program = jit(text, Profile::Debug);
+    fn concatenated4(source: &str, args: [&[u8]; 4]) -> Vec<u8> {
+        let program = jit(source, Profile::Debug);
         let [a, b, c, d] = args.map(new_string);
         let mut out = blank();
         func::<extern "C" fn(&MoraString, &MoraString, &MoraString, &MoraString, &mut MoraString)>(
             &program, "F",
         )(&a, &b, &c, &d, &mut out);
-        text_of(&out)
-    }
-
-    /// The text of `string`.
-    fn text_of(string: &MoraString) -> Vec<u8> {
-        text(string)
-    }
-
-    #[test]
-    fn a_chain_of_additions_is_one_call() {
-        let three = "F(a: string, b: string, c: string, ref r: string) { r = a + b + c; }\n";
-        assert_eq!(calls(three), 1, "{}", ir(three));
-        let four = "F(a: string, b: string, c: string, d: string, ref r: string) \
-                    { r = a + b + c + d; }\n";
-        assert_eq!(calls(four), 1, "{}", ir(four));
-        let literals = "F(a: string, ref r: string) { r = \"Hello, \" + a + \"!\"; }\n";
-        assert_eq!(calls(literals), 1, "{}", ir(literals));
-        // Parenthesised on the right, and on both sides.
-        let right = "F(a: string, b: string, c: string, ref r: string) { r = a + (b + c); }\n";
-        assert_eq!(calls(right), 1, "{}", ir(right));
-        // Each part is stored once, and the call gets the count of parts.
-        assert!(ir(three).contains("iconst.i64 3"), "{}", ir(three));
-        assert!(ir(four).contains("iconst.i64 4"), "{}", ir(four));
+        text(&out)
     }
 
     #[test]
@@ -805,84 +651,6 @@ mod tests {
     }
 
     #[test]
-    fn a_user_variable_is_not_folded() {
-        let text = "F(a: string, b: string, c: string, ref r: string) \
-                    { let x = a + b; r = x + c; }\n";
-        assert_eq!(calls(text), 2, "{}", ir(text));
-        let program = format!("{text}var t = \"\";\nF(\"\", \"\", \"\", ref t);\n");
-        assert_eq!(concatenated3(&program, [b"a", b"b", b"c"]), b"abc");
-    }
-
-    /// `F` of `a + b + c` with the temporary the chain goes through changed
-    /// by `edit`, which gets the statements of the first block.
-    fn edited_chain(edit: impl FnOnce(&mut Vec<Statement>)) -> Vec<u8> {
-        let text = "F(a: string, b: string, c: string, ref r: string) { r = a + b + c; }\n\
-                    var t = \"\";\nF(\"\", \"\", \"\", ref t);\n";
-        let program = jit_one_with(text, "F", |body| edit(&mut body.blocks[0].statements));
-        let args = [b"a", b"b", b"c"].map(|arg| new_string(arg));
-        let mut out = blank();
-        func::<extern "C" fn(&MoraString, &MoraString, &MoraString, &mut MoraString)>(
-            &program, "F",
-        )(&args[0], &args[1], &args[2], &mut out);
-        text_of(&out)
-    }
-
-    /// Makes the last concatenation read the temporary of the first one on
-    /// both sides.
-    fn read_twice(statements: &mut [Statement]) {
-        let temporary = statements
-            .iter()
-            .find_map(|statement| match &statement.kind {
-                StatementKind::Assign(place, Rvalue::Binary(..)) => Some(place.clone()),
-                _ => None,
-            });
-        for statement in statements.iter_mut().rev() {
-            if let StatementKind::Assign(_, Rvalue::Binary(_, left, right)) = &mut statement.kind
-                && let Some(temporary) = &temporary
-            {
-                *left = Operand::Copy(temporary.clone());
-                *right = Operand::Copy(temporary.clone());
-                return;
-            }
-        }
-    }
-
-    #[test]
-    fn a_temporary_read_twice_is_not_folded() {
-        let text = edited_chain(|statements| read_twice(statements));
-        // The intermediate `a + b` is read on both sides of the second `+`.
-        assert_eq!(text, b"abab");
-        let clif = lowered_in(
-            "F(a: string, b: string, c: string, ref r: string) { r = a + b + c; }\n",
-            "F",
-            Profile::Debug,
-            |body| read_twice(&mut body.blocks[0].statements),
-        );
-        assert_eq!(clif.matches("call fn").count(), 2, "{clif}");
-    }
-
-    #[test]
-    fn a_statement_between_the_two_additions_stops_the_fold() {
-        let text = edited_chain(|statements| {
-            let at = statements
-                .iter()
-                .rposition(|statement| {
-                    matches!(statement.kind, StatementKind::Assign(_, Rvalue::Binary(..)))
-                })
-                .unwrap_or(0);
-            let unrelated = Statement {
-                kind: StatementKind::Assign(
-                    Place::local(LocalId::RETURN),
-                    Rvalue::Use(Operand::Const(Const::Unit)),
-                ),
-                span: statements[at].span,
-            };
-            statements.insert(at, unrelated);
-        });
-        assert_eq!(text, b"abc");
-    }
-
-    #[test]
     #[should_panic(
         expected = "UsersApi.F: invalid MIR: a string literal `a literal of more than fifteen bytes` the scan missed"
     )]
@@ -902,15 +670,122 @@ mod tests {
         let db = TestDb::default();
         let project = crate::test_util::app_of(
             &db,
-            "F(a: int): int { let s = $\"x{a,5}y\"; return 1; }\nF(1);\n",
+            "F(a: int): int { let s = $`x{a,5}y{\"a hole of more than 15 bytes\"}`; return 1; }\nF(1);\n",
         );
         let program = Program::collect(&db, project).unwrap();
-        assert_eq!(long_literals(&program), Vec::<std::sync::Arc<str>>::new());
+        let found = long_literals(&program);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(&*found[0], "a hole of more than 15 bytes");
     }
 
     /// The function the lowering of `F` makes, as text.
     fn ir(text: &str) -> String {
         lowered_in(text, "F", Profile::Debug, |_| {})
+    }
+
+    /// How many calls of `mora_rt_string_concat` the lowering of `text`
+    /// makes: the calls of the import the runtime list numbers.
+    fn concat_calls(text: &str) -> usize {
+        let clif = ir(text);
+        let name = format!("u0:{}", 1 + RuntimeFn::StringConcat as usize);
+        let imports: Vec<&str> = clif
+            .lines()
+            .filter(|line| line.contains(&name))
+            .filter_map(|line| line.trim().split(' ').next())
+            .collect();
+        assert_eq!(imports.len(), 1, "{clif}");
+        clif.matches(&format!("call {}(", imports[0])).count()
+    }
+
+    #[test]
+    fn a_chain_of_additions_is_one_call() {
+        let strings = |names: &str| {
+            let params: Vec<String> = names.split(' ').map(|n| format!("{n}: string")).collect();
+            params.join(", ")
+        };
+        let sources = [
+            format!("F({}, ref r: string) {{ r = a + b; }}\n", strings("a b")),
+            format!(
+                "F({}, ref r: string) {{ r = a + b + c; }}\n",
+                strings("a b c")
+            ),
+            format!(
+                "F({}, ref r: string) {{ r = a + b + c + d; }}\n",
+                strings("a b c d")
+            ),
+            format!(
+                "F({}, ref r: string) {{ r = (a + b) + (c + d); }}\n",
+                strings("a b c d")
+            ),
+            format!(
+                "F({}, ref r: string) {{ r = a + (b + c); }}\n",
+                strings("a b c")
+            ),
+            "F(a: string, ref r: string) { r = \"Hello, \" + a + \"!\"; }\n".to_owned(),
+            format!(
+                "Id(s: string): string => s;\nF({}, ref r: string) {{ r = a + b + Id(c); }}\n",
+                strings("a b c")
+            ),
+            format!(
+                "F({}, k: bool, ref r: string) {{ r = a + b + (k ? x : y); }}\n",
+                strings("a b x y")
+            ),
+        ];
+        for source in &sources {
+            assert_eq!(concat_calls(source), 1, "{source}");
+        }
+    }
+
+    #[test]
+    fn a_chain_with_a_call_or_a_branch_gives_the_text_of_its_parts_in_order() {
+        let program = jit(
+            "Id(s: string): string => s;\n\
+             Call(a: string, b: string, c: string, ref r: string) { r = a + b + Id(c) + a; }\n\
+             Both(a: string, b: string, c: string, d: string, ref r: string) \
+             { r = (a + b) + (c + d); }\n\
+             Pick(a: string, b: string, x: string, y: string, k: bool, ref r: string) \
+             { r = a + b + (k ? x : y); }\n\
+             var t = \"\";\nCall(\"\", \"\", \"\", ref t);\nBoth(\"\", \"\", \"\", \"\", ref t);\n\
+             Pick(\"\", \"\", \"\", \"\", true, ref t);\n",
+            Profile::Debug,
+        );
+        let [a, b, c, d] = [&b"fifteen bytes!!"[..], b"-", b"cd", b"and some more"].map(new_string);
+        let mut out = blank();
+        func::<extern "C" fn(&MoraString, &MoraString, &MoraString, &mut MoraString)>(
+            &program, "Call",
+        )(&a, &b, &c, &mut out);
+        assert_eq!(text(&out), b"fifteen bytes!!-cdfifteen bytes!!");
+        func::<extern "C" fn(&MoraString, &MoraString, &MoraString, &MoraString, &mut MoraString)>(
+            &program, "Both",
+        )(&a, &b, &c, &d, &mut out);
+        assert_eq!(text(&out), b"fifteen bytes!!-cdand some more");
+        let pick = func::<
+            extern "C" fn(
+                &MoraString,
+                &MoraString,
+                &MoraString,
+                &MoraString,
+                &bool,
+                &mut MoraString,
+            ),
+        >(&program, "Pick");
+        pick(&a, &b, &c, &d, &true, &mut out);
+        assert_eq!(text(&out), b"fifteen bytes!!-cd");
+        pick(&a, &b, &c, &d, &false, &mut out);
+        assert_eq!(text(&out), b"fifteen bytes!!-and some more");
+    }
+
+    #[test]
+    #[should_panic(expected = "UsersApi.F: invalid MIR: a `+` of strings that MIR has not turned")]
+    fn an_addition_of_strings_is_an_internal_error() {
+        first_assignment(
+            "F(a: string, b: string, ref r: string) { r = a + b; }\n",
+            |rvalue| {
+                if let Rvalue::Concat(operands) = rvalue {
+                    *rvalue = Rvalue::Binary(BinOp::Add, operands[0].clone(), operands[1].clone());
+                }
+            },
+        );
     }
 
     #[test]

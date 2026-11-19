@@ -394,6 +394,10 @@ impl Printer<'_> {
                 let parts: Vec<String> = parts.iter().map(|part| self.operand(part)).collect();
                 aggregate_text(self.db, *kind, &parts)
             }
+            Rvalue::Concat(parts) => {
+                let parts: Vec<String> = parts.iter().map(|part| self.operand(part)).collect();
+                format!("concat({})", parts.join(", "))
+            }
             Rvalue::Interpolate(pieces) => {
                 let mut text = String::from("$\"");
                 for piece in pieces {
@@ -1119,6 +1123,17 @@ fn Fib(n#0: int, this: in P) -> int {
             "()"
         );
         assert_eq!(rvalue_text(&fx, Rvalue::Interpolate(vec![])), "$\"\"");
+        assert_eq!(
+            rvalue_text(
+                &fx,
+                Rvalue::Concat(vec![
+                    copy(2),
+                    Operand::Const(Const::String("x".into())),
+                    copy(3)
+                ])
+            ),
+            "concat(copy _2, \"x\", copy _3)"
+        );
         assert_eq!(
             rvalue_text(
                 &fx,

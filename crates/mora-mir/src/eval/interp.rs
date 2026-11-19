@@ -158,6 +158,7 @@ impl Machine<'_> {
                 return Ok(ConstValue::Aggregate(*kind, parts));
             }
             Rvalue::Borrow(..) => self.internal("a borrow"),
+            Rvalue::Concat(_) => self.internal("a concatenation"),
             Rvalue::Interpolate(_) => self.internal("an interpolated string"),
         };
         Ok(ConstValue::Scalar(value))

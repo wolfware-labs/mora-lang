@@ -264,6 +264,10 @@ pub enum Rvalue {
     Cast(CastKind, Operand, Ty),
     /// A struct or tuple built from its parts, in order.
     Aggregate(AggregateKind, Vec<Operand>),
+    /// The strings of the operands joined in order: a whole chain of `+`
+    /// on strings, parentheses included, is one of these, so that the
+    /// result is built once. It always has at least two operands.
+    Concat(Vec<Operand>),
     /// A string built from text and operands.
     Interpolate(Vec<InterpPiece>),
 }

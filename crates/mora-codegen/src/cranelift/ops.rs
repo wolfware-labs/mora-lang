@@ -106,6 +106,12 @@ impl Lowering<'_, '_> {
                 _ => {}
             }
         }
+        if op == BinOp::Add && self.is_string(left) {
+            broken(
+                self.body,
+                "a `+` of strings that MIR has not turned into a concatenation",
+            );
+        }
         let (scalar, left) = self.scalar(left);
         let (count, right) = self.scalar(right);
         if matches!(op, BinOp::Div | BinOp::Rem) {

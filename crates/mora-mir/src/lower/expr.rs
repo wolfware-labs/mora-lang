@@ -359,11 +359,43 @@ impl Lowerer<'_> {
     // Operators and assignments.
 
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Lowered<Rvalue> {
+        if op == BinaryOp::Add && self.joins_strings(expr) {
+            let mut leaves = Vec::new();
+            self.concat_leaves(lhs, &mut leaves);
+            self.concat_leaves(rhs, &mut leaves);
+            return Ok(Rvalue::Concat(self.operands(&leaves)?));
+        }
         let op = self.expect(bin_op(op), expr, OPERATOR_NOT_LOWERED);
         let left = self.operand(lhs)?;
         let left = self.stable(left, &[rhs], self.span(lhs));
         let right = self.operand(rhs)?;
         Ok(Rvalue::Binary(op, left, right))
+    }
+
+    /// Whether `expr`, a `+`, is a concatenation that lowers to a
+    /// [`Rvalue::Concat`]: it is a string, and not a constant, which
+    /// evaluation folds, nor a body lowered for evaluation, whose
+    /// interpreter joins two strings itself.
+    fn joins_strings(&self, expr: ExprId) -> bool {
+        !self.owner.evaluation && self.constant(expr).is_none() && self.ty(expr) == Ty::String
+    }
+
+    /// Adds to `leaves` the expressions that `expr`, an operand of a
+    /// concatenation, joins: the leaves of a `+` of strings inside it,
+    /// parentheses included, and `expr` itself otherwise. A `+` the
+    /// inference converts is a leaf, as it has a value of its own.
+    fn concat_leaves(&self, expr: ExprId, leaves: &mut Vec<ExprId>) {
+        match &self.owner.hir.exprs[expr] {
+            Expr::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            } if self.joins_strings(expr) && self.owner.inference.conversion(expr).is_none() => {
+                self.concat_leaves(*lhs, leaves);
+                self.concat_leaves(*rhs, leaves);
+            }
+            _ => leaves.push(expr),
+        }
     }
 
     /// `lhs = rhs`, or `lhs op= rhs`: `lhs = (T)(lhs op rhs)`, its place
@@ -394,8 +426,17 @@ impl Lowerer<'_> {
         };
         let read = self.converted(conversion, Operand::Copy(place.clone()), self.span(lhs));
         let read = self.stable(read, &[rhs], self.span(lhs));
-        let right = self.operand(rhs)?;
-        let value = Rvalue::Binary(op, read, right);
+        let value = if op == BinOp::Add && !self.owner.evaluation && result_ty == Ty::String {
+            // `s += a + b` joins `s`, `a` and `b`.
+            let mut leaves = Vec::new();
+            self.concat_leaves(rhs, &mut leaves);
+            let mut parts = vec![read];
+            parts.extend(self.operands(&leaves)?);
+            Rvalue::Concat(parts)
+        } else {
+            let right = self.operand(rhs)?;
+            Rvalue::Binary(op, read, right)
+        };
         let span = self.span(expr);
         match self.owner.inference.conversion(expr) {
             Some(back) => {

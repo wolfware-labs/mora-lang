@@ -9,14 +9,13 @@ use cranelift_codegen::isa::{CallConv, TargetFrontendConfig};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use mora_hir::Ty;
 use mora_mir::{
-    BinOp, BlockId, Body, Callee, Const, LocalId, LocalTy, Operand, Place, Projection, Rvalue,
-    Statement, StatementKind, Terminator, TerminatorKind,
+    BlockId, Body, Callee, Const, LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement,
+    StatementKind, Terminator, TerminatorKind,
 };
 use mora_span::Span;
 
 use super::aggregates::is_memory_value;
 use super::runtime::{Call, Env};
-use super::strings::Chains;
 use crate::abi::{FnAbi, PassMode};
 use crate::layout::{Layout, Layouts, Scalar, Shape};
 
@@ -186,19 +185,13 @@ pub(super) fn lower(
         blocks,
         env,
         span: body.span,
-        chains: Chains::of(body),
-        at: (0, 0),
     };
     for (index, block) in body.blocks.iter().enumerate() {
         lowering.builder.switch_to_block(lowering.blocks[index]);
         if index == BlockId::ENTRY.index() {
             lowering.parameters(abi);
         }
-        for (at, statement) in block.statements.iter().enumerate() {
-            if lowering.chains.skips(index, at) {
-                continue;
-            }
-            lowering.at = (index, at);
+        for statement in &block.statements {
             lowering.statement(statement);
         }
         lowering.terminator(index, &block.terminator);
@@ -282,10 +275,6 @@ pub(super) struct Lowering<'a, 'f> {
     pub(super) env: &'a Env<'a>,
     /// The source of the statement being lowered.
     pub(super) span: Span,
-    /// The concatenations that fold into the ones that read them.
-    pub(super) chains: Chains,
-    /// The block and the position of the statement being lowered.
-    pub(super) at: (usize, usize),
 }
 
 impl Lowering<'_, '_> {
@@ -334,10 +323,8 @@ impl Lowering<'_, '_> {
                 let address = self.place_address(borrowed);
                 self.write(place, Some(address));
             }
-            StatementKind::Assign(place, Rvalue::Binary(BinOp::Add, left, right))
-                if self.is_string(left) =>
-            {
-                self.concatenate(place, left, right);
+            StatementKind::Assign(place, Rvalue::Concat(operands)) => {
+                self.concatenate(place, operands);
             }
             StatementKind::Assign(place, Rvalue::Binary(op, left, right)) => {
                 let value = self.binary(*op, left, right);

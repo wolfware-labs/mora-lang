@@ -371,7 +371,145 @@ fn compound_assignment_on_a_string_appends() {
     let lowered = lowered("var s = \"a\";\ns += \"b\";\nlet t = s + \"c\";\n");
     assert_in_order(
         &lowered.code("top-level"),
-        &["s#0 = copy s#0 + \"b\";", "t#1 = copy s#0 + \"c\";"],
+        &[
+            "s#0 = concat(copy s#0, \"b\");",
+            "t#1 = concat(copy s#0, \"c\");",
+        ],
+    );
+}
+
+/// The `concat(...)` statements of the body `name`, with their text.
+fn concats(lowered: &Lowered, name: &str) -> Vec<String> {
+    lowered
+        .code(name)
+        .into_iter()
+        .filter(|line| line.contains("concat("))
+        .collect()
+}
+
+#[test]
+fn a_chain_of_string_additions_is_one_concatenation() {
+    let lowered = lowered(
+        "F(a: string, b: string, c: string, d: string): string => a + b + c + d;\n\
+         G(a: string, b: string, c: string): string => a + b + c;\n\
+         H(a: string, b: string): string => a + b;\n",
+    );
+    assert_eq!(
+        concats(&lowered, "F"),
+        ["_0 = concat(copy (*a#0), copy (*b#1), copy (*c#2), copy (*d#3));"]
+    );
+    assert_eq!(
+        concats(&lowered, "G"),
+        ["_0 = concat(copy (*a#0), copy (*b#1), copy (*c#2));"]
+    );
+    assert_eq!(
+        concats(&lowered, "H"),
+        ["_0 = concat(copy (*a#0), copy (*b#1));"]
+    );
+}
+
+#[test]
+fn parentheses_do_not_split_a_concatenation() {
+    let lowered = lowered(
+        "F(a: string, b: string, c: string, d: string): string => (a + b) + (c + d);\n\
+         G(a: string, b: string, c: string): string => a + (b + c);\n",
+    );
+    assert_eq!(
+        concats(&lowered, "F"),
+        ["_0 = concat(copy (*a#0), copy (*b#1), copy (*c#2), copy (*d#3));"]
+    );
+    assert_eq!(
+        concats(&lowered, "G"),
+        ["_0 = concat(copy (*a#0), copy (*b#1), copy (*c#2));"]
+    );
+}
+
+#[test]
+fn a_call_in_a_chain_runs_before_the_concatenation_in_order() {
+    let lowered = lowered(
+        "Id(s: string): string => s;\n\
+         F(a: string, b: string, c: string): string => a + b + Id(c) + a;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_4 = copy (*a#0);",
+            "_5 = copy (*b#1);",
+            "_7 = call UsersApi.Id{fn UsersApi.Id}(copy _6) -> bb1;",
+            "_0 = concat(copy _4, copy _5, copy _7, copy (*a#0));",
+        ],
+    );
+    assert_eq!(concats(&lowered, "F").len(), 1);
+}
+
+#[test]
+fn a_branch_in_a_chain_runs_before_the_concatenation() {
+    let lowered = lowered(
+        "F(a: string, b: string, x: string, y: string, c: bool): string => a + b + (c ? x : y);\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_6 = copy (*a#0);",
+            "_7 = copy (*b#1);",
+            "_8 = copy (*x#2);",
+            "_8 = copy (*y#3);",
+            "_0 = concat(copy _6, copy _7, copy _8);",
+        ],
+    );
+    assert_eq!(concats(&lowered, "F").len(), 1);
+}
+
+#[test]
+fn a_place_a_later_part_changes_is_read_first() {
+    let lowered = lowered(
+        "Change(ref s: string): string { s = \"z\"; return \"b\"; }\n\
+         F(ref s: string): string => s + Change(ref s) + s;\n",
+    );
+    assert_in_order(
+        &lowered.code("F"),
+        &[
+            "_2 = copy (*s#0);",
+            "_4 = call UsersApi.Change{fn UsersApi.Change}(copy _3) -> bb1;",
+            "_0 = concat(copy _2, copy _4, copy (*s#0));",
+        ],
+    );
+}
+
+#[test]
+fn a_compound_addition_joins_the_whole_right_side() {
+    let lowered = lowered("var s = \"a\";\ns += \"b\" + s + \"c\";\n");
+    assert_eq!(
+        concats(&lowered, "top-level"),
+        ["s#0 = concat(copy s#0, \"b\", copy s#0, \"c\");"]
+    );
+}
+
+#[test]
+fn other_additions_stay_binary() {
+    let lowered = lowered(
+        "F(a: int, b: int, c: int): int => a + b + c;\n\
+         G(a: double, b: double): double => a + b;\n",
+    );
+    assert_eq!(concats(&lowered, "F"), Vec::<String>::new());
+    assert_eq!(concats(&lowered, "G"), Vec::<String>::new());
+    assert!(
+        lowered
+            .code("F")
+            .iter()
+            .any(|line| line.ends_with("+ copy (*c#2);")),
+        "{:?}",
+        lowered.code("F")
+    );
+}
+
+#[test]
+fn literals_in_a_chain_are_parts() {
+    // Each literal of a parenthesised `+` is a part.
+    let lowered = lowered("F(a: string): string => a + (\"ab\" + \"cd\");\n");
+    assert_eq!(
+        concats(&lowered, "F"),
+        ["_0 = concat(copy (*a#0), \"ab\", \"cd\");"]
     );
 }
 
@@ -3708,7 +3846,10 @@ fn a_captured_this_is_borrowed_after_the_arguments() {
 fn a_constant_initializer_lowers_to_a_body() {
     let lowered = lowered("const S: string = \"ab\" + \"cd\";\n");
     assert_eq!(lowered.bodies("S"), ["UsersApi.S"]);
-    assert_eq!(lowered.code("S"), ["_0 = \"ab\" + \"cd\";", "return;"]);
+    assert_eq!(
+        lowered.code("S"),
+        ["_0 = concat(\"ab\", \"cd\");", "return;"]
+    );
 }
 
 #[test]

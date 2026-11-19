@@ -537,6 +537,18 @@ impl Checker<'_> {
                 }
                 fine.then_some(Ty::Struct(*item))
             }
+            Rvalue::Concat(operands) => {
+                let tys = self.operands(at, operands)?;
+                if operands.len() < 2 {
+                    self.error(at, "a concatenation of fewer than two strings");
+                    return None;
+                }
+                if let Some(ty) = tys.iter().find(|ty| **ty != Ty::String) {
+                    self.error(at, format!("a concatenation of {ty:?}, not a string"));
+                    return None;
+                }
+                Some(Ty::String)
+            }
             Rvalue::Interpolate(pieces) => {
                 if self.std_loaded {
                     self.error(at, "interpolation is not lowered once std is loaded");
@@ -1926,6 +1938,46 @@ mod tests {
         let fx = fx();
         rejects(&fx, &external(), true, "external call");
         assert_eq!(validate(&fx.db, &external(), false), Ok(()));
+    }
+
+    #[test]
+    fn a_concatenation_of_strings_is_a_string() {
+        let fx = fx();
+        let text = Operand::Const(Const::String("x".into()));
+        let mut mir = with_stmt(assign(
+            place(2),
+            Rvalue::Concat(vec![copy(1), text.clone(), copy(1)]),
+        ));
+        mir.bodies[0].locals[1] = val(Ty::String);
+        mir.bodies[0].locals[2] = val(Ty::String);
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        // An int destination does not hold a string.
+        mir.bodies[0].locals[2] = val(int());
+        assert!(validate(&fx.db, &mir, true).is_err());
+        // Fewer than two parts, and a part that is not a string.
+        let mut one = with_stmt(assign(place(2), Rvalue::Concat(vec![copy(1)])));
+        one.bodies[0].locals[1] = val(Ty::String);
+        one.bodies[0].locals[2] = val(Ty::String);
+        rejects(&fx, &one, true, "fewer than two strings");
+        let mut number = with_stmt(assign(
+            place(2),
+            Rvalue::Concat(vec![text.clone(), int_const(1)]),
+        ));
+        number.bodies[0].locals[2] = val(Ty::String);
+        rejects(
+            &fx,
+            &number,
+            true,
+            "a concatenation of Primitive(Int), not a string",
+        );
+        // A bad operand is the one problem.
+        let mut bad = with_stmt(assign(place(2), Rvalue::Concat(vec![text, copy(9)])));
+        bad.bodies[0].locals[2] = val(Ty::String);
+        rejects(&fx, &bad, true, "no local _9");
+        assert_eq!(
+            validate(&fx.db, &bad, true).map_err(|problems| problems.len()),
+            Err(1)
+        );
     }
 
     #[test]
