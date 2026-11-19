@@ -19,10 +19,8 @@ exclude_globs = [
 # mutant back for review instead of hiding a new one with the same name.
 exclude_re = [
     # Lexer arithmetic that lands on the same result: index 0 of an
-    # identifier is always an identifier character, and number errors always
-    # start at offset 0.
+    # identifier is always an identifier character.
     '^crates/mora-syntax/src/lexer/mod\.rs:481:35: replace > with >= in Lexer<.a>::code_token$',
-    '^crates/mora-syntax/src/lexer/number\.rs:247:37: replace \+ with \* in separators$',
     # Popping the last event and leaving a tombstone build the same tree.
     '^crates/mora-syntax/src/parser/mod\.rs:230:21: replace \+ with - in Marker::abandon$',
     '^crates/mora-syntax/src/parser/mod\.rs:230:21: replace \+ with \* in Marker::abandon$',
@@ -41,7 +39,7 @@ exclude_re = [
     # Neither compiler has a backend yet: `&[]` and a leaked empty `Vec` are
     # the same empty slice.
     '^crates/mora-testkit/src/compiler\.rs:59:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
-    '^crates/mora-testkit/src/compiler\.rs:152:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    '^crates/mora-testkit/src/compiler\.rs:163:9: replace <impl Compiler for FrontEnd>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     # Where the lines differ, `common[i][j]` is the larger of the two
     # entries the diff compares, so comparing with it picks the same side.
     '^crates/mora-testkit/src/diff\.rs:34:87: replace \+ with \* in diff$',
