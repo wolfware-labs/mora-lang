@@ -2,6 +2,8 @@
 //! driver can compile.
 
 use std::fmt::Write;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use mora_diag::{Diagnostic, Files, Severity};
 use mora_span::{FileId, Project, SourceFile};
@@ -42,7 +44,8 @@ pub trait Compiler: Sync {
 /// The compiler the suites and `cargo xtask spec-examples` use. It is
 /// [`FrontEnd`] until the driver can compile a file (M1.16).
 pub fn compiler() -> &'static dyn Compiler {
-    &FrontEnd
+    static FRONT_END: FrontEnd = FrontEnd::new();
+    &FRONT_END
 }
 
 /// A compiler that can do nothing: it has no backend, so run cases fail
@@ -71,13 +74,23 @@ impl Compiler for Unbuilt {
 /// [`crate::case`]); the standard library is not loaded, so names under
 /// `Std`, the names of the prelude and names in a file with a `using`
 /// directive of `Std` are not checked when nothing else declares them. It
-/// has no backend.
-pub struct FrontEnd;
+/// has no backend, unless it was given a `jit-runner` executable with
+/// [`FrontEnd::with_runner`]: then it runs programs through the JIT in a
+/// child process of it.
+pub struct FrontEnd {
+    /// The `jit-runner` executable, when the front end can run programs.
+    runner: Option<PathBuf>,
+    /// How long a program may run.
+    timeout: Duration,
+}
+
+/// How long a program may run before its case fails.
+pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The analysis database of one check.
 #[salsa::db]
 #[derive(Clone, Default)]
-struct Database {
+pub(crate) struct Database {
     storage: salsa::Storage<Self>,
 }
 
@@ -88,17 +101,46 @@ impl salsa::Database for Database {}
 impl mora_span::Db for Database {}
 
 /// One case, loaded into a fresh database.
-struct Analysis {
-    db: Database,
-    project: Project,
+pub(crate) struct Analysis {
+    pub(crate) db: Database,
+    pub(crate) project: Project,
     inputs: Vec<SourceFile>,
     /// The paths the files are shown under, in the order of the case.
     shown: Vec<String>,
-    checked: Checked,
+    pub(crate) checked: Checked,
+}
+
+impl Default for FrontEnd {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FrontEnd {
-    fn analyze(&self, path: &str, text: &str) -> Analysis {
+    /// A front end with no backend.
+    pub const fn new() -> FrontEnd {
+        FrontEnd {
+            runner: None,
+            timeout: DEFAULT_RUN_TIMEOUT,
+        }
+    }
+
+    /// A front end that runs programs through the JIT, each in a child
+    /// process started from the `jit-runner` executable `runner`.
+    pub fn with_runner(runner: PathBuf) -> FrontEnd {
+        FrontEnd {
+            runner: Some(runner),
+            timeout: DEFAULT_RUN_TIMEOUT,
+        }
+    }
+
+    /// The same front end with another limit on how long a program runs.
+    #[must_use]
+    pub fn with_timeout(self, timeout: Duration) -> FrontEnd {
+        FrontEnd { timeout, ..self }
+    }
+
+    pub(crate) fn analyze(&self, path: &str, text: &str) -> Analysis {
         let case = case::split(path, text).unwrap_or_else(|problem| panic!("{problem}"));
         let namespace = case
             .namespace
@@ -148,7 +190,7 @@ impl FrontEnd {
 }
 
 /// Whether `diagnostics` holds an error.
-fn has_error(diagnostics: &[Diagnostic]) -> bool {
+pub(crate) fn has_error(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error)
@@ -160,11 +202,25 @@ impl Compiler for FrontEnd {
     }
 
     fn backends(&self) -> &[Backend] {
-        &[]
+        if self.runner.is_some() {
+            &[Backend::Jit]
+        } else {
+            &[]
+        }
     }
 
-    fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
-        unimplemented!("the driver cannot run programs yet");
+    /// Runs the program in a `jit-runner` process. Panics when the program
+    /// runs longer than the limit, when a signal ends it, or when the runner
+    /// cannot build it, which fails only the case.
+    fn run(&self, path: &str, text: &str, _: Backend) -> Result<Output, Checked> {
+        let Some(runner) = &self.runner else {
+            unimplemented!("this front end has no runner");
+        };
+        let analysis = self.analyze(path, text);
+        if has_error(&analysis.checked.diagnostics) {
+            return Err(analysis.checked);
+        }
+        Ok(crate::runner::run_child(runner, path, text, self.timeout))
     }
 
     /// The HIR of each file of the case. A case of several files shows each
@@ -241,12 +297,37 @@ impl Backend {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Output {
     pub stdout: String,
+    pub stderr: String,
     pub exit: i32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_front_end_with_a_runner_has_a_backend() {
+        assert_eq!(FrontEnd::new().backends(), []);
+        assert_eq!(FrontEnd::with_runner("x".into()).backends(), [Backend::Jit]);
+    }
+
+    #[test]
+    fn the_default_front_end_has_no_backend() {
+        assert_eq!(FrontEnd::default().backends(), []);
+    }
+
+    #[test]
+    fn with_timeout_sets_the_limit() {
+        let front_end = FrontEnd::new().with_timeout(Duration::from_secs(3));
+        assert_eq!(front_end.timeout, Duration::from_secs(3));
+        assert_eq!(FrontEnd::new().timeout, DEFAULT_RUN_TIMEOUT);
+    }
+
+    #[test]
+    #[should_panic(expected = "no runner")]
+    fn a_front_end_without_a_runner_cannot_run() {
+        let _ = FrontEnd::new().run("a.mr", "let x = 1;\n", Backend::Jit);
+    }
 
     #[test]
     #[should_panic(expected = "cannot compile")]
@@ -256,13 +337,13 @@ mod tests {
 
     #[test]
     fn a_program_with_an_error_has_no_hir() {
-        let checked = FrontEnd.hir("a.mr", "let x = y;\n").unwrap_err();
+        let checked = FrontEnd::new().hir("a.mr", "let x = y;\n").unwrap_err();
         assert_eq!(checked.diagnostics.len(), 1);
     }
 
     #[test]
     fn the_hir_of_one_file_has_no_header() {
-        let hir = FrontEnd.hir("a.mr", "let x = 1;\n").unwrap();
+        let hir = FrontEnd::new().hir("a.mr", "let x = 1;\n").unwrap();
         assert_eq!(hir, "top-level {\n    let x#0: int = 1;\n}\n");
     }
 
@@ -274,14 +355,14 @@ mod tests {
 
     #[test]
     fn a_program_with_an_error_has_no_mir() {
-        let checked = FrontEnd.mir("a.mr", "let x = y;\n").unwrap_err();
+        let checked = FrontEnd::new().mir("a.mr", "let x = y;\n").unwrap_err();
         assert_eq!(checked.diagnostics.len(), 1);
     }
 
     #[test]
     fn the_mir_of_several_files_names_each() {
         let text = "//@ file src/Program.mr\nlet x = 1;\n//@ file src/Util.mr\nF() {}\n";
-        let mir = FrontEnd.mir("a.mr", text).unwrap();
+        let mir = FrontEnd::new().mir("a.mr", text).unwrap();
         assert!(mir.starts_with("//@ file src/Program.mr\n"), "{mir}");
         assert!(
             mir.contains("//@ file src/Util.mr\nfn App.F() -> () {"),
@@ -292,7 +373,7 @@ mod tests {
     #[test]
     fn the_hir_of_several_files_names_each() {
         let text = "//@ file src/Program.mr\nlet x = 1;\n//@ file src/Util.mr\nF() {}\n";
-        let hir = FrontEnd.hir("a.mr", text).unwrap();
+        let hir = FrontEnd::new().hir("a.mr", text).unwrap();
         assert_eq!(
             hir,
             "//@ file src/Program.mr\ntop-level {\n    let x#0: int = 1;\n}\n//@ file src/Util.mr\nfn App.F() {}\n"

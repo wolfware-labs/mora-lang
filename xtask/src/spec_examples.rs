@@ -478,6 +478,7 @@ F();
             let expected = run::expected(text).unwrap();
             Ok(Output {
                 stdout: expected.stdout,
+                stderr: expected.stderr,
                 exit: expected.exit,
             })
         }

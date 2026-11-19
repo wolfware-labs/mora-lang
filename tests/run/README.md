@@ -1,13 +1,13 @@
 # Run tests
 
-Each `.mr` file here is a program (§20.1). Its `// expect:` lines give its standard output, one line each, and an optional `// exit:` line gives its exit code, 0 by default:
+Each `.mr` file here is a program (§20.1). Its `// expect:` lines give its standard output, one line each, its `// stderr:` lines give its standard error the same way (empty when there are none), and an optional `// exit:` line gives its exit code, 0 by default:
 
 ```mora
 // expect: 3
 Console.WriteLine(1 + 2);
 ```
 
-The harness first compiles the program, which must report no error, and compares the text form of its HIR and of its MIR with the `.hir` and `.mir` files beside it. Then it builds and runs the program through every backend the compiler has, the JIT and an AOT build, and compares each run with the expected output. While the compiler has no backend, compiling and the two snapshots are the whole test. A program that reports errors has neither snapshot.
+The harness first compiles the program, which must report no error, and compares the text form of its HIR and of its MIR with the `.hir` and `.mir` files beside it. Then it runs the program through the JIT, in a child `jit-runner` process because a panic exits the process, and compares its standard output, standard error and exit code with the expected ones. The AOT build joins the JIT with M1.14. While the compiler has no backend, compiling and the two snapshots are the whole test. A program that reports errors has neither snapshot.
 
 In the HIR, a local is `name#n`, and a name that is not a local is followed by what it names in braces, as `Console{external}` or `X{field App.Point.X}`. An operand that is itself an operation is in parentheses.
 
@@ -22,8 +22,8 @@ A constant is one line, `const App.Size: int = 8;`, with the value constant eval
 - `(T)a` converts a number to `T` as the source wrote it. `(implicit T)a` is a conversion the compiler inserted because every value fits, such as `int` to `long`.
 - `call f(args) -> bbN;` calls `f` and continues in `bbN`; `x = call ...` stores the result. `-> !` marks a call that does not return.
 - `App.Point{struct App.Point}(a, b)` builds a struct from the values of its instance fields, in the order they are declared; `(a, b)` builds a tuple. `App.Point{struct App.Point}.Y{init}` is the initializer of the field `Y`, called for a field that `new` leaves out.
-- `Console.WriteLine{external}` is a function of the standard library, which is not loaded yet, called by the path as written. It is the only external callee here.
-- `$"text{a}"` builds an interpolated string. It stands in until the standard library formats values, and then it is replaced.
+- `Console.WriteLine{external}` is a function of the standard library, which is not loaded yet, called by the path as written. It is the only external callee here, and it runs through a temporary runtime stand-in until M1.15.
+- `$"text{a}"` builds an interpolated string. It stands in until the standard library formats values (M1.15), and runs through a temporary runtime stand-in until then.
 - A local function is named after its owner, `Owner.Local`. When one owner has several local functions with the same name, the second is `Owner.Local#2`, the third `Owner.Local#3`, in the order of the text.
 
 After a change to the HIR or the MIR, update the snapshots and review the diff:

@@ -1091,6 +1091,7 @@ name = "mora-testkit"
 version = "0.0.0"
 dependencies = [
  "mora-check",
+ "mora-codegen",
  "mora-diag",
  "mora-hir",
  "mora-mir",

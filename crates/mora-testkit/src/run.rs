@@ -1,31 +1,38 @@
 //! Run tests: a `.mr` program with `// expect:` lines giving its standard
-//! output, one line each, and an optional `// exit:` line giving its exit
-//! code (0 by default).
+//! output, one line each, `// stderr:` lines giving its standard error the
+//! same way (empty by default), and an optional `// exit:` line giving its
+//! exit code (0 by default).
 
 use crate::compiler::Compiler;
 use crate::diff::diff;
 use crate::ui::rendered;
 
 const EXPECT: &str = "// expect:";
+const STDERR: &str = "// stderr:";
 const EXIT: &str = "// exit:";
 
 /// What a run test expects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
     pub stdout: String,
+    pub stderr: String,
     pub exit: i32,
 }
 
-/// Reads the `// expect:` and `// exit:` lines. The text after the marker,
+/// Reads the `// expect:`, `// stderr:` and `// exit:` lines. The text after the marker,
 /// less one space, is a line of output.
 pub fn expected(text: &str) -> Result<Expected, String> {
     let mut stdout = String::new();
+    let mut stderr = String::new();
     let mut exit = None;
     for (number, line) in (1usize..).zip(text.lines()) {
         let line = line.trim_start();
         if let Some(rest) = line.strip_prefix(EXPECT) {
             stdout.push_str(rest.strip_prefix(' ').unwrap_or(rest));
             stdout.push('\n');
+        } else if let Some(rest) = line.strip_prefix(STDERR) {
+            stderr.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            stderr.push('\n');
         } else if let Some(rest) = line.strip_prefix(EXIT) {
             if exit.is_some() {
                 return Err(format!("line {number}: a second `{EXIT}` line"));
@@ -39,12 +46,13 @@ pub fn expected(text: &str) -> Result<Expected, String> {
     }
     Ok(Expected {
         stdout,
+        stderr,
         exit: exit.unwrap_or(0),
     })
 }
 
 /// Checks one case: builds and runs `text` as `path` with every backend the
-/// compiler has, and compares each run's output and exit code with the
+/// compiler has, and compares each run's output, error output and exit code with the
 /// expected ones. Returns the problems, empty when the case passes.
 pub fn check(compiler: &dyn Compiler, path: &str, text: &str) -> Vec<String> {
     let expected = match expected(text) {
@@ -71,6 +79,13 @@ pub fn check(compiler: &dyn Compiler, path: &str, text: &str) -> Vec<String> {
             problems.push(format!(
                 "{name}: stdout differs (- expected, + actual):\n{}",
                 diff(&expected.stdout, &stdout)
+            ));
+        }
+        let stderr = output.stderr.replace("\r\n", "\n");
+        if stderr != expected.stderr {
+            problems.push(format!(
+                "{name}: stderr differs (- expected, + actual):\n{}",
+                diff(&expected.stderr, &stderr)
             ));
         }
         if output.exit != expected.exit {
@@ -159,8 +174,19 @@ mod tests {
             expected(text),
             Ok(Expected {
                 stdout: "Hello\n\n two spaces\n".to_owned(),
+                stderr: String::new(),
                 exit: 3,
             })
+        );
+    }
+
+    #[test]
+    fn stderr_lines_build_expected_stderr() {
+        assert_eq!(
+            expected("// stderr: panic at a\n// stderr: b\n")
+                .unwrap()
+                .stderr,
+            "panic at a\nb\n"
         );
     }
 

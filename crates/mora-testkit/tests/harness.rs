@@ -87,6 +87,7 @@ impl Compiler for Fake {
         }
         let mut output = Output {
             stdout: String::new(),
+            stderr: String::new(),
             exit: 0,
         };
         for (_, word, rest) in statements(text) {
@@ -98,6 +99,10 @@ impl Compiler for Fake {
                 "jit-print" if backend == Backend::Jit => {
                     output.stdout.push_str(rest);
                     output.stdout.push('\n');
+                }
+                "eprint" => {
+                    output.stderr.push_str(rest);
+                    output.stderr.push('\n');
                 }
                 "exit" => output.exit = rest.parse().unwrap(),
                 _ => {}
@@ -352,6 +357,46 @@ aot: stdout differs (- expected, + actual):
 - two
 + 2
 "
+    );
+}
+
+#[test]
+fn run_reports_a_stderr_mismatch_with_a_diff() {
+    let text = "// stderr: one\n// stderr: two\neprint one\neprint 2\n";
+    let root = suite_dir("run-stderr", "run", &[("a.mr", text)]);
+    let report = run(&BOTH, &root);
+    assert_eq!(
+        failure(&report),
+        "\
+jit: stderr differs (- expected, + actual):
+  one
+- two
++ 2
+
+aot: stderr differs (- expected, + actual):
+  one
+- two
++ 2
+"
+    );
+}
+
+#[test]
+fn run_case_with_matching_stderr_passes() {
+    let text = "// stderr: warn\n// exit: 101\neprint warn\nexit 101\n";
+    let root = suite_dir("run-stderr-ok", "run", &[("a.mr", text)]);
+    let report = run(&BOTH, &root);
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+}
+
+#[test]
+fn run_reports_unexpected_stderr() {
+    let root = suite_dir("run-stderr-extra", "run", &[("a.mr", "eprint oops\n")]);
+    let report = run(&BOTH, &root);
+    assert!(
+        failure(&report).contains("stderr differs"),
+        "{:?}",
+        report.failures
     );
 }
 

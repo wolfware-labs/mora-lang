@@ -2260,7 +2260,7 @@ The MVP compiles the standard library from source together with the program, and
 
 ### 14.16 JIT and the REPL
 
-`mora repl` and the test harness use `cranelift-jit` on the same MIR. The REPL keeps a session project: each input is parsed as declarations or as top-level statements; `let` and `var` locals from earlier inputs become session globals; each input is compiled and run immediately. `:type expr`, `:mir fn`, `:load file.mr` and `:reset` are built in.
+`mora repl` and the test harness use `cranelift-jit` on the same MIR. The harness runs each JIT program in a child `jit-runner` process, because a panic exits the process. The REPL keeps a session project: each input is parsed as declarations or as top-level statements; `let` and `var` locals from earlier inputs become session globals; each input is compiled and run immediately. `:type expr`, `:mir fn`, `:load file.mr` and `:reset` are built in.
 
 ### 14.17 Inlining, scalar replacement and bounds checks
 
@@ -3210,7 +3210,7 @@ The UI and run harnesses live in `mora-testkit` and run under `cargo test`. Each
 
 - **UI annotations** go after the code on the line where the primary label starts: `//~ ERROR MRnnnn` or `//~ WARNING MRnnnn`, several per line if needed, with any text after the code as a comment. A diagnostic without an annotation fails the case, and so does an annotation nothing reported.
 - **UI snapshots** are the diagnostics rendered without color as in §17.6, in the `.stderr` file beside the case; a case that reports nothing has none. `cargo test -p mora-testkit --test ui -- --bless` rewrites them.
-- **Run expectations** are one `// expect:` line per line of standard output, in order, and at most one `// exit:` line, 0 when absent. The program runs through every backend the compiler has, and each run is compared with them, so the JIT and the AOT build must agree. A `\r\n` line ending compares equal to `\n`.
+- **Run expectations** are one `// expect:` line per line of standard output, in order, one `// stderr:` line per line of standard error, in order, none when the program writes nothing there, and at most one `// exit:` line, 0 when absent. The program runs through every backend the compiler has, and each run is compared with them, so the JIT and the AOT build must agree. A `\r\n` line ending compares equal to `\n`.
 
 ### 20.2 The MVP acceptance test
 
