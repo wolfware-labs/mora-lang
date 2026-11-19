@@ -1683,7 +1683,7 @@ Done when:
 - `mora docs --llm` prints the same bytes on every run, and they match the site's `llms.txt` for that version.
 - `mora-errors.jsonl` has one line per page in `docs/errors/`.
 - A check after each deploy downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
-- The deploy runs only for `main`, in a job that has the pages and OIDC permissions and nothing else; the job that builds the site from a pull request has a read-only token and no secrets; every third-party action is pinned by commit SHA (§20.5).
+- The deploy runs only for `main`, in a job that has the permissions the Pages deployment needs and no more; the job that builds the site from a pull request has a read-only token and no secrets; every third-party action is pinned by commit SHA (§20.5).
 - The install page and the pages that show an install command load no script or style from another origin.
 
 ### M7.10 Release workflow
