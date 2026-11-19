@@ -139,9 +139,14 @@ mod tests {
 
     #[unsafe(no_mangle)]
     unsafe extern "C" fn mora_pal_free(ptr: *mut u8, size: usize, align: usize) {
-        if let Ok(layout) = std::alloc::Layout::from_size_align(size, align) {
-            // SAFETY: the caller passes the block's own size and alignment.
-            unsafe { std::alloc::dealloc(ptr, layout) }
+        // SAFETY: the caller passes the size and alignment the block was
+        // allocated with, which `mora_pal_alloc` already took as a valid
+        // layout.
+        unsafe {
+            std::alloc::dealloc(
+                ptr,
+                std::alloc::Layout::from_size_align_unchecked(size, align),
+            )
         }
     }
 
