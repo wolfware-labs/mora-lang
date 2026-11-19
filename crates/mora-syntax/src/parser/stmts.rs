@@ -143,8 +143,8 @@ fn skip_attribute(p: &mut Parser<'_>) {
     }
 }
 
-const OPENERS: &[SyntaxKind] = &[K::LParen, K::LBracket, K::LBrace, K::HoleOpen];
-const CLOSERS: &[SyntaxKind] = &[K::RParen, K::RBracket, K::RBrace, K::HoleClose];
+pub(super) const OPENERS: &[SyntaxKind] = &[K::LParen, K::LBracket, K::LBrace, K::HoleOpen];
+pub(super) const CLOSERS: &[SyntaxKind] = &[K::RParen, K::RBracket, K::RBrace, K::HoleClose];
 
 /// Skips the bracketed group ahead, if there is one.
 fn skip_group(p: &mut Parser<'_>) {

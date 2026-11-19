@@ -6,6 +6,7 @@
 //! `await` through [`unary`]; member access, calls, indexing, `++`/`--` and
 //! propagation through [`postfix`].
 
+use super::stmts::{CLOSERS, OPENERS};
 use super::types::{self, PREDEFINED_TYPES, scan_type_no_fn};
 use super::{CompletedMarker, Input, Parser, items, patterns, stmts};
 use crate::SyntaxKind;
@@ -240,6 +241,15 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             lhs = m.complete(p, K::AssignExpr);
             continue;
         }
+        // A token the lexer rejected where an operator would go, or the rest
+        // of a literal it found unclosed: the operand and the run are one
+        // error.
+        if p.at_rejected() {
+            let m = lhs.precede(p);
+            skip_rejected(p);
+            lhs = m.complete(p, K::Error);
+            continue;
+        }
         return Some(lhs);
     }
 }
@@ -455,6 +465,11 @@ fn lambda_param(p: &mut Parser<'_>) {
 fn primary(p: &mut Parser<'_>) -> Option<CompletedMarker> {
     if at_lambda(p) {
         return Some(lambda(p));
+    }
+    if p.at(K::Unknown) {
+        let e = p.start();
+        skip_rejected(p);
+        return Some(e.complete(p, K::Error));
     }
     let kind = p.current();
     if LITERALS.contains(&kind) {
@@ -738,23 +753,50 @@ fn arg_inner(p: &mut Parser<'_>) {
     if p.at_any(&[K::RefKw, K::InKw, K::MoveKw]) {
         p.bump_any();
     }
-    if p.at(K::Unknown) {
-        skip_rejected(p);
-    } else {
-        expr(p);
-    }
+    expr(p);
     m.complete(p, K::Arg);
 }
 
-/// Skips an argument that starts with a token the lexer rejected, up to the
-/// `,` or the closing token that ends it. The lexer reported the token, so
-/// the argument is one `Error` node and the parser reports nothing more.
+/// What ends a run of tokens that starts with one the lexer rejected, at
+/// the run's own nesting level: the `,` or `;` that ends an argument, an
+/// element or a statement, and a keyword that starts a statement, which no
+/// expression holds.
+const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
+    K::Comma,
+    K::Semicolon,
+    K::LetKw,
+    K::VarKw,
+    K::IfKw,
+    K::WhileKw,
+    K::DoKw,
+    K::ForKw,
+    K::ForeachKw,
+    K::ReturnKw,
+    K::BreakKw,
+    K::ContinueKw,
+];
+
+/// Takes a run of tokens that starts with one the lexer rejected, such as
+/// the text between two curly quotes, up to what ends it
+/// ([`REJECTED_RUN_ENDS`]) or a closing bracket that is not its own; a
+/// bracketed group inside it is taken whole. The lexer reported the token,
+/// so the caller makes the run one `Error` node and the parser reports
+/// nothing more about it.
 fn skip_rejected(p: &mut Parser<'_>) {
-    let e = p.start();
-    while !p.at_end() && !p.at_any(&[K::Comma, K::RParen, K::Semicolon, K::RBrace]) {
+    let mut open = 0usize;
+    while !p.at_end() {
+        if p.at_any(OPENERS) {
+            open += 1;
+        } else if p.at_any(CLOSERS) {
+            if open == 0 {
+                return;
+            }
+            open -= 1;
+        } else if open == 0 && p.at_any(REJECTED_RUN_ENDS) {
+            return;
+        }
         p.bump_any();
     }
-    e.complete(p, K::Error);
 }
 
 /// `(e)`, `()`, `(a, b)`, `(Id: 1, Name: "a")`. A parenthesized

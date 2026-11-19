@@ -90,6 +90,10 @@ pub(crate) struct Input<'t> {
     raw: Vec<usize>,
     /// Whether the token is directly followed by the next one, with no trivia.
     joined: Vec<bool>,
+    /// Whether the token starts where the lexer ended a character or string
+    /// literal it found unclosed (`MR0012`), so that it is the rest of what
+    /// was meant as the literal.
+    cut: Vec<bool>,
 }
 
 impl<'t> Input<'t> {
@@ -100,6 +104,7 @@ impl<'t> Input<'t> {
             ranges: Vec::new(),
             raw: Vec::new(),
             joined: Vec::new(),
+            cut: Vec::new(),
         };
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
@@ -109,6 +114,9 @@ impl<'t> Input<'t> {
             input.ranges.push(token.range);
             input.raw.push(i);
             input.joined.push(lexed.is_joined(i));
+            input.cut.push(lexed.errors.iter().any(|error| {
+                error.code == codes::MR0012 && error.range.end() == token.range.start()
+            }));
         }
         input
     }
@@ -421,6 +429,13 @@ impl<'t> Parser<'t> {
 
     pub(crate) fn at_any(&self, kinds: &[SyntaxKind]) -> bool {
         kinds.iter().any(|&kind| self.at(kind))
+    }
+
+    /// Whether the next token is one the lexer rejected, or the rest of a
+    /// literal it found unclosed, as `b` in `'ab`: the lexer reported its
+    /// cause, and the parser takes it into an `Error` node.
+    pub(crate) fn at_rejected(&self) -> bool {
+        self.at(K::Unknown) || self.input.cut.get(self.pos).copied().unwrap_or(false)
     }
 
     /// Whether the next token is the identifier `word`, which the grammar

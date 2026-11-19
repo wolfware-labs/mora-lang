@@ -1343,6 +1343,17 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_run_anywhere_in_an_expression_reports_no_unknown_name() {
+        for text in [
+            "let a = \"x\" + \u{201c}y\u{201d};\n",
+            "let b = (1\u{201c}two);\n",
+            "Console.WriteLine('ab);\n",
+        ] {
+            assert_eq!(reported(text), Vec::<String>::new(), "{text:?}");
+        }
+    }
+
+    #[test]
     fn a_generic_local_function_sees_its_type_parameters() {
         assert_eq!(
             reported("F() {\n    Id<T>(x: T): T => x;\n    let y: T = 1;\n}\n"),

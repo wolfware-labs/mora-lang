@@ -272,8 +272,8 @@ impl Sink<'_> {
     /// Whether the lexer already reported the cause of a syntax error at
     /// `range`: the error wraps a token it rejected (`MR0017`), or it marks
     /// something missing at the end of a string or character literal it
-    /// found unclosed (`MR0012`), where the closing quote swallowed the
-    /// token that was meant to follow.
+    /// found unclosed (`MR0012`). An unclosed string runs to the end of the
+    /// line and takes the token that was meant to follow it.
     fn lexer_reported(
         &self,
         range: TextRange,

@@ -506,10 +506,66 @@ fn a_usable_token_with_a_lexer_error_still_gets_its_missing_semicolon() {
 }
 
 #[test]
-fn a_token_after_a_rejected_one_is_still_checked() {
-    // The stray `)` is not part of the rejected argument and is reported.
+fn a_rejected_run_takes_its_brackets_whole() {
     assert_eq!(
         codes_of("F(\u{201c}G(a, b)\u{201d});\n"),
-        ["MR0017", "MR0110", "MR0017", "MR0110"]
+        ["MR0017", "MR0017"]
     );
+    // A stray `)` is not part of the run and is reported.
+    assert_eq!(
+        codes_of("F(\u{201c}a\u{201d}));\n"),
+        ["MR0017", "MR0017", "MR0110", "MR0110"]
+    );
+}
+
+#[test]
+fn a_rejected_run_stops_before_a_statement_keyword() {
+    // The call is not closed, which is a mistake of its own, and the next
+    // statement is parsed.
+    assert_eq!(
+        codes_of("F(\u{201c}x\nlet y = 1;\n"),
+        ["MR0017", "MR0110", "MR0110"]
+    );
+}
+
+#[test]
+fn a_rejected_token_starts_an_error_expression_anywhere() {
+    for text in [
+        "let a = \"x\" + \u{201c}y\u{201d};\n",
+        "if (\u{201c}a\u{201d}) { }\n",
+        "F(\u{201c}a, b\u{201d});\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
+    }
+    for text in [
+        "let a = [\u{201c}a, b];\n",
+        "let s = $\"{\u{201c}x}\";\n",
+        "let a = \u{201c};\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
+    }
+    // A missing `;` after the run is still reported.
+    assert_eq!(
+        codes_of("let a = \"x\" + \u{201c}y\u{201d}\nlet b = 2;\n"),
+        ["MR0017", "MR0017", "MR0110"]
+    );
+    assert_eq!(
+        codes_of("let a = \u{201c}\nlet b = 1;\n"),
+        ["MR0017", "MR0110"]
+    );
+}
+
+#[test]
+fn a_rejected_token_after_an_operand_joins_it_in_one_error() {
+    assert_eq!(codes_of("let a = (1\u{201c}2);\n"), ["MR0017"]);
+    // What follows the brackets is still checked.
+    assert_eq!(codes_of("let a = (1\u{201c}2) + ;\n"), ["MR0017", "MR0110"]);
+    assert_eq!(codes_of("let a = 1 \\\nlet b = 2;\n"), ["MR0017", "MR0110"]);
+}
+
+#[test]
+fn the_rest_of_an_unclosed_character_literal_is_part_of_its_error() {
+    assert_eq!(codes_of("F('ab);\n"), ["MR0012"]);
+    // The line has no `;`.
+    assert_eq!(codes_of("let c = 'ab\nlet d = 1;\n"), ["MR0012", "MR0110"]);
 }
