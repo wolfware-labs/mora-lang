@@ -1715,7 +1715,7 @@ Done when:
 - `mora self update` refuses, each in its own test and before unpacking any file: an archive whose checksum differs; an archive with no signature; a valid Sigstore signature from another repository; one from another workflow of `wolfware-labs/mora-lang`; one from the release workflow run on a branch; a certificate whose OIDC issuer is not GitHub Actions; and a signature with no transparency-log entry. After each refusal `mora --version` and the files under `~/.mora` are unchanged.
 - An update interrupted while it replaces files leaves a toolchain that runs: either the old one or the new one.
 - Unpacking refuses an entry with an absolute path, a `..` segment or a link that points outside the install directory.
-- `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS, a redirect to plain HTTP, and a redirect to a host outside the list the spec gives.
+- `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS or is outside the host list the spec gives, a redirect to plain HTTP, and a redirect to a host outside that list.
 - `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short (for example one that takes a fixed trailing argument). A test truncates the script at every byte. The same for `install.ps1`.
 
 ### M7.12 Benchmarks and budgets
