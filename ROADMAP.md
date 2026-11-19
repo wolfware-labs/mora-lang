@@ -366,7 +366,7 @@ Done when:
 
 - Run tests for exit codes 0, an `int` from `Main`, and 101 on panic.
 - A deep-recursion test prints `stack overflow` on every Tier 1 target.
-- The stack-overflow handler runs on its alternate stack and does not allocate; the large-frame test of M1.12 prints `stack overflow` too.
+- The stack-overflow handler does not allocate, and on Unix targets it runs on an alternate signal stack (§13.10); the large-frame test of M1.12 prints `stack overflow` too.
 - Runtime tests: an allocation the platform refuses panics with `out of memory allocating N bytes` and never returns a null pointer to compiled code; a second panic raised while the first is being printed aborts at once (§11.4).
 - Process arguments that are not valid UTF-8 never become a `string` holding invalid UTF-8 (§13.4); the spec states what the program receives instead.
 
@@ -465,7 +465,7 @@ Done when:
 - Two runs of `mora check --message-format json` on the same project print the same bytes.
 - A watch-mode test edits a file and receives a new round that ends with the summary object.
 - CLI tests: a `safe` fix whose edit lies in a path dependency's file, in the standard library, or in a file reached through a symbolic link that leaves the project is not applied and the file is unchanged; `mora fix` writes no file other than `.mr` files under the project's `src/` and `tests/`.
-- A file is written only when its content is still what the check read, and it is replaced in one step (write beside it, then rename), so an interrupted run leaves no half-written source file.
+- A file is written only when its content is still what the check read, and it is replaced in one step (write beside it, then rename), so an interrupted run leaves no half-written source file. A test with a writer that edits the file between the check and the replacement finds that edit kept and the fix reported as not applied, through a held lock or an atomic compare-and-replace on each platform.
 - An edit whose span is outside its file or splits a character is refused, never clamped (the renderer clamps, §17.6; a writer must not); `placeholder` fixes are never applied, whatever the flags; the run stops after four rounds.
 - The JSON objects escape control characters in messages, labels and file names, and the human format does not pass terminal control sequences from source text or file names through to the terminal.
 
@@ -1280,7 +1280,7 @@ Done when:
 - `LocalDate.Of(2026, 2, 30)` is an `Err`, and January 31 plus `Period.Months(1)` is the last day of February.
 - A UI test for `wall-clock-duration` and its fix.
 - `Console.ReadLine()` returns `none` at end of input.
-- Outside `mora test`, two runs of a program that prints `Random.Shared.Next(0, int.MaxValue)` ten times print different lines, on every Tier 1 target; under `mora test --seed` they print the same lines.
+- Over 16 runs outside `mora test` of a program that prints `Random.Shared.Next(0, int.MaxValue)` ten times, the printed lines are not all the same (all 16 agreeing by chance is negligible), on every Tier 1 target; under `mora test --seed` they print the same lines.
 
 ### M5.9 Files, directories and paths
 
