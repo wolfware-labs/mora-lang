@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn a_program_runs_and_returns_its_exit_code() {
-        assert_eq!(build_and_run("a.mr", "Main(): int { return 3; }\n"), Ok(3));
+        assert_eq!(build_and_run("a.mr", "return 3;\n"), Ok(3));
     }
 
     #[test]

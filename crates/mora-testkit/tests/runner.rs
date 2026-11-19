@@ -11,11 +11,7 @@ fn front_end() -> FrontEnd {
 #[test]
 fn the_runner_runs_a_program_and_returns_its_output() {
     let output = front_end()
-        .run(
-            "a.mr",
-            "Main(): int {\n    Console.WriteLine(1);\n    return 3;\n}\n",
-            Backend::Jit,
-        )
+        .run("a.mr", "Console.WriteLine(1);\nreturn 3;\n", Backend::Jit)
         .unwrap();
     assert_eq!(output.stdout, "1\n");
     assert_eq!(output.stderr, "");

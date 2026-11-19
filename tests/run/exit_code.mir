@@ -1,0 +1,12 @@
+fn top-level() -> int {
+    let _0: int;
+
+    bb0: {
+        call Console.WriteLine{external}("before") -> bb1; // 3:1
+    }
+
+    bb1: {
+        _0 = 3; // 4:8
+        return; // 4:1
+    }
+}

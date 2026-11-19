@@ -593,7 +593,8 @@ impl<'a> Owner<'a> {
                 let what =
                     "only functions, methods, initializers and top-level statements are lowered";
                 self.expect((owner == BodyOwner::TopLevel).then_some(()), what);
-                (Ty::UNIT, None, Vec::new())
+                let ret = self.inference.entry_return().cloned();
+                (ret.unwrap_or(Ty::UNIT), None, Vec::new())
             }
         };
         let params = self.hir.params.iter().copied().zip(params).collect();

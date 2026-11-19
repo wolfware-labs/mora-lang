@@ -197,6 +197,24 @@ fn top-level() -> () {
 }
 
 #[test]
+fn a_top_level_return_gives_the_generated_main_its_type() {
+    let lowered = lowered("Console.WriteLine(1);\nreturn 3;\n");
+    assert_eq!(
+        lowered.code("top-level"),
+        [
+            "call Console.WriteLine{external}(1) -> bb1;",
+            "_0 = 3;",
+            "return;",
+        ]
+    );
+    assert!(
+        lowered
+            .dump("top-level")
+            .starts_with("fn top-level() -> int {")
+    );
+}
+
+#[test]
 fn lowers_wrapping_ops() {
     let lowered =
         lowered("var a = 1;\nlet b = a +% 2;\nlet c = a -% b;\nlet d = a *% c;\nlet e = a + b;\n");

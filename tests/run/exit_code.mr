@@ -1,0 +1,4 @@
+// expect: before
+// exit: 3
+Console.WriteLine("before");
+return 3;

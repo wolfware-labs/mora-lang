@@ -154,6 +154,8 @@ pub(super) fn infer_body(
         block_stmt: None,
         ret: None,
         ret_later: false,
+        entry: owner == BodyOwner::TopLevel,
+        entry_ret: None,
         scope: body_scope(project, file, owner),
         item: None,
         tree: Cell::new(None),
@@ -242,6 +244,7 @@ pub(super) fn infer_body(
         conversions: check.conversions,
         element_conversions: check.element_conversions,
         errors: check.errors,
+        entry_ret: check.entry_ret,
     }
 }
 
@@ -289,6 +292,12 @@ struct Check<'a> {
     /// whose target type gives no result type here, as one passed to a
     /// call that is not checked yet.
     ret_later: bool,
+    /// Whether a `return` here ends the generated `Main` of top-level
+    /// statements, whose return type is inferred from its `return`s (§4.6):
+    /// false inside a local function or a lambda.
+    entry: bool,
+    /// The type the generated `Main` returns, once a `return` gives it.
+    entry_ret: Option<Ty>,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
@@ -529,7 +538,9 @@ impl Check<'_> {
                 self.defaults(&function.defaults);
                 let ret = self.resolution.return_type(function.ret);
                 if let Some(root) = function.body {
+                    let entry = std::mem::replace(&mut self.entry, false);
                     self.function_body(root, Some(ret), true);
+                    self.entry = entry;
                 }
             }
             Stmt::Block(stmts) => self.block(stmts),
@@ -582,6 +593,13 @@ impl Check<'_> {
                 let ret = self.ret.take();
                 match &ret {
                     Some(ret) => self.check(*expr, ret),
+                    // The first `return` of the top-level statements gives
+                    // the type of the generated `Main`; the others check
+                    // against it.
+                    None if self.entry => match self.entry_ret.clone() {
+                        Some(ty) => self.check(*expr, &ty),
+                        None => self.entry_ret = self.infer(*expr),
+                    },
                     None => {
                         let expect = self.unknown_ret();
                         self.expr(*expr, expect);
@@ -871,7 +889,9 @@ impl Check<'_> {
                 // result type then.
                 let later = matches!(expect, Expect::Later);
                 let outer = std::mem::replace(&mut self.ret_later, later);
+                let entry = std::mem::replace(&mut self.entry, false);
                 self.function_body(lambda.body, ret, false);
+                self.entry = entry;
                 self.ret_later = outer;
                 None
             }

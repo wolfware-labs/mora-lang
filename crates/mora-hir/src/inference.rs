@@ -59,6 +59,9 @@ pub struct Inference {
     element_conversions: FxHashMap<(ExprId, u32), Conversion>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
+    /// For top-level statements, the type the generated `Main` returns: the
+    /// type of its first `return` value (§4.6).
+    entry_ret: Option<Ty>,
 }
 
 /// The value of an operation made only of literals that takes its target
@@ -125,6 +128,12 @@ pub struct Conversion {
 }
 
 impl Inference {
+    /// The return type of the generated `Main` of top-level statements, as
+    /// their `return` statements give it; `None` when none returns a value.
+    pub fn entry_return(&self) -> Option<&Ty> {
+        self.entry_ret.as_ref()
+    }
+
     /// The conversion applied to the value of `expr`, when it changes type:
     /// to the type its context expects, to the promoted type of its
     /// operation, or by a cast. A compound assignment carries the cast
@@ -695,6 +704,43 @@ mod tests {
             .iter()
             .filter_map(|(id, _)| inference.literal(id))
             .collect()
+    }
+
+    /// The return type of the generated `Main` of the top-level statements
+    /// of `text`, as inference names it.
+    fn entry_return(text: &str) -> Option<String> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        inference.entry_return().map(|ty| super::ty_name(&db, ty))
+    }
+
+    #[test]
+    fn the_return_of_top_level_statements_types_the_generated_main() {
+        assert_eq!(entry_return("return 3;\n"), Some("int".to_owned()));
+        assert_eq!(entry_return("let x = 1;\n"), None);
+        assert_eq!(
+            entry_return("let x: long = 1;\nif (x > 0) { return 1; }\nreturn 2;\n"),
+            Some("int".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_return_in_a_local_function_does_not_type_the_generated_main() {
+        assert_eq!(entry_return("F(): int { return 3; }\nlet x = F();\n"), None);
+    }
+
+    #[test]
+    fn a_second_return_checks_against_the_first() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", "if (true) { return 1; }\nreturn \"a\";\n")],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        assert_eq!(inference.errors.len(), 1);
     }
 
     #[test]
