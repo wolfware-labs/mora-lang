@@ -621,7 +621,7 @@ Done when:
 - Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 - Run tests in both profiles: an index, a range start or end out of range, a start past the end, and a `^` index past the length each panic with the message of §11.4 on spans, `Memory<T>` and arrays; the bounds check does not rely on arithmetic that wraps in a release build.
 - `stackalloc` with a negative length, and with one larger than the limit the spec gives, panics; memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
-- UI test: a `Span<T>` over a `Memory<T>` or an array is live while the last other reference to the array is dropped by a callee; the hidden reference of §10.6 keeps it alive (run under the debug runtime).
+- Run test under the debug runtime: a `Span<T>` over a `Memory<T>` or an array is live while the last other reference to the array is dropped by a callee; the hidden reference of §10.6 keeps it alive.
 
 ### M2.10 Weak references and the cycle lint
 
@@ -738,7 +738,8 @@ Done when:
 - Run tests for construction, members and `indirect` recursion.
 - A layout test shows `User?` is one pointer wide.
 - UI tests for `MR0150`: a union that holds itself directly, through a struct, through an option, through a tuple and through a generic argument; each is one error and the compiler does not recurse without bound.
-- A run test under the debug runtime: a function that receives `ref u` and a borrow of a field of `u`'s current case in one call is `MR0320`, and a union stored in a `mut` field is passed as a snapshot when a case field is borrowed (§10.4), so assigning another case during the call leaves the borrow valid.
+- UI test: a function that receives `ref u` and a borrow of a field of `u`'s current case in one call is `MR0320`.
+- A run test under the debug runtime: a union stored in a `mut` field is passed as a snapshot when a case field is borrowed (§10.4), so assigning another case during the call leaves the borrow valid.
 - Layout tests for the niche rules of §13.5 on both pointer widths: a union with a niche, one without, and an option of each; the tag read from a value the program built is always a declared case.
 
 ### M3.2 Enums
@@ -1240,7 +1241,7 @@ Done when:
 - `Add` of a present key returns `false` and changes nothing; assigning `none` through the indexer removes the key.
 - UI test: a getter that reads `dict[key]` passes the getter check, and `@Cheap` on a function outside `Std` is `MR0254`.
 - Two runs of one program outside `mora test` hash the same string to different values, and two runs under `mora test` with one seed hash it to the same value.
-- A run test inserts 100,000 keys built to collide under the default hash with a known key, into a `Dictionary` made with a fresh random key, and the number of probes stays within a constant factor of the same test with random keys.
+- A run test inserts 100,000 keys built to collide under the default hash with a known key, into a `Dictionary` made with a fresh random key, and the number of probes stays within a constant factor of the same test with random keys. As a control, the same keys inserted into a `Dictionary` that uses that known key do collide and the probe count grows, which shows the set is a real collision set.
 - OQ-24 is closed in §24 with the measured cost of each hasher.
 
 ### M5.6 Enumeration protocol and foreach
@@ -1715,7 +1716,7 @@ Done when:
 - An update interrupted while it replaces files leaves a toolchain that runs: either the old one or the new one.
 - Unpacking refuses an entry with an absolute path, a `..` segment or a link that points outside the install directory.
 - `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS, and a redirect to plain HTTP.
-- `install.sh` cut off at any byte runs nothing: its body is one function called on the last line. The same for `install.ps1`.
+- `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short (for example one that takes a fixed trailing argument). A test truncates the script at every byte. The same for `install.ps1`.
 
 ### M7.12 Benchmarks and budgets
 
