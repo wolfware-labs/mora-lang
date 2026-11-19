@@ -346,14 +346,14 @@ Done when:
 
 Spec: [§13.5](docs/design/mora.md#135-value-layouts), [§13.7](docs/design/mora.md#137-calling-convention-and-symbols), [§14.13](docs/design/mora.md#1413-cranelift-lowering). Crates: `mora-codegen`. Blocked by: M1.10, M0.13.
 
-A `Backend` trait taking optimized MIR and a target description, and its Cranelift implementation: lowering of MIR for scalars, structs, tuples, calls, control flow, overflow-checked arithmetic and panics as `noreturn` runtime calls; object files through `cranelift-object`; in-process execution through `cranelift-jit`; struct layout of §13.5 computed from the target description and the calling convention of §13.7. To settle in the spec: §13.10 says how a frame larger than the guard page is probed, and §13.5 gives the largest size a type may have and the error for one that exceeds it.
+A `Backend` trait taking optimized MIR and a target description, and its Cranelift implementation: lowering of MIR for scalars, structs, tuples, calls, control flow, overflow-checked arithmetic and panics as `noreturn` runtime calls; object files through `cranelift-object`; in-process execution through `cranelift-jit`; struct layout of §13.5 computed from the target description and the calling convention of §13.7. To settle in the spec: §13.10 says how a frame larger than the guard page is probed, and §13.5 gives the largest size a type may have and the error for one that exceeds it. To settle in the spec: the panic message for `int.MinValue / -1` and `int.MinValue % -1` in release builds (§11.4).
 
 Done when:
 
 - The run harness executes every M1 run test through the JIT and through an object file linked by M1.14, and compares outputs.
 - Overflow in a debug build panics with the message of §11.4.
 - Run tests in both profiles, through the JIT and the object file: division and remainder by zero, `int.MinValue / -1` and `int.MinValue % -1` panic with the message of §11.4 and exit code 101, never with a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
-- A function whose frame is larger than the guard page touches every page of it on entry (stack probes): a run test calls one with a multi-megabyte struct local near the stack limit and gets `stack overflow` (§13.10) on every Tier 1 target, with M1.13.
+- A function whose frame is larger than the guard page touches every page of it on entry (stack probes): a unit test on the generated code for a function with a multi-megabyte struct local shows a store to every page of the frame on entry; the run test that shows `stack overflow` is in M1.13.
 - Layout arithmetic is checked: a struct or tuple whose size does not fit the target's address space is reported as an error, never wrapped (unit test against the 32-bit test description).
 
 ### M1.13 Runtime: startup, output and panics
@@ -366,9 +366,10 @@ Done when:
 
 - Run tests for exit codes 0, an `int` from `Main`, and 101 on panic.
 - A deep-recursion test prints `stack overflow` on every Tier 1 target.
-- The stack-overflow handler does not allocate, and on Unix targets it runs on an alternate signal stack (§13.10); the large-frame test of M1.12 prints `stack overflow` too.
+- The stack-overflow handler does not allocate, and on Unix targets it runs on an alternate signal stack (§13.10).
 - Runtime tests: an allocation the platform refuses panics with `out of memory allocating N bytes` and never returns a null pointer to compiled code; a second panic raised while the first is being printed aborts at once (§11.4).
 - Process arguments that are not valid UTF-8 never become a `string` holding invalid UTF-8 (§13.4); the spec states what the program receives instead.
+- A run test calls a function whose frame is larger than the guard page (a multi-megabyte struct local) near the stack limit and prints `stack overflow` (§13.10) on every Tier 1 target, since M1.12 probes every page of such a frame.
 
 ### M1.14 Linking on Linux, macOS and Windows
 
@@ -380,7 +381,7 @@ Done when:
 
 - Hello world links and runs on every Tier 1 runner.
 - On Linux, `file` reports the executable as statically linked.
-- Removing the linker from `PATH` on macOS yields the `xcode-select --install` hint.
+- With a test hook that points the toolchain at an empty tool folder, the missing-tool error on macOS carries the `xcode-select --install` hint.
 - On Linux and Windows the linker, the start files and the libraries are taken from the toolchain directory by absolute path. A test puts a decoy `ld.lld` (`lld-link.exe` on Windows) first on `PATH` and in the project directory and shows it is not run; on macOS `xcrun` is started as `/usr/bin/xcrun`.
 - Every linker argument is passed as one argument, never through a shell, and each path or name taken from the project is passed so that it cannot be read as an option or split in a response file: a test links a project whose folder name starts with `-` and contains a space and a quote.
 
@@ -396,7 +397,7 @@ Done when:
 - Run tests interpolate every primitive type.
 - MIR has no `External` callee and no `Interpolate` rvalue, and diverging calls are known from their declarations: the M1.10 stand-ins are removed.
 - The strings run test prints `name.Length`.
-- "Compiling `Std`" means the source tree embedded in the toolchain and nothing else. UI tests: a project whose root namespace resolves to `Std` or to a name that starts with `Std.` (by its `namespace` key, or by the default taken from a project named `std`, §4.2) is rejected with the code the spec assigns, and `unsafe`, `RawPtr<T>` and `@Cheap` in a user project are `MR0107` and `MR0254` whatever the project is called.
+- "Compiling `Std`" means the source tree embedded in the toolchain and nothing else. UI test: a project whose root namespace resolves to `Std` or to a name that starts with `Std.` (by its `namespace` key, or by the default taken from a project named `std`, §4.2) is rejected with the code the spec assigns.
 
 ### M1.16 Driver and the build, run and check commands
 
@@ -410,7 +411,7 @@ Done when:
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
 - A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
 - A build of several projects reports a diagnostic once when two of them report the same one, as two sibling projects that run one library field initializer do (§14.6).
-- A cache entry is never trusted because it is there, and a hash stored beside it does not make it trusted (§14.15 then states the check): a test replaces, truncates and bit-flips the files under `target/mora/cache/` and the build either rebuilds them or fails with an error, never loads them, reading a damaged entry never panics, and an entry replaced between its check and its use is not loaded (the check and the read use one open file).
+- A cache entry is never trusted because it is there: it is accepted only by a check that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test replaces, truncates and bit-flips the files under `target/mora/cache/` and the build either rebuilds them or fails with an error, never loads them, reading a damaged entry never panics, and an entry replaced between its check and its use is not loaded (the check and the read use one open file).
 - CLI tests: a `[project] name` outside lowercase letters, digits and `-`, or one that starts with `-`, and an `entry` that is absolute or leaves the project folder through `..`, are errors before any file is written; nothing is ever written outside the project's `target/`.
 - Source discovery reads only regular files below `src/`: a special file such as a FIFO named `X.mr` is never opened and is reported with a diagnostic. Tests with such a FIFO and with a link cycle end without hanging, and a symbolic link that leaves the project follows the rule the spec gives (§17.3); the 4 GiB check of `MR0003` reads the size before the content.
 - A text that is not valid UTF-8 is `MR0001` and a text of 4 GiB or more is `MR0003`, both reported before any lexing, through one checked entry point that the driver, the language server and the test kit all use; `LineIndex::new` returns an error instead of panicking on an oversized text.
@@ -427,7 +428,7 @@ Done when:
 - `gdb` or `lldb` stops at a breakpoint set by `file:line` (manual check recorded in the pull request).
 - Symbols are unique per build, following the project-identity rule the spec then gives for mangled names (§13.7, §4.4): a test with two path dependencies that have the same root namespace and declare the same function path links and calls each one correctly, and code generation fails with an internal error, never emits both, when two different bodies get one symbol.
 - `mora demangle` and the backtrace printer return a symbol unchanged when it is not a valid mangled name: a property test feeds lengths past the end, lengths that overflow, non-UTF-8 bytes and empty segments, with no panic and no read past the input. The printer does not allocate after a stack overflow or an out-of-memory panic.
-- A `@Export` name is checked against the names the runtime and the C library define; see the spec.
+- UI test: an `@Export` name the spec reserves (§13.7) is rejected with the code the spec assigns.
 
 ### M1.18 Third instruction set under emulation
 
@@ -464,7 +465,7 @@ Done when:
 - CLI tests: `mora fix` applies a `safe` fix and leaves a `review` one, applies both with `--applicability review`, and `--code` limits it to one code.
 - Two runs of `mora check --message-format json` on the same project print the same bytes.
 - A watch-mode test edits a file and receives a new round that ends with the summary object.
-- CLI tests: a `safe` fix whose edit lies in a path dependency's file, in the standard library, or in a file reached through a symbolic link that leaves the project is not applied and the file is unchanged; `mora fix` writes no file other than `.mr` files under the project's `src/` and `tests/`.
+- CLI tests: a `safe` fix whose edit lies in the standard library, or in a file reached through a symbolic link that leaves the project is not applied and the file is unchanged; `mora fix` writes no file other than `.mr` files under the project's `src/` and `tests/`.
 - A file is written only when its content is still what the check read, and it is replaced in one step (write beside it, then rename), so an interrupted run leaves no half-written source file. A test with a writer that edits the file between the check and the replacement finds that edit kept and the fix reported as not applied, through a held lock or an atomic compare-and-replace on each platform.
 - An edit whose span is outside its file or splits a character is refused, never clamped (the renderer clamps, §17.6; a writer must not); `placeholder` fixes are never applied, whatever the flags; the run stops after four rounds.
 - The JSON objects escape control characters in messages, labels and file names, and the human format does not pass terminal control sequences from source text or file names through to the terminal.
@@ -533,7 +534,7 @@ Done when:
 
 Spec: [§13.3](docs/design/mora.md#133-shared-objects), [§13.4](docs/design/mora.md#134-strings-and-arrays). Crates: `mora-mir`, `mora-rt`, `mora-codegen`. Blocked by: M2.1.
 
-The object header of §13.3, inline retain and release sequences, `mora_rt_drop` with the iterative release work list, weak count handling, immortal objects, `T[]` layout and allocation, and reference-count overflow abort. To settle in the spec: the panic for a negative or too large array length (§5.4, §11.4), and that allocation sizes are checked in every profile (§13.4).
+The object header of §13.3, inline retain and release sequences, `mora_rt_drop` with the iterative release work list, weak count handling, immortal objects, `T[]` layout and allocation, and reference-count overflow abort. To settle in the spec: what happens for a negative or too large array length, where the rule being considered is a panic with the message the spec gives (§5.4, §11.4), and that allocation sizes are checked in every profile (§13.4).
 
 Done when:
 
@@ -543,7 +544,7 @@ Done when:
 - MIR lowers array creation `new T[n]` and signatures with an array type.
 - Runtime tests set `strong` to 2^31 - 1 and `weak` to 2^32 - 2 and show the next retain and the next weak retain abort with `reference count overflow`; a weak load of an object whose strong count is zero gives `none`; a release of an immortal object and a weak retain of one write nothing.
 - The size of an array allocation is computed with checked arithmetic in every profile: on the 32-bit test description, `new long[n]` with a length whose size wraps panics and allocates nothing.
-- `new T[n]` with a negative `n` ends as the spec then states (the proposal is a panic with a message the spec gives).
+- `new T[n]` with a negative `n` ends as the spec then states (§5.4, §11.4).
 - The 1,000,000-node release test also runs with a destructor on the node type that releases another list, so the work list is entered again while it runs.
 
 ### M2.4 Parameter modes and `this`
@@ -582,7 +583,7 @@ Done when:
 - A destructor that stores `this` and removes it again before it returns (a retain and a release of the dying object inside its own destructor) runs once and frees once, or aborts with the resurrection message, as the spec states; the test runs under the debug runtime and in a release build.
 - A weak load of the object from inside its own destructor gives `none`.
 - A panic inside a destructor aborts at once with exit code 101 and runs no other destructor (§10.8, §11.4).
-- UI test: `MR0142` for a destructor that stores, returns or captures `this` directly.
+- UI test: `MR0142` for a destructor that stores or captures `this` directly.
 
 ### M2.7 Unique classes and move-only values
 
@@ -594,6 +595,7 @@ Done when:
 
 - UI tests for storing a borrowed unique value and for mutating through an `in` borrow.
 - A run test shows a unique object's destructor running when its owner leaves scope.
+- UI test: `weak` on a unique class is `MR0350`.
 
 ### M2.8 Borrows from exclusive and aliased places
 
@@ -612,7 +614,7 @@ Done when:
 
 Spec: [§5.9](docs/design/mora.md#59-views), [§6.9](docs/design/mora.md#69-members), [§10.6](docs/design/mora.md#106-views). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M2.8.
 
-`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : allows ref struct` constraint (§8.2), and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9). To settle in the spec: the definition of `stackalloc`: element types, the largest length, a negative length and whether the memory is zeroed (§5.9, §10.6).
+`Span<T>`, `ReadOnlySpan<T>`, `ref struct`, `stackalloc`, range slicing, `Memory<T>` and `ReadOnlyMemory<T>`, and the view check of §10.6: `MR0340` to `MR0344`, hidden keep-alives that last to the view's last use, the `where T : allows ref struct` constraint (§8.2), and `params` arguments collected into their `ReadOnlySpan<T>` (§6.9). To settle in the spec: the definition of `stackalloc`: element types, the largest length, a negative length (the rule being considered is a panic) and whether the memory is zeroed (§5.9, §10.6).
 
 Done when:
 
@@ -620,7 +622,7 @@ Done when:
 - `let s = box.Data.AsSpan();` compiles and the snapshot lives until `s`'s last use.
 - Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 - Run tests in both profiles: an index, a range start or end out of range, a start past the end, and a `^` index past the length each panic with the message of §11.4 on spans and arrays, and a range start or end out of range does too on a slice of a `Memory<T>`; the bounds check does not rely on arithmetic that wraps in a release build.
-- `stackalloc` with a negative length, and with one larger than the limit, ends as the spec then states (the proposal is a panic); memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
+- `stackalloc` with a negative length, and with one larger than the limit, ends as the spec then states; memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
 - Run test under the debug runtime: a `Span<T>` over a `Memory<T>` or an array is live while the last other reference to the array is dropped by a callee; the hidden reference of §10.6 keeps it alive.
 
 ### M2.10 Weak references and the cycle lint
@@ -633,7 +635,7 @@ Done when:
 
 - A run test reads `none` after the target dies.
 - Lint tests: a parent and child pair is reported; a self-referential tree is not.
-- UI tests: `weak` on a unique class, a struct, a `string`, an array and an interface value is `MR0350`.
+- UI tests: `weak` on a struct, a `string` and an array is `MR0350`.
 - A run test takes a weak reference to an object, lets the last strong reference go at its last use, and reads `none` in the same scope (§10.7); the object's memory is freed only after the weak reference dies (debug runtime).
 
 ### M2.11 Closures and function types
@@ -669,11 +671,10 @@ Done when:
 - One MIR snapshot test per guarantee of §10.13 with no `Retain`/`Release` statements beyond the ones that guarantee itself requires (release at last use keeps its release).
 - The M2 run tests still pass and stay leak-free.
 - A MIR snapshot of a recursive function that passes a list it no longer needs shows the release before the recursive call, and a 100,000-deep run test stays leak-free, with the peak live heap held by the list and the objects it reaches independent of the depth (stack frames are not counted).
-- Summaries are conservative where the compiler cannot see the callee: a call through an escaping function value, through an `any I` value, of an `extern` function, or of a function in a call-graph cycle whose fixed point is not reached, counts as writing every field and releasing every type. MIR snapshots show the snapshot, the root keep-alive and the retain/release pair kept in each of these cases, and kept when the callee writes the field or releases the type through a function it calls.
+- Summaries are conservative where the compiler cannot see the callee: a call through an escaping function value, of an `extern` function, or of a function in a call-graph cycle whose fixed point is not reached, counts as writing every field and releasing every type. MIR snapshots show the snapshot, the root keep-alive and the retain/release pair kept in each of these cases, and kept when the callee writes the field or releases the type through a function it calls.
 - The adversarial run tests of M2.8 pass under the debug runtime with the optimizer on, and each has a twin in which the elision does apply.
 - Release at last use never comes before the last use of a view, a snapshot or a hidden owner that depends on the value (§10.8), and never moves the drop of a value whose drop runs a destructor: one run test each, with a weak reference showing where the release happened.
 - Pair cancellation keeps a pair when the code between them makes a weak load of the object (§14.12 item 2).
-- Each hand-written summary of a `Std` `unsafe` function is compared with what the debug runtime observes (§14.12).
 
 ### M2.14 Debug runtime: poisoning and leak report
 
@@ -737,7 +738,7 @@ Done when:
 
 - Run tests for construction, members and `indirect` recursion.
 - A layout test shows `User?` is one pointer wide.
-- UI tests for `MR0150`: a union that holds itself directly, through a struct, through an option, through a tuple and through a generic argument; each is one error and the compiler does not recurse without bound.
+- UI tests for `MR0150`: a union that holds itself directly and through a struct; each is one error and the compiler does not recurse without bound.
 - UI test: a function that receives `ref u` and a borrow of a field of `u`'s current case in one call is `MR0320`.
 - A run test under the debug runtime: a union stored in a `mut` field is passed as a snapshot when a case field is borrowed (§10.4), so assigning another case during the call leaves the borrow valid.
 - Layout tests for the niche rules of §13.5 on both pointer widths: a union with a niche, one without, and an option of each; the tag read from a value the program built is always a declared case.
@@ -778,14 +779,14 @@ Done when:
 
 - UI tests show the missing case text, for example `missing case: Rect(_, _)`.
 - A property test checks that no arm matches any reported missing value.
-- A property test generates types (unions, enums, `bool`, options, results, tuples, nested) with arm lists, and for every list the checker accepts as exhaustive, every generated value of the type matches an arm; for every arm it reports as unreachable (`MR2010`), no generated value reaches it first.
-- A `@NonExhaustive` union or enum of another project needs a `_` arm (§6.6), a `@Flags` enum is never exhaustive without one (§6.7), and an enum match counts a value that two members share once.
+- A property test generates types (unions, enums, `bool`, tuples, nested) with arm lists, and for every list the checker accepts as exhaustive, every generated value of the type matches an arm; for every arm it reports as unreachable (`MR2010`), no generated value reaches it first.
+- A `match` over a `@Flags` enum is not checked for exhaustiveness (§6.7); without a `_` arm, a value no arm matches traps (M3.3). An enum match counts a value that two members share once.
 
 ### M3.5 Options, `none` and flow narrowing
 
 Spec: [§5.6](docs/design/mora.md#56-option-types-and-none), [§7.5](docs/design/mora.md#75-option-operators). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.4.
 
-`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks. To settle in the spec: the places flow narrowing applies to and where it ends (§5.6).
+`Option<T>` in the standard library, `T?` syntax, `none` (D-54), `MR0131`, implicit `T` to `T?`, `??`, `??=`, `?.`, `?[]`, `as` with `MR0210` (D-153), the members of §5.6, `MR0162`, `MR2001`, and flow narrowing after `none` checks. To settle in the spec: the places flow narrowing applies to and where it ends (§5.6). The rule being considered is that narrowing applies only to a place nothing else can write between the check and the use, so a `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow, at the end of a branch that the check guards and that does not exit, and at a loop back edge that can reach an assignment; and after `if (user is none) return;` the variable has type `User` for the rest of the block.
 
 Done when:
 
@@ -793,8 +794,10 @@ Done when:
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
 - UI tests: `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
-- UI tests, with the places and the ends of narrowing as §5.6 then states them: narrowing applies only to a place nothing else can write between the check and the use. A `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow, at the end of a branch that the check guards and that does not exit, and at a loop back edge that can reach an assignment. The example of §5.6 keeps working: after `if (user is none) return;` the variable has type `User` for the rest of the block.
-- A run test under the debug runtime for each of those: the code compiles only with `?.`, `??` or a new `is` test, and reads no payload of a `none`.
+- UI tests for each place and each end of narrowing §5.6 then lists.
+- A run test under the debug runtime for each place and end that §5.6 then lists: the code compiles only with `?.`, `??` or a new `is` test, and reads no payload of a `none`.
+- UI test: a union that holds itself through an option is `MR0150`, one error, and the compiler does not recurse without bound.
+- The exhaustiveness property test of M3.4 also generates options: for every arm list the checker accepts as exhaustive, every generated value of an option type matches an arm, and for every arm it reports as unreachable (`MR2010`) no generated value reaches it first.
 
 ### M3.6 Operators, conversions and indexers
 
@@ -826,6 +829,7 @@ Done when:
 - A top-level `?` that fails prints `error: ...` and exits with 1.
 - UI tests for the `T` to `Result<T, E>` and `@From` rows of §5.10.
 - Drop-order run tests for the `?` exit under the debug runtime: locals with destructors are dropped in reverse order when `?` returns early, a local moved before the `?` is not dropped, a temporary of the statement that holds the `?` is dropped once, and the error value converted through `IFrom` (§11.3) is dropped once. The tests are added to `tests/memory` (M2.15).
+- The exhaustiveness property test of M3.4 also generates results: for every arm list the checker accepts as exhaustive, every generated value of a result type matches an arm, and for every arm it reports as unreachable (`MR2010`) no generated value reaches it first.
 
 ### M3.8 Generics and constraints
 
@@ -837,6 +841,7 @@ Done when:
 
 - UI tests for violating each constraint.
 - Inference tests for calls with lambdas and generic arguments.
+- UI test: a union that holds itself through a generic argument is `MR0150`, one error, and the compiler does not recurse without bound.
 
 ### M3.9 Monomorphization
 
@@ -849,7 +854,6 @@ Done when:
 - A program using `List<int>` and `List<string>` (stub list in tests) emits two instantiations.
 - UI test for polymorphic recursion.
 - The polymorphic-recursion test includes a function that calls itself with `(T, T)` and one that calls itself with `T[]`: each reports `MR0220` once, in bounded time and memory, and no layout of a type that does not fit the address space is computed (with the checked layout arithmetic of M1.12).
-- Instantiations are keyed by item and canonical type arguments, the project that declares each type included (identified as the spec then states, §13.6), so two types with one name from two projects give two instantiations.
 
 ### M3.10 Interfaces and static dispatch
 
@@ -876,9 +880,10 @@ Done when:
 - A failing `(C)i` cast panics with the message of §11.4.
 - UI tests for the boxing and interface-value rows of §5.10.
 - Run tests: `x as T` on an `any I` value gives `T?`, the value when its run-time type is `T` and `none` otherwise (D-153).
-- A run test, following the project-identity rule the spec then gives for canonical type names (§13.6, §4.4), with two path dependencies whose own root namespaces and type names are equal, bound under two keys: `is`, `as` and a checked cast tell the two types apart, and one library reached through two keys gives one type.
 - The compiler knows every type used as a dynamic value in the build, so it fails the build with an internal error when two different types get one type id; a unit test forces a collision.
 - A value boxed as `any I` keeps the drop function, size and alignment of its own type: a run test drops a boxed struct with a destructor through an interface value, once, under the debug runtime.
+- UI test: `weak` on an interface value is `MR0350`.
+- A call through an `any I` value counts for the optimizer as writing every field and releasing every type: MIR snapshots show the snapshot, the root keep-alive and the retain/release pair kept around such a call (§14.12).
 
 ### M3.12 Tuples, collection expressions and smaller expressions
 
@@ -894,6 +899,7 @@ Done when:
 - Run tests in both profiles: `a[^0]`, `a[^(n + 1)]`, `a[5..2]` and a range past the end panic with the message of §11.4 on arrays, spans and strings, and a string range that splits a character panics (§5.3), so no `string` ever holds invalid UTF-8.
 - The length of a collection expression with spreads is computed with checked arithmetic in every profile; storage is never allocated from a wrapped length.
 - `default(T)` for a type without `IDefault` is `MR0190` for classes, unique classes, views and types that hold one, so no value is ever made from zero bytes.
+- UI test: a union that holds itself through a tuple is `MR0150`, one error, and the compiler does not recurse without bound.
 
 ### M3.13 Statics
 
@@ -906,21 +912,27 @@ Done when:
 - A lazy cycle panics with the message of §4.7.
 - A `const` string longer than 15 bytes is an immortal object in read-only data, and reading it never writes its count.
 - A UI test reports `MR0155` for a static method and a static getter named through a value, and its fix writes the type's name in place of the value.
+- A `static mut` that a `none` check guards is narrowed or not as §5.6 then states (M3.5): a UI test and a run test under the debug runtime that reads no payload of a `none`.
+- Effect inference (M3.18) charges a `static lazy` initializer to its first access: a `Clock.Now()` placed in one infers `clock` there.
 
 ### M3.14 Local path dependencies and library projects
 
 Spec: [§4.4](docs/design/mora.md#44-dependencies), [§17.2](docs/design/mora.md#172-manifest). Crates: `mora-driver`, `mora-pkg`, `mora-hir`. Blocked by: M3.10.
 
-`kind = "lib"`, root namespaces, `[dependencies]` path entries whose keys bind each dependency's root namespace (D-96), `MR0122`, `MR0501`, the dependency-cycle check `MR0502`, and `mora.lock` with path entries. To settle in the spec: what identifies a project reached through different spellings of its path or through a symbolic link, whether `path` may be absolute (§4.4), and where the output of a path dependency goes (§17.3).
+`kind = "lib"`, root namespaces, `[dependencies]` path entries whose keys bind each dependency's root namespace (D-96), `MR0122`, `MR0501`, the dependency-cycle check `MR0502`, and `mora.lock` with path entries. To settle in the spec: what identifies a project reached through different spellings of its path or through a symbolic link (the rule being considered is the resolved location of its manifest), whether `path` may be absolute (§4.4), and where the output and caches of a path dependency go (§17.3), where the rule being considered is under the root project's `target/`, with `mora.lock` written at the root project only.
 
 Done when:
 
 - A two-project example (app plus library) builds and runs.
 - A remote dependency source reports `MR0122`.
 - Two path dependencies that depend on each other report `MR0502`.
-- A project is identified as the spec then states (§4.4; the proposal is the resolved location of its manifest): a test reaches one library through two spellings of its path and through a symbolic link and gets one project, one set of types and one copy of its code, and `MR0502` is reported for a cycle written with different spellings.
-- Building, `mora fmt` and `mora fix` write nothing inside a dependency's folder: its output and caches go under the root project's `target/`, and `mora.lock` is written at the root project only (CLI test with a read-only dependency folder).
+- A project is identified as the spec then states (§4.4): a test reaches one library through two spellings of its path and through a symbolic link and gets one project, one set of types and one copy of its code, and `MR0502` is reported for a cycle written with different spellings.
+- Building and `mora fix` write nothing inside a dependency's folder: its output and caches go where the spec then states (§17.3) (CLI test with a read-only dependency folder).
 - `mora.lock` records each path as written, relative to the manifest, never an absolute path of the machine; an absolute `path` in `mora.toml` follows the rule the spec gives.
+- A `@NonExhaustive` union or enum of another project needs a `_` arm (§6.6).
+- CLI test: a `safe` fix whose edit lies in a path dependency's file is not applied and the file is unchanged.
+- Instantiations are keyed by item and canonical type arguments, the project that declares each type included (identified as the spec then states, §13.6), so two types with one name from two projects give two instantiations.
+- A run test, following the project-identity rule the spec then gives for canonical type names (§13.6, §4.4), with two path dependencies whose own root namespaces and type names are equal, bound under two keys: `is`, `as` and a checked cast tell the two types apart, and one library reached through two keys gives one type.
 
 ### M3.15 Attributes: `Cfg`, lint levels and `Obsolete`
 
@@ -962,7 +974,7 @@ Done when:
 - A hole type with only `IDisplay` goes to `AppendDisplay`, and one that also implements `IHole<T>` goes to `AppendHole`.
 - UI tests: a hole type with neither `IHole<T>` nor `IDisplay` is an error naming both; assigning a `string` to a handler type does not compile.
 - UI tests: a `Literal` cannot be created from a run-time `string`: no conversion, no cast, no constructor, no `default(Literal)`, no memberwise creation and no `with`, in a user project; a `const` string and a string literal convert, and an interpolated string with a hole does not.
-- UI test: lint `unchecked-injection` flags a call of a function marked as an escape hatch, as `Html.Unchecked(text)` will be, including through a method group.
+- UI test: lint `unchecked-injection` flags a call of `Html.Unchecked(text)` once M5.14 declares it, including through a method group.
 - `format` and `source` reach the handler as `Literal` values holding exactly the text in the source file.
 
 ### M3.18 Effect inference and `uses` bounds
@@ -979,7 +991,7 @@ Done when:
 - UI tests for `MR0251` reporting a loop, a heap allocation, a mutation and a failure, each naming the call.
 - `mora explain-effects` prints each effect of a function with its call path.
 - A function that calls an `extern` function infers `ffi`, at any depth, and `uses none` on it is `MR0250`.
-- Calls the source does not write as calls carry their effects: a destructor run by a drop, a getter, an indexer, a user-defined operator and conversion (`IFrom`), an interpolation handler, a `static lazy` initializer on first access, a default interface method, a field initializer run by memberwise creation, and `foreach` over a user enumerator. One test each infers `clock` from a `Clock.Now()` placed there.
+- Calls the source does not write as calls carry their effects: a destructor run by a drop, a getter, an indexer, a user-defined operator and conversion (`IFrom`), an interpolation handler, a default interface method, and a field initializer run by memberwise creation. One test each infers `clock` from a `Clock.Now()` placed there.
 - A generic function is charged per instantiation with what its type arguments' members do, and a call through `any I` without a bound, through an escaping function value, and through a function value read from a field or a collection adds `dyn`; a bound on the interface method or the function type is then checked against every implementation and every lambda converted to it.
 - `@RequiresCapability` and `@Blocking` only add effects; no attribute or bound removes one that inference found, and `@Cheap` outside `Std` is `MR0254`.
 
@@ -1067,17 +1079,17 @@ Done when:
 
 Spec: [§9.7](docs/design/mora.md#97-running-macros), [§14.2](docs/design/mora.md#142-crates). Crates: `mora-macro`, `mora-hir`. Blocked by: M4.2.
 
-The `MacroRunner` interface in `mora-hir` and its implementation in `mora-macro`: compiling macros with the JIT, the capability sandbox (`MR0613`), the 5-second and 256 MiB limits, panics reported at the use site, and same-project cycles (`MR0614`). To settle in the spec: the state a macro invocation starts from, and how standard input, `Environment.Exit` and console output count in the sandbox (§9.7, §6.14).
+The `MacroRunner` interface in `mora-hir` and its implementation in `mora-macro`: compiling macros with the JIT, the capability sandbox (`MR0613`), the 5-second and 256 MiB limits, panics reported at the use site, and same-project cycles (`MR0614`). To settle in the spec: the state a macro invocation starts from, and how console output counts in the sandbox (§9.7, §9.8). To settle in the spec: which effect of §6.14 reading standard input and `Environment.Exit` carry (the vocabulary has none today; `stdio` is a target capability of §19.4), so that the sandbox of §9.7 rejects them.
 
 Done when:
 
 - A macro calling `File.ReadAllText` fails with `MR0613`.
 - An infinite loop in a macro fails after 5 seconds with the use site in the message.
 - UI tests for `MR0613`: a macro, or a function it calls at any depth, that calls an `extern` function (`ffi`), reads the clock, the environment or random numbers, opens a socket, or calls through an escaping function value or an `any I` value without a bound (`dyn`).
-- A macro that panics, recurses until the stack ends, or allocates past 256 MiB fails the build with an error at the use site that carries its message; the compiler process and a running language server survive each case and go on to report the other diagnostics (test in `mora-macro` and a scripted LSP session).
-- The time limit stops a loop that makes no call and no allocation, and the memory a stopped macro held is returned. The limits apply to each invocation in the language server too.
-- Each invocation starts from the state the spec then gives (§9.7), so that running the macros of a build in any order or in parallel gives the same bytes (test runs a build twice with the order reversed). If the ruling resets state per invocation, `static mut` and `static lazy` values, the identity counter and hash keys do not carry over from another invocation or another macro.
-- A macro cannot end or block the build: `Environment.Exit` and a read of standard input in a macro fail at the use site (`MR0613` or another code the spec assigns). To settle in the spec: how the `stdio` capability divides console output, which §9.8 allows in a macro, from input.
+- A macro that panics, recurses until the stack ends, or allocates past 256 MiB fails the build with an error at the use site that carries its message; the compiler process survives each case and goes on to report the other diagnostics (test in `mora-macro`).
+- The time limit stops a loop that makes no call and no allocation, and the memory a stopped macro held is returned.
+- Each invocation starts from the state the spec then gives (§9.7), so that running the macros of a build in any order or in parallel gives the same bytes (test runs a build twice with the order reversed). If the ruling resets state per invocation, `static mut` and `static lazy` values, the identity counter and hash keys do not carry over from another invocation or another macro. The reversed-order test includes a macro that increments a `static mut`, one that reads a `static lazy`, and one that prints an object's identity number and a string's hash.
+- A macro cannot end or block the build: `Environment.Exit` and a read of standard input in a macro fail at the use site (`MR0613` or another code the spec assigns).
 
 ### M4.4 Expansion, ordering and hygiene
 
@@ -1113,7 +1125,7 @@ Done when:
 - Editing a method body does not rerun any macro (counter in `--verbose`).
 - Editing a field reruns only the macros on that type.
 - Editing a helper function a macro calls reruns that macro.
-- A cached expansion is used only when the build can show it was written by this toolchain for this key. A hash stored beside the entry does not show that, so the check is one that neither the project's files nor another local process can forge, as §14.15 then states (for example an entry the toolchain authenticates with a key held outside the project and the cache, or a cache location only the toolchain can write). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler, and an entry replaced between its check and its use is not used. The key is a cryptographic hash such as the BLAKE3 hash §13.6 uses, not a shorter or non-cryptographic one.
+- A cached expansion is used only when the build can show it was written by this toolchain for this key. The check is one that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler, and an entry replaced between its check and its use is not used. The key is a cryptographic hash such as the BLAKE3 hash §13.6 uses, not a shorter or non-cryptographic one.
 - The key covers every input: editing a constant or a static initializer the macro reads, an attribute argument, a helper attribute on a member (§9.9), the `@Cfg` values in force, and the text of the type as the model shows it each rerun the macro; a change to the toolchain version discards every entry.
 - The diagnostics and the console output of a cached expansion are replayed, so a warning from `Warn` is reported on every build.
 
@@ -1190,8 +1202,9 @@ Done when:
 
 - Using `unsafe` in a user project reports `MR0107`.
 - A test-only `std` module moves values through raw storage with no leak.
-- UI test: a project whose root namespace is `Std`, and a path dependency that declares `namespace Std.Collections`, still report `MR0107` for `unsafe`, cannot declare an `extern` function with `@Import(Lib = "mora_rt")`, and get `MR0254` for `@Cheap`.
+- UI test: a project whose root namespace is `Std`, and a path dependency whose `[project] namespace` is `Std.Collections`, besides the error of M1.15 still report `MR0107` for `unsafe` and `RawPtr<T>` and cannot declare an `extern` function with `@Import(Lib = "mora_rt")`; `@Cheap` in them is `MR0254` as M3.18 states.
 - Run test in `dev` and in `release`: a test-only `std` module that asks `Alloc`, `Realloc`, `Offset` or `Add` for a size or offset that overflows panics before any memory is allocated or written.
+- Each hand-written summary of a `Std` `unsafe` function is compared with what the debug runtime observes (§14.12).
 
 ### M5.2 Strings, text and formatting
 
@@ -1233,13 +1246,13 @@ Done when:
 
 Spec: [§15.3](docs/design/mora.md#153-collections), [§15.4](docs/design/mora.md#154-lookups-never-panic). Crates: `std`, `mora-rt`. Blocked by: M5.4, M3.18.
 
-Insertion-ordered `Dictionary` (D-29) hashed with per-process random keys, `Hasher.Fast` (the keyed fast hash, the default) and `Hasher.Strong` (SipHash-1-3) with the optional `hasher` constructor argument of §15.3, the keys fixed under `mora test` and `mora bench`, the members of §15.3 and §15.4 including `Get` returning `TValue?`, `HashSet`, `Queue` and `Stack`. The `Dictionary` index `get` and `Count`, and `HashSet.Contains` and `Count`, are marked `@Cheap` (D-103), and `@Cheap` outside `Std` is `MR0254`. This issue closes OQ-24: the spec names the default and says which of the two a collection filled from input uses.
+Insertion-ordered `Dictionary` (D-29) hashed with per-process random keys, `Hasher.Fast` (the keyed fast hash, the default) and `Hasher.Strong` (SipHash-1-3) with the optional `hasher` constructor argument of §15.3, the keys fixed under `mora test` and `mora bench`, the members of §15.3 and §15.4 including `Get` returning `TValue?`, `HashSet`, `Queue` and `Stack`. The `Dictionary` index `get` and `Count`, and `HashSet.Contains` and `Count`, are marked `@Cheap` (D-103; `@Cheap` outside `Std` is M3.18's rule). This issue closes OQ-24: the spec names the default and says which of the two a collection filled from input uses.
 
 Done when:
 
 - Iteration order equals insertion order after removals and re-insertions.
 - `Add` of a present key returns `false` and changes nothing; assigning `none` through the indexer removes the key.
-- UI test: a getter that reads `dict[key]` passes the getter check, and `@Cheap` on a function outside `Std` is `MR0254`.
+- UI test: a getter that reads `dict[key]` passes the getter check.
 - Over 16 runs of one program outside `mora test`, the hash of one string takes more than one value (all 16 agreeing by chance is negligible), and two runs under `mora test` with one seed hash it to the same value.
 - A run test inserts 100,000 keys built to collide under the default hash with a known key, into a `Dictionary` made with a fresh random key, and the number of probes stays within a constant factor of the same test with random keys. As a control, the same keys inserted into a `Dictionary` that uses that known key do collide and the probe count grows, which shows the set is a real collision set.
 - OQ-24 is closed in §24 with the measured cost of each hasher.
@@ -1256,6 +1269,7 @@ Done when:
 - A method returning `IEnumerable<User>` works with `foreach` and the sequence operators.
 - A run test iterates the collection expression `["a", "b", "c"]` with `foreach`.
 - Run test: `foreach (let (word, count) in counts)` over a `List<(string, int)>` binds both parts; UI test: a name bound twice in the designation is `MR0180`.
+- Effect inference (M3.18) charges `foreach` over a user enumerator with the effects of that enumerator: a `Clock.Now()` placed in it infers `clock` in the function that holds the loop.
 
 ### M5.7 Sequence operators
 
@@ -1335,6 +1349,7 @@ Done when:
 - A test that fails for some values of `Random.Shared` prints its seed, and `--seed` with that seed fails it again with the same values.
 - A doc-comment example with a wrong `// expect:` line fails under its example name, and an `// error: MRnnnn` example passes when that code is reported.
 - `Assert.Snapshot` and `Assert.SnapshotJson` fail after the value changes, a second snapshot in the same test uses `<test>.2.snap`, `mora test --bless` rewrites every file the test uses, and the next run passes.
+- `#Assert` and `Assert.Equal` on a `Secret<T>` print `Secret<string>(***)` in the failure message.
 
 ### M5.13 Signals and `@Observable`
 
@@ -1353,7 +1368,7 @@ Done when:
 
 Spec: [§15.2](docs/design/mora.md#152-strings-and-text), [§7.14](docs/design/mora.md#714-interpolation-handlers). Crates: `std`. Blocked by: M5.2, M3.17.
 
-The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, and `Unchecked`.
+The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, and `Unchecked`. To settle in the spec: whether a value that starts with `/\` is refused too, since a browser reads it as `//`.
 
 Done when:
 
@@ -1363,7 +1378,7 @@ Done when:
 - Attribute names are matched without regard to case: a hole in `ONCLICK`, `OnLoad`, `STYLE` and `SrcDoc` panics, and `HREF`, `Src` and `FormAction` get the URL rule.
 - A hole value holding `"`, `'`, `<`, `>`, `&` and a backtick cannot end a double-quoted or a single-quoted attribute value or start a tag in element text (the output is parsed back and holds one element and one attribute).
 - A hole inside a comment, inside `<textarea>` or `<title>` markup that the literal leaves open, and directly after `<` panics with the context.
-- In a URL attribute, a hole after the literal `JavaScript:` or `data:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2). To settle in the spec: whether a value that starts with `/\` is refused too, since a browser reads it as `//`.
+- In a URL attribute, a hole after the literal `JavaScript:` or `data:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2).
 
 ### M5.15 Logging and tracing
 
@@ -1390,7 +1405,7 @@ Done when:
 - In `dev` and in `release`, a free hook sees the secret's bytes already zero when its buffer is released, for a secret made with `new`, one made by `Clone()` and one read by `@Json`; the zeroing is not removed as a dead store. Every buffer a secret outgrew while it was being read from JSON is zero when it is released too, and a deserialization that fails after the secret's field was read zeroes it.
 - `Json.Serialize` of a type with a `Secret<T>` field and no `@JsonSecret` leaves the field out; with `@JsonSecret` it writes the plaintext.
 - UI tests: returning the span from `Use`, storing it in a field and capturing it in an escaping closure are each rejected by the view check (§10.6); copying it with `ToArray()` or into a `string` inside `Use` warns `secret-copied`.
-- `@Display`, `#Assert`, `Assert.Equal`, a panic message and a `Report` chain that hold a `Secret<T>` print `Secret<string>(***)`; a `JsonError` raised while reading a secret's property does not quote the input text.
+- `@Display` and a panic message that hold a `Secret<T>` print `Secret<string>(***)`; a `JsonError` raised while reading a secret's property does not quote the input text.
 
 ### M5.17 `Report` and `Context`
 
@@ -1403,6 +1418,7 @@ Done when:
 - A three-level chain prints the newest context first, then the error and the chain of its `Source()`.
 - An `Ok` passed through `Context(() => ...)` never runs the lambda.
 - A `Report` built from an internal error with two context lines has `PublicMessage` `none`; one built from an error with a `PublicMessage` returns exactly that text, with no context line in it; `Code` and `HttpStatus` equal the wrapped error's in both.
+- A `Report` chain that holds a `Secret<T>` prints `Secret<string>(***)`.
 
 ### M5.18 Standard library API reference
 
@@ -1504,7 +1520,7 @@ Done when:
 - Pipelined requests on one connection are answered in order.
 - Protocol tests over raw TCP for each framing case the spec then lists. In every case the bytes after the rejected request are never answered as a second request, and the connection is closed.
 - A chunked body of more than the body limit gets 413 once the limit is passed, with at most the limit plus one 64 KiB step reserved; a `Content-Length` above the limit gets 413 before any of the body is read.
-- 64 clients that send a head with `Content-Length: 1048576` and then nothing do not stop a 65th client's request with a body from being served once the body read timeout the spec then gives has passed, also with `RequestTimeout` set to `none`.
+- 64 clients that send a head with `Content-Length: 1048576` and then nothing hold the whole body budget, also with `RequestTimeout` set to `none`: a 65th client that sends its request after the body read timeout has passed is served; a 65th client that is already waiting gets the 503 of §16.1, never a hang.
 - A request line or header value with bytes that are not valid UTF-8 gets the response the spec then states, and no `string` reached from `Request` holds invalid UTF-8 (checked with `FromUtf8` on its bytes).
 - `cargo fuzz` target over the connection state machine: arbitrary bytes on a connection never panic the server, never grow memory past the head limit plus the body budget, and never produce a response to bytes that are part of an earlier request's body.
 
@@ -1591,18 +1607,19 @@ Done when:
 - `c ? r? : d` formats as `c ? (r?) : d`, and `x?[i]` and `flag ? [1] : []` keep their spacing.
 - `mora check` warns `MR2030` on an unformatted file, and `mora fix` formats it.
 - `mora fmt --check` fails on an unformatted file.
+- `mora fmt` writes nothing inside a dependency's folder (CLI test with a read-only dependency folder).
 
 ### M7.2 Language server: core and diagnostics
 
 Spec: [§17.8](docs/design/mora.md#178-language-server). Crates: `mora-lsp`, `mora-cli`. Blocked by: M4.9.
 
-`mora lsp` on `lsp-server`: initialization, document sync, the shared database, debounced diagnostics with fixes as code actions, and the UTF-16 positions of M0.5. The limits of §9.7 apply to macros the server runs. To settle in the spec (§17.8): whether the server runs the macros of a project before the editor reports the folder as trusted, and what it shows in their place when it does not.
+`mora lsp` on `lsp-server`: initialization, document sync, the shared database, debounced diagnostics with fixes as code actions, and the UTF-16 positions of M0.5. The limits of §9.7 apply to macros the server runs. To settle in the spec (§17.8): whether the server runs the macros of a project before the editor reports the folder as trusted, and what it shows in their place when it does not. To settle in the spec: a memory budget for the language server in §20.6.
 
 Done when:
 
 - Scripted session tests: open, edit, receive and clear a diagnostic.
 - Diagnostics arrive within the §20.6 budget on `users-api`.
-- Scripted session tests open a project whose macro loops forever, one whose macro allocates without bound and one whose macro panics: each gives the §9.7 error at the use site within the time limit, the server answers a hover request afterwards, and its memory returns to within the §20.6 budget.
+- Scripted session tests open a project whose macro loops forever, one whose macro allocates without bound, one whose macro recurses until the stack ends and one whose macro panics: each gives the §9.7 error at the use site within the time limit, the limits of §9.7 hold for each invocation in the server, and the server survives, goes on to report the other diagnostics and answers a hover request afterwards.
 - The checked entry point of M1.16 reports `MR0001` for bytes that are not valid UTF-8 (a file the server reads from disk) and `MR0003` for a text of 4 GiB or more (a file or a document the editor sends), before any lexing and without ending the server; a malformed message on the transport is rejected without ending the server.
 
 ### M7.3 Language server: navigation
@@ -1637,7 +1654,7 @@ Done when:
 - The extension's integration test starts `mora lsp` and receives diagnostics.
 - Integration test: a folder whose `.vscode/settings.json` sets the executable path to a script in the folder does not run that script, in a trusted and in an untrusted folder.
 - Integration test: in an untrusted folder no `mora` process is started; after the folder is trusted, `mora lsp` starts and diagnostics arrive.
-- The `.vsix` holds no executable and its manifest declares limited support for untrusted folders; the store tokens are read only by the publishing job of M7.10.
+- The `.vsix` holds no executable and its manifest declares limited support for untrusted folders.
 
 ### M7.6 REPL
 
@@ -1682,7 +1699,6 @@ Done when:
 - The site deploys from `main` through GitHub Actions.
 - `mora docs --llm` prints the same bytes on every run, and they match the site's `llms.txt` for that version.
 - `mora-errors.jsonl` has one line per page in `docs/errors/`.
-- A check after each deploy downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
 - The deploy runs only for `main`, in a job that has the permissions the Pages deployment needs and no more; the job that builds the site from a pull request has a read-only token and no secrets; every third-party action is pinned by commit SHA (§20.5).
 - The install page and the pages that show an install command load no script or style from another origin.
 
@@ -1701,6 +1717,7 @@ Done when:
 - `SHA256SUMS` is produced from the archives after they are built and before signing, and is signed like an archive.
 - `cosign verify-blob` with the identity of §19.3 fails on an archive signed by the same workflow run from a branch, and on one signed by another workflow of this repository.
 - The tag rule the spec then gives (§19.3) is in place as a ruleset on `v*` tags, and a push of such a tag by an account outside it is refused (recorded in the issue).
+- The extension-store tokens are read only by the publishing job (shown by the workflow's `permissions` and its use of secrets).
 
 ### M7.11 Installers and self update
 
@@ -1716,7 +1733,8 @@ Done when:
 - An update interrupted while it replaces files leaves a toolchain that runs: either the old one or the new one.
 - Unpacking refuses an entry with an absolute path, a `..` segment or a link that points outside the install directory.
 - `install.sh` and `install.ps1` verify the checksum, and the signature when `cosign` is present, before unpacking; on a mismatch they exit non-zero and leave `~/.mora` and `PATH` as they were. They refuse a download address that is not HTTPS or is outside the host list the spec gives, a redirect to plain HTTP, and a redirect to a host outside that list.
-- `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short (for example one that takes a fixed trailing argument). A test truncates the script at every byte. The same for `install.ps1`.
+- `install.sh` cut off at any byte, inside its final call included, runs nothing partial: its body is one function, and the final call is a form that cannot run when it is cut short. A test truncates the script at every byte. The same for `install.ps1`.
+- A check after each site deploy (M7.9) downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
 
 ### M7.12 Benchmarks and budgets
 
@@ -1775,7 +1793,7 @@ Done when:
 
 | Milestone | Scope | Spec |
 |---|---|---|
-| M8: WebAssembly and libraries | Wasm targets, the `.wasm` library format with `mora.meta`, `mora.ir`, `mora.deps`, `mora.caps` and `mora.abi`, linking modes and ABI checks (OQ-15), and a stable plugin ABI at an opt-in boundary: `[abi] stable` interface packages, `@Frozen` types, and native and Wasm plugins loaded from one interface; WASI 0.3 with async in the Component Model for `wasm32-wasi`, and `mora bindgen wit` to import a WIT interface as Mora declarations. **Security questions to settle with the spec update**: (1) Which checks does the consuming compiler run on a library's `mora.ir` and `mora.meta` (the MIR validator of §14.7, types, moves and borrows, effects) so that a crafted library cannot break §10.14? (2) Does a build ever link precompiled code, or always compile from the checked `mora.ir`, and what proves the code matches it? (3) Does each custom section get a decoder that rejects malformed input, with size limits and a fuzz target (§20.1)? | [§18.1](docs/design/mora.md#181-webassembly-target), [§18.2](docs/design/mora.md#182-the-library-format), [§18.3](docs/design/mora.md#183-linking-libraries), [§18.4](docs/design/mora.md#184-abi-stability), [§24](docs/design/mora.md#24-open-questions) |
+| M8: WebAssembly and libraries | Wasm targets, the `.wasm` library format with `mora.meta`, `mora.ir`, `mora.deps`, `mora.caps` and `mora.abi`, linking modes and ABI checks (OQ-15), and a stable plugin ABI at an opt-in boundary: `[abi] stable` interface packages, `@Frozen` types, and native and Wasm plugins loaded from one interface; WASI 0.3 with async in the Component Model for `wasm32-wasi`, and `mora bindgen wit` to import a WIT interface as Mora declarations. **Security questions to settle with the spec update:** (1) Which checks does the consuming compiler run on a library's `mora.ir` and `mora.meta` (the MIR validator of §14.7, types, moves and borrows, effects) so that a crafted library cannot break §10.14? (2) Does a build ever link precompiled code, or always compile from the checked `mora.ir`, and what proves the code matches it? (3) Does each custom section get a decoder that rejects malformed input, with size limits and a fuzz target (§20.1)? | [§18.1](docs/design/mora.md#181-webassembly-target), [§18.2](docs/design/mora.md#182-the-library-format), [§18.3](docs/design/mora.md#183-linking-libraries), [§18.4](docs/design/mora.md#184-abi-stability), [§24](docs/design/mora.md#24-open-questions) |
 | M9: Packages and capabilities | URL and git dependency sources, inline imports in scripts, lockfile hashes, `mora fetch`, and capability grants enforced on wasm and native targets, narrowed per dependency, with sandboxed runs. **Security questions to settle with the spec update:** (1) Where is the content hash of an inline `import` kept, so that a script's dependency is pinned as a manifest dependency is (§18.5)? (2) A prebuilt `.wasm` from a git release: is it checked against a build of the tagged source, or is the source always built? (3) Do URL and git sources accept only `https`, and is `mora fetch` the only command that reaches the network, with `mora build` and `mora check` never doing so? (4) When `mora fetch` builds a dependency from source, does it run only that dependency's macros, inside the sandbox of §9.7, and nothing else of the dependency? For a prebuilt `.wasm`, what is executed, if anything, and what is verified before use (see the question above)? | [§18.5](docs/design/mora.md#185-imports-manifest-and-lockfile), [§18.6](docs/design/mora.md#186-capabilities) |
 | M10: Threads | `shared` classes with atomic counts, sendable checks, `Thread`, `Task.Run`, `Mutex`, `Atomic`, `Channel`, a multi-threaded executor (OQ-6, OQ-7, OQ-1), supervised worker processes as a framework option, sending a freshly built object graph to another thread as one region, and `Parallel.For` and `Parallel.Map`, whose bodies the compiler checks for effects so that their results are deterministic. **Security questions to settle with the spec update:** (1) How the memory-model suite (§20.3) covers threads: a case per sendable rule of §12.6, and a debug-runtime check that aborts when a plain count is updated from two threads. (2) What rule keeps `static mut` state on the main thread (§4.7, OQ-6), and what is its diagnostic? (3) `SECURITY.md` lists a data race in safe code as in scope: does the milestone's exit test include it? | [§12.6](docs/design/mora.md#126-threads-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
 | M11: Language growth | Class inheritance, variance, `yield return`, retroactive implementations, arenas, allocators, user `unsafe`, `decimal`, conditionally async higher-order functions (`async?`), more macro kinds (OQ-3, 4, 5, 9, 10, 11, 12, 13), value parameters for generics (integers, `bool` and enums), and must-consume unique classes. **Security questions to settle with the spec update:** (1) Does a package that contains `unsafe` code need a grant (§18.6), as one that uses `@Import` needs `ffi` (§13.9)? (2) `SECURITY.md` scopes memory safety to code outside the standard library's `unsafe` dialect: is that scope restated when user `unsafe` lands? | [§9.10](docs/design/mora.md#910-not-in-the-mvp), [§10.12](docs/design/mora.md#1012-arenas-post-mvp), [§24](docs/design/mora.md#24-open-questions) |
