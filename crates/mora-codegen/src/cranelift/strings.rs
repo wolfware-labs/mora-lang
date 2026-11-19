@@ -52,14 +52,20 @@ impl Walker<'_> {
             Rvalue::Concat(values) => self.operands(values),
             Rvalue::Interpolate(pieces) => {
                 for piece in pieces {
-                    if let InterpPiece::Operand {
-                        value, alignment, ..
-                    } = piece
-                    {
-                        self.operand(value);
-                        alignment
-                            .iter()
-                            .for_each(|alignment| self.operand(alignment));
+                    match piece {
+                        // A text is a literal part, which needs its object
+                        // when it is long.
+                        InterpPiece::Text(text) => {
+                            self.operand(&Operand::Const(Const::String(text.as_str().into())));
+                        }
+                        InterpPiece::Operand {
+                            value, alignment, ..
+                        } => {
+                            self.operand(value);
+                            alignment
+                                .iter()
+                                .for_each(|alignment| self.operand(alignment));
+                        }
                     }
                 }
             }
@@ -169,7 +175,7 @@ impl Lowering<'_, '_> {
 
     /// The address of the string `operand` reads: its place, or a new slot
     /// that holds a literal.
-    fn string_address(&mut self, operand: &Operand) -> Value {
+    pub(super) fn string_address(&mut self, operand: &Operand) -> Value {
         match self.string_source(operand) {
             Source::Place(place) => self.place_address(place),
             source @ Source::Const(_) => {
@@ -238,13 +244,15 @@ impl Lowering<'_, '_> {
             let part = self.offset(array, offset);
             self.store_source(part, source);
         }
-        let count = self
-            .builder
-            .ins()
-            .iconst(self.pointer, operands.len() as i64);
         // The parts are copies, so the result may go to a place a part
         // reads.
         let out = self.place_address(place);
+        self.join_parts(array, operands.len(), out);
+    }
+
+    /// Writes at `out` the concatenation of the `count` strings at `array`.
+    pub(super) fn join_parts(&mut self, array: Value, count: usize, out: Value) {
+        let count = self.builder.ins().iconst(self.pointer, count as i64);
         let concat = self.env.function(RuntimeFn::StringConcat);
         self.builder.ins().call(concat, &[array, count, out]);
     }
@@ -687,7 +695,7 @@ mod tests {
     /// makes: the calls of the import the runtime list numbers.
     fn concat_calls(text: &str) -> usize {
         let clif = ir(text);
-        let name = format!("u0:{}", 1 + RuntimeFn::StringConcat as usize);
+        let name = format!("u0:{}", 1 + RuntimeFn::StringConcat.index());
         let imports: Vec<&str> = clif
             .lines()
             .filter(|line| line.contains(&name))

@@ -75,7 +75,7 @@ impl Lowering<'_, '_> {
     /// With an internal error when it is not a scalar: a string has no
     /// operator but `+`, `==` and `!=`, and an aggregate none but `==` and
     /// `!=`.
-    fn scalar(&mut self, operand: &Operand) -> (Scalar, Value) {
+    pub(super) fn scalar(&mut self, operand: &Operand) -> (Scalar, Value) {
         let source = self.source(operand);
         let Shape::Scalar(scalar) = self.source_layout(source).shape else {
             broken(

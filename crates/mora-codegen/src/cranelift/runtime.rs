@@ -28,21 +28,62 @@ pub(super) const DIVISION_BY_ZERO: &str = "division by zero";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RuntimeFn {
     /// `mora_rt_panic`: stops with a message at a source location.
-    Panic = 0,
+    Panic,
     /// `mora_rt_panic_overflow`: stops with an arithmetic overflow.
-    PanicOverflow = 1,
+    PanicOverflow,
     /// `mora_rt_fmod`: `%` on `double`.
-    Fmod = 2,
+    Fmod,
     /// `mora_rt_fmodf`: `%` on `float`.
-    Fmodf = 3,
+    Fmodf,
     /// `mora_rt_string_concat`: `a + b` on `string`.
-    StringConcat = 4,
+    StringConcat,
     /// `mora_rt_string_eq`: `==` on `string`.
-    StringEq = 5,
+    StringEq,
+    /// `__mora_standin_write_line_*`: `Console.WriteLine` of a value of the
+    /// kind. A stand-in M1.15 (#43) removes.
+    WriteLine(StandinKind),
+    /// `__mora_standin_format_*`: the text of a value of the kind, for a
+    /// hole of an interpolated string. A stand-in M1.15 (#43) removes; there
+    /// is none for a string, which is a part as it is.
+    Format(StandinKind),
+}
+
+/// The type of the value a stand-in takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StandinKind {
+    /// A signed integer, extended to 64 bits.
+    I64,
+    /// An unsigned integer, extended to 64 bits.
+    U64,
+    /// A `float`.
+    F32,
+    /// A `double`.
+    F64,
+    /// A `bool`, extended to 32 bits.
+    Bool,
+    /// A `char`.
+    Char,
+    /// A `string`, by address.
+    String,
+}
+
+impl StandinKind {
+    /// The type the stand-in takes the value as, on a target whose pointers
+    /// have the type `pointer`: a string crosses by address.
+    fn param(self, pointer: Type) -> Type {
+        match self {
+            StandinKind::I64 | StandinKind::U64 => types::I64,
+            StandinKind::F32 => types::F32,
+            StandinKind::F64 => types::F64,
+            StandinKind::Bool | StandinKind::Char => types::I32,
+            StandinKind::String => pointer,
+        }
+    }
 }
 
 impl RuntimeFn {
-    /// Every entry point, in the order of the discriminants.
+    /// Every entry point, in the order of [`RuntimeFn::index`]: the fixed
+    /// ones, the seven `WriteLine`s and the six `Format`s.
     pub(crate) const ALL: &[RuntimeFn] = &[
         RuntimeFn::Panic,
         RuntimeFn::PanicOverflow,
@@ -50,7 +91,31 @@ impl RuntimeFn {
         RuntimeFn::Fmodf,
         RuntimeFn::StringConcat,
         RuntimeFn::StringEq,
+        RuntimeFn::WriteLine(StandinKind::I64),
+        RuntimeFn::WriteLine(StandinKind::U64),
+        RuntimeFn::WriteLine(StandinKind::F32),
+        RuntimeFn::WriteLine(StandinKind::F64),
+        RuntimeFn::WriteLine(StandinKind::Bool),
+        RuntimeFn::WriteLine(StandinKind::Char),
+        RuntimeFn::WriteLine(StandinKind::String),
+        RuntimeFn::Format(StandinKind::I64),
+        RuntimeFn::Format(StandinKind::U64),
+        RuntimeFn::Format(StandinKind::F32),
+        RuntimeFn::Format(StandinKind::F64),
+        RuntimeFn::Format(StandinKind::Bool),
+        RuntimeFn::Format(StandinKind::Char),
     ];
+
+    /// The position of the entry point in [`RuntimeFn::ALL`].
+    ///
+    /// # Panics
+    ///
+    /// For `Format(String)`, which is no entry point: a string is a part of
+    /// an interpolation as it is.
+    pub(crate) fn index(self) -> usize {
+        let known = Self::ALL.iter().position(|known| *known == self);
+        known.unwrap_or_else(|| panic!("`{self:?}` is not a runtime entry point"))
+    }
 
     /// The symbol the runtime defines.
     pub(crate) fn name(self) -> &'static str {
@@ -61,6 +126,22 @@ impl RuntimeFn {
             RuntimeFn::Fmodf => "mora_rt_fmodf",
             RuntimeFn::StringConcat => "mora_rt_string_concat",
             RuntimeFn::StringEq => "mora_rt_string_eq",
+            RuntimeFn::WriteLine(StandinKind::I64) => "__mora_standin_write_line_i64",
+            RuntimeFn::WriteLine(StandinKind::U64) => "__mora_standin_write_line_u64",
+            RuntimeFn::WriteLine(StandinKind::F32) => "__mora_standin_write_line_f32",
+            RuntimeFn::WriteLine(StandinKind::F64) => "__mora_standin_write_line_f64",
+            RuntimeFn::WriteLine(StandinKind::Bool) => "__mora_standin_write_line_bool",
+            RuntimeFn::WriteLine(StandinKind::Char) => "__mora_standin_write_line_char",
+            RuntimeFn::WriteLine(StandinKind::String) => "__mora_standin_write_line_string",
+            RuntimeFn::Format(StandinKind::I64) => "__mora_standin_format_i64",
+            RuntimeFn::Format(StandinKind::U64) => "__mora_standin_format_u64",
+            RuntimeFn::Format(StandinKind::F32) => "__mora_standin_format_f32",
+            RuntimeFn::Format(StandinKind::F64) => "__mora_standin_format_f64",
+            RuntimeFn::Format(StandinKind::Bool) => "__mora_standin_format_bool",
+            RuntimeFn::Format(StandinKind::Char) => "__mora_standin_format_char",
+            RuntimeFn::Format(StandinKind::String) => {
+                panic!("a string is a part of an interpolation as it is")
+            }
         }
     }
 
@@ -99,6 +180,10 @@ impl RuntimeFn {
             RuntimeFn::StringConcat => (&[pointer, pointer, pointer], &[]),
             // The addresses of the two strings, and whether they are equal.
             RuntimeFn::StringEq => (&[pointer, pointer], &[types::I8]),
+            // The value, which is extended as `StandinKind` says.
+            RuntimeFn::WriteLine(kind) => (&[kind.param(pointer)], &[]),
+            // The value, and the address to write the text to.
+            RuntimeFn::Format(kind) => (&[kind.param(pointer), pointer], &[]),
         };
         signature
             .params
@@ -305,7 +390,7 @@ pub(super) struct Env<'a> {
 impl Env<'_> {
     /// The import of `function`.
     pub(super) fn function(&self, function: RuntimeFn) -> FuncRef {
-        self.functions[function as usize]
+        self.functions[function.index()]
     }
 
     /// The line and column, counting from 1, where `span` starts.
@@ -361,10 +446,45 @@ mod tests {
     }
 
     #[test]
-    fn the_discriminants_are_the_positions() {
+    fn the_index_is_the_position() {
         for (index, function) in RuntimeFn::ALL.iter().enumerate() {
-            assert_eq!(*function as usize, index);
+            assert_eq!(function.index(), index);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a runtime entry point")]
+    fn a_string_has_no_formatting_entry_point() {
+        RuntimeFn::Format(StandinKind::String).index();
+    }
+
+    #[test]
+    #[should_panic(expected = "a part of an interpolation as it is")]
+    fn a_string_has_no_formatting_name() {
+        RuntimeFn::Format(StandinKind::String).name();
+    }
+
+    #[test]
+    fn the_stand_ins_are_named_for_their_kind() {
+        let names: Vec<&str> = RuntimeFn::ALL[6..].iter().map(|f| f.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "__mora_standin_write_line_i64",
+                "__mora_standin_write_line_u64",
+                "__mora_standin_write_line_f32",
+                "__mora_standin_write_line_f64",
+                "__mora_standin_write_line_bool",
+                "__mora_standin_write_line_char",
+                "__mora_standin_write_line_string",
+                "__mora_standin_format_i64",
+                "__mora_standin_format_u64",
+                "__mora_standin_format_f32",
+                "__mora_standin_format_f64",
+                "__mora_standin_format_bool",
+                "__mora_standin_format_char",
+            ]
+        );
     }
 
     #[test]
@@ -399,6 +519,22 @@ mod tests {
             signature(RuntimeFn::StringEq),
             (vec![p, p], vec![types::I8])
         );
+        use StandinKind::*;
+        let (f32, f64) = (types::F32, types::F64);
+        for (kind, value) in [
+            (I64, p),
+            (U64, p),
+            (F32, f32),
+            (F64, f64),
+            (Bool, n),
+            (Char, n),
+        ] {
+            assert_eq!(signature(RuntimeFn::WriteLine(kind)), (vec![value], vec![]));
+            assert_eq!(signature(RuntimeFn::Format(kind)), (vec![value, p], vec![]));
+        }
+        // A string crosses by address, which is as wide as a pointer.
+        let narrow = RuntimeFn::WriteLine(String).signature(types::I32, CallConv::SystemV);
+        assert_eq!(narrow.params[0].value_type, types::I32);
         let narrow = RuntimeFn::Panic.signature(types::I32, CallConv::SystemV);
         assert_eq!(narrow.params[0].value_type, types::I32);
     }

@@ -326,6 +326,9 @@ impl Lowering<'_, '_> {
             StatementKind::Assign(place, Rvalue::Concat(operands)) => {
                 self.concatenate(place, operands);
             }
+            StatementKind::Assign(place, Rvalue::Interpolate(pieces)) => {
+                self.interpolate(place, pieces);
+            }
             StatementKind::Assign(place, Rvalue::Binary(op, left, right)) => {
                 let value = self.binary(*op, left, right);
                 self.write(place, Some(value));
@@ -338,7 +341,6 @@ impl Lowering<'_, '_> {
                 let value = self.cast(operand, ty);
                 self.write(place, Some(value));
             }
-            other => fail(self.body, &format!("the statement `{other:?}`"), "M1.12"),
         }
     }
 
@@ -440,8 +442,9 @@ impl Lowering<'_, '_> {
     ///
     /// # Panics
     ///
-    /// With an internal error for a function of the standard library, which
-    /// M1.15 brings, or a function outside the program.
+    /// With an internal error for a function of the standard library that is
+    /// not a stand-in (standin.rs), which M1.15 brings, or a function outside
+    /// the program.
     fn call(
         &mut self,
         target: Option<&Call>,
@@ -452,11 +455,11 @@ impl Lowering<'_, '_> {
     ) {
         let Some(target) = target else {
             match callee {
-                Callee::External(path) => fail(
-                    self.body,
-                    &format!("a call to `{}` of the standard library", path.join(".")),
-                    "M1.15",
-                ),
+                Callee::External(path) => {
+                    self.standin_call(path, args);
+                    self.continue_after_call(next);
+                    return;
+                }
                 other => broken(
                     self.body,
                     &format!("the callee `{other:?}` is not in the program"),
@@ -489,6 +492,12 @@ impl Lowering<'_, '_> {
                 }
             }
         }
+        self.continue_after_call(next);
+    }
+
+    /// Continues in `next` after a call; traps when the call returns
+    /// although it has no `next`.
+    fn continue_after_call(&mut self, next: Option<BlockId>) {
         match next {
             Some(next) => {
                 self.builder.ins().jump(self.blocks[next.index()], &[]);
@@ -1348,9 +1357,10 @@ pub(in crate::cranelift) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "internal error generating code for top-level: a call to \
-                               `Console.Write` of the standard library is not lowered until \
-                               M1.15")]
+    #[should_panic(
+        expected = "internal error generating code for top-level: `Console.Write` \
+                               is a stand-in callee that is not lowered until M1.15"
+    )]
     fn external_callees_wait_for_the_standard_library() {
         jit("Console.Write(1);\n", Profile::Debug);
     }

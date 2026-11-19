@@ -373,12 +373,6 @@ mod tests {
         assert!(text.contains("sret"), "{text}");
     }
 
-    #[test]
-    #[should_panic(expected = "UsersApi.F: the statement `Assign(")]
-    fn an_interpolated_string_is_an_internal_error() {
-        jit_one("F(a: int) { let s = $\"{a}\"; }\n", "F");
-    }
-
     /// The first assignment of the body.
     fn first_assignment(body: &mut mora_mir::Body) -> (&mut Place, &mut Rvalue) {
         body.blocks

@@ -4,6 +4,7 @@
 
 mod pal;
 pub mod panic;
+pub mod standin;
 pub mod string;
 // Left out of this crate's unit tests, whose harness has its own `main`.
 #[cfg(all(feature = "start", not(test)))]

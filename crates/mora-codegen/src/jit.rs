@@ -1,5 +1,6 @@
 //! A program compiled into the memory of this process.
 
+use std::io::Write;
 use std::mem::ManuallyDrop;
 
 use cranelift_jit::JITModule;
@@ -32,7 +33,11 @@ impl JitProgram {
         // the host's C convention, which `extern "C"` names, and its code
         // lives as long as `self`, which this call borrows.
         let main = unsafe { std::mem::transmute::<*const u8, extern "C" fn() -> i32>(main) };
-        main()
+        let code = main();
+        // As the process entry point does: output the program buffered must
+        // not be lost, and nothing is left to report a failed flush to.
+        let _ = std::io::stdout().flush();
+        code
     }
 
     /// The address of the finalized function `symbol`.
