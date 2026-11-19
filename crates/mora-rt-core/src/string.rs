@@ -25,6 +25,10 @@ pub const HEAP_TAG: u8 = 0x80;
 pub const NONE_TAG: u8 = 0x81;
 /// The size of the header every shared object starts with (§13.3).
 pub const HEADER_SIZE: usize = 8;
+/// The offset of a heap object's strong count.
+pub const STRONG_OFFSET: usize = 0;
+/// The offset of a heap object's weak count.
+pub const WEAK_OFFSET: usize = 4;
 /// The offset of a heap object's capacity.
 pub const CAPACITY_OFFSET: usize = 8;
 /// The offset of a heap object's bytes.
@@ -33,6 +37,45 @@ pub const BYTES_OFFSET: usize = 12;
 pub const OBJECT_ALIGN: usize = 4;
 /// The strong count of an object that is never retained or released.
 pub const IMMORTAL: u32 = 1 << 31;
+
+/// A `u32` as the bytes a target of the byte order `big_endian` says stores.
+fn u32_bytes(value: u32, big_endian: bool) -> [u8; 4] {
+    if big_endian {
+        value.to_be_bytes()
+    } else {
+        value.to_le_bytes()
+    }
+}
+
+/// The first [`BYTES_OFFSET`] bytes of a heap object: its strong and weak
+/// counts and its capacity, as `u32`s in the byte order `big_endian` says.
+/// A compiler writes these into the objects it puts in read-only data.
+pub fn object_header(
+    strong: u32,
+    weak: u32,
+    capacity: u32,
+    big_endian: bool,
+) -> [u8; BYTES_OFFSET] {
+    let mut header = [0; BYTES_OFFSET];
+    for (offset, value) in [
+        (STRONG_OFFSET, strong),
+        (WEAK_OFFSET, weak),
+        (CAPACITY_OFFSET, capacity),
+    ] {
+        header[offset..offset + 4].copy_from_slice(&u32_bytes(value, big_endian));
+    }
+    header
+}
+
+/// The bytes of a heap string of `len` bytes on a target of the byte order
+/// `big_endian` says, with zeros where the address of its object goes: the
+/// pointer-sized bytes at offset 0.
+pub fn heap_template(len: u32, big_endian: bool) -> [u8; SIZE] {
+    let mut bytes = [0; SIZE];
+    bytes[LEN_OFFSET..LEN_OFFSET + 4].copy_from_slice(&u32_bytes(len, big_endian));
+    bytes[TAG_OFFSET] = HEAP_TAG;
+    bytes
+}
 
 /// A string value as it sits in memory.
 #[repr(C)]
@@ -65,11 +108,12 @@ impl MoraString {
 
     /// A heap string of `len` bytes that lives in `object`.
     pub fn heap(object: *const u8, len: u32) -> MoraString {
-        let mut string = MoraString::EMPTY;
+        let mut string = MoraString {
+            bytes: heap_template(len, cfg!(target_endian = "big")),
+            _align: [],
+        };
         let address = object.expose_provenance().to_ne_bytes();
         string.bytes[..address.len()].copy_from_slice(&address);
-        string.bytes[LEN_OFFSET..LEN_OFFSET + 4].copy_from_slice(&len.to_ne_bytes());
-        string.bytes[TAG_OFFSET] = HEAP_TAG;
         string
     }
 
@@ -190,11 +234,42 @@ mod tests {
     }
 
     #[test]
+    fn object_headers_hold_counts_and_capacity_in_the_byte_order_asked() {
+        let little = object_header(IMMORTAL, 0, 40, false);
+        assert_eq!(little[STRONG_OFFSET..WEAK_OFFSET], [0, 0, 0, 0x80]);
+        assert_eq!(little[WEAK_OFFSET..CAPACITY_OFFSET], [0, 0, 0, 0]);
+        assert_eq!(little[CAPACITY_OFFSET..], [40, 0, 0, 0]);
+        let big = object_header(1, 2, 40, true);
+        assert_eq!(big[STRONG_OFFSET..WEAK_OFFSET], [0, 0, 0, 1]);
+        assert_eq!(big[WEAK_OFFSET..CAPACITY_OFFSET], [0, 0, 0, 2]);
+        assert_eq!(big[CAPACITY_OFFSET..], [0, 0, 0, 40]);
+    }
+
+    #[test]
+    fn heap_templates_hold_length_and_tag_and_leave_the_address_zero() {
+        let little = heap_template(0x0102_0304, false);
+        assert_eq!(little[..LEN_OFFSET], [0; 8]);
+        assert_eq!(little[LEN_OFFSET..LEN_OFFSET + 4], [4, 3, 2, 1]);
+        assert_eq!(little[12..TAG_OFFSET], [0, 0, 0]);
+        assert_eq!(little[TAG_OFFSET], HEAP_TAG);
+        let big = heap_template(0x0102_0304, true);
+        assert_eq!(big[LEN_OFFSET..LEN_OFFSET + 4], [1, 2, 3, 4]);
+        assert_eq!(big[TAG_OFFSET], HEAP_TAG);
+        // A heap string is its template and the address.
+        let object = [0u8; 4];
+        let native = heap_template(7, cfg!(target_endian = "big"));
+        let s = MoraString::heap(object.as_ptr(), 7);
+        assert_eq!(s.raw()[LEN_OFFSET..], native[LEN_OFFSET..]);
+    }
+
+    #[test]
     fn the_layout_constants_agree() {
         assert_eq!(size_of::<MoraString>(), SIZE);
         assert_eq!(align_of::<MoraString>(), align_of::<usize>());
         assert_eq!(TAG_OFFSET, SIZE - 1);
         assert_eq!(BYTES_OFFSET, CAPACITY_OFFSET + 4);
         assert_eq!(CAPACITY_OFFSET, HEADER_SIZE);
+        assert_eq!(WEAK_OFFSET, STRONG_OFFSET + 4);
+        assert_eq!(CAPACITY_OFFSET, WEAK_OFFSET + 4);
     }
 }

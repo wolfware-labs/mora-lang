@@ -8,7 +8,7 @@ use mora_hir::Ty;
 use mora_mir::{BinOp, Operand, UnOp};
 
 use super::checks::Arith;
-use super::function::{Lowering, Source, broken, fail, scalar_type};
+use super::function::{Lowering, Source, broken, scalar_type};
 use crate::Profile;
 use crate::layout::{Scalar, Shape};
 
@@ -72,16 +72,15 @@ impl Lowering<'_, '_> {
     ///
     /// # Panics
     ///
-    /// With an internal error when it is not a scalar: strings are not
-    /// lowered until M1.12, and an aggregate has no operator but `==` and
+    /// With an internal error when it is not a scalar: a string has no
+    /// operator but `+`, `==` and `!=`, and an aggregate none but `==` and
     /// `!=`.
     fn scalar(&mut self, operand: &Operand) -> (Scalar, Value) {
         let source = self.source(operand);
         let Shape::Scalar(scalar) = self.source_layout(source).shape else {
-            fail(
+            broken(
                 self.body,
                 &format!("an operator on `{operand:?}`, which is not a scalar"),
-                "M1.12",
             )
         };
         // A scalar is never zero-sized.
@@ -100,9 +99,12 @@ impl Lowering<'_, '_> {
     pub(super) fn binary(&mut self, op: BinOp, left: &Operand, right: &Operand) -> Value {
         if let BinOp::Eq | BinOp::Ne = op
             && let Some(ty) = self.source_ty(self.source(left))
-            && let Shape::Aggregate(_) = self.layouts.of(&ty).shape
         {
-            return self.aggregates_compare(op, &ty, left, right);
+            match self.layouts.of(&ty).shape {
+                Shape::Aggregate(_) => return self.aggregates_compare(op, &ty, left, right),
+                Shape::String => return self.strings_compare(op, left, right),
+                _ => {}
+            }
         }
         let (scalar, left) = self.scalar(left);
         let (count, right) = self.scalar(right);
@@ -160,6 +162,12 @@ impl Lowering<'_, '_> {
             let right = self.aggregate_address(right);
             self.fields_equal(ty, left, right)
         };
+        self.comparison(op, equal)
+    }
+
+    /// `equal`, the `bool` of `==`, as the `bool` of `op`, which is `==` or
+    /// `!=`.
+    pub(super) fn comparison(&mut self, op: BinOp, equal: Value) -> Value {
         match op {
             BinOp::Eq => equal,
             _ => self.builder.ins().icmp_imm_u(IntCC::Equal, equal, 0),
@@ -182,9 +190,6 @@ impl Lowering<'_, '_> {
     /// floating-point field compares as `==` does: `-0.0` equals `0.0`, and
     /// NaN equals nothing.
     ///
-    /// # Panics
-    ///
-    /// With an internal error for a string field, which M1.12 brings.
     fn fields_equal(&mut self, ty: &Ty, left: Value, right: Value) -> Value {
         let mut equal = self.builder.ins().iconst(types::I8, 1);
         for (offset, field) in (0..).map_while(|index| self.layouts.field(ty, index)) {
@@ -200,7 +205,7 @@ impl Lowering<'_, '_> {
                     self.compare(&Conditions::EQUAL, scalar, a, b)
                 }
                 Shape::Aggregate(_) => self.fields_equal(&field, left, right),
-                Shape::String => fail(self.body, "the equality of a string field", "M1.12"),
+                Shape::String => self.strings_equal(left, right),
             };
             equal = self.builder.ins().band(equal, same);
         }
@@ -1211,20 +1216,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "UsersApi.F: the equality of a string field is not lowered until M1.12"
-    )]
-    fn the_equality_of_a_string_field_waits() {
-        jit_one(
-            "F(move a: (string, int), move b: (string, int)): bool => a == b;\n",
-            "F",
-        );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "an operator on `Const(Unit)`, which is not a scalar is not lowered until M1.12"
-    )]
+    #[should_panic(expected = "invalid MIR: an operator on `Const(Unit)`, which is not a scalar")]
     fn an_operator_on_a_unit_is_an_internal_error() {
         with_rvalue("F(move a: int, move b: int): bool => a == b;\n", |rvalue| {
             if let Rvalue::Binary(_, _, right) = rvalue {

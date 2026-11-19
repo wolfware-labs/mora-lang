@@ -6,6 +6,7 @@ mod checks;
 mod function;
 mod ops;
 mod runtime;
+mod strings;
 
 use std::fmt;
 use std::str::FromStr;

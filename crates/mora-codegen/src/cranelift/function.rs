@@ -9,11 +9,12 @@ use cranelift_codegen::isa::{CallConv, TargetFrontendConfig};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use mora_hir::Ty;
 use mora_mir::{
-    BlockId, Body, Callee, Const, LocalId, LocalTy, Operand, Place, Projection, Rvalue, Statement,
-    StatementKind, Terminator, TerminatorKind,
+    BinOp, BlockId, Body, Callee, Const, LocalId, LocalTy, Operand, Place, Projection, Rvalue,
+    Statement, StatementKind, Terminator, TerminatorKind,
 };
 use mora_span::Span;
 
+use super::aggregates::is_memory_value;
 use super::runtime::{Call, Env};
 use crate::abi::{FnAbi, PassMode};
 use crate::layout::{Layout, Layouts, Scalar, Shape};
@@ -139,7 +140,8 @@ fn abi_params(mode: PassMode, pointer: Type) -> Vec<AbiParam> {
 ///
 /// # Panics
 ///
-/// With an internal error for MIR that is not lowered until M1.12: a string.
+/// With an internal error for MIR that is not lowered yet: an interpolated
+/// string.
 pub(super) fn lower(
     func: &mut ir::Function,
     context: &mut FunctionBuilderContext,
@@ -306,15 +308,12 @@ impl Lowering<'_, '_> {
             StatementKind::Assign(place, Rvalue::Use(operand)) => {
                 let source = self.source(operand);
                 let layout = self.place_layout(place);
-                match layout.shape {
-                    // A zero-sized aggregate has no value to copy.
-                    Shape::Aggregate(_) if layout.size > 0 => {
-                        self.assign_aggregate(place, source, &layout);
-                    }
-                    _ => {
-                        let value = self.source_value(source);
-                        self.write(place, value);
-                    }
+                // A zero-sized aggregate has no value to copy.
+                if is_memory_value(&layout) {
+                    self.assign_aggregate(place, source, &layout);
+                } else {
+                    let value = self.source_value(source);
+                    self.write(place, value);
                 }
             }
             StatementKind::Assign(place, Rvalue::Aggregate(_, operands)) => {
@@ -323,6 +322,11 @@ impl Lowering<'_, '_> {
             StatementKind::Assign(place, Rvalue::Borrow(_, borrowed)) => {
                 let address = self.place_address(borrowed);
                 self.write(place, Some(address));
+            }
+            StatementKind::Assign(place, Rvalue::Binary(BinOp::Add, left, right))
+                if self.is_string(left) =>
+            {
+                self.concatenate(place, left, right);
             }
             StatementKind::Assign(place, Rvalue::Binary(op, left, right)) => {
                 let value = self.binary(*op, left, right);
@@ -626,7 +630,10 @@ impl Lowering<'_, '_> {
         match layout.shape {
             _ if layout.size == 0 => None,
             Shape::Scalar(scalar) => Some(scalar_type(scalar, self.pointer)),
-            ref shape => fail(self.body, &format!("a value of shape {shape:?}"), "M1.12"),
+            ref shape => broken(
+                self.body,
+                &format!("a value of shape {shape:?} read as a scalar"),
+            ),
         }
     }
 
@@ -710,7 +717,7 @@ impl Lowering<'_, '_> {
             Const::Bool(value) => i64::from(*value),
             Const::Char(value) => i64::from(u32::from(*value)),
             Const::Unit => return None,
-            Const::String(_) => fail(self.body, "a string constant", "M1.12"),
+            Const::String(_) => broken(self.body, "a string constant in a scalar"),
         };
         let ty = self.value_type(&self.layouts.of(&constant.ty()))?;
         let ins = self.builder.ins();
@@ -984,6 +991,7 @@ pub(in crate::cranelift) mod tests {
         };
         let (zero_message, path) = (data(0), data(1));
         let lines = mora_span::line_index(&db, file);
+        let strings = std::collections::HashMap::new();
         let env = Env {
             profile,
             calls,
@@ -991,6 +999,9 @@ pub(in crate::cranelift) mod tests {
             zero_message,
             path,
             path_len: "src/Program.mr".len(),
+            strings: &strings,
+            colocated: true,
+            big_endian: false,
             file,
             lines,
             db: &db,
@@ -1192,12 +1203,6 @@ pub(in crate::cranelift) mod tests {
             "Outer(): int { Inner(): int => 3; return Inner(); }\n",
             "Outer",
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "UsersApi.F: a string constant is not lowered until M1.12")]
-    fn a_string_constant_is_an_internal_error() {
-        jit_one("F() { let s = \"a\"; }\n", "F");
     }
 
     #[test]

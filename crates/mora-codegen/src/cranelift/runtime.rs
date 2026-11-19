@@ -3,7 +3,9 @@
 //! message with.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use cranelift_codegen::ir::Endianness;
 use cranelift_codegen::ir::{
     AbiParam, ExternalName, FuncRef, Function, GlobalValue, GlobalValueData, Signature, Type,
     UserExternalName, types,
@@ -13,6 +15,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use mora_span::{Db, LineIndex, SourceFile, Span, line_index};
 
 use super::cranelift_error;
+use super::strings::{define_literal, long_literals};
 use crate::Profile;
 use crate::error::CodegenError;
 use crate::layout::Layout;
@@ -32,6 +35,10 @@ pub(crate) enum RuntimeFn {
     Fmod = 2,
     /// `mora_rt_fmodf`: `%` on `float`.
     Fmodf = 3,
+    /// `mora_rt_string_concat`: `a + b` on `string`.
+    StringConcat = 4,
+    /// `mora_rt_string_eq`: `==` on `string`.
+    StringEq = 5,
 }
 
 impl RuntimeFn {
@@ -41,6 +48,8 @@ impl RuntimeFn {
         RuntimeFn::PanicOverflow,
         RuntimeFn::Fmod,
         RuntimeFn::Fmodf,
+        RuntimeFn::StringConcat,
+        RuntimeFn::StringEq,
     ];
 
     /// The symbol the runtime defines.
@@ -50,6 +59,8 @@ impl RuntimeFn {
             RuntimeFn::PanicOverflow => "mora_rt_panic_overflow",
             RuntimeFn::Fmod => "mora_rt_fmod",
             RuntimeFn::Fmodf => "mora_rt_fmodf",
+            RuntimeFn::StringConcat => "mora_rt_string_concat",
+            RuntimeFn::StringEq => "mora_rt_string_eq",
         }
     }
 
@@ -81,6 +92,13 @@ impl RuntimeFn {
             ),
             RuntimeFn::Fmod => (&[types::F64, types::F64], &[types::F64]),
             RuntimeFn::Fmodf => (&[types::F32, types::F32], &[types::F32]),
+            // The address of the parts, how many there are, and the address
+            // to write the result to. Strings always cross by address, so
+            // the convention of a target for a value of 16 bytes does not
+            // matter.
+            RuntimeFn::StringConcat => (&[pointer, pointer, pointer], &[]),
+            // The addresses of the two strings, and whether they are equal.
+            RuntimeFn::StringEq => (&[pointer, pointer], &[types::I8]),
         };
         signature
             .params
@@ -105,6 +123,9 @@ pub(super) struct Runtime {
     functions: Vec<FuncId>,
     zero_message: DataId,
     files: HashMap<SourceFile, FileData>,
+    // The object of each string literal longer than an inline string holds.
+    strings: HashMap<Arc<str>, DataId>,
+    big_endian: bool,
 }
 
 impl Runtime {
@@ -148,10 +169,19 @@ impl Runtime {
             };
             files.insert(file, data);
         }
+        let big_endian = module.isa().endianness() == Endianness::Big;
+        let mut strings = HashMap::new();
+        // In the order the literals first appear in, as the files are.
+        for text in long_literals(program) {
+            let id = define_literal(module, text, big_endian)?;
+            strings.insert(Arc::clone(text), id);
+        }
         Ok(Runtime {
             functions,
             zero_message,
             files,
+            strings,
+            big_endian,
         })
     }
 
@@ -189,6 +219,9 @@ impl Runtime {
             zero_message: data_symbol(func, self.zero_message, pic),
             path: data_symbol(func, file.path, pic),
             path_len: file.path_len,
+            strings: &self.strings,
+            colocated: pic,
+            big_endian: self.big_endian,
             file: function.key.file,
             lines: &file.lines,
             db: program.db(),
@@ -216,7 +249,7 @@ fn define_bytes<M: Module>(module: &mut M, bytes: &[u8]) -> Result<DataId, Codeg
 /// for an absolute address: Cranelift's position-independent sequences on Arm
 /// use relocations that its object writer has for ELF and Mach-O only. The
 /// same holds for a call of the runtime, `colocated` on its import.
-fn data_symbol(func: &mut Function, id: DataId, colocated: bool) -> GlobalValue {
+pub(super) fn data_symbol(func: &mut Function, id: DataId, colocated: bool) -> GlobalValue {
     // The namespace of data (cranelift-module).
     let name = func.declare_imported_user_function(UserExternalName::new(1, id.as_u32()));
     func.create_global_value(GlobalValueData::Symbol {
@@ -252,6 +285,15 @@ pub(super) struct Env<'a> {
     pub(super) path: GlobalValue,
     /// The length of the file's path.
     pub(super) path_len: usize,
+    /// The object of each string literal that does not fit in a string
+    /// value, by its text.
+    pub(super) strings: &'a HashMap<Arc<str>, DataId>,
+    /// Whether the data symbols of the module are colocated (see
+    /// [`data_symbol`]).
+    pub(super) colocated: bool,
+    /// Whether the target stores a multi-byte integer with its most
+    /// significant byte first.
+    pub(super) big_endian: bool,
     /// The file the function is in.
     pub(super) file: SourceFile,
     /// The line starts of the file.
@@ -351,6 +393,11 @@ mod tests {
         assert_eq!(
             signature(RuntimeFn::Fmodf),
             (vec![types::F32; 2], vec![types::F32])
+        );
+        assert_eq!(signature(RuntimeFn::StringConcat), (vec![p, p, p], vec![]));
+        assert_eq!(
+            signature(RuntimeFn::StringEq),
+            (vec![p, p], vec![types::I8])
         );
         let narrow = RuntimeFn::Panic.signature(types::I32, CallConv::SystemV);
         assert_eq!(narrow.params[0].value_type, types::I32);

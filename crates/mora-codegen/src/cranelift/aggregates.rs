@@ -2,7 +2,7 @@
 //! the words a value of up to two words crosses a call in.
 
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value};
-use mora_mir::{Operand, Place};
+use mora_mir::{Const, Operand, Place};
 
 use super::function::{Lowering, Source, broken};
 use crate::layout::{Layout, Shape};
@@ -10,6 +10,12 @@ use crate::layout::{Layout, Shape};
 /// The flags of an access to memory that holds a value passed in words: it
 /// cannot trap, and a local's slot can be less aligned than a word.
 const WORDS: MemFlagsData = MemFlagsData::new().with_notrap();
+
+/// Whether a value of `layout` is kept in memory and copied as bytes: a
+/// string, or an aggregate that is not zero-sized.
+pub(super) fn is_memory_value(layout: &Layout) -> bool {
+    layout.size > 0 && matches!(layout.shape, Shape::Aggregate(_) | Shape::String)
+}
 
 impl Lowering<'_, '_> {
     /// The address of a new slot that holds a value of `layout`, a whole
@@ -67,18 +73,23 @@ impl Lowering<'_, '_> {
     }
 
     /// Stores the value `source` reads at `address`, in memory no place
-    /// holds: a scalar is stored, and an aggregate is copied.
+    /// holds: a scalar is stored, an aggregate or a string is copied, and a
+    /// string literal is written.
     pub(super) fn store_source(&mut self, address: Value, source: Source<'_>) {
         let layout = self.source_layout(source);
-        if let (Source::Place(place), Shape::Aggregate(_)) = (source, &layout.shape)
-            && layout.size > 0
-        {
-            let from = self.place_address(place);
-            self.copy(address, from, &layout);
-        } else if let Some(value) = self.source_value(source) {
-            self.builder
-                .ins()
-                .store(MemFlagsData::trusted(), value, address, 0);
+        match source {
+            Source::Place(place) if is_memory_value(&layout) => {
+                let from = self.place_address(place);
+                self.copy(address, from, &layout);
+            }
+            Source::Const(Const::String(text)) => self.store_literal(address, text),
+            _ => {
+                if let Some(value) = self.source_value(source) {
+                    self.builder
+                        .ins()
+                        .store(MemFlagsData::trusted(), value, address, 0);
+                }
+            }
         }
     }
 
@@ -366,12 +377,6 @@ mod tests {
     #[should_panic(expected = "UsersApi.F: the statement `Assign(")]
     fn an_interpolated_string_is_an_internal_error() {
         jit_one("F(a: int) { let s = $\"{a}\"; }\n", "F");
-    }
-
-    #[test]
-    #[should_panic(expected = "UsersApi.F: a value of shape String is not lowered until M1.12")]
-    fn a_copy_of_a_string_is_an_internal_error() {
-        jit_one("F(move s: string) { let t = s; }\n", "F");
     }
 
     /// The first assignment of the body.

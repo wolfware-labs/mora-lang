@@ -359,6 +359,8 @@ mod tests {
             "mora_rt_panic_overflow",
             "mora_rt_fmod",
             "mora_rt_fmodf",
+            "mora_rt_string_concat",
+            "mora_rt_string_eq",
         ] {
             assert!(names.contains(&name), "{name}");
         }
