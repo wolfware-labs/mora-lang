@@ -492,12 +492,14 @@ mod tests {
                 &target,
                 Profile::Debug,
             );
-            let wide = object::File::parse(&*aggregates).unwrap();
-            assert_eq!(wide.architecture(), architecture, "{name}");
-            let file = object::File::parse(&*bytes).unwrap();
-            assert_eq!(file.format(), format, "{name}");
-            assert_eq!(file.architecture(), architecture, "{name}");
-            let defined = |wanted: &str, global: bool| {
+            // Two overloads, each under a symbol of its own.
+            let overloads = object_of(
+                "F(x: int): int => 1;\nF(x: uint): int => 2;\n\
+                 Main(): int { return F(1) + F(1u); }\n",
+                &target,
+                Profile::Debug,
+            );
+            let defined = |file: &object::File<'_>, wanted: &str, global: bool| {
                 file.symbols().any(|s| {
                     let name = s.name().unwrap();
                     let name = if format == BinaryFormat::MachO {
@@ -508,10 +510,44 @@ mod tests {
                     name == wanted && s.is_definition() && (!global || s.is_global())
                 })
             };
-            assert!(defined(MAIN, true), "{name}: no global {MAIN}");
-            assert!(defined(&symbol("Main"), false), "{name}: no Main");
-            assert!(!defined(&symbol("Main"), true), "{name}: Main is global");
+            let wide = object::File::parse(&*aggregates).unwrap();
+            assert_eq!(wide.architecture(), architecture, "{name}");
+            for function in ["MakeP", "MakeBig", "Take"] {
+                assert!(
+                    defined(&wide, &symbol(function), false),
+                    "{name}: no {function}"
+                );
+            }
+            let overloads = object::File::parse(&*overloads).unwrap();
+            for function in ["F(int)", "F(uint)"] {
+                assert!(
+                    defined(&overloads, &symbol(function), false),
+                    "{name}: no {function}"
+                );
+            }
+            let file = object::File::parse(&*bytes).unwrap();
+            assert_eq!(file.format(), format, "{name}");
+            assert_eq!(file.architecture(), architecture, "{name}");
+            assert!(defined(&file, MAIN, true), "{name}: no global {MAIN}");
+            assert!(defined(&file, &symbol("Main"), false), "{name}: no Main");
+            assert!(
+                !defined(&file, &symbol("Main"), true),
+                "{name}: Main is global"
+            );
         }
+    }
+
+    #[test]
+    fn overloads_run_side_by_side() {
+        let text = "struct P {\n    public X: int;\n}\n\
+                    F(x: int): int => 1;\nF(x: uint): int => 2;\nF(x: string): int => 3;\n\
+                    F(p: P): int => p.X;\nF(t: (int, long)): int => 5;\n\
+                    Main(): int { return F(1) * 10000 + F(1u) * 1000 + F(\"s\") * 100 + F(new P { X = 4 }) * 10 + F((1, 2L)); }\n";
+        let program = jit(text, Profile::Debug);
+        assert_eq!(program.run_main(), 12345);
+        let int: extern "C" fn(i32) -> i32 = func(&program, "F(int)");
+        let uint: extern "C" fn(u32) -> i32 = func(&program, "F(uint)");
+        assert_eq!((int(0), uint(0)), (1, 2));
     }
 
     #[test]

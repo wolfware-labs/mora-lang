@@ -2,12 +2,15 @@
 
 use std::collections::HashMap;
 
-use mora_hir::{BodyOwner, EntryPoint, ItemId, def_map, instance_fields};
+use mora_hir::{
+    BodyOwner, EntryPoint, ItemId, ItemKind, Signature, def_map, instance_fields, item_tree,
+    signature,
+};
 use mora_mir::{Body, Callee, TerminatorKind, mir};
 use mora_span::{Db, Project, SourceFile};
 
 use crate::error::CodegenError;
-use crate::mangle::mangle;
+use crate::mangle::{mangle, overload_segment};
 
 /// A body: the owner it belongs to, and its index in the owner's `Mir::bodies`
 /// (0 is the owner's own body).
@@ -113,7 +116,7 @@ impl<'db> Program<'db> {
             functions: vec![Function {
                 key,
                 body,
-                symbol: symbol_of(&body.name, project.root_namespace(db)),
+                symbol: symbol_of(&body.name, project.root_namespace(db), None),
             }],
             index,
             entry: FunctionId(0),
@@ -127,10 +130,16 @@ impl<'db> Program<'db> {
         };
         let id = function_id(self.functions.len());
         self.index.insert(key, id);
+        // A local function's name starts with its owner's, whose last
+        // segment an overload's parameter types follow.
+        let overload = overload(self.db, key).map(|segment| {
+            let owner = owner_mir.bodies[0].name.split('.').count() - 1;
+            (owner, segment)
+        });
         self.functions.push(Function {
             key,
             body,
-            symbol: symbol_of(&body.name, root),
+            symbol: symbol_of(&body.name, root, overload),
         });
     }
 
@@ -201,13 +210,66 @@ fn target_key(db: &dyn Db, from: BodyKey, callee: &Callee) -> Option<BodyKey> {
 }
 
 /// The symbol of a body named `name`. A body in the top-level statements is
-/// named below `top-level`, which stands for the root namespace.
-fn symbol_of(name: &str, root: &str) -> String {
-    let mut segments = name.split('.').peekable();
-    if segments.peek() == Some(&TOP_LEVEL) {
+/// named below `top-level`, which stands for the root namespace. `overload`
+/// replaces the segment at its position, that of an overloaded function, with
+/// the one that holds its parameter types.
+fn symbol_of(name: &str, root: &str, overload: Option<(usize, String)>) -> String {
+    let mut segments: Vec<&str> = name.split('.').collect();
+    if let Some((index, segment)) = &overload {
+        segments[*index] = segment;
+    }
+    if segments.first() == Some(&TOP_LEVEL) {
         mangle(root.split('.').chain(segments))
     } else {
         mangle(segments)
+    }
+}
+
+/// The segment of the function that owns `key` when other functions share
+/// its name, in its type or in its namespace, so that the overloads get
+/// symbols of their own (§13.7); `None` for any other body.
+fn overload(db: &dyn Db, key: BodyKey) -> Option<String> {
+    let BodyOwner::Item(idx) = key.owner else {
+        return None;
+    };
+    let tree = item_tree(db, key.file);
+    let item = tree.item(idx);
+    let shared = match item.parent {
+        Some(ty) => tree
+            .item(ty)
+            .members
+            .iter()
+            .filter(|&&member| {
+                let member = tree.item(member);
+                member.kind == ItemKind::Function && member.name == item.name
+            })
+            .count(),
+        None => {
+            let map = def_map(db, key.project);
+            map.file_namespace(key.file)
+                .and_then(|namespace| map.namespace(namespace).items.get(&item.name))
+                .map_or(0, |items| {
+                    items
+                        .iter()
+                        .filter(|other| {
+                            item_tree(db, other.file).item(other.item).kind == ItemKind::Function
+                        })
+                        .count()
+                })
+        }
+    };
+    let id = ItemId {
+        project: key.project,
+        file: key.file,
+        item: idx,
+    };
+    match signature(db, id) {
+        Signature::Function(function) if shared > 1 => Some(overload_segment(
+            &item.name,
+            function.params.iter().map(|param| &param.ty),
+            db,
+        )),
+        _ => None,
     }
 }
 
@@ -372,16 +434,47 @@ mod tests {
     }
 
     #[test]
+    fn overloads_add_their_parameter_types_to_their_segment() {
+        let db = TestDb::default();
+        let project = app_of(
+            &db,
+            "struct P {\n    public X: int;\n    G(): int => 1;\n    G(x: int): int => x;\n    H(): int => 2;\n}\n\
+             F(x: int): int { Inner(): int => 1; return Inner(); }\n\
+             F(p: P, t: (a: int, b: (string,))): int { Inner(): int => 2; return Inner(); }\n\
+             One(): int => 1;\n\
+             let p = new P { X = 1 };\n\
+             let x = F(1) + F(p, (1, (\"s\",))) + One() + p.G() + p.G(2) + p.H();\n",
+        );
+        let program = Program::collect(&db, project).unwrap();
+        let symbols = symbols(&program);
+        for wanted in [
+            mangle(["UsersApi", "F(int)"]),
+            mangle(["UsersApi", "F(int)", "Inner"]),
+            mangle(["UsersApi", "F(UsersApi.P,(int,(string,)))"]),
+            mangle(["UsersApi", "F(UsersApi.P,(int,(string,)))", "Inner"]),
+            mangle(["UsersApi", "P", "G()"]),
+            mangle(["UsersApi", "P", "G(int)"]),
+            mangle(["UsersApi", "P", "H"]),
+            symbol("One"),
+        ] {
+            assert!(symbols.contains(&wanted), "{wanted} not in {symbols:?}");
+        }
+    }
+
+    #[test]
     fn symbols_prefix_a_dotted_root_namespace() {
         assert_eq!(
-            symbol_of("top-level.Helper", "Acme.Users"),
+            symbol_of("top-level.Helper", "Acme.Users", None),
             mangle(["Acme", "Users", "top-level", "Helper"])
         );
         assert_eq!(
-            symbol_of("top-level", "Acme.Users"),
+            symbol_of("top-level", "Acme.Users", None),
             mangle(["Acme", "Users", "top-level"])
         );
-        assert_eq!(symbol_of("A.B.C", "Acme.Users"), mangle(["A", "B", "C"]));
+        assert_eq!(
+            symbol_of("A.B.C", "Acme.Users", None),
+            mangle(["A", "B", "C"])
+        );
     }
 
     #[test]
