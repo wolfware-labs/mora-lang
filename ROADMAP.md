@@ -543,7 +543,7 @@ Done when:
 - MIR lowers array creation `new T[n]` and signatures with an array type.
 - Runtime tests set `strong` to 2^31 - 1 and `weak` to 2^32 - 2 and show the next retain and the next weak retain abort with `reference count overflow`; a weak load of an object whose strong count is zero gives `none`; a release of an immortal object and a weak retain of one write nothing.
 - The size of an array allocation is computed with checked arithmetic in every profile: on the 32-bit test description, `new long[n]` with a length whose size wraps panics and allocates nothing.
-- `new T[n]` with a negative `n` panics with the message the spec gives.
+- `new T[n]` with a negative `n` ends as the spec then states (the proposal is a panic with a message the spec gives).
 - The 1,000,000-node release test also runs with a destructor on the node type that releases another list, so the work list is entered again while it runs.
 
 ### M2.4 Parameter modes and `this`
@@ -620,7 +620,7 @@ Done when:
 - `let s = box.Data.AsSpan();` compiles and the snapshot lives until `s`'s last use.
 - Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 - Run tests in both profiles: an index, a range start or end out of range, a start past the end, and a `^` index past the length each panic with the message of §11.4 on spans, `Memory<T>` and arrays; the bounds check does not rely on arithmetic that wraps in a release build.
-- `stackalloc` with a negative length, and with one larger than the limit the spec gives, panics; memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
+- `stackalloc` with a negative length, and with one larger than the limit, ends as the spec then states (the proposal is a panic); memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
 - Run test under the debug runtime: a `Span<T>` over a `Memory<T>` or an array is live while the last other reference to the array is dropped by a callee; the hidden reference of §10.6 keeps it alive.
 
 ### M2.10 Weak references and the cycle lint
