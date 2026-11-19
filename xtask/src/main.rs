@@ -88,7 +88,13 @@ fn run_error_codes() -> CommandResult {
 fn run_spec_examples() -> CommandResult {
     let repo = spec_examples::load(&root()).map_err(|err| err.to_string())?;
     let front_end = FrontEnd::with_runner(runner::build(&root())?);
+    // An example that panics, as a pending one whose construct is not lowered
+    // yet does, reports the message in its problem; the default hook would
+    // print it as well, on every run.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
     let outcome = spec_examples::check(&repo, &front_end);
+    std::panic::set_hook(hook);
     for problem in &outcome.problems {
         eprintln!("{problem}");
     }
