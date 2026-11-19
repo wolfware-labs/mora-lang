@@ -396,7 +396,7 @@ Done when:
 - Run tests interpolate every primitive type.
 - MIR has no `External` callee and no `Interpolate` rvalue, and diverging calls are known from their declarations: the M1.10 stand-ins are removed.
 - The strings run test prints `name.Length`.
-- "Compiling `Std`" means the source tree embedded in the toolchain and nothing else. UI tests: a project whose name is `std` or whose `namespace` is `Std` (or starts with `Std.`) is rejected with the code the spec assigns, and `unsafe`, `RawPtr<T>` and `@Cheap` in a user project are `MR0107` and `MR0254` whatever the project is called.
+- "Compiling `Std`" means the source tree embedded in the toolchain and nothing else. UI tests: a project whose root namespace resolves to `Std` or to a name that starts with `Std.` (by its `namespace` key, or by the default taken from a project named `std`, §4.2) is rejected with the code the spec assigns, and `unsafe`, `RawPtr<T>` and `@Cheap` in a user project are `MR0107` and `MR0254` whatever the project is called.
 
 ### M1.16 Driver and the build, run and check commands
 
