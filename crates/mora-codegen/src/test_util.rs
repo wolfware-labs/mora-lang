@@ -2,6 +2,7 @@
 
 use mora_diag::Severity;
 use mora_hir::test_support::{TestDb, app};
+use mora_rt_core::string::{BYTES_OFFSET, MoraString};
 use mora_span::Project;
 use mora_target::Target;
 
@@ -56,6 +57,25 @@ pub(crate) fn object_of(text: &str, target: &Target, profile: Profile) -> Vec<u8
     let project = app_of(&db, text);
     let program = Program::collect(&db, project).unwrap();
     Cranelift.object(&program, target, profile).unwrap()
+}
+
+/// The first `len` bytes of the object of the heap string `string`, which a
+/// test keeps alive: a literal's object lives as long as its program, and a
+/// built one until it is released, which no test does.
+pub(crate) fn object_bytes(string: &MoraString, len: usize) -> Vec<u8> {
+    assert!(!string.is_inline(), "an inline string has no object");
+    // SAFETY: a heap object holds its header and `capacity` bytes, and the
+    // callers read no more than the header and the string's length.
+    unsafe { std::slice::from_raw_parts(string.object(), len) }.to_vec()
+}
+
+/// The bytes of `string`: the ones inside the value, or those of its heap
+/// object (`object_bytes`).
+pub(crate) fn string_bytes(string: &MoraString) -> Vec<u8> {
+    if string.is_inline() {
+        return string.raw()[..string.len()].to_vec();
+    }
+    object_bytes(string, BYTES_OFFSET + string.len())[BYTES_OFFSET..].to_vec()
 }
 
 /// Set in the child process of a test that ends the process, as a panic of

@@ -140,7 +140,7 @@ mod tests {
 
     use super::super::function::tests::jit_one_with;
     use crate::Profile;
-    use crate::test_util::{child, func, jit, only_in_child};
+    use crate::test_util::{child, func, jit, only_in_child, string_bytes};
 
     /// What `F` writes to its `ref` string when it is `text`.
     fn built(text: &str) -> Vec<u8> {
@@ -150,8 +150,7 @@ mod tests {
         );
         let mut out = MoraString::EMPTY;
         func::<extern "C" fn(&mut MoraString)>(&program, "F")(&mut out);
-        // SAFETY: a built string is alive.
-        unsafe { out.as_bytes() }.to_vec()
+        string_bytes(&out)
     }
 
     #[test]
@@ -179,8 +178,7 @@ mod tests {
             let program = jit(&text, Profile::Debug);
             let mut out = MoraString::EMPTY;
             func::<extern "C" fn($rust, &mut MoraString)>(&program, "F")($value, &mut out);
-            // SAFETY: a built string is alive.
-            String::from_utf8(unsafe { out.as_bytes() }.to_vec()).unwrap()
+            String::from_utf8(string_bytes(&out)).unwrap()
         }};
     }
 
@@ -224,8 +222,7 @@ mod tests {
         let mut out = MoraString::EMPTY;
         let n = new_string(name.as_bytes());
         func::<extern "C" fn(&MoraString, &mut MoraString)>(&program, "F")(&n, &mut out);
-        // SAFETY: a built string is alive.
-        assert_eq!(unsafe { out.as_bytes() }, format!("<{name}>").as_bytes());
+        assert_eq!(string_bytes(&out), format!("<{name}>").as_bytes());
     }
 
     #[test]

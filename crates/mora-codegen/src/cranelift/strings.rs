@@ -293,7 +293,7 @@ mod tests {
 
     use super::*;
     use crate::Profile;
-    use crate::test_util::{func, jit, object_of};
+    use crate::test_util::{func, jit, object_bytes, object_of, string_bytes};
     use crate::{JitProgram, Program};
 
     /// A string in place of the empty one, which a test overwrites.
@@ -303,15 +303,13 @@ mod tests {
 
     /// The `u32` at `offset` of the object of the heap string `string`.
     fn object_word(string: &MoraString, offset: usize) -> u32 {
-        // SAFETY: a heap object starts with 12 readable bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(string.object().add(offset), 4) };
-        u32::from_ne_bytes(bytes.try_into().unwrap())
+        let bytes = object_bytes(string, offset + 4);
+        u32::from_ne_bytes(bytes[offset..].try_into().unwrap())
     }
 
     /// The text of `string`.
     fn text(string: &MoraString) -> Vec<u8> {
-        // SAFETY: a literal's object is immortal, and a built one is alive.
-        unsafe { string.as_bytes() }.to_vec()
+        string_bytes(string)
     }
 
     /// The value `Set` of `source` writes into its `ref` parameter, and the
@@ -363,10 +361,10 @@ mod tests {
         assert_eq!(object_word(&s, STRONG_OFFSET), IMMORTAL);
         assert_eq!(object_word(&s, WEAK_OFFSET), 0);
         assert_eq!(object_word(&s, CAPACITY_OFFSET), 36);
-        assert_eq!(text(&s), literal.as_bytes());
-        // SAFETY: the object holds its 36 bytes after the header.
-        let bytes = unsafe { std::slice::from_raw_parts(s.object().add(BYTES_OFFSET), 36) };
-        assert_eq!(bytes, literal.as_bytes());
+        assert_eq!(
+            object_bytes(&s, BYTES_OFFSET + 36)[BYTES_OFFSET..],
+            *literal.as_bytes()
+        );
     }
 
     #[test]
