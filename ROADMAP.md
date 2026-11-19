@@ -1525,7 +1525,7 @@ Done when:
 - A chunked body of more than the body limit gets 413 once the limit is passed, with at most the limit plus one 64 KiB step reserved; a `Content-Length` above the limit gets 413 before any of the body is read.
 - 64 clients that send a head with `Content-Length: 1048576` and then nothing never stop a 65th client from being served once the body read timeout the spec then gives has passed, also with `RequestTimeout` set to `none`; while it waits, the 65th client is either served or gets the 503 of §16.1 after 5 s, never a hang.
 - A request line or header value with bytes that are not valid UTF-8 gets the response the spec then states, and no `string` reached from `Request` holds invalid UTF-8 (checked with `FromUtf8` on its bytes).
-- `cargo fuzz` target over the connection state machine: arbitrary bytes on a connection never panic the server, never grow memory past the head limit plus the body budget, and never produce a response to bytes that are part of an earlier request's body.
+- `cargo fuzz` target over the connection state machine: arbitrary bytes on a connection never panic the server, never grow memory past the head limit of §16.1 for each open connection, a fixed amount of state per connection that the target states, and the body budget, and never produce a response to bytes that are part of an earlier request's body.
 
 ### M6.7 WebApp, routing and results
 
