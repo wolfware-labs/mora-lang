@@ -793,7 +793,7 @@ Done when:
 - UI tests: `x.y` on `T?` offers both fixes; after `if (u is none) return;` `u` has type `User`.
 - UI tests for the `T` to `T?` row of §5.10.
 - UI tests: `as` where the type cannot vary is `MR0210`, and `1 as long` offers the fix to `(long)1`.
-- UI tests, with the places and the ends of narrowing as §5.6 then states them: narrowing applies only to a place nothing else can write between the check and the use. A `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow and at the end of the branch the check guards, and at a loop back edge that can reach an assignment.
+- UI tests, with the places and the ends of narrowing as §5.6 then states them: narrowing applies only to a place nothing else can write between the check and the use. A `mut` field of a class, a `static mut`, an array or collection element, and a local captured by a closure that assigns it are not narrowed; a narrowed local loses its narrowing at an assignment, at a `ref` borrow, at the end of a branch that the check guards and that does not exit, and at a loop back edge that can reach an assignment. The example of §5.6 keeps working: after `if (user is none) return;` the variable has type `User` for the rest of the block.
 - A run test under the debug runtime for each of those: the code compiles only with `?.`, `??` or a new `is` test, and reads no payload of a `none`.
 
 ### M3.6 Operators, conversions and indexers
