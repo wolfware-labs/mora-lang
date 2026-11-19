@@ -1629,7 +1629,7 @@ Done when:
 
 Spec: [§17.9](docs/design/mora.md#179-vs-code-extension). Crates: `editors/vscode`. Blocked by: M7.4.
 
-The `wolfware.mora` extension: TextMate grammar, language configuration, snippets, the LSP client, status-bar version, the missing-toolchain prompt, and publishing to the Visual Studio Marketplace and Open VSX from the release workflow. The setting that names the `mora` executable is read from user settings only, never from a folder's settings. In a folder the editor has not marked as trusted the extension gives syntax colouring and snippets only and starts no process. The missing-toolchain prompt opens the install page of §19.3 or runs its install script, and downloads nothing else. To settle in the spec (§17.9): these three rules.
+The `wolfware.mora` extension: TextMate grammar, language configuration, snippets, the LSP client, status-bar version, the missing-toolchain prompt, and publishing to the Visual Studio Marketplace and Open VSX from the release workflow. The setting that names the `mora` executable is read from user settings only, never from a folder's settings. In a folder the editor has not marked as trusted the extension gives syntax colouring and snippets only and starts no process. The missing-toolchain prompt opens the install page of §19.3, runs its install script only in a trusted folder, and downloads nothing else. To settle in the spec (§17.9): these three rules.
 
 Done when:
 
