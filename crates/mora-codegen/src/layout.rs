@@ -82,6 +82,13 @@ impl<'db> Layouts<'db> {
         layout.size.next_multiple_of(self.pointer_bytes())
     }
 
+    /// The alignment of `layout`, at least that of a word, which is what a
+    /// slot needs so that a load or store of words is aligned: riscv64
+    /// traps or emulates one that is not.
+    pub fn word_align(&self, layout: &Layout) -> u32 {
+        layout.align.max(self.target.align.pointer)
+    }
+
     /// The layout of a value of `ty`.
     ///
     /// # Panics
@@ -510,6 +517,20 @@ mod tests {
         narrow.align.pointer = 4;
         let layouts = Layouts::new(&db, &narrow);
         assert_eq!(layouts.word_size(&layouts.of(&prim(Primitive::Short))), 4);
+    }
+
+    #[test]
+    fn slots_align_to_at_least_a_word() {
+        let db = TestDb::new();
+        let layouts = Layouts::new(&db, &x86_64());
+        let align = |ty: &Ty| layouts.word_align(&layouts.of(ty));
+        assert_eq!(align(&prim(Primitive::Byte)), 8);
+        assert_eq!(align(&tuple(vec![prim(Primitive::Int); 3])), 8);
+        assert_eq!(align(&Ty::String), 8);
+        let mut wide = x86_64();
+        wide.align.i64 = 16;
+        let layouts = Layouts::new(&db, &wide);
+        assert_eq!(layouts.word_align(&layouts.of(&prim(Primitive::Long))), 16);
     }
 
     #[test]

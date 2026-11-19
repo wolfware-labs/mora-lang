@@ -34,11 +34,15 @@ impl Lowering<'_, '_> {
         self.builder.ins().call(write_line, &[value]);
     }
 
-    /// Panics: `path` is not a call a stand-in lowers.
+    /// Panics: the call of `path`, a function of the standard library, is
+    /// not one a stand-in lowers.
     fn not_a_standin(&self, path: &[String]) -> ! {
         fail(
             self.body,
-            &format!("`{}` is a stand-in callee that", path.join(".")),
+            &format!(
+                "a call of `{}`, a standard library function,",
+                path.join(".")
+            ),
             "M1.15",
         )
     }
@@ -110,13 +114,15 @@ impl Lowering<'_, '_> {
         self.join_parts(array, pieces.len(), out);
     }
 
-    /// Writes at `part` the text of the hole that reads `value`.
+    /// Writes at `part` the text of the hole that reads `value`: a copy of a
+    /// string, or the text a stand-in formats.
     fn interpolated_part(&mut self, part: Value, value: &Operand) {
+        let source = self.source(value);
+        if self.source_layout(source).shape == Shape::String {
+            self.store_source(part, source);
+            return;
+        }
         match self.standin_operand(value) {
-            Some((StandinKind::String, _)) => {
-                let source = self.source(value);
-                self.store_source(part, source);
-            }
             Some((kind, value)) => {
                 let format = self.env.function(RuntimeFn::Format(kind));
                 self.builder.ins().call(format, &[value, part]);
@@ -293,7 +299,8 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "`Console.Write` is a stand-in callee that is not lowered until M1.15"
+        expected = "a call of `Console.Write`, a standard library function, is not lowered \
+                    until M1.15"
     )]
     fn other_callees_wait_for_the_standard_library() {
         jit("Console.Write(1);\n", Profile::Debug);
@@ -301,7 +308,8 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "`Console.WriteLine` is a stand-in callee that is not lowered until M1.15"
+        expected = "a call of `Console.WriteLine`, a standard library function, is not \
+                    lowered until M1.15"
     )]
     fn write_line_of_two_arguments_waits_for_the_standard_library() {
         jit("Console.WriteLine(1, 2);\n", Profile::Debug);

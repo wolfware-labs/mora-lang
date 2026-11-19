@@ -92,7 +92,7 @@ pub(crate) fn only_in_child(body: impl FnOnce()) {
 
 /// Runs the ignored test `test` of this crate in a child process, and
 /// returns what it wrote and how it ended. The child test returns at once
-/// unless [`in_child`].
+/// unless [`only_in_child`] runs it.
 pub(crate) fn child(test: &str) -> std::process::Output {
     std::process::Command::new(std::env::current_exe().unwrap())
         .args([

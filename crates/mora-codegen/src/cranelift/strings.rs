@@ -829,7 +829,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "which is not a string, used as one")]
+    #[should_panic(
+        expected = "UsersApi.F: invalid MIR: `Const(Int(1, Int))`, which is not a \
+                               string, used as one"
+    )]
     fn a_string_compared_with_a_scalar_is_an_internal_error() {
         first_assignment("F(a: string, b: string): bool => a == b;\n", |rvalue| {
             if let Rvalue::Binary(_, _, right) = rvalue {

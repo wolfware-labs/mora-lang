@@ -8,7 +8,7 @@ use super::function::{Lowering, Source, broken};
 use crate::layout::{Layout, Shape};
 
 /// The flags of an access to memory that holds a value passed in words: it
-/// cannot trap, and a local's slot can be less aligned than a word.
+/// cannot trap.
 const WORDS: MemFlagsData = MemFlagsData::new().with_notrap();
 
 /// Whether a value of `layout` is kept in memory and copied as bytes: a
@@ -19,13 +19,14 @@ pub(super) fn is_memory_value(layout: &Layout) -> bool {
 
 impl Lowering<'_, '_> {
     /// The address of a new slot that holds a value of `layout`, a whole
-    /// number of words in size so that a load of words stays inside it.
+    /// number of words in size and aligned to a word so that a load of words
+    /// stays inside it and is aligned.
     pub(super) fn temporary(&mut self, layout: &Layout) -> Value {
         let size = self.layouts.word_size(layout);
         let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             size,
-            layout.align.trailing_zeros() as u8,
+            self.layouts.word_align(layout).trailing_zeros() as u8,
         ));
         self.builder.ins().stack_addr(self.pointer, slot, 0)
     }

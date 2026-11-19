@@ -1,6 +1,7 @@
 //! The lowering of operators, comparisons and casts on scalars. Their
 //! results match those of constant evaluation bit for bit (§14.6), except
-//! that a checked operation wraps here.
+//! that a checked operation that overflows wraps in a release build; a debug
+//! build panics instead (checks.rs).
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Type, Value, types};
@@ -195,14 +196,14 @@ impl Lowering<'_, '_> {
     /// `right` are equal, field by field and inside nested aggregates. A
     /// floating-point field compares as `==` does: `-0.0` equals `0.0`, and
     /// NaN equals nothing.
-    ///
     fn fields_equal(&mut self, ty: &Ty, left: Value, right: Value) -> Value {
         let mut equal = self.builder.ins().iconst(types::I8, 1);
         for (offset, field) in (0..).map_while(|index| self.layouts.field(ty, index)) {
             let layout = self.layouts.of(&field);
             let (left, right) = (self.offset(left, offset), self.offset(right, offset));
+            // A zero-sized field is an aggregate with no fields, which is
+            // equal to any other.
             let same = match layout.shape {
-                _ if layout.size == 0 => continue,
                 Shape::Scalar(scalar) => {
                     let ty = scalar_type(scalar, self.pointer);
                     let flags = MemFlagsData::trusted();
@@ -433,7 +434,7 @@ mod tests {
              MulL(move a: long, move b: long): long => a * b;\n\
              MulU(move a: ulong, move b: ulong): ulong => a * b;\n\
              AddU(move a: uint, move b: uint): uint => a + b;\n\
-             DivD(move a: double, move b: double): double => a - b;\n",
+             SubD(move a: double, move b: double): double => a - b;\n",
         );
         assert_eq!(
             program.get::<extern "C" fn(i32, i32) -> i32>("Add")(40, 2),
@@ -469,7 +470,7 @@ mod tests {
             4_000_000_005
         );
         assert_eq!(
-            program.get::<extern "C" fn(f64, f64) -> f64>("DivD")(5.0, 2.5),
+            program.get::<extern "C" fn(f64, f64) -> f64>("SubD")(5.0, 2.5),
             2.5
         );
     }
@@ -883,8 +884,9 @@ mod tests {
         debug(&text)
     }
 
-    /// Checks `$value as $to` for each integer `$to` against the cast
-    /// function the program has.
+    /// Checks `$value as $to` for each `$to` against the cast function the
+    /// program has. A float cast to an integer saturates and takes NaN to 0,
+    /// as `as` does.
     macro_rules! casts_to {
         ($program:ident, $from:ty, $name:literal, $values:expr, [$($to:ty => $to_name:literal),*]) => {
             $(
@@ -925,19 +927,6 @@ mod tests {
         );
         from!(isize, "nint", [0isize, -1, 300, isize::MAX, isize::MIN]);
         from!(usize, "nuint", [0usize, 300, 1 << 63, usize::MAX]);
-    }
-
-    /// Checks `value as $to` for a float `$from` against the cast function
-    /// the program has, comparing the bits of a float and NaN as NaN.
-    macro_rules! float_casts {
-        ($program:ident, $from:ty, $name:literal, $values:expr, [$($to:ty => $to_name:literal),*]) => {
-            $(
-                let f = $program.get::<extern "C" fn($from) -> $to>(concat!("Cast_", $name, "_", $to_name));
-                for value in $values {
-                    assert_eq!(f(value), value as $to, "({}){:?}", $to_name, value);
-                }
-            )*
-        };
     }
 
     #[test]
@@ -983,7 +972,7 @@ mod tests {
         let singles = doubles.map(|v| v as f32);
         macro_rules! targets {
             ($from:ty, $name:literal, $values:expr) => {
-                float_casts!(program, $from, $name, $values, [
+                casts_to!(program, $from, $name, $values, [
                     u8 => "byte", i8 => "sbyte", i16 => "short", u16 => "ushort", i32 => "int",
                     u32 => "uint", i64 => "long", u64 => "ulong", isize => "nint", usize => "nuint"
                 ]);
@@ -1194,6 +1183,22 @@ mod tests {
         let flags = func::<extern "C" fn(bool, bool) -> bool>(&program, "Flags");
         assert!(flags(true, true));
         assert!(!flags(true, false));
+    }
+
+    #[test]
+    fn zero_sized_structs_are_built_copied_and_compared() {
+        let program = jit(
+            "struct E {}\nstruct H {\n    public E: E;\n    public X: int;\n}\n\
+             Empty(): bool { let a = new E {}; let b = a; return a == b; }\n\
+             Holder(x: int, y: int): bool {\n    let a = new H { E = new E {}, X = x };\n\
+             \x20   var b = a;\n    b = new H { E = new E {}, X = y };\n    return a == b;\n}\n\
+             Empty();\nHolder(1, 2);\n",
+            Profile::Debug,
+        );
+        assert!(func::<extern "C" fn() -> bool>(&program, "Empty")());
+        let holder = func::<extern "C" fn(i32, i32) -> bool>(&program, "Holder");
+        assert!(holder(3, 3));
+        assert!(!holder(3, 4));
     }
 
     #[test]

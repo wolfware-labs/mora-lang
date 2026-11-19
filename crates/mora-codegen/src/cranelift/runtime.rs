@@ -398,10 +398,11 @@ impl Env<'_> {
         self.functions[function.index()]
     }
 
-    /// The line and column, counting from 1, where `span` starts.
-    pub(super) fn location(&self, span: Span) -> (u32, u32) {
+    /// The line and column, counting from 1, where `span` starts; `None`
+    /// when it starts outside the file.
+    pub(super) fn location(&self, span: Span) -> Option<(u32, u32)> {
         let start = u32::from(span.range.start()) as usize;
-        mora_diag::line_column(self.file.text(self.db), self.lines, start).unwrap_or((0, 0))
+        mora_diag::line_column(self.file.text(self.db), self.lines, start)
     }
 }
 
@@ -444,8 +445,16 @@ mod tests {
                 .map(|file| runtime.files[file].path.as_u32())
                 .collect();
             // After the runtime's message, one object per file, in order.
+            // Nothing calls `H`, so `Other.mr` has no function in the
+            // program and no object.
             let first = runtime.zero_message.as_u32() + 1;
             assert_eq!(seen.len(), 2);
+            assert!(
+                program
+                    .functions()
+                    .iter()
+                    .all(|function| function.key.file.path(&db) != "src/Other.mr")
+            );
             assert_eq!(ids, [first, first + 1]);
         }
     }

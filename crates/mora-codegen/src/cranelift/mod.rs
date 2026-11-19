@@ -45,8 +45,10 @@ impl Backend for Cranelift {
         target: &Target,
         profile: Profile,
     ) -> Result<Vec<u8>, CodegenError> {
-        // COFF has no position-independent code: the linker adjusts the
-        // addresses an image holds.
+        // Cranelift's object writer lacks the COFF relocations of its
+        // position-independent sequences on aarch64 (see `data_symbol`), so
+        // a COFF object holds absolute addresses, which the linker's base
+        // relocations adjust.
         let isa = isa(target, profile, target.object_format != ObjectFormat::Coff)?;
         let builder =
             ObjectBuilder::new(isa, "mora", default_libcall_names()).map_err(cranelift_error)?;

@@ -34,7 +34,7 @@ pub(super) enum Storage {
         /// The size in bytes, a multiple of the pointer size; 0 for a
         /// zero-sized local whose address is taken.
         size: u32,
-        /// The alignment in bytes.
+        /// The alignment in bytes, at least that of a word.
         align: u32,
     },
 }
@@ -57,7 +57,7 @@ pub(super) fn storage(body: &Body, layouts: &Layouts<'_>, pointer: Type) -> Vec<
                 }
                 _ => Storage::Slot {
                     size: layouts.word_size(&layout),
-                    align: layout.align,
+                    align: layouts.word_align(&layout),
                 },
             }
         })
@@ -879,9 +879,10 @@ pub(in crate::cranelift) mod tests {
             storage_by_name(text, None),
             [
                 ("_0".to_owned(), Storage::None),
-                ("n".to_owned(), slot(8, 4)),
-                ("t".to_owned(), slot(8, 4)),
-                ("s".to_owned(), slot(8, 1)),
+                // Slots are whole words, aligned to a word.
+                ("n".to_owned(), slot(8, 8)),
+                ("t".to_owned(), slot(8, 8)),
+                ("s".to_owned(), slot(8, 8)),
                 ("b".to_owned(), Storage::Variable(types::I8)),
                 ("l".to_owned(), Storage::Variable(types::I64)),
             ]
@@ -1428,8 +1429,8 @@ pub(in crate::cranelift) mod tests {
 
     #[test]
     #[should_panic(
-        expected = "internal error generating code for top-level: `Console.Write` \
-                               is a stand-in callee that is not lowered until M1.15"
+        expected = "internal error generating code for top-level: a call of `Console.Write`, \
+                    a standard library function, is not lowered until M1.15"
     )]
     fn external_callees_wait_for_the_standard_library() {
         jit("Console.Write(1);\n", Profile::Debug);

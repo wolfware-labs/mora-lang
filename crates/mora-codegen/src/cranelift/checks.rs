@@ -235,8 +235,15 @@ impl Lowering<'_, '_> {
 
     /// The file, its length, and the line and column of the statement being
     /// lowered, the leading arguments of every panic.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error when the statement's source starts outside its
+    /// file, which no MIR lowering gives.
     fn location_args(&mut self) -> [Value; 4] {
-        let (line, column) = self.env.location(self.span);
+        let Some((line, column)) = self.env.location(self.span) else {
+            broken(self.body, "a source location outside its file");
+        };
         let path = self.builder.ins().symbol_value(self.pointer, self.env.path);
         let length = self.constant_of(self.pointer, self.env.path_len as i64);
         let line = self.constant_of(types::I32, i64::from(line));
@@ -324,6 +331,24 @@ mod tests {
     const INT_DIV: &str = "F(move a: int, move b: int): int => a / b;\n";
     const INT_REM: &str = "F(move a: int, move b: int): int => a % b;\n";
     const LONG_DIV: &str = "F(move a: long, move b: long): long => a / b;\n";
+
+    #[test]
+    #[should_panic(
+        expected = "internal error generating code for UsersApi.F: invalid MIR: a source \
+                    location outside its file"
+    )]
+    fn a_check_at_a_span_outside_its_file_is_an_internal_error() {
+        jit_one_with_in(INT_ADD, "F", Profile::Debug, |body| {
+            let past = mora_span::TextRange::empty(100_000.into());
+            for statement in body
+                .blocks
+                .iter_mut()
+                .flat_map(|block| &mut block.statements)
+            {
+                statement.span.range = past;
+            }
+        });
+    }
 
     #[test]
     fn debug_add_overflow_panics_with_the_operands() {
