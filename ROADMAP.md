@@ -383,7 +383,7 @@ Done when:
 - With a test hook that replaces the `/usr/bin/xcrun` path with one that does not exist, or makes it report no developer tools, the missing-tool error on macOS carries the `xcode-select --install` hint.
 - On Linux and Windows the linker, the start files and the libraries are taken from the toolchain directory by absolute path. A test puts a decoy `ld.lld` (`lld-link.exe` on Windows) first on `PATH` and in the project directory and shows it is not run; on macOS `xcrun` is started as `/usr/bin/xcrun`.
 - Every linker argument is passed as one argument, never through a shell, and each path or name taken from the project is passed so that it cannot be read as an option or split in a response file: a test links a project whose folder name starts with `-` and contains a space and a quote.
-- A run test calls a function whose frame is larger than the guard page (a multi-megabyte struct local) near the stack limit and prints `stack overflow` (§13.10) on every Tier 1 target, since M1.12 probes every page of such a frame.
+- A run test calls a function whose frame is larger than the guard page (a multi-megabyte struct local) near the stack limit and prints `stack overflow` (§13.10) on every Tier 1 target, since M1.12 probes such a frame on entry as §13.10 then states.
 
 ### M1.15 Standard library bootstrap and console output
 
@@ -621,7 +621,7 @@ Done when:
 - `let s = box.Data.AsSpan();` compiles and the snapshot lives until `s`'s last use.
 - Calls of a `params` function are checked and lowered, with their arguments collected into a span; until then such a call reports that it is not lowered until M2.9.
 - Run tests in both profiles: an index, a range start or end out of range, a start past the end, and a `^` index past the length each panic with the message of §11.4 on spans and arrays, and a range start or end out of range does too on a slice of a `Memory<T>`; the bounds check does not rely on arithmetic that wraps in a release build.
-- `stackalloc` with a negative length, and with one larger than the limit, ends as the spec then states; memory it returns is probed page by page, so a length near the stack limit gives `stack overflow` (§13.10), and its span cannot leave its block (`MR0343`).
+- `stackalloc` with a negative length, and with one larger than the limit, ends as the spec then states; memory it returns is probed as §13.10 then states, so a length near the stack limit gives `stack overflow`, and its span cannot leave its block (`MR0343`).
 - Run test under the debug runtime: a `Span<T>` over a `Memory<T>` or an array is live while the last other reference to the array is dropped by a callee; the hidden reference of §10.6 keeps it alive.
 
 ### M2.10 Weak references and the cycle lint
