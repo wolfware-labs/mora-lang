@@ -1,7 +1,8 @@
 //! How a value or a function crosses a call: the pass mode of each parameter
 //! and of the result.
 
-use mora_mir::{Body, LocalId};
+use mora_hir::Ty;
+use mora_mir::{Body, BorrowMode, LocalId, LocalTy};
 
 use crate::layout::{Layout, Layouts, Scalar, Shape};
 
@@ -14,7 +15,7 @@ pub enum PassMode {
     Direct(Scalar),
     /// In this many pointer-sized words.
     Words(u8),
-    /// By a pointer to memory the caller owns.
+    /// By a pointer to a copy the callee owns.
     Indirect,
 }
 
@@ -49,18 +50,43 @@ pub struct FnAbi {
 
 impl FnAbi {
     /// The pass modes of `body`: its parameters are the locals `1..=params`
-    /// and its result is `_0`.
+    /// and its result is `_0`. An `in` parameter that passes the value it
+    /// borrows ([`borrowed_value`]) is passed as that value.
     pub fn of(body: &Body, layouts: &Layouts<'_>) -> FnAbi {
         let mode = |local: usize| {
-            PassMode::of(
-                &layouts.of_local(&body.locals[local].ty),
-                layouts.pointer_bytes(),
-            )
+            let ty = &body.locals[local].ty;
+            let layout = borrowed_value(ty, layouts).unwrap_or_else(|| layouts.of_local(ty));
+            PassMode::of(&layout, layouts.pointer_bytes())
         };
         FnAbi {
             params: (1..=body.params).map(mode).collect(),
             ret: mode(LocalId::RETURN.0 as usize),
         }
+    }
+}
+
+/// The layout of the value that a local of type `ty` passes in place of its
+/// address, when it is an `in` borrow of a plain value of at most two words
+/// (§10.3, §13.7); `None` for any other local, which a larger or non-plain
+/// `in` borrow and every `ref` borrow pass by address.
+pub fn borrowed_value(ty: &LocalTy, layouts: &Layouts<'_>) -> Option<Layout> {
+    let LocalTy::Borrow(BorrowMode::In, ty) = ty else {
+        return None;
+    };
+    let layout = layouts.of(ty);
+    (layout.size <= 2 * layouts.pointer_bytes() && is_plain(ty, layouts)).then_some(layout)
+}
+
+/// Whether `ty` is plain: it holds no reference of any kind (§10.3), so a
+/// copy of its bytes is a value of it. A string holds one to its heap
+/// object, and a type a later milestone lowers may hold one.
+fn is_plain(ty: &Ty, layouts: &Layouts<'_>) -> bool {
+    match ty {
+        Ty::Primitive(_) => true,
+        Ty::Tuple(_) | Ty::Struct(_) => (0..)
+            .map_while(|index| layouts.field(ty, index))
+            .all(|(_, field)| is_plain(&field, layouts)),
+        _ => false,
     }
 }
 
@@ -137,7 +163,9 @@ mod tests {
         let project = app_of(
             &db,
             "struct S {\n    public A: long;\n    public B: int;\n}\n\n\
-             F(a: int, move s: S): S {\n    return s;\n}\n",
+             F(a: int, move s: S): S {\n    return s;\n}\n\
+             struct W {\n    public S: string;\n}\n\
+             G(s: string, t: (long, long, long), q: S, ref r: int, u: (), w: W, o: (string,)) {}\n",
         );
         let file = file_named(&db, project, "src/Program.mr");
         let item = item_named(&db, project, file, "F");
@@ -146,9 +174,33 @@ mod tests {
         assert_eq!(
             FnAbi::of(&mir.bodies[0], &layouts),
             FnAbi {
-                params: vec![PassMode::Direct(Scalar::Pointer), PassMode::Words(2)],
+                params: vec![
+                    PassMode::Direct(Scalar::Int {
+                        bytes: 4,
+                        signed: true
+                    }),
+                    PassMode::Words(2)
+                ],
                 ret: PassMode::Words(2),
             }
+        );
+        // An `in` string, or a struct or a tuple that holds one, holds a
+        // reference, and a triple is too large, so they pass their address,
+        // as a `ref` does; a plain pair of words and a zero-sized value pass
+        // as values.
+        let item = item_named(&db, project, file, "G");
+        let mir = mora_mir::mir(&db, project, file, BodyOwner::Item(item.item));
+        assert_eq!(
+            FnAbi::of(&mir.bodies[0], &layouts).params,
+            [
+                PassMode::Direct(Scalar::Pointer),
+                PassMode::Direct(Scalar::Pointer),
+                PassMode::Words(2),
+                PassMode::Direct(Scalar::Pointer),
+                PassMode::Ignore,
+                PassMode::Direct(Scalar::Pointer),
+                PassMode::Direct(Scalar::Pointer),
+            ]
         );
     }
 }

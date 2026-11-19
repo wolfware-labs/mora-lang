@@ -773,13 +773,13 @@ mod tests {
                 &MoraString,
                 &MoraString,
                 &MoraString,
-                &bool,
+                bool,
                 &mut MoraString,
             ),
         >(&program, "Pick");
-        pick(&a, &b, &c, &d, &true, &mut out);
+        pick(&a, &b, &c, &d, true, &mut out);
         assert_eq!(text(&out), b"fifteen bytes!!-cd");
-        pick(&a, &b, &c, &d, &false, &mut out);
+        pick(&a, &b, &c, &d, false, &mut out);
         assert_eq!(text(&out), b"fifteen bytes!!-and some more");
     }
 

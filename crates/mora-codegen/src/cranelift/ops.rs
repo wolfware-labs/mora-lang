@@ -1168,32 +1168,32 @@ mod tests {
              Last(1, 2);\nNan(1.0);\nNanNe(1.0);\nNested(1, 2);\nFlags(true, false);\n",
             Profile::Debug,
         );
-        let ints = |name| func::<extern "C" fn(&i32, &i32) -> bool>(&program, name);
-        assert!(ints("Tup")(&3, &3));
-        assert!(!ints("Tup")(&3, &4));
-        assert!(func::<extern "C" fn(&i32) -> bool>(&program, "Zero")(&3));
-        assert!(ints("Same")(&5, &5));
-        assert!(!ints("Same")(&5, &6));
-        assert!(!ints("Differs")(&5, &5));
-        assert!(ints("Differs")(&5, &6));
-        let doubles = func::<extern "C" fn(&f64, &f64) -> bool>(&program, "Middle");
-        assert!(doubles(&1.5, &1.5));
-        assert!(!doubles(&1.5, &2.5));
-        let bytes = func::<extern "C" fn(&u8, &u8) -> bool>(&program, "Last");
-        assert!(bytes(&9, &9));
-        assert!(!bytes(&9, &8));
+        let ints = |name| func::<extern "C" fn(i32, i32) -> bool>(&program, name);
+        assert!(ints("Tup")(3, 3));
+        assert!(!ints("Tup")(3, 4));
+        assert!(func::<extern "C" fn(i32) -> bool>(&program, "Zero")(3));
+        assert!(ints("Same")(5, 5));
+        assert!(!ints("Same")(5, 6));
+        assert!(!ints("Differs")(5, 5));
+        assert!(ints("Differs")(5, 6));
+        let doubles = func::<extern "C" fn(f64, f64) -> bool>(&program, "Middle");
+        assert!(doubles(1.5, 1.5));
+        assert!(!doubles(1.5, 2.5));
+        let bytes = func::<extern "C" fn(u8, u8) -> bool>(&program, "Last");
+        assert!(bytes(9, 9));
+        assert!(!bytes(9, 8));
         // NaN equals nothing, itself included.
-        let nan = func::<extern "C" fn(&f64) -> bool>(&program, "Nan");
-        assert!(nan(&1.0));
-        assert!(!nan(&f64::NAN));
-        let nan_ne = func::<extern "C" fn(&f64) -> bool>(&program, "NanNe");
-        assert!(!nan_ne(&1.0));
-        assert!(nan_ne(&f64::NAN));
-        assert!(ints("Nested")(&2, &2));
-        assert!(!ints("Nested")(&2, &3));
-        let flags = func::<extern "C" fn(&bool, &bool) -> bool>(&program, "Flags");
-        assert!(flags(&true, &true));
-        assert!(!flags(&true, &false));
+        let nan = func::<extern "C" fn(f64) -> bool>(&program, "Nan");
+        assert!(nan(1.0));
+        assert!(!nan(f64::NAN));
+        let nan_ne = func::<extern "C" fn(f64) -> bool>(&program, "NanNe");
+        assert!(!nan_ne(1.0));
+        assert!(nan_ne(f64::NAN));
+        assert!(ints("Nested")(2, 2));
+        assert!(!ints("Nested")(2, 3));
+        let flags = func::<extern "C" fn(bool, bool) -> bool>(&program, "Flags");
+        assert!(flags(true, true));
+        assert!(!flags(true, false));
     }
 
     #[test]
@@ -1202,9 +1202,9 @@ mod tests {
             "Left(a: int): bool => 1 == a;\nUnits(): bool => () == ();\nLeft(1);\nUnits();\n",
             Profile::Debug,
         );
-        let left = func::<extern "C" fn(&i32) -> bool>(&program, "Left");
-        assert!(left(&1));
-        assert!(!left(&2));
+        let left = func::<extern "C" fn(i32) -> bool>(&program, "Left");
+        assert!(left(1));
+        assert!(!left(2));
         assert!(func::<extern "C" fn() -> bool>(&program, "Units")());
     }
 

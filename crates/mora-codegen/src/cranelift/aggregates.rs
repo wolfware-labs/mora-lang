@@ -175,14 +175,17 @@ mod tests {
         let mut bytes = Bytes([0; 16]);
         bytes.0[8..12].copy_from_slice(&7i32.to_ne_bytes());
         bytes.0[12] = 3;
+        // The struct is plain and two words long, so `in` passes its words.
+        let (low, high) = bytes.0.split_at(8);
+        let words = [low, high].map(|word| u64::from_ne_bytes(word.try_into().unwrap()));
         let get_c = jit_one(text, "GetC");
         assert_eq!(
-            func::<extern "C" fn(&Bytes) -> i32>(&get_c, "GetC")(&bytes),
+            func::<extern "C" fn(u64, u64) -> i32>(&get_c, "GetC")(words[0], words[1]),
             7
         );
         let get_a = jit_one(text, "GetA");
         assert_eq!(
-            func::<extern "C" fn(&Bytes) -> u8>(&get_a, "GetA")(&bytes),
+            func::<extern "C" fn(u64, u64) -> u8>(&get_a, "GetA")(words[0], words[1]),
             3
         );
     }
@@ -195,7 +198,7 @@ mod tests {
              Take(move p: P): int => p.X + p.Y + p.Z;\n\
              Run(a: int): int => Take(Make(a));\nRun(1);\n",
         );
-        assert_eq!(func::<extern "C" fn(&i32) -> i32>(&program, "Run")(&1), 6);
+        assert_eq!(func::<extern "C" fn(i32) -> i32>(&program, "Run")(1), 6);
     }
 
     #[test]
@@ -206,11 +209,11 @@ mod tests {
              TakeBig(move b: Big): long => b.A + b.B + b.C;\n\
              Run(x: long): long => TakeBig(MakeBig(x));\nRun(10);\n",
         );
-        assert_eq!(func::<extern "C" fn(&i64) -> i64>(&program, "Run")(&10), 33);
+        assert_eq!(func::<extern "C" fn(i64) -> i64>(&program, "Run")(10), 33);
         // The host reads the result as a struct returned by value, and
         // passes the address of a copy the callee owns.
-        let make = func::<extern "C" fn(&i64) -> Big>(&program, "MakeBig");
-        let big = make(&5);
+        let make = func::<extern "C" fn(i64) -> Big>(&program, "MakeBig");
+        let big = make(5);
         assert_eq!(big, Big { a: 5, b: 6, c: 7 });
         let take = func::<extern "C" fn(&Big) -> i64>(&program, "TakeBig");
         assert_eq!(take(&big), 18);
@@ -228,10 +231,10 @@ mod tests {
         let mut expected = [0u8; 5];
         expected[..4].copy_from_slice(&5i32.to_ne_bytes());
         expected[4] = 1;
-        let pair = func::<extern "C" fn(&i32, &bool) -> u64>(&program, "Pair");
-        let record = func::<extern "C" fn(&i32, &bool) -> u64>(&program, "Record");
-        assert_eq!(pair(&5, &true).to_ne_bytes()[..5], expected);
-        assert_eq!(record(&5, &true).to_ne_bytes()[..5], expected);
+        let pair = func::<extern "C" fn(i32, bool) -> u64>(&program, "Pair");
+        let record = func::<extern "C" fn(i32, bool) -> u64>(&program, "Record");
+        assert_eq!(pair(5, true).to_ne_bytes()[..5], expected);
+        assert_eq!(record(5, true).to_ne_bytes()[..5], expected);
     }
 
     #[test]
@@ -241,8 +244,8 @@ mod tests {
              Swap(x: int, y: int): int {\n    var p = new P { X = x, Y = y };\n\
              \x20   p = new P { X = p.Y, Y = p.X };\n    p = Flip(p);\n    p = Flip(p);\n\
              \x20   return p.X * 10 + p.Y;\n}\nSwap(1, 2);\n");
-        let swap = func::<extern "C" fn(&i32, &i32) -> i32>(&program, "Swap");
-        assert_eq!(swap(&1, &2), 21);
+        let swap = func::<extern "C" fn(i32, i32) -> i32>(&program, "Swap");
+        assert_eq!(swap(1, 2), 21);
     }
 
     #[test]
@@ -251,7 +254,7 @@ mod tests {
             "struct P {\n    public X: int = 4;\n    public Y: int;\n}\n\
              GetX(y: int): int { let p = new P { Y = y }; return p.X + p.Y; }\nGetX(1);\n",
         );
-        assert_eq!(func::<extern "C" fn(&i32) -> i32>(&program, "GetX")(&1), 5);
+        assert_eq!(func::<extern "C" fn(i32) -> i32>(&program, "GetX")(1), 5);
     }
 
     #[test]
@@ -267,10 +270,10 @@ mod tests {
              let q = p.Scaled(2); return q.X * 100 + q.Y; }\n\
              Length(3, 4);\nScaled(3, 4);\n",
         );
-        let length = func::<extern "C" fn(&i32, &i32) -> i32>(&program, "Length");
-        assert_eq!(length(&3, &4), 25);
-        let scaled = func::<extern "C" fn(&i32, &i32) -> i32>(&program, "Scaled");
-        assert_eq!(scaled(&3, &4), 608);
+        let length = func::<extern "C" fn(i32, i32) -> i32>(&program, "Length");
+        assert_eq!(length(3, 4), 25);
+        let scaled = func::<extern "C" fn(i32, i32) -> i32>(&program, "Scaled");
+        assert_eq!(scaled(3, 4), 608);
     }
 
     #[test]
@@ -285,15 +288,16 @@ mod tests {
              To = new P { X = 3, Y = x }, Tag = 9 };\n    let t = l.To;\n\
              \x20   return Sum(l.From) * 100 + Sum(t) * 10 + l.To.Y;\n}\n\
              Copy(1, 2);\nParam(new P { X = 1, Y = 2 });\nInner(4);\n");
-        let ints = func::<extern "C" fn(&i32, &i32) -> i32>(&program, "Copy");
-        assert_eq!(ints(&1, &2), 12);
-        let (x, y) = (5, 6);
-        let point = [x, y];
-        let param = func::<extern "C" fn(&[i32; 2]) -> i32>(&program, "Param");
-        assert_eq!(param(&point), 56);
+        let ints = func::<extern "C" fn(i32, i32) -> i32>(&program, "Copy");
+        assert_eq!(ints(1, 2), 12);
+        let mut point = [0u8; 8];
+        point[..4].copy_from_slice(&5i32.to_ne_bytes());
+        point[4..].copy_from_slice(&6i32.to_ne_bytes());
+        let param = func::<extern "C" fn(u64) -> i32>(&program, "Param");
+        assert_eq!(param(u64::from_ne_bytes(point)), 56);
         // From = (4, 2) sums to 6, To = (3, 4) to 7.
-        let inner = func::<extern "C" fn(&i32) -> i32>(&program, "Inner");
-        assert_eq!(inner(&4), 6 * 100 + 7 * 10 + 4);
+        let inner = func::<extern "C" fn(i32) -> i32>(&program, "Inner");
+        assert_eq!(inner(4), 6 * 100 + 7 * 10 + 4);
     }
 
     #[test]
@@ -313,13 +317,10 @@ mod tests {
              \x20   return TakePair(MakePair(1.5)) + o;\n}\n\
              RunWide(a: long): long => TakeWide(MakeWide(a));\n\
              Drop(1);\nRun();\nRunWide(2);\n");
-        assert_eq!(func::<extern "C" fn(&i64) -> i64>(&program, "Drop")(&7), 7);
+        assert_eq!(func::<extern "C" fn(i64) -> i64>(&program, "Drop")(7), 7);
         // 1.5 + 3.0, and 3 + 4.
         assert_eq!(func::<extern "C" fn() -> f64>(&program, "Run")(), 7.5);
-        assert_eq!(
-            func::<extern "C" fn(&i64) -> i64>(&program, "RunWide")(&3),
-            7
-        );
+        assert_eq!(func::<extern "C" fn(i64) -> i64>(&program, "RunWide")(3), 7);
     }
 
     #[test]
@@ -329,7 +330,7 @@ mod tests {
              Run(a: int): int {\n    var p = new P { X = a, Y = 10 };\n    Bump(ref p.Y);\n\
              \x20   Bump(ref p.Y);\n    return p.X * 100 + p.Y;\n}\n\
              Run(1);\n");
-        assert_eq!(func::<extern "C" fn(&i32) -> i32>(&program, "Run")(&3), 312);
+        assert_eq!(func::<extern "C" fn(i32) -> i32>(&program, "Run")(3), 312);
     }
 
     #[test]
@@ -337,7 +338,7 @@ mod tests {
         let program = app("Nothing() {}\nTake(move u: (), a: int): int => a;\n\
              Run(a: int): int {\n    let u = Nothing();\n    let t = (u, a);\n    return Take(u, a);\n}\n\
              Run(1);\n");
-        assert_eq!(func::<extern "C" fn(&i32) -> i32>(&program, "Run")(&8), 8);
+        assert_eq!(func::<extern "C" fn(i32) -> i32>(&program, "Run")(8), 8);
     }
 
     #[test]
@@ -349,7 +350,7 @@ mod tests {
              Sum(a: long): long {\n    let w = new Wide { A = a, B = 2, C = 3, D = 4, E = 5 };\n\
              \x20   var v = w;\n    return v.A + v.B + v.C + v.D + v.E;\n}\nSum(1);\n",
         );
-        assert_eq!(func::<extern "C" fn(&i64) -> i64>(&program, "Sum")(&1), 15);
+        assert_eq!(func::<extern "C" fn(i64) -> i64>(&program, "Sum")(1), 15);
     }
 
     #[test]

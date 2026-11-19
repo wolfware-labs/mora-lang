@@ -16,7 +16,7 @@ use mora_span::Span;
 
 use super::aggregates::is_memory_value;
 use super::runtime::{Call, Env};
-use crate::abi::{FnAbi, PassMode};
+use crate::abi::{FnAbi, PassMode, borrowed_value};
 use crate::layout::{Layout, Layouts, Scalar, Shape};
 
 /// The trap code of `Unreachable`, and of the end of a block that panics.
@@ -280,7 +280,9 @@ pub(super) struct Lowering<'a, 'f> {
 impl Lowering<'_, '_> {
     /// Stores the parameters, which the entry block receives, in their
     /// locals, and takes the address of the result and of each parameter
-    /// passed by pointer; `abi` passes them.
+    /// passed by pointer; `abi` passes them. An `in` parameter that comes as
+    /// the value it borrows (`borrowed_value`) keeps the value in a slot of
+    /// its own, and the local holds the slot's address.
     fn parameters(&mut self, abi: &FnAbi) {
         let entry = self.blocks[BlockId::ENTRY.index()];
         let mut values = self.builder.block_params(entry).to_vec().into_iter();
@@ -288,15 +290,29 @@ impl Lowering<'_, '_> {
             self.indirect[LocalId::RETURN.index()] = values.next();
         }
         for (local, &mode) in self.body.param_ids().zip(&abi.params) {
-            match mode {
-                PassMode::Ignore => {}
-                PassMode::Direct(_) => self.write(&Place::local(local), values.next()),
-                PassMode::Words(count) => {
+            let place = Place::local(local);
+            let borrowed = borrowed_value(&self.body.locals[local.index()].ty, self.layouts);
+            let held = borrowed.map(|layout| {
+                let address = self.temporary(&layout);
+                self.write(&place, Some(address));
+                address
+            });
+            match (mode, held) {
+                (PassMode::Ignore, _) => {}
+                (PassMode::Direct(_), None) => self.write(&place, values.next()),
+                (PassMode::Direct(_), Some(address)) => {
+                    if let Some(value) = values.next() {
+                        self.builder
+                            .ins()
+                            .store(MemFlagsData::trusted(), value, address, 0);
+                    }
+                }
+                (PassMode::Words(count), held) => {
                     let words: Vec<Value> = values.by_ref().take(usize::from(count)).collect();
-                    let address = self.place_address(&Place::local(local));
+                    let address = held.unwrap_or_else(|| self.place_address(&place));
                     self.store_words(address, &words);
                 }
-                PassMode::Indirect => self.indirect[local.index()] = values.next(),
+                (PassMode::Indirect, _) => self.indirect[local.index()] = values.next(),
             }
         }
     }
@@ -510,9 +526,24 @@ impl Lowering<'_, '_> {
 
     /// Adds to `values` what passes `arg` to a call: nothing for a
     /// zero-sized value, the scalar, the words of a copy of the value, or
-    /// the address of a copy the callee owns.
+    /// the address of a copy the callee owns. An `in` borrow that passes
+    /// the value it borrows (`borrowed_value`) passes that value instead.
     fn argument(&mut self, arg: &Operand, values: &mut Vec<Value>) {
-        let source = self.source(arg);
+        let borrowed = match arg {
+            Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
+                borrowed_value(&self.body.locals[place.local.index()].ty, self.layouts).map(|_| {
+                    Place {
+                        local: place.local,
+                        projections: vec![Projection::Deref],
+                    }
+                })
+            }
+            _ => None,
+        };
+        let source = match &borrowed {
+            Some(value) => Source::Place(value),
+            None => self.source(arg),
+        };
         let layout = self.source_layout(source);
         match self.pass_mode(&layout) {
             PassMode::Ignore => {}
@@ -1119,7 +1150,7 @@ pub(in crate::cranelift) mod tests {
             },
         );
         assert_eq!(
-            func::<extern "C" fn(&bool) -> i32>(&program, "Pick")(&true),
+            func::<extern "C" fn(bool) -> i32>(&program, "Pick")(true),
             2
         );
     }
@@ -1213,10 +1244,49 @@ pub(in crate::cranelift) mod tests {
     }
 
     #[test]
-    fn in_parameters_are_pointers() {
+    fn small_plain_in_parameters_are_values() {
         let program = jit("F(a: int): int => a;\nF(1);\n", Profile::Debug);
-        let f: extern "C" fn(&i32) -> i32 = func(&program, "F");
-        assert_eq!(f(&41), 41);
+        let f: extern "C" fn(i32) -> i32 = func(&program, "F");
+        assert_eq!(f(41), 41);
+        // Two words, read through the borrow the body sees, and passed on
+        // as an `in` argument; and a zero-sized value, which passes nothing.
+        let program = jit(
+            "struct P {\n    public X: long;\n    public Y: int;\n}\n\
+             Y(p: P): int => p.Y;\nF(p: P, u: (), n: int): int => Y(p) * 10 + n;\n\
+             G(): int { let p = new P { X = 1, Y = 4 }; return F(p, (), 2); }\nG();\n",
+            Profile::Debug,
+        );
+        let mut p = [0u8; 16];
+        p[8..12].copy_from_slice(&7i32.to_ne_bytes());
+        let (low, high) = p.split_at(8);
+        let words = [low, high].map(|word| u64::from_ne_bytes(word.try_into().unwrap()));
+        let f: extern "C" fn(u64, u64, i32) -> i32 = func(&program, "F");
+        assert_eq!(f(words[0], words[1], 3), 73);
+        assert_eq!(func::<extern "C" fn() -> i32>(&program, "G")(), 42);
+    }
+
+    #[test]
+    fn large_or_non_plain_in_parameters_are_pointers_to_the_callers_value() {
+        // Three words: the callee reads the caller's own value.
+        let program = jit(
+            "struct Big {\n    public A: long;\n    public B: long;\n    public C: long;\n}\n\
+             F(b: Big): long => b.C;\nG(): long { let b = new Big { A = 1, B = 2, C = 3 }; return F(b); }\n\
+             G();\n",
+            Profile::Debug,
+        );
+        let big = [1i64, 2, 9];
+        let f: extern "C" fn(&[i64; 3]) -> i64 = func(&program, "F");
+        assert_eq!(f(&big), 9);
+        assert_eq!(func::<extern "C" fn() -> i64>(&program, "G")(), 3);
+        let lowered = lowered_in(
+            "struct Big {\n    public A: long;\n    public B: long;\n    public C: long;\n}\n\
+             F(b: Big): long => b.C;\n",
+            "F",
+            Profile::Debug,
+            |_| {},
+        );
+        // No copy: the callee has no slot for the value.
+        assert!(!lowered.contains("explicit_slot"), "{lowered}");
     }
 
     #[test]
@@ -1280,9 +1350,9 @@ pub(in crate::cranelift) mod tests {
             "Pick(c: bool): int { if c { return 1; } return 2; }\nPick(true);\n",
             Profile::Debug,
         );
-        let pick: extern "C" fn(&bool) -> i32 = func(&program, "Pick");
-        assert_eq!(pick(&true), 1);
-        assert_eq!(pick(&false), 2);
+        let pick: extern "C" fn(bool) -> i32 = func(&program, "Pick");
+        assert_eq!(pick(true), 1);
+        assert_eq!(pick(false), 2);
     }
 
     /// A body that switches on its parameter `_1`: the first constant of

@@ -318,8 +318,8 @@ mod tests {
     }
 
     const INT_ADD: &str = "F(move a: int, move b: int): int => a + b;\n";
-    /// The same with the parameters by reference, as the column of a panic
-    /// is counted in it.
+    /// The same with `in` parameters, which pass an `int` as its value, as the
+    /// column of a panic is counted in it.
     const REF_ADD: &str = "F(a: int, b: int): int => a + b;\n";
     const INT_DIV: &str = "F(move a: int, move b: int): int => a / b;\n";
     const INT_REM: &str = "F(move a: int, move b: int): int => a % b;\n";
@@ -337,7 +337,7 @@ mod tests {
     #[ignore = "runs in a child process"]
     fn child_add() {
         only_in_child(|| {
-            call::<*const i32, i32>(REF_ADD, Profile::Debug, &i32::MAX, &1);
+            call::<i32, i32>(REF_ADD, Profile::Debug, i32::MAX, 1);
         });
     }
 
