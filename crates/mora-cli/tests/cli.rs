@@ -218,3 +218,59 @@ fn version_into_a_full_disk_is_a_failure() {
     );
     assert!(!text.contains("panicked"), "{text}");
 }
+
+#[test]
+fn version_and_help_options_into_a_closed_pipe_exit_0_quietly() {
+    for option in ["--version", "--help"] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+            .arg(option)
+            .stdout(writer)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{option}");
+        assert_eq!(stderr(&output), "", "{option}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn version_and_help_options_into_a_full_disk_are_failures() {
+    for option in ["--version", "--help"] {
+        let full = std::fs::File::create("/dev/full").unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+            .arg(option)
+            .stdout(full)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{option}");
+        let text = stderr(&output);
+        assert!(
+            text.starts_with("error: cannot write to stdout: "),
+            "{option}: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_version_option_prints_the_first_line_only() {
+    let output = mora(&["--version"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        format!("mora {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn a_usage_error_prints_nothing_on_stdout() {
+    let output = mora(&["--color"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output).starts_with("error: "),
+        "{}",
+        stderr(&output)
+    );
+}

@@ -152,7 +152,10 @@ impl Command {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => return clap_exit(&error),
+    };
     match &cli.command {
         Command::Version => version(cli.message_format, cli.color),
         command => {
@@ -160,6 +163,25 @@ fn main() -> ExitCode {
             report_error(&message, cli.color);
             ExitCode::from(exit::USAGE)
         }
+    }
+}
+
+/// Prints what clap stopped on, in clap's own colors: help or the version on
+/// stdout, a usage error on stderr. `Error::exit` would drop a failed write
+/// to stdout and exit 0.
+fn clap_exit(error: &clap::Error) -> ExitCode {
+    let code = ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(exit::USAGE));
+    let written = error.print();
+    if error.use_stderr() {
+        // As in `report_error`, a failed write to stderr cannot be reported.
+        code
+    } else {
+        // `--color` is not parsed yet when clap stops, so `auto` applies.
+        finish(
+            written.and_then(|()| io::stdout().flush()),
+            code,
+            Color::Auto,
+        )
     }
 }
 

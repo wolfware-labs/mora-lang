@@ -1,5 +1,6 @@
 # Clippy reads only the nearest clippy.toml, so this one repeats the
-# workspace's settings before adding its own.
+# workspace's settings before adding its own. tests/clippy_config.rs fails
+# when a setting of the workspace's is missing here or differs.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
