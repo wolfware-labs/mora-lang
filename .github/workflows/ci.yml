@@ -46,7 +46,7 @@ jobs:
           fi
           # A file, not a pipe: with pipefail, `grep -q` closing a pipe early
           # would fail `git diff` and skip a real change.
-          git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-files"
+          git diff --name-only --no-renames "$BASE" HEAD > "$RUNNER_TEMP/changed-files"
           inert_docs='^((CLA|CODE_OF_CONDUCT|CONTRIBUTING|README|SECURITY)\.md|\.github/[^/]+\.md)$'
           if grep -qvE "$inert_docs" "$RUNNER_TEMP/changed-files"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
