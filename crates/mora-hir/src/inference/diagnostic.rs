@@ -442,12 +442,18 @@ fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty
     }
 }
 
-/// `MR0203`: a value whose type does not convert to the expected one.
 /// `MR0203`: the `return;` statement `stmt` gives no value where the
 /// generated `Main` returns `expected`.
+///
+/// # Panics
+///
+/// When the source map has no range for `stmt`: every statement but a local
+/// declaration has one.
 fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic {
     let e = source.name(expected);
-    let range = source.map.stmts.get(&stmt).copied().unwrap_or_default();
+    let Some(&range) = source.map.stmts.get(&stmt) else {
+        panic!("inference: the statement {stmt:?} has no range in the source map");
+    };
     Diagnostic::error(
         codes::MR0203,
         format!("mismatched types: expected `{e}`, found `()`"),
@@ -461,6 +467,7 @@ fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic
     ))
 }
 
+/// `MR0203`: a value whose type does not convert to the expected one.
 fn mismatch(
     source: &Source<'_>,
     expr: ExprId,
@@ -796,6 +803,16 @@ mod tests {
             map,
         };
         f(&source, inits);
+    }
+
+    #[test]
+    #[should_panic(expected = "has no range in the source map")]
+    fn a_missing_value_without_a_statement_range_is_an_internal_error() {
+        with_inits("let a = 1;\n", |source, _| {
+            // A local declaration has no range of its own in the map.
+            let (stmt, _) = source.body.stmts.iter().next().unwrap();
+            missing_value(source, stmt, &Ty::Primitive(Primitive::Int));
+        });
     }
 
     #[test]
