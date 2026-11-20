@@ -403,7 +403,7 @@ Done when:
 
 Spec: [§14.15](docs/design/mora.md#1415-standard-library-compilation), [§17.1](docs/design/mora.md#171-commands), [§17.2](docs/design/mora.md#172-manifest), [§17.3](docs/design/mora.md#173-project-layout), [§17.4](docs/design/mora.md#174-profiles). Crates: `mora-driver`, `mora-pkg`, `mora-cli`. Blocked by: M1.14, M1.15.
 
-Reading `mora.toml` (the `[project]` keys and profiles; unknown keys are `MR0500`), discovering `src/**/*.mr` and rejecting files of 4 GiB or more with `MR0003` (§3.1), the dev and release profiles of §17.4, the `target/` layout, the on-disk cache of the standard library's checked MIR, and `mora build`, `mora run` and `mora check`. To settle in the spec: where the cache of `Std` lives and what makes an entry valid (§14.15), the error codes for an invalid `name` and `entry` (§17.2), and whether discovery follows symbolic links (§17.3).
+Reading `mora.toml` (the `[project]` keys and profiles; unknown keys are `MR0500`), discovering `src/**/*.mr` and rejecting files of 4 GiB or more with `MR0003` (§3.1), the dev and release profiles of §17.4, the `target/` layout, the on-disk cache of the standard library's checked MIR, and `mora build`, `mora run` and `mora check`. To settle in the spec: what makes an entry of the `Std` cache valid (§14.15), the error codes for an invalid `name` and `entry` (§17.2), and whether discovery follows symbolic links (§17.3).
 
 Done when:
 
@@ -1709,7 +1709,7 @@ Done when:
 
 Spec: [§19.2](docs/design/mora.md#192-toolchain-archive), [§19.3](docs/design/mora.md#193-installation). Crates: `.github/workflows`, `xtask`. Blocked by: M0.11, M6.8.
 
-`cargo xtask dist` building the archive of §19.2 per host, the release workflow on tags producing archives, SHA-256 checksums and Sigstore signatures through GitHub OIDC, and GitHub Releases with notes. Jobs are split by what they may do: build jobs have a read-only token, no OIDC permission and no secrets; one signing job has the OIDC permission and runs no repository code beyond `cosign` on the built archives; one publishing job holds the release, tap, winget and extension-store credentials and runs after the signatures verify; it checks out nothing and runs no code from the tagged source, and uses only the verified archives and pinned automation. To settle in the spec (§19.3): who may create a version tag (a tag ruleset on `v*` limited to maintainers, from a commit on `main`).
+`cargo xtask dist` building the archive of §19.2 per host, the release workflow on tags producing archives, SHA-256 checksums and Sigstore signatures through GitHub OIDC, and GitHub Releases with notes. Jobs are split by what they may do: build jobs have a read-only token, no OIDC permission and no secrets; one signing job has the OIDC permission and runs no repository code beyond `cosign` on the built archives; the publishing jobs, one per destination (the release, the tap, winget, each extension store), each hold only that destination's credential and run after the signatures verify; they check out nothing and run no code from the tagged source, and use only the verified archives and pinned automation. To settle in the spec (§19.3): who may create a version tag (a tag ruleset on `v*` limited to maintainers, from a commit on `main`).
 
 Done when:
 
@@ -1717,8 +1717,9 @@ Done when:
 - `cosign verify-blob` succeeds on each archive.
 - The workflow starts only for tags that match the version pattern, checks that the tagged commit is on `main` and that the tag equals the workspace version, and fails otherwise before building.
 - The workflow file declares `permissions: {}` at the top and grants each job only what the scope gives it; every third-party action is pinned by commit SHA (§20.5); the build jobs run with `--locked`.
+- Each publishing job can read only its own destination's credential (shown by the workflow's `secrets` and environments).
 - `SHA256SUMS` is produced from the archives after they are built and before signing, and is signed like an archive.
-- `cosign verify-blob` with the identity of §19.3 fails on an archive signed by the same workflow run from a branch, and on one signed by another workflow of this repository.
+- `cosign verify-blob` with the identity of §19.3 fails on a blob signed by a run of the release workflow from a branch (a test branch that removes the tag checks produces it), and on one signed by another workflow of this repository.
 - The tag rule the spec then gives (§19.3) is in place as a ruleset on `v*` tags, and a push of such a tag by an account outside it is refused (recorded in the issue).
 
 ### M7.11 Installers and self update
@@ -1769,7 +1770,7 @@ Done when:
 - A developer who has not seen Mora installs it, opens §2.2 in VS Code and gets diagnostics, hover and go-to-definition (recorded in the issue).
 - Every channel of §19.3 serves v0.1.0, and on a fresh machine each passes the integrity and authenticity check of its row of §19.3: the scripts with and without `cosign`, `mora self update` from the last release candidate, the pinned checksums of the Homebrew formula and the winget manifest against `SHA256SUMS` (the formula and the manifest the install used are the ones the release workflow published to the tap and to the winget repository), and `cosign verify-blob` on every archive (recorded in the issue).
 - The spec says what an edition may change, how an edition is chosen in `mora.toml`, and that every edition change ships with a `safe` fix.
-- The extension-store tokens are read only by the publishing job (shown by the workflow's `permissions` and its use of secrets).
+- Each extension-store token is read only by the publishing job of its own store (shown by the workflow's `permissions` and its use of secrets).
 - A check after each site deploy (M7.9) downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
 
 ### M7.14 Parallel code generation in a fixed output order
