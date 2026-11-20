@@ -40,10 +40,46 @@ pub(crate) fn jit(text: &str, profile: Profile) -> JitProgram {
     Cranelift.jit(&program, profile).unwrap()
 }
 
+/// The symbol of the function of the app `jit` compiled whose segment is
+/// `name` with its parameter types: `F` finds `F(int)` when no other `F`
+/// is there, and `F(int)` names that overload.
+///
+/// # Panics
+///
+/// When no function or more than one has that name.
+fn symbol_named(jit: &JitProgram, name: &str) -> String {
+    let found: Vec<String> = jit
+        .function_symbols()
+        .into_iter()
+        .filter(|symbol| {
+            segment(symbol).is_some_and(|segment| {
+                segment == name
+                    || segment
+                        .strip_prefix(name)
+                        .is_some_and(|rest| rest.starts_with('('))
+            })
+        })
+        .collect();
+    let [symbol] = found.as_slice() else {
+        panic!("{name} names {found:?}");
+    };
+    symbol.clone()
+}
+
+/// The segment after `UsersApi` in a symbol of the app `app_of` builds, when
+/// it is the last one.
+fn segment(symbol: &str) -> Option<&str> {
+    let rest = symbol.strip_prefix("_M8UsersApi")?.strip_suffix('E')?;
+    let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+    let len: usize = rest[..digits].parse().ok()?;
+    (rest.len() == digits + len).then(|| &rest[digits..])
+}
+
 /// The function `name` of the app `jit` compiled, as a function pointer of
-/// type `F`.
+/// type `F`. `name` is the function's name, or its name and parameter types
+/// for one of several overloads.
 pub(crate) fn func<F: Copy>(jit: &JitProgram, name: &str) -> F {
-    let address = jit.function(&symbol(name));
+    let address = jit.function(&symbol_named(jit, name));
     assert_eq!(size_of::<F>(), size_of::<*const u8>());
     // SAFETY: the caller names a function whose Mora signature matches `F`
     // under the host's C convention, and `F` is a function pointer, the size

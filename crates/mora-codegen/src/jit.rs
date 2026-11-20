@@ -53,6 +53,18 @@ impl JitProgram {
     }
 }
 
+#[cfg(test)]
+impl JitProgram {
+    /// The symbols of the functions the program declares.
+    pub(crate) fn function_symbols(&self) -> Vec<String> {
+        self.module
+            .declarations()
+            .get_functions()
+            .filter_map(|(_, function)| function.name.clone())
+            .collect()
+    }
+}
+
 impl Drop for JitProgram {
     fn drop(&mut self) {
         // SAFETY: `drop` runs once, so the module is taken once, and no

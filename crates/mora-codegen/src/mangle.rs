@@ -16,10 +16,10 @@ pub fn mangle<'a>(segments: impl IntoIterator<Item = &'a str>) -> String {
     symbol
 }
 
-/// The segment of an overloaded function: its name followed by the types of
+/// The segment of a declared function: its name followed by the types of
 /// its parameters, between parentheses and separated by commas, as in
 /// `Add(int,string)`, so that each overload has a symbol of its own.
-pub(crate) fn overload_segment<'a>(
+pub(crate) fn parameter_segment<'a>(
     name: &str,
     params: impl IntoIterator<Item = &'a Ty>,
     db: &dyn Db,
@@ -28,8 +28,8 @@ pub(crate) fn overload_segment<'a>(
     format!("{name}({})", params.join(","))
 }
 
-/// A type as an overload's segment writes it: a primitive by its keyword, a
-/// struct by its full name, and a tuple as its element types between
+/// A type as a function's segment writes it: a primitive or `string` by its
+/// keyword, a struct by its full name, and a tuple as its element types between
 /// parentheses, separated by commas and with a comma after a single one,
 /// without the elements' names, which do not tell overloads apart (§5.5).
 fn type_text(db: &dyn Db, ty: &Ty) -> String {

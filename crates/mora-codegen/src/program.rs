@@ -3,14 +3,13 @@
 use std::collections::HashMap;
 
 use mora_hir::{
-    BodyOwner, EntryPoint, ItemId, ItemKind, Signature, def_map, instance_fields, item_tree,
-    signature,
+    BodyOwner, EntryPoint, ItemId, Signature, def_map, instance_fields, item_tree, signature,
 };
 use mora_mir::{Body, Callee, TerminatorKind, mir};
 use mora_span::{Db, Project, SourceFile};
 
 use crate::error::CodegenError;
-use crate::mangle::{mangle, overload_segment};
+use crate::mangle::{mangle, parameter_segment};
 
 /// A body: the owner it belongs to, and its index in the owner's `Mir::bodies`
 /// (0 is the owner's own body).
@@ -131,15 +130,15 @@ impl<'db> Program<'db> {
         let id = function_id(self.functions.len());
         self.index.insert(key, id);
         // A local function's name starts with its owner's, whose last
-        // segment an overload's parameter types follow.
-        let overload = overload(self.db, key).map(|segment| {
+        // segment the function's parameter types follow.
+        let function = function_segment(self.db, key).map(|segment| {
             let owner = owner_mir.bodies[0].name.split('.').count() - 1;
             (owner, segment)
         });
         self.functions.push(Function {
             key,
             body,
-            symbol: symbol_of(&body.name, root, overload),
+            symbol: symbol_of(&body.name, root, function),
         });
     }
 
@@ -210,12 +209,12 @@ fn target_key(db: &dyn Db, from: BodyKey, callee: &Callee) -> Option<BodyKey> {
 }
 
 /// The symbol of a body named `name`. A body in the top-level statements is
-/// named below `top-level`, which stands for the root namespace. `overload`
-/// replaces the segment at its position, that of an overloaded function, with
+/// named below `top-level`, which stands for the root namespace. `function`
+/// replaces the segment at its position, that of a declared function, with
 /// the one that holds its parameter types.
-fn symbol_of(name: &str, root: &str, overload: Option<(usize, String)>) -> String {
+fn symbol_of(name: &str, root: &str, function: Option<(usize, String)>) -> String {
     let mut segments: Vec<&str> = name.split('.').collect();
-    if let Some((index, segment)) = &overload {
+    if let Some((index, segment)) = &function {
         segments[*index] = segment;
     }
     if segments.first() == Some(&TOP_LEVEL) {
@@ -225,47 +224,26 @@ fn symbol_of(name: &str, root: &str, overload: Option<(usize, String)>) -> Strin
     }
 }
 
-/// The segment of the function that owns `key` when other functions share
-/// its name, in its type or in its namespace, so that the overloads get
-/// symbols of their own (§13.7); `None` for any other body.
-fn overload(db: &dyn Db, key: BodyKey) -> Option<String> {
+/// The segment of the declared function, member or namespace function, that
+/// owns `key`: its name and its parameter types (§13.7), so that its
+/// overloads, those it has and those added later, get symbols of their own;
+/// `None` for the entry point `Main`, which keeps its bare name, and for any
+/// other body.
+fn function_segment(db: &dyn Db, key: BodyKey) -> Option<String> {
     let BodyOwner::Item(idx) = key.owner else {
         return None;
-    };
-    let tree = item_tree(db, key.file);
-    let item = tree.item(idx);
-    let shared = match item.parent {
-        Some(ty) => tree
-            .item(ty)
-            .members
-            .iter()
-            .filter(|&&member| {
-                let member = tree.item(member);
-                member.kind == ItemKind::Function && member.name == item.name
-            })
-            .count(),
-        None => {
-            let map = def_map(db, key.project);
-            map.file_namespace(key.file)
-                .and_then(|namespace| map.namespace(namespace).items.get(&item.name))
-                .map_or(0, |items| {
-                    items
-                        .iter()
-                        .filter(|other| {
-                            item_tree(db, other.file).item(other.item).kind == ItemKind::Function
-                        })
-                        .count()
-                })
-        }
     };
     let id = ItemId {
         project: key.project,
         file: key.file,
         item: idx,
     };
+    if def_map(db, key.project).entry_point() == EntryPoint::Main(id) {
+        return None;
+    }
     match signature(db, id) {
-        Signature::Function(function) if shared > 1 => Some(overload_segment(
-            &item.name,
+        Signature::Function(function) => Some(parameter_segment(
+            &item_tree(db, key.file).item(idx).name,
             function.params.iter().map(|param| &param.ty),
             db,
         )),
@@ -297,7 +275,7 @@ mod tests {
         let program = Program::collect(&db, project).unwrap();
         let entry = &program.functions()[program.entry().0 as usize];
         assert_eq!(entry.symbol, mangle(["UsersApi", "top-level"]));
-        assert!(symbols(&program).contains(&symbol("F")));
+        assert!(symbols(&program).contains(&symbol("F()")));
     }
 
     #[test]
@@ -342,9 +320,9 @@ mod tests {
         );
         let program = Program::collect(&db, project).unwrap();
         let symbols = symbols(&program);
-        assert!(symbols.contains(&symbol("Outer")), "{symbols:?}");
+        assert!(symbols.contains(&symbol("Outer(int)")), "{symbols:?}");
         assert!(
-            symbols.contains(&mangle(["UsersApi", "Outer", "Inner"])),
+            symbols.contains(&mangle(["UsersApi", "Outer(int)", "Inner"])),
             "{symbols:?}"
         );
         assert!(
@@ -386,7 +364,7 @@ mod tests {
             .collect();
         assert_eq!(calls.len(), 1);
         let target = program.callee(top, calls[0]).unwrap();
-        assert_eq!(program.functions()[target.0 as usize].symbol, symbol("F"));
+        assert_eq!(program.functions()[target.0 as usize].symbol, symbol("F()"));
     }
 
     #[test]
@@ -411,7 +389,7 @@ mod tests {
         let outer = program
             .functions()
             .iter()
-            .position(|f| f.symbol == symbol("Outer"))
+            .position(|f| f.symbol == symbol("Outer(int)"))
             .unwrap();
         let outer_id = FunctionId(u32::try_from(outer).unwrap());
         let mut resolved = Vec::new();
@@ -422,7 +400,7 @@ mod tests {
             }
         }
         assert!(
-            resolved.contains(&mangle(["UsersApi", "Outer", "Inner"])),
+            resolved.contains(&mangle(["UsersApi", "Outer(int)", "Inner"])),
             "{resolved:?}"
         );
         assert!(
@@ -434,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn overloads_add_their_parameter_types_to_their_segment() {
+    fn functions_add_their_parameter_types_to_their_segment() {
         let db = TestDb::default();
         let project = app_of(
             &db,
@@ -442,8 +420,9 @@ mod tests {
              F(x: int): int { Inner(): int => 1; return Inner(); }\n\
              F(p: P, t: (a: int, b: (string,))): int { Inner(): int => 2; return Inner(); }\n\
              One(): int => 1;\n\
+             S(s: string): int => 1;\n\
              let p = new P { X = 1 };\n\
-             let x = F(1) + F(p, (1, (\"s\",))) + One() + p.G() + p.G(2) + p.H();\n",
+             let x = F(1) + F(p, (1, (\"s\",))) + One() + S(\"s\") + p.G() + p.G(2) + p.H();\n",
         );
         let program = Program::collect(&db, project).unwrap();
         let symbols = symbols(&program);
@@ -454,8 +433,9 @@ mod tests {
             mangle(["UsersApi", "F(UsersApi.P,(int,(string,)))", "Inner"]),
             mangle(["UsersApi", "P", "G()"]),
             mangle(["UsersApi", "P", "G(int)"]),
-            mangle(["UsersApi", "P", "H"]),
-            symbol("One"),
+            mangle(["UsersApi", "P", "H()"]),
+            symbol("One()"),
+            symbol("S(string)"),
         ] {
             assert!(symbols.contains(&wanted), "{wanted} not in {symbols:?}");
         }

@@ -514,7 +514,11 @@ mod tests {
             };
             let wide = object::File::parse(&*aggregates).unwrap();
             assert_eq!(wide.architecture(), architecture, "{name}");
-            for function in ["MakeP", "MakeBig", "Take"] {
+            for function in [
+                "MakeP(long)",
+                "MakeBig(long)",
+                "Take(UsersApi.P,UsersApi.Big)",
+            ] {
                 assert!(
                     defined(&wide, &symbol(function), false),
                     "{name}: no {function}"
