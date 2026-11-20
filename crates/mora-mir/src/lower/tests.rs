@@ -533,16 +533,6 @@ fn other_additions_stay_binary() {
 }
 
 #[test]
-fn literals_in_a_chain_are_parts() {
-    // Each literal of a parenthesised `+` is a part.
-    let lowered = lowered("F(a: string): string => a + (\"ab\" + \"cd\");\n");
-    assert_eq!(
-        concats(&lowered, "F"),
-        ["_0 = concat(copy (*a#0), \"ab\", \"cd\");"]
-    );
-}
-
-#[test]
 fn postfix_increment_yields_old_value() {
     let lowered = lowered("var i = 1;\nlet j = i++;\ni--;\nlet k = ++i;\n--i;\n");
     assert_eq!(

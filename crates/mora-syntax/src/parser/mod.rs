@@ -28,7 +28,8 @@ mod types;
 pub use types::PREDEFINED_TYPES;
 
 use mora_diag::codes;
-use mora_span::TextRange;
+use mora_span::{TextRange, TextSize};
+use rustc_hash::FxHashSet;
 
 use crate::ast::{self, AstNode};
 use crate::lexer::{Lexed, lex};
@@ -118,6 +119,13 @@ impl<'t> Input<'t> {
             cut: Vec::new(),
             line_start: Vec::new(),
         };
+        // Where the lexer ended each literal it found unclosed.
+        let cut_at: FxHashSet<TextSize> = lexed
+            .errors
+            .iter()
+            .filter(|error| error.code == codes::MR0012)
+            .map(|error| error.range.end())
+            .collect();
         let mut line_break = false;
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
@@ -130,9 +138,7 @@ impl<'t> Input<'t> {
             input.ranges.push(token.range);
             input.raw.push(i);
             input.joined.push(lexed.is_joined(i));
-            input.cut.push(lexed.errors.iter().any(|error| {
-                error.code == codes::MR0012 && error.range.end() == token.range.start()
-            }));
+            input.cut.push(cut_at.contains(&token.range.start()));
         }
         input
     }

@@ -6,7 +6,6 @@
 //! standard input. The runner's standard output and error and its exit code
 //! are the program's.
 
-use std::any::Any;
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -17,6 +16,7 @@ use std::time::{Duration, Instant};
 use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
 
 use crate::compiler::{FrontEnd, Output, has_error};
+use crate::harness::{panic_text, without_panic_output};
 
 /// The exit code of the runner when it could not build the program: the
 /// program itself never ran.
@@ -49,11 +49,7 @@ pub fn main() -> ! {
 /// back before the program runs, so a panic of the runtime's own code
 /// prints its message.
 fn build_quietly(path: &str, text: &str) -> Result<JitProgram, String> {
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let jit = build(path, text);
-    std::panic::set_hook(hook);
-    jit
+    without_panic_output(|| build(path, text))
 }
 
 /// Reports `reason` as an internal error and exits.
@@ -86,16 +82,9 @@ fn build(path: &str, text: &str) -> Result<JitProgram, String> {
             .jit(&program, Profile::Debug)
             .map_err(|error| error.to_string())
     }))
-    .map_err(|payload| message_of(payload.as_ref()))?
-}
-
-/// The message of a panic.
-fn message_of(payload: &(dyn Any + Send)) -> String {
-    payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-        .unwrap_or_else(|| "the compiler panicked".to_owned())
+    .map_err(|payload| {
+        panic_text(payload.as_ref()).unwrap_or_else(|| "the compiler panicked".to_owned())
+    })?
 }
 
 /// Runs the case in a `runner` process and returns what the program did.
@@ -242,12 +231,5 @@ mod tests {
         let _ = catch_unwind(|| panic!("after the build"));
         std::panic::set_hook(original);
         assert!(CALLED.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn the_message_of_a_panic_is_its_text() {
-        assert_eq!(message_of(&"a"), "a");
-        assert_eq!(message_of(&String::from("b")), "b");
-        assert_eq!(message_of(&1), "the compiler panicked");
     }
 }

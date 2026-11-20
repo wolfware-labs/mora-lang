@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use mora_hir::{
-    BodyOwner, EntryPoint, ItemId, Signature, def_map, instance_fields, item_tree, signature,
+    BodyOwner, EntryPoint, ItemId, TOP_LEVEL, def_map, instance_fields, item_tree, signature,
 };
 use mora_mir::{Body, Callee, TerminatorKind, mir};
 use mora_span::{Db, Project, SourceFile};
@@ -29,6 +29,13 @@ pub struct BodyKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionId(pub u32);
 
+impl FunctionId {
+    /// The position as an index into [`Program::functions`].
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// One body to generate code for.
 pub struct Function<'db> {
     /// Where the body comes from.
@@ -46,9 +53,6 @@ pub struct Program<'db> {
     index: HashMap<BodyKey, FunctionId>,
     entry: FunctionId,
 }
-
-/// The name of the body of the top-level statements.
-const TOP_LEVEL: &str = "top-level";
 
 impl<'db> Program<'db> {
     /// Collects the bodies reachable from the entry point of `project`.
@@ -77,7 +81,7 @@ impl<'db> Program<'db> {
         let mut pending = vec![entry];
         program.add(entry, root);
         while let Some(key) = pending.pop() {
-            let caller = program.functions[program.index[&key].0 as usize].body;
+            let caller = program.function(program.index[&key]).body;
             for block in &caller.blocks {
                 let TerminatorKind::Call { callee, .. } = &block.terminator.kind else {
                     continue;
@@ -152,6 +156,15 @@ impl<'db> Program<'db> {
         &self.functions
     }
 
+    /// The function `id`.
+    ///
+    /// # Panics
+    ///
+    /// When `id` is not a function of this program.
+    pub fn function(&self, id: FunctionId) -> &Function<'db> {
+        &self.functions[id.index()]
+    }
+
     /// The entry point.
     pub fn entry(&self) -> FunctionId {
         self.entry
@@ -160,7 +173,7 @@ impl<'db> Program<'db> {
     /// The function `caller` reaches through `callee`; `None` for a function
     /// of the standard library.
     pub fn callee(&self, caller: FunctionId, callee: &Callee) -> Option<FunctionId> {
-        let from = self.functions.get(caller.0 as usize)?.key;
+        let from = self.functions.get(caller.index())?.key;
         let target = target_key(self.db, from, callee)?;
         self.index.get(&target).copied()
     }
@@ -241,14 +254,12 @@ fn function_segment(db: &dyn Db, key: BodyKey) -> Option<String> {
     if def_map(db, key.project).entry_point() == EntryPoint::Main(id) {
         return None;
     }
-    match signature(db, id) {
-        Signature::Function(function) => Some(parameter_segment(
-            &item_tree(db, key.file).item(idx).name,
-            function.params.iter().map(|param| &param.ty),
-            db,
-        )),
-        _ => None,
-    }
+    let function = signature(db, id).as_function()?;
+    Some(parameter_segment(
+        &item_tree(db, key.file).item(idx).name,
+        function.params.iter().map(|param| &param.ty),
+        db,
+    ))
 }
 
 #[cfg(test)]
@@ -273,7 +284,7 @@ mod tests {
         let db = TestDb::default();
         let project = app_of(&db, "F(): int => 1;\nF();\n");
         let program = Program::collect(&db, project).unwrap();
-        let entry = &program.functions()[program.entry().0 as usize];
+        let entry = program.function(program.entry());
         assert_eq!(entry.symbol, mangle(["UsersApi", "top-level"]));
         assert!(symbols(&program).contains(&symbol("F()")));
     }
@@ -364,7 +375,7 @@ mod tests {
             .collect();
         assert_eq!(calls.len(), 1);
         let target = program.callee(top, calls[0]).unwrap();
-        assert_eq!(program.functions()[target.0 as usize].symbol, symbol("F()"));
+        assert_eq!(program.function(target).symbol, symbol("F()"));
     }
 
     #[test]
@@ -396,7 +407,7 @@ mod tests {
         for block in &program.functions()[outer].body.blocks {
             if let TerminatorKind::Call { callee, .. } = &block.terminator.kind {
                 let id = program.callee(outer_id, callee).unwrap();
-                resolved.push(program.functions()[id.0 as usize].symbol.clone());
+                resolved.push(program.function(id).symbol.clone());
             }
         }
         assert!(

@@ -74,3 +74,28 @@ pub fn jit_symbols() -> Vec<(&'static str, *const u8)> {
         ),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jit_symbols_are_unique_and_non_null() {
+        let symbols = jit_symbols();
+        let mut names: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), symbols.len());
+        assert!(symbols.iter().all(|(_, address)| !address.is_null()));
+        for name in [
+            "mora_rt_panic",
+            "mora_rt_panic_overflow",
+            "mora_rt_fmod",
+            "mora_rt_fmodf",
+            "mora_rt_string_concat",
+            "mora_rt_string_eq",
+        ] {
+            assert!(names.contains(&name), "{name}");
+        }
+    }
+}

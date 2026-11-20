@@ -401,7 +401,7 @@ impl Env<'_> {
     /// The line and column, counting from 1, where `span` starts; `None`
     /// when it starts outside the file.
     pub(super) fn location(&self, span: Span) -> Option<(u32, u32)> {
-        let start = u32::from(span.range.start()) as usize;
+        let start = usize::from(span.range.start());
         mora_diag::line_column(self.file.text(self.db), self.lines, start)
     }
 }
@@ -457,6 +457,18 @@ mod tests {
             );
             assert_eq!(ids, [first, first + 1]);
         }
+    }
+
+    #[test]
+    fn every_runtime_function_is_in_the_jit_symbol_table() {
+        let symbols = mora_rt::jit_symbols();
+        let names: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
+        let missing: Vec<&str> = RuntimeFn::ALL
+            .iter()
+            .map(|function| function.name())
+            .filter(|name| !names.contains(name))
+            .collect();
+        assert_eq!(missing, Vec::<&str>::new());
     }
 
     #[test]

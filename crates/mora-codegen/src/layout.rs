@@ -3,7 +3,7 @@
 //! This is the only place that computes them.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mora_hir::{Primitive, Ty, instance_fields};
 use mora_mir::LocalTy;
@@ -94,14 +94,48 @@ impl<'db> Layouts<'db> {
     /// # Panics
     ///
     /// With an internal error for a type that lowering does not give a
-    /// layout: `Ty::Unsupported` and `Ty::Error`.
+    /// layout: `Ty::Unsupported` and `Ty::Error`, and a struct that holds
+    /// itself.
     pub fn of(&self, ty: &Ty) -> Layout {
         if let Some(layout) = self.cache.borrow().get(ty) {
             return layout.clone();
         }
-        let layout = self.compute(ty);
-        self.cache.borrow_mut().insert(ty.clone(), layout.clone());
-        layout
+        self.compute_fields_first(ty);
+        self.of(ty)
+    }
+
+    /// Computes the layout of `ty` and of every type its fields hold, each
+    /// after the types of its own fields, with a stack of its own: a chain
+    /// of structs as long as the program writes must not overflow the
+    /// thread's stack.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error for a struct that holds itself, whose size
+    /// has no end.
+    fn compute_fields_first(&self, ty: &Ty) {
+        // Each type, and whether its fields are on the stack above it.
+        let mut stack = vec![(ty.clone(), false)];
+        // The types whose fields are being computed: one that comes back
+        // holds itself.
+        let mut open = HashSet::new();
+        while let Some((ty, expanded)) = stack.pop() {
+            if self.cache.borrow().contains_key(&ty) {
+                continue;
+            }
+            if expanded {
+                open.remove(&ty);
+                let layout = self.compute(&ty);
+                self.cache.borrow_mut().insert(ty, layout);
+                continue;
+            }
+            if !open.insert(ty.clone()) {
+                panic!("internal error computing a layout: {ty:?} holds itself");
+            }
+            let fields = self.field_tys(&ty);
+            stack.push((ty, true));
+            stack.extend(fields.into_iter().map(|field| (field, false)));
+        }
     }
 
     /// The offset of field `index` of the struct or tuple type `ty` from the
@@ -113,6 +147,15 @@ impl<'db> Layouts<'db> {
         };
         let index = index as usize;
         Some((*offsets.get(index)?, self.field_tys(ty).get(index)?.clone()))
+    }
+
+    /// The offset and type of every field of the struct or tuple type `ty`,
+    /// in declaration order; none for any other type.
+    pub fn fields(&self, ty: &Ty) -> Vec<(u32, Ty)> {
+        let Shape::Aggregate(offsets) = self.of(ty).shape else {
+            return Vec::new();
+        };
+        offsets.into_iter().zip(self.field_tys(ty)).collect()
     }
 
     /// The types of the fields of `ty` in declaration order: the instance
@@ -148,6 +191,7 @@ impl<'db> Layouts<'db> {
         }
     }
 
+    /// The layout of `ty`, once the layouts of its fields are in the cache.
     fn compute(&self, ty: &Ty) -> Layout {
         match ty {
             Ty::Primitive(primitive) => self.primitive(*primitive),
@@ -227,25 +271,12 @@ impl<'db> Layouts<'db> {
 
 #[cfg(test)]
 mod tests {
+    use mora_hir::Ty;
     use mora_hir::test_support::{TestDb, file_named, item_named};
-    use mora_hir::{TupleElem, Ty};
     use mora_mir::LocalTy;
-    use mora_target::Target;
 
     use super::*;
-    use crate::test_util::app_of;
-
-    fn x86_64() -> Target {
-        Target::builtin("x86_64-linux").expect("the built-in target")
-    }
-
-    fn tuple(tys: Vec<Ty>) -> Ty {
-        Ty::Tuple(
-            tys.into_iter()
-                .map(|ty| TupleElem { name: None, ty })
-                .collect(),
-        )
-    }
+    use crate::test_util::{CHAIN, app_of, struct_chain, tuple, x86_64};
 
     fn prim(p: Primitive) -> Ty {
         Ty::Primitive(p)
@@ -542,6 +573,54 @@ mod tests {
         assert_eq!(layouts.cache.borrow().len(), 1);
         assert_eq!(layouts.of(&ty), first);
         assert_eq!(layouts.cache.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_long_chain_of_structs_has_a_layout() {
+        let db = TestDb::new();
+        let first = struct_ty(&db, &struct_chain(CHAIN), "S0");
+        assert_eq!(
+            Layouts::new(&db, &x86_64()).of(&first),
+            Layout {
+                size: 4,
+                align: 4,
+                shape: Shape::Aggregate(vec![0])
+            }
+        );
+    }
+
+    #[test]
+    fn a_struct_held_twice_is_laid_out_once() {
+        let db = TestDb::new();
+        let ty = struct_ty(
+            &db,
+            "struct P {\n    public X: int;\n}\nstruct Q {\n    public A: P;\n    public B: (P, P);\n}\n",
+            "Q",
+        );
+        let layouts = Layouts::new(&db, &x86_64());
+        assert_eq!(layouts.of(&ty).size, 12);
+        // Q, P, `(P, P)` and `int`.
+        assert_eq!(layouts.cache.borrow().len(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error computing a layout: Struct")]
+    fn a_struct_that_holds_itself_has_no_layout() {
+        let db = TestDb::new();
+        let ty = struct_ty(&db, "struct S {\n    public A: (int, S);\n}\n", "S");
+        Layouts::new(&db, &x86_64()).of(&ty);
+    }
+
+    #[test]
+    fn fields_have_their_offsets_and_types_in_order() {
+        let db = TestDb::new();
+        let layouts = Layouts::new(&db, &x86_64());
+        let pair = tuple(vec![prim(Primitive::Bool), prim(Primitive::Int)]);
+        assert_eq!(
+            layouts.fields(&pair),
+            [(4, prim(Primitive::Bool)), (0, prim(Primitive::Int))]
+        );
+        assert_eq!(layouts.fields(&prim(Primitive::Int)), []);
     }
 
     #[test]

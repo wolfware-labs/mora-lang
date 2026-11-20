@@ -67,24 +67,20 @@ pub fn overflow_message(op: u32, signed: bool, left: u64, right: u64) -> String 
     format!("arithmetic overflow: {left} {symbol} {right}")
 }
 
-/// Flushes stdout, prints `text` to stderr and ends the process with
-/// [`PANIC_EXIT_CODE`]. Nothing is left to report a failed write to.
-fn raise(text: &str) -> ! {
+/// Flushes stdout, prints `text` to stderr as it is formatted, and ends the
+/// process with [`PANIC_EXIT_CODE`]. Nothing is left to report a failed
+/// write to.
+fn raise(text: fmt::Arguments<'_>) -> ! {
     let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().write_all(text.as_bytes());
+    let _ = std::io::stderr().lock().write_fmt(text);
     process::exit(PANIC_EXIT_CODE)
 }
 
-/// Panics with `message`, which has no source location: flushes stdout,
-/// prints `panic: <message>` to stderr as `message` is formatted, building
-/// nothing on the heap, so that it works when memory has run out, and ends
-/// the process with [`PANIC_EXIT_CODE`].
+/// Panics with `message`, which has no source location: prints
+/// `panic: <message>` as `message` is formatted, building nothing on the
+/// heap, so that it works when memory has run out ([`raise`]).
 pub(crate) fn panic_without_location(message: fmt::Arguments<'_>) -> ! {
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr()
-        .lock()
-        .write_fmt(format_args!("panic: {message}\n"));
-    process::exit(PANIC_EXIT_CODE)
+    raise(format_args!("panic: {message}\n"))
 }
 
 /// The text of `len` bytes at `ptr`; an invalid sequence becomes U+FFFD.
@@ -117,7 +113,10 @@ pub unsafe extern "C" fn mora_rt_panic(
 ) -> ! {
     // SAFETY: the caller upholds the pointers and lengths.
     let (file, message) = unsafe { (text(file, file_len), text(message, message_len)) };
-    raise(&panic_text(&file, line, column, &message))
+    raise(format_args!(
+        "{}",
+        panic_text(&file, line, column, &message)
+    ))
 }
 
 /// Panics with the overflow of the operation `op`, an [`OverflowOp`], on the
@@ -141,7 +140,10 @@ pub unsafe extern "C" fn mora_rt_panic_overflow(
     // SAFETY: the caller upholds the pointer and length.
     let file = unsafe { text(file, file_len) };
     let message = overflow_message(op, signed != 0, left, right);
-    raise(&panic_text(&file, line, column, &message))
+    raise(format_args!(
+        "{}",
+        panic_text(&file, line, column, &message)
+    ))
 }
 
 #[cfg(test)]
@@ -325,25 +327,5 @@ mod tests {
     #[ignore = "runs in a child process"]
     fn child_overflows_unsigned() {
         only_in_child(|| overflow_minus_one(0));
-    }
-
-    #[test]
-    fn jit_symbols_are_unique_and_non_null() {
-        let symbols = crate::symbols::jit_symbols();
-        let mut names: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), symbols.len());
-        assert!(symbols.iter().all(|(_, address)| !address.is_null()));
-        for name in [
-            "mora_rt_panic",
-            "mora_rt_panic_overflow",
-            "mora_rt_fmod",
-            "mora_rt_fmodf",
-            "mora_rt_string_concat",
-            "mora_rt_string_eq",
-        ] {
-            assert!(names.contains(&name), "{name}");
-        }
     }
 }

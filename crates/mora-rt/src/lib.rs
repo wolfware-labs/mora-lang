@@ -10,7 +10,7 @@ pub mod string;
 #[cfg(all(feature = "start", not(test)))]
 mod start;
 
-pub mod symbols;
+mod symbols;
 #[cfg(test)]
 mod test_util;
 

@@ -22,8 +22,8 @@ exclude_re = [
     # identifier is always an identifier character.
     '^crates/mora-syntax/src/lexer/mod\.rs:481:35: replace > with >= in Lexer<.a>::code_token$',
     # Popping the last event and leaving a tombstone build the same tree.
-    '^crates/mora-syntax/src/parser/mod\.rs:270:21: replace \+ with - in Marker::abandon$',
-    '^crates/mora-syntax/src/parser/mod\.rs:270:21: replace \+ with \* in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:276:21: replace \+ with - in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:276:21: replace \+ with \* in Marker::abandon$',
     # The scan starting one token early sees the `?` itself, which it skips;
     # scanning past the end reads the end-of-file kind.
     '^crates/mora-syntax/src/parser/exprs\.rs:269:20: replace \+ with \* in conditional_follows$',

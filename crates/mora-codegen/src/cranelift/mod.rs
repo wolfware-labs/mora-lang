@@ -165,8 +165,7 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
 }
 
 /// Declares and defines every function of `program` in `module`, then
-/// `__mora_main`, which calls the entry point. Returns the id of
-/// `__mora_main`.
+/// `__mora_main`, which calls the entry point.
 ///
 /// # Errors
 ///
@@ -182,8 +181,8 @@ fn define_program<M: Module>(
     program: &Program<'_>,
     layouts: &Layouts<'_>,
     profile: Profile,
-) -> Result<FuncId, CodegenError> {
-    let entry = program.functions()[program.entry().0 as usize].body;
+) -> Result<(), CodegenError> {
+    let entry = program.function(program.entry()).body;
     let exit = Exit::of(entry, layouts);
     let ids = define_functions(module, program, layouts, profile)?;
     let call_conv = module.isa().default_call_conv();
@@ -195,7 +194,7 @@ fn define_program<M: Module>(
     let mut context = module.make_context();
     context.func.signature = signature;
     context.func.name = UserFuncName::user(0, main.as_u32());
-    let entry_ref = module.declare_func_in_func(ids[program.entry().0 as usize], &mut context.func);
+    let entry_ref = module.declare_func_in_func(ids[program.entry().index()], &mut context.func);
     let mut function_context = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut context.func, &mut function_context);
     let block = builder.create_block();
@@ -210,8 +209,7 @@ fn define_program<M: Module>(
     builder.finalize(module.isa().frontend_config());
     module
         .define_function(main, &mut context)
-        .map_err(cranelift_error)?;
-    Ok(main)
+        .map_err(cranelift_error)
 }
 
 /// Declares every function of `program` in `module`, then defines them.
@@ -245,7 +243,7 @@ fn define_functions<M: Module>(
         let calls = call_targets(
             module,
             program,
-            (FunctionId(caller), function.body),
+            FunctionId(caller),
             &ids,
             layouts,
             &mut context.func,
@@ -268,29 +266,29 @@ fn define_functions<M: Module>(
     Ok(ids)
 }
 
-/// The function each block of `caller`, a function of `program` and its
-/// body, calls, declared in `func`, with the layout of its result: `None` for
-/// a block that ends in no call, or calls a function of the standard library
-/// or one outside `program`. `ids` holds the id of each function of
-/// `program`.
+/// The function each block of `caller`, a function of `program`, calls,
+/// declared in `func`, with the layout of its result: `None` for a block that
+/// ends in no call, or calls a function of the standard library or one
+/// outside `program`. `ids` holds the id of each function of `program`.
 fn call_targets<M: Module>(
     module: &mut M,
     program: &Program<'_>,
-    (caller, body): (FunctionId, &Body),
+    caller: FunctionId,
     ids: &[FuncId],
     layouts: &Layouts<'_>,
     func: &mut Function,
 ) -> Vec<Option<Call>> {
-    body.blocks
+    program
+        .function(caller)
+        .body
+        .blocks
         .iter()
         .map(|block| match &block.terminator.kind {
             TerminatorKind::Call { callee, .. } => {
                 program.callee(caller, callee).map(|target| Call {
-                    func: module.declare_func_in_func(ids[target.0 as usize], func),
+                    func: module.declare_func_in_func(ids[target.index()], func),
                     result: layouts.of_local(
-                        &program.functions()[target.0 as usize].body.locals
-                            [LocalId::RETURN.index()]
-                        .ty,
+                        &program.function(target).body.locals[LocalId::RETURN.index()].ty,
                     ),
                 })
             }
@@ -322,10 +320,10 @@ impl Exit {
         } else if entry.params == 0 && layouts.of_local(result).size == 0 {
             Exit::Zero
         } else {
-            panic!(
-                "internal error generating code for {}: an entry point with parameters \
-                 or a result other than `int` is not lowered until M1.13",
-                entry.name
+            function::fail(
+                entry,
+                "an entry point with parameters or a result other than `int`",
+                "M1.13",
             )
         }
     }
@@ -363,11 +361,7 @@ mod tests {
     use object::{Object, ObjectSymbol};
 
     use super::*;
-    use crate::test_util::{app_of, func, jit, object_of, symbol};
-
-    fn x86_64_linux() -> Target {
-        Target::builtin("x86_64-linux").unwrap()
-    }
+    use crate::test_util::{app_of, func, jit, object_of, symbol, x86_64};
 
     fn is_unsupported(result: Result<OwnedTargetIsa, CodegenError>, reason: &str) {
         assert_eq!(
@@ -558,7 +552,7 @@ mod tests {
 
     #[test]
     fn objects_are_position_independent_and_the_jit_is_not() {
-        let target = x86_64_linux();
+        let target = x86_64();
         assert!(isa(&target, Profile::Debug, true).unwrap().flags().is_pic());
         assert!(
             !isa(&target, Profile::Debug, false)
@@ -576,37 +570,37 @@ mod tests {
 
     #[test]
     fn unsupported_targets_are_errors() {
-        let mut wasm = x86_64_linux();
+        let mut wasm = x86_64();
         wasm.object_format = ObjectFormat::Wasm;
         is_unsupported(
             isa(&wasm, Profile::Debug, true),
             "Cranelift writes no WebAssembly objects",
         );
-        let mut arm = x86_64_linux();
+        let mut arm = x86_64();
         arm.call_conv = CallConv::Aapcs;
         is_unsupported(
             isa(&arm, Profile::Debug, true),
             "Cranelift generates no 32-bit Arm code",
         );
-        let mut narrow = x86_64_linux();
+        let mut narrow = x86_64();
         narrow.pointer_width = 32;
         is_unsupported(
             isa(&narrow, Profile::Debug, true),
             "pointers must be 64 bits wide",
         );
-        let mut disabled = x86_64_linux();
+        let mut disabled = x86_64();
         disabled.triple = "s390x-unknown-linux-gnu".into();
         is_unsupported(
             isa(&disabled, Profile::Debug, true),
             "Support for this target is disabled",
         );
-        let mut garbage = x86_64_linux();
+        let mut garbage = x86_64();
         garbage.triple = "not a triple".into();
         is_unsupported(
             isa(&garbage, Profile::Debug, true),
             "`not a triple` is not a target triple: Unrecognized architecture: not a triple",
         );
-        let mut mismatch = x86_64_linux();
+        let mut mismatch = x86_64();
         mismatch.call_conv = CallConv::Win64;
         is_unsupported(
             isa(&mismatch, Profile::Debug, true),
@@ -645,7 +639,7 @@ mod tests {
     fn profiles_choose_the_optimization_level() {
         assert_eq!(opt_level(Profile::Debug), "none");
         assert_eq!(opt_level(Profile::Release), "speed");
-        let target = x86_64_linux();
+        let target = x86_64();
         let debug = isa(&target, Profile::Debug, false).unwrap();
         assert_eq!(debug.flags().opt_level(), OptLevel::None);
         let release = isa(&target, Profile::Release, false).unwrap();

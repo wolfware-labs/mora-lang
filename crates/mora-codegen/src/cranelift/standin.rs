@@ -9,9 +9,13 @@
 use cranelift_codegen::ir::{InstBuilder, Value, types};
 use mora_mir::{InterpPiece, Operand, Place};
 
-use super::function::{Lowering, broken, fail};
+use super::function::{Lowering, fail};
 use super::runtime::{RuntimeFn, StandinKind};
 use crate::layout::{Scalar, Shape};
+
+/// The milestone that brings the standard library, and with it what the
+/// stand-ins do not lower.
+const STANDARD_LIBRARY: &str = "M1.15";
 
 impl Lowering<'_, '_> {
     /// Lowers the call of the standard library function `path` with `args`:
@@ -43,7 +47,7 @@ impl Lowering<'_, '_> {
                 "a call of `{}`, a standard library function,",
                 path.join(".")
             ),
-            "M1.15",
+            STANDARD_LIBRARY,
         )
     }
 
@@ -79,15 +83,7 @@ impl Lowering<'_, '_> {
     /// an alignment or a format, and for a hole of a type that is not a
     /// primitive or a string, which M1.15 brings.
     pub(super) fn interpolate(&mut self, place: &Place, pieces: &[InterpPiece]) {
-        let layout = self.place_layout(place);
-        if layout.shape != Shape::String {
-            broken(
-                self.body,
-                &format!("an interpolation into `{place:?}`, which is not a string"),
-            );
-        }
-        let (parts, offsets) = self.layouts.array(&layout, pieces.len() as u32);
-        let array = self.temporary(&parts);
+        let (array, offsets) = self.string_parts(place, pieces.len(), "an interpolation");
         for (piece, offset) in pieces.iter().zip(offsets) {
             let part = self.offset(array, offset);
             match piece {
@@ -101,7 +97,7 @@ impl Lowering<'_, '_> {
                         fail(
                             self.body,
                             "an alignment or a format in an interpolated string",
-                            "M1.15",
+                            STANDARD_LIBRARY,
                         );
                     }
                     self.interpolated_part(part, value);
@@ -130,7 +126,7 @@ impl Lowering<'_, '_> {
             None => fail(
                 self.body,
                 "a hole of a type that is not a primitive or a string",
-                "M1.15",
+                STANDARD_LIBRARY,
             ),
         }
     }

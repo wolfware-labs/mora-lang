@@ -51,16 +51,16 @@ pub struct FnAbi {
 impl FnAbi {
     /// The pass modes of `body`: its parameters are the locals `1..=params`
     /// and its result is `_0`. An `in` parameter that passes the value it
-    /// borrows ([`borrowed_value`]) is passed as that value.
+    /// borrows (`borrowed_value`) is passed as that value.
     pub fn of(body: &Body, layouts: &Layouts<'_>) -> FnAbi {
-        let mode = |local: usize| {
-            let ty = &body.locals[local].ty;
+        let mode = |local: LocalId| {
+            let ty = &body.locals[local.index()].ty;
             let layout = borrowed_value(ty, layouts).unwrap_or_else(|| layouts.of_local(ty));
             PassMode::of(&layout, layouts.pointer_bytes())
         };
         FnAbi {
-            params: (1..=body.params).map(mode).collect(),
-            ret: mode(LocalId::RETURN.0 as usize),
+            params: body.param_ids().map(mode).collect(),
+            ret: mode(LocalId::RETURN),
         }
     }
 }
@@ -69,7 +69,7 @@ impl FnAbi {
 /// address, when it is an `in` borrow of a plain value of at most two words
 /// (§10.3, §13.7); `None` for any other local, which a larger or non-plain
 /// `in` borrow and every `ref` borrow pass by address.
-pub fn borrowed_value(ty: &LocalTy, layouts: &Layouts<'_>) -> Option<Layout> {
+pub(crate) fn borrowed_value(ty: &LocalTy, layouts: &Layouts<'_>) -> Option<Layout> {
     let LocalTy::Borrow(BorrowMode::In, ty) = ty else {
         return None;
     };
@@ -79,42 +79,36 @@ pub fn borrowed_value(ty: &LocalTy, layouts: &Layouts<'_>) -> Option<Layout> {
 
 /// Whether `ty` is plain: it holds no reference of any kind (§10.3), so a
 /// copy of its bytes is a value of it. A string holds one to its heap
-/// object, and a type a later milestone lowers may hold one.
+/// object, and a type a later milestone lowers may hold one. The fields
+/// are walked with a stack of their own, as deep as the program nests
+/// structs.
 fn is_plain(ty: &Ty, layouts: &Layouts<'_>) -> bool {
-    match ty {
-        Ty::Primitive(_) => true,
-        Ty::Tuple(_) | Ty::Struct(_) => (0..)
-            .map_while(|index| layouts.field(ty, index))
-            .all(|(_, field)| is_plain(&field, layouts)),
-        _ => false,
+    let mut pending = vec![ty.clone()];
+    while let Some(ty) = pending.pop() {
+        match ty {
+            Ty::Primitive(_) => {}
+            Ty::Tuple(_) | Ty::Struct(_) => {
+                pending.extend(layouts.fields(&ty).into_iter().map(|(_, field)| field));
+            }
+            _ => return false,
+        }
     }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use mora_hir::test_support::{TestDb, file_named, item_named};
-    use mora_hir::{BodyOwner, Primitive, TupleElem, Ty};
+    use mora_hir::{BodyOwner, Primitive, Ty};
     use mora_target::Target;
 
     use super::*;
-    use crate::test_util::app_of;
-
-    fn x86_64() -> Target {
-        Target::builtin("x86_64-linux").expect("the built-in target")
-    }
+    use crate::test_util::{CHAIN, app_of, struct_chain, tuple, x86_64};
 
     fn mode(ty: &Ty, target: &Target) -> PassMode {
         let db = TestDb::new();
         let layouts = Layouts::new(&db, target);
         PassMode::of(&layouts.of(ty), layouts.pointer_bytes())
-    }
-
-    fn tuple(tys: Vec<Ty>) -> Ty {
-        Ty::Tuple(
-            tys.into_iter()
-                .map(|ty| TupleElem { name: None, ty })
-                .collect(),
-        )
     }
 
     fn prim(p: Primitive) -> Ty {
@@ -155,6 +149,21 @@ mod tests {
         narrow.pointer_width = 32;
         narrow.align.pointer = 4;
         assert_eq!(mode(&Ty::String, &narrow), PassMode::Indirect);
+    }
+
+    #[test]
+    fn a_plain_in_parameter_nested_deep_passes_its_value() {
+        let db = TestDb::new();
+        let text = format!("{}F(s: S0): int => 1;\n", struct_chain(CHAIN));
+        let project = app_of(&db, &text);
+        let file = file_named(&db, project, "src/Program.mr");
+        let item = item_named(&db, project, file, "F");
+        let mir = mora_mir::mir(&db, project, file, BodyOwner::Item(item.item));
+        let layouts = Layouts::new(&db, &x86_64());
+        assert_eq!(
+            FnAbi::of(&mir.bodies[0], &layouts).params,
+            [PassMode::Words(1)]
+        );
     }
 
     #[test]

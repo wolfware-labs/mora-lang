@@ -1,7 +1,10 @@
 //! Helpers shared by the tests of this crate.
 
+use std::fmt::Write;
+
 use mora_diag::Severity;
 use mora_hir::test_support::{TestDb, app};
+use mora_hir::{TupleElem, Ty};
 use mora_rt_core::string::{BYTES_OFFSET, CAPACITY_OFFSET, MoraString};
 use mora_span::Project;
 use mora_target::Target;
@@ -24,6 +27,36 @@ pub(crate) fn app_of(db: &TestDb, text: &str) -> Project {
         .collect();
     assert_eq!(errors, Vec::<String>::new(), "{text}");
     project
+}
+
+/// The built-in target `x86_64-linux`.
+pub(crate) fn x86_64() -> Target {
+    Target::builtin("x86_64-linux").unwrap()
+}
+
+/// The tuple of the types `tys`, with no element names.
+pub(crate) fn tuple(tys: Vec<Ty>) -> Ty {
+    Ty::Tuple(
+        tys.into_iter()
+            .map(|ty| TupleElem { name: None, ty })
+            .collect(),
+    )
+}
+
+/// How many structs [`struct_chain`] declares in the tests that a walk
+/// recursing into each field would overflow the stack of a test thread with.
+pub(crate) const CHAIN: usize = 2_000;
+
+/// The text of `count` structs `S0` to `S{count - 1}`, each holding the
+/// next in its one field `X`, and a last struct `S{count}` holding an `int`.
+pub(crate) fn struct_chain(count: usize) -> String {
+    // Writing to a `String` cannot fail.
+    let mut text = String::new();
+    for n in 0..count {
+        let _ = writeln!(text, "struct S{n} {{\n    public X: S{};\n}}", n + 1);
+    }
+    let _ = writeln!(text, "struct S{count} {{\n    public X: int;\n}}");
+    text
 }
 
 /// The symbol of the function `name` of the app `app_of` builds, which is named

@@ -161,14 +161,7 @@ pub(super) fn lower(
             Storage::Variable(ty) => (Some(builder.declare_var(ty)), None),
             // The caller owns the memory of this local.
             Storage::Slot { .. } if in_caller_memory(abi, local) => (None, None),
-            Storage::Slot { size, align } => (
-                None,
-                Some(builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    size,
-                    align.trailing_zeros() as u8,
-                ))),
-            ),
+            Storage::Slot { size, align } => (None, Some(stack_slot(&mut builder, size, align))),
         })
         .unzip();
     let blocks: Vec<ir::Block> = body.blocks.iter().map(|_| builder.create_block()).collect();
@@ -198,6 +191,15 @@ pub(super) fn lower(
     }
     lowering.builder.seal_all_blocks();
     lowering.builder.finalize(config);
+}
+
+/// A new stack slot of `size` bytes aligned to `align`, a power of two.
+pub(super) fn stack_slot(builder: &mut FunctionBuilder<'_>, size: u32, align: u32) -> StackSlot {
+    builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        size,
+        align.trailing_zeros() as u8,
+    ))
 }
 
 /// Whether the local at `index` of a body that passes its values as `abi` is
@@ -568,18 +570,11 @@ impl Lowering<'_, '_> {
     /// With an internal error for the read of another constant, which only
     /// a body lowered for constant evaluation holds.
     pub(super) fn source<'o>(&self, operand: &'o Operand) -> Source<'o> {
-        let place = match operand {
-            Operand::Copy(place) | Operand::Move(place) => Some(place),
-            _ => None,
-        };
-        let constant = match operand {
-            Operand::Const(constant) => Some(constant),
-            _ => None,
-        };
-        if let Some(place) = place {
-            return Source::Place(place);
+        match operand {
+            Operand::Copy(place) | Operand::Move(place) => Source::Place(place),
+            Operand::Const(constant) => Source::Const(constant),
+            Operand::ConstRead(_) => broken(self.body, "a read of another constant"),
         }
-        Source::Const(constant.unwrap_or_else(|| broken(self.body, "a read of another constant")))
     }
 
     /// The type of the value `source` reads; `None` for the pointer of a
@@ -780,6 +775,7 @@ pub(in crate::cranelift) mod tests {
     use mora_hir::test_support::{TestDb, file_named, item_named};
     use mora_hir::{Primitive, Ty};
     use mora_mir::{Block, BorrowMode, LocalDecl, LocalTy};
+    use mora_span::Project;
     use mora_target::Target;
 
     use super::*;
@@ -789,11 +785,11 @@ pub(in crate::cranelift) mod tests {
     use crate::cranelift::{define_functions, isa, jit_builder};
     use crate::jit::JitProgram;
     use crate::program::Program;
-    use crate::test_util::{app_of, func, jit};
+    use crate::test_util::{app_of, func, jit, x86_64};
 
-    /// The body of `owner` in the app of `text`.
-    fn body_of(db: &TestDb, text: &str, name: Option<&str>) -> Body {
-        let project = app_of(db, text);
+    /// The body of the function `name` of `project`, or of its top-level
+    /// statements when `name` is `None`.
+    fn body_of(db: &TestDb, project: Project, name: Option<&str>) -> Body {
         let file = file_named(db, project, "src/Program.mr");
         let owner = match name {
             Some(name) => BodyOwner::Item(item_named(db, project, file, name).item),
@@ -834,7 +830,7 @@ pub(in crate::cranelift) mod tests {
         let db = TestDb::default();
         let project = app_of(&db, text);
         let file = file_named(&db, project, "src/Program.mr");
-        let mut body = body_of(&db, text, Some(name));
+        let mut body = body_of(&db, project, Some(name));
         edit(&mut body);
         let program = Program::from_body(&db, project, file, &body);
         let target = Target::host().unwrap();
@@ -849,8 +845,8 @@ pub(in crate::cranelift) mod tests {
     /// The storage of each named local of a body, with `_0` first.
     fn storage_by_name(text: &str, name: Option<&str>) -> Vec<(String, Storage)> {
         let db = TestDb::default();
-        let body = body_of(&db, text, name);
-        let layouts = Layouts::new(&db, &Target::builtin("x86_64-linux").unwrap());
+        let body = body_of(&db, app_of(&db, text), name);
+        let layouts = Layouts::new(&db, &x86_64());
         body.locals
             .iter()
             .zip(storage(&body, &layouts, types::I64))
@@ -977,9 +973,9 @@ pub(in crate::cranelift) mod tests {
         let db = TestDb::default();
         let project = app_of(&db, text);
         let file = file_named(&db, project, "src/Program.mr");
-        let mut body = body_of(&db, text, Some(name));
+        let mut body = body_of(&db, project, Some(name));
         edit(&mut body);
-        let target = Target::builtin("x86_64-linux").unwrap();
+        let target = x86_64();
         let layouts = Layouts::new(&db, &target);
         let isa = isa(&target, profile, false).unwrap();
         let abi = FnAbi::of(&body, &layouts);

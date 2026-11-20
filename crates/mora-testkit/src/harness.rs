@@ -230,8 +230,10 @@ fn suite(
 
 /// The problems `case` returns, or the message of its panic as the only one.
 pub fn guarded(case: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    panic::catch_unwind(AssertUnwindSafe(case))
-        .unwrap_or_else(|payload| vec![format!("panicked: {}", message(&*payload))])
+    panic::catch_unwind(AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+        let message = panic_text(&*payload).unwrap_or_else(|| "a non-string payload".to_owned());
+        vec![format!("panicked: {message}")]
+    })
 }
 
 /// Every `.mr` file below `dir`. A missing directory is an error, so a
@@ -256,17 +258,39 @@ fn shown(root: &Path, file: &Path) -> String {
     parts.join("/")
 }
 
-fn message(payload: &(dyn Any + Send)) -> String {
+/// The text of a panic's payload, when it is a string.
+pub(crate) fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a non-string payload".to_owned())
+}
+
+/// Runs `f` with a silent panic hook, and puts the hook back after: a panic
+/// that `f` catches and reports itself is not printed a second time by the
+/// default hook.
+pub fn without_panic_output<T>(f: impl FnOnce() -> T) -> T {
+    let hook = panic::take_hook();
+    panic::set_hook(Box::new(|_| {}));
+    let result = f();
+    panic::set_hook(hook);
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_of_a_panic_is_its_string_payload() {
+        assert_eq!(panic_text(&"a"), Some("a".to_owned()));
+        assert_eq!(panic_text(&String::from("b")), Some("b".to_owned()));
+        assert_eq!(panic_text(&1), None);
+        assert_eq!(
+            guarded(|| std::panic::panic_any(1)),
+            ["panicked: a non-string payload"]
+        );
+    }
 
     #[test]
     fn options_keep_bless_and_filters_and_skip_other_flags() {

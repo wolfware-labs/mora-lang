@@ -57,7 +57,11 @@ pub fn hir_dump(db: &dyn Db, project: Project, file: SourceFile) -> String {
     out
 }
 
-/// The name the dumps give the body of `owner` in `file`: `top-level` for
+/// The name the dumps, and the symbols code generation derives from them,
+/// give the body of the top-level statements.
+pub const TOP_LEVEL: &str = "top-level";
+
+/// The name the dumps give the body of `owner` in `file`: [`TOP_LEVEL`] for
 /// the top-level statements, the full name of a function, `Type.Member`
 /// for a value member, a getter, an operator or an accessor, the type's
 /// name for a constructor or a destructor, and `extension#n` for an
@@ -66,7 +70,7 @@ pub fn owner_name(db: &dyn Db, project: Project, file: SourceFile, owner: BodyOw
     let scope = Scope::file(project, file);
     let item = |item| item_full_name(db, scope.item(item));
     match owner {
-        BodyOwner::TopLevel => "top-level".to_owned(),
+        BodyOwner::TopLevel => TOP_LEVEL.to_owned(),
         BodyOwner::Item(idx) => item(idx),
         BodyOwner::Value(ty, index) => {
             let values = &item_tree(db, file).item(ty).values;

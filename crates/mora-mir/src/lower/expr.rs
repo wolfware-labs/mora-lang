@@ -359,11 +359,9 @@ impl Lowerer<'_> {
     // Operators and assignments.
 
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Lowered<Rvalue> {
-        if op == BinaryOp::Add && self.joins_strings(expr) {
-            let mut leaves = Vec::new();
-            self.concat_leaves(lhs, &mut leaves);
-            self.concat_leaves(rhs, &mut leaves);
-            return Ok(Rvalue::Concat(self.operands(&leaves)?));
+        if op == BinaryOp::Add && self.joins_strings(&self.ty(expr)) {
+            let parts = self.concat_parts(expr);
+            return Ok(Rvalue::Concat(self.operands(&parts)?));
         }
         let op = self.expect(bin_op(op), expr, OPERATOR_NOT_LOWERED);
         let left = self.operand(lhs)?;
@@ -372,29 +370,36 @@ impl Lowerer<'_> {
         Ok(Rvalue::Binary(op, left, right))
     }
 
-    /// Whether `expr`, a `+`, is a concatenation that lowers to a
-    /// [`Rvalue::Concat`]: it is a string, in a body that is not lowered for
-    /// evaluation, whose interpreter joins two strings itself. A string
-    /// never converts to another type (§5.10), and no string `+` is a
+    /// Whether a `+` whose result has the type `ty` is a concatenation that
+    /// lowers to a [`Rvalue::Concat`]: it is a string, in a body that is not
+    /// lowered for evaluation, whose interpreter joins two strings itself. A
+    /// string never converts to another type (§5.10), and no string `+` is a
     /// constant outside evaluation, so neither needs a check here.
-    fn joins_strings(&self, expr: ExprId) -> bool {
-        !self.owner.evaluation && self.ty(expr) == Ty::String
+    fn joins_strings(&self, ty: &Ty) -> bool {
+        !self.owner.evaluation && *ty == Ty::String
     }
 
-    /// Adds to `leaves` the expressions that `expr`, an operand of a
-    /// concatenation, joins: the leaves of a `+` of strings inside it,
-    /// parentheses included, and `expr` itself otherwise.
-    fn concat_leaves(&self, expr: ExprId, leaves: &mut Vec<ExprId>) {
+    /// The expressions that `expr` joins, in order: the parts of a `+` of
+    /// strings, parentheses and nested `+` of strings included, and `expr`
+    /// itself when it is no such `+`.
+    fn concat_parts(&self, expr: ExprId) -> Vec<ExprId> {
+        let mut parts = Vec::new();
+        self.add_concat_parts(expr, &mut parts);
+        parts
+    }
+
+    /// Adds the parts of `expr` ([`Lowerer::concat_parts`]) to `parts`.
+    fn add_concat_parts(&self, expr: ExprId, parts: &mut Vec<ExprId>) {
         match &self.owner.hir.exprs[expr] {
             Expr::Binary {
                 op: BinaryOp::Add,
                 lhs,
                 rhs,
-            } if self.joins_strings(expr) => {
-                self.concat_leaves(*lhs, leaves);
-                self.concat_leaves(*rhs, leaves);
+            } if self.joins_strings(&self.ty(expr)) => {
+                self.add_concat_parts(*lhs, parts);
+                self.add_concat_parts(*rhs, parts);
             }
-            _ => leaves.push(expr),
+            _ => parts.push(expr),
         }
     }
 
@@ -426,12 +431,10 @@ impl Lowerer<'_> {
         };
         let read = self.converted(conversion, Operand::Copy(place.clone()), self.span(lhs));
         let read = self.stable(read, &[rhs], self.span(lhs));
-        let value = if op == BinOp::Add && !self.owner.evaluation && result_ty == Ty::String {
+        let value = if op == BinOp::Add && self.joins_strings(&result_ty) {
             // `s += a + b` joins `s`, `a` and `b`.
-            let mut leaves = Vec::new();
-            self.concat_leaves(rhs, &mut leaves);
             let mut parts = vec![read];
-            parts.extend(self.operands(&leaves)?);
+            parts.extend(self.operands(&self.concat_parts(rhs))?);
             Rvalue::Concat(parts)
         } else {
             let right = self.operand(rhs)?;

@@ -150,7 +150,7 @@ impl Lowering<'_, '_> {
     pub(super) fn divide(&mut self, op: BinOp, scalar: Scalar, left: Value, right: Value) -> Value {
         let div = op == BinOp::Div;
         match scalar {
-            Scalar::Int { signed, .. } => self.divide_int(div, signed, left, right),
+            Scalar::Int { signed, .. } => self.divide_int(op, signed, left, right),
             Scalar::Float | Scalar::Double if div => self.builder.ins().fdiv(left, right),
             Scalar::Float | Scalar::Double => {
                 let function = if scalar == Scalar::Float {
@@ -168,8 +168,9 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// `left / right` when `div`, else `left % right`, on integers.
-    fn divide_int(&mut self, div: bool, signed: bool, left: Value, right: Value) -> Value {
+    /// `left / right` when `op` is `/`, else `left % right`, on integers.
+    fn divide_int(&mut self, op: BinOp, signed: bool, left: Value, right: Value) -> Value {
+        let div = op == BinOp::Div;
         let ty = self.builder.func.dfg.value_type(left);
         let zero = self.builder.ins().iconst(ty, 0);
         let by_zero = self.builder.ins().icmp(IntCC::Equal, right, zero);
@@ -190,13 +191,13 @@ impl Lowering<'_, '_> {
             let min = self.builder.ins().iconst(ty, i64::MIN >> (64 - ty.bits()));
             let is_min = self.builder.ins().icmp(IntCC::Equal, left, min);
             let overflows = self.builder.ins().band(is_min, by_minus_one);
-            let op = if div {
+            let overflow = if div {
                 OverflowOp::Div
             } else {
                 OverflowOp::Rem
             };
             self.panic_if(overflows, |lowering| {
-                lowering.panic_overflow(op, true, left, right);
+                lowering.panic_overflow(overflow, true, left, right);
             });
             return if div {
                 self.builder.ins().sdiv(left, right)
@@ -289,9 +290,8 @@ mod tests {
     use mora_mir::LocalTy;
 
     use super::super::function::tests::{jit_one_in, jit_one_with_in, lowered_in};
-    use super::super::runtime::RuntimeFn;
     use crate::Profile;
-    use crate::test_util::{child, func, object_of, only_in_child};
+    use crate::test_util::{child, func, object_of, only_in_child, x86_64};
 
     /// `text`, a function `F` of two `int`s, and a call of it.
     fn entry(text: &str) -> String {
@@ -773,21 +773,9 @@ mod tests {
     }
 
     #[test]
-    fn every_runtime_function_is_in_the_jit_symbol_table() {
-        let symbols = mora_rt::jit_symbols();
-        let names: Vec<&str> = symbols.iter().map(|(name, _)| *name).collect();
-        let missing: Vec<&str> = RuntimeFn::ALL
-            .iter()
-            .map(|function| function.name())
-            .filter(|name| !names.contains(name))
-            .collect();
-        assert_eq!(missing, Vec::<&str>::new());
-    }
-
-    #[test]
     fn objects_import_the_panic_entry_points() {
         use object::{Object, ObjectSymbol};
-        let target = mora_target::Target::builtin("x86_64-linux").unwrap();
+        let target = x86_64();
         let bytes = object_of(&entry(INT_ADD), &target, Profile::Debug);
         let file = object::File::parse(&*bytes).unwrap();
         let undefined = |wanted: &str| {

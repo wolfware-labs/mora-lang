@@ -193,26 +193,37 @@ impl Lowering<'_, '_> {
     }
 
     /// Whether the values of the struct or tuple type `ty` at `left` and
-    /// `right` are equal, field by field and inside nested aggregates. A
-    /// floating-point field compares as `==` does: `-0.0` equals `0.0`, and
-    /// NaN equals nothing.
+    /// `right` are equal, field by field and inside nested aggregates, in
+    /// declaration order. A floating-point field compares as `==` does:
+    /// `-0.0` equals `0.0`, and NaN equals nothing. Nested aggregates are
+    /// walked with a stack of their own, as deep as the program nests
+    /// structs.
     fn fields_equal(&mut self, ty: &Ty, left: Value, right: Value) -> Value {
         let mut equal = self.builder.ins().iconst(types::I8, 1);
-        for (offset, field) in (0..).map_while(|index| self.layouts.field(ty, index)) {
-            let layout = self.layouts.of(&field);
-            let (left, right) = (self.offset(left, offset), self.offset(right, offset));
-            // A zero-sized field is an aggregate with no fields, which is
-            // equal to any other.
-            let same = match layout.shape {
+        // Each field still to compare, with its offset from the start of
+        // the outer value; the next one last.
+        let mut pending: Vec<(u32, Ty)> = self.layouts.fields(ty).into_iter().rev().collect();
+        while let Some((offset, field)) = pending.pop() {
+            let same = match self.layouts.of(&field).shape {
+                // A zero-sized field is an aggregate with no fields, which
+                // is equal to any other.
+                Shape::Aggregate(_) => {
+                    let inner = self.layouts.fields(&field).into_iter().rev();
+                    pending.extend(inner.map(|(inner, ty)| (offset + inner, ty)));
+                    continue;
+                }
                 Shape::Scalar(scalar) => {
+                    let (left, right) = (self.offset(left, offset), self.offset(right, offset));
                     let ty = scalar_type(scalar, self.pointer);
                     let flags = MemFlagsData::trusted();
                     let a = self.builder.ins().load(ty, flags, left, 0);
                     let b = self.builder.ins().load(ty, flags, right, 0);
                     self.compare(&Conditions::EQUAL, scalar, a, b)
                 }
-                Shape::Aggregate(_) => self.fields_equal(&field, left, right),
-                Shape::String => self.strings_equal(left, right),
+                Shape::String => {
+                    let (left, right) = (self.offset(left, offset), self.offset(right, offset));
+                    self.strings_equal(left, right)
+                }
             };
             equal = self.builder.ins().band(equal, same);
         }
@@ -393,7 +404,7 @@ mod tests {
     use super::super::function::tests::{jit_one, jit_one_with};
     use crate::Profile;
     use crate::jit::JitProgram;
-    use crate::test_util::{func, jit};
+    use crate::test_util::{CHAIN, func, jit, struct_chain};
 
     /// The functions of a program, each compiled alone for a debug build,
     /// since the program of an app holds only what its entry reaches.
@@ -1183,6 +1194,17 @@ mod tests {
         let flags = func::<extern "C" fn(bool, bool) -> bool>(&program, "Flags");
         assert!(flags(true, true));
         assert!(!flags(true, false));
+    }
+
+    #[test]
+    fn structs_nested_deep_compare_their_innermost_field() {
+        let text = format!("{}F(a: S0, b: S0): bool => a == b;\n", struct_chain(CHAIN));
+        let program = jit_one(&text, "F");
+        // `S0` is one `int` deep inside, plain and one word long, so `in`
+        // passes its word.
+        let f = func::<extern "C" fn(u64, u64) -> bool>(&program, "F");
+        assert!(f(7, 7));
+        assert!(!f(7, 8));
     }
 
     #[test]

@@ -24,6 +24,7 @@ use std::process::ExitCode;
 use cargo_metadata::MetadataCommand;
 use mora_diag::registry;
 use mora_testkit::FrontEnd;
+use mora_testkit::harness::without_panic_output;
 
 use crate::paths::root;
 
@@ -91,10 +92,7 @@ fn run_spec_examples() -> CommandResult {
     // An example that panics, as a pending one whose construct is not lowered
     // yet does, reports the message in its problem; the default hook would
     // print it as well, on every run.
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let outcome = spec_examples::check(&repo, &front_end);
-    std::panic::set_hook(hook);
+    let outcome = without_panic_output(|| spec_examples::check(&repo, &front_end));
     for problem in &outcome.problems {
         eprintln!("{problem}");
     }

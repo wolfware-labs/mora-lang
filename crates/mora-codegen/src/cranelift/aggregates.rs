@@ -1,10 +1,10 @@
 //! The lowering of values in memory: structs and tuples, their copies, and
 //! the words a value of up to two words crosses a call in.
 
-use cranelift_codegen::ir::{InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value};
+use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value};
 use mora_mir::{Const, Operand, Place};
 
-use super::function::{Lowering, Source, broken};
+use super::function::{Lowering, Source, broken, stack_slot};
 use crate::layout::{Layout, Shape};
 
 /// The flags of an access to memory that holds a value passed in words: it
@@ -23,11 +23,8 @@ impl Lowering<'_, '_> {
     /// stays inside it and is aligned.
     pub(super) fn temporary(&mut self, layout: &Layout) -> Value {
         let size = self.layouts.word_size(layout);
-        let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            size,
-            self.layouts.word_align(layout).trailing_zeros() as u8,
-        ));
+        let align = self.layouts.word_align(layout);
+        let slot = stack_slot(&mut self.builder, size, align);
         self.builder.ins().stack_addr(self.pointer, slot, 0)
     }
 

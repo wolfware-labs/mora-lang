@@ -29,7 +29,7 @@ use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::ty::ParamMode;
 use crate::type_ref::TypeRef;
 
-pub use dump::{escape_char, hir_dump, item_text, owner_name};
+pub use dump::{TOP_LEVEL, escape_char, hir_dump, item_text, owner_name};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 

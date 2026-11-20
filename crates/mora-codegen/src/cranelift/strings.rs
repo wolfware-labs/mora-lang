@@ -230,15 +230,7 @@ impl Lowering<'_, '_> {
     ///
     /// With an internal error when `place` or an operand is not a string.
     pub(super) fn concatenate(&mut self, place: &Place, operands: &[Operand]) {
-        let layout = self.place_layout(place);
-        if layout.shape != Shape::String {
-            broken(
-                self.body,
-                &format!("a concatenation into `{place:?}`, which is not a string"),
-            );
-        }
-        let (parts, offsets) = self.layouts.array(&layout, operands.len() as u32);
-        let array = self.temporary(&parts);
+        let (array, offsets) = self.string_parts(place, operands.len(), "a concatenation");
         for (operand, offset) in operands.iter().zip(offsets) {
             let source = self.string_source(operand);
             let part = self.offset(array, offset);
@@ -248,6 +240,29 @@ impl Lowering<'_, '_> {
         // reads.
         let out = self.place_address(place);
         self.join_parts(array, operands.len(), out);
+    }
+
+    /// A new array of `count` strings, which holds the parts of `what`, a
+    /// string built into `place`, and the offset of each part in it.
+    ///
+    /// # Panics
+    ///
+    /// With an internal error when `place` is not a string.
+    pub(super) fn string_parts(
+        &mut self,
+        place: &Place,
+        count: usize,
+        what: &str,
+    ) -> (Value, Vec<u32>) {
+        let layout = self.place_layout(place);
+        if layout.shape != Shape::String {
+            broken(
+                self.body,
+                &format!("{what} into `{place:?}`, which is not a string"),
+            );
+        }
+        let (parts, offsets) = self.layouts.array(&layout, count as u32);
+        (self.temporary(&parts), offsets)
     }
 
     /// Writes at `out` the concatenation of the `count` strings at `array`.
@@ -293,7 +308,7 @@ mod tests {
 
     use super::*;
     use crate::Profile;
-    use crate::test_util::{func, jit, object_bytes, object_of, string_bytes};
+    use crate::test_util::{func, jit, object_bytes, object_of, string_bytes, x86_64};
     use crate::{JitProgram, Program};
 
     /// A string in place of the empty one, which a test overwrites.
@@ -499,7 +514,7 @@ mod tests {
     fn objects_put_long_literals_in_read_only_data() {
         use object::{Object, ObjectSection, ObjectSymbol, SectionKind};
         let literal = "a literal of more than fifteen bytes";
-        let target = mora_target::Target::builtin("x86_64-linux").unwrap();
+        let target = x86_64();
         let text = format!(
             "F(a: string): string => a + \"{literal}\";\nG(a: string): bool => a == \"short\";\n\
              F(\"\");\nG(\"\");\n"
@@ -586,7 +601,7 @@ mod tests {
 
     #[test]
     fn the_objects_of_literals_do_not_depend_on_a_hash_table() {
-        let target = mora_target::Target::builtin("x86_64-linux").unwrap();
+        let target = x86_64();
         let text = "A(ref s: string) { s = \"the first long literal\"; }\n\
                     B(ref s: string) { s = \"the second long literal\"; }\n\
                     C(ref s: string) { s = \"the third long literal\"; }\n\

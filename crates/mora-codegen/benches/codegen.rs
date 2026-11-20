@@ -2,8 +2,9 @@
 //!
 //! - `cold/*` time `Cranelift.object` for the host target on a project whose
 //!   front end and MIR queries have already run, so each time is code
-//!   generation alone. `object-debug` and `object-release` differ in the
-//!   optimization level.
+//!   generation alone. The top-level statements call every free function,
+//!   which call the methods, so that every body is in the program.
+//!   `object-debug` and `object-release` differ in the optimization level.
 //!
 //! `cargo bench -p mora-codegen --bench codegen`, or `cargo xtask bench-compare`
 //! to compare a branch with `origin/main`.
@@ -56,7 +57,7 @@ fn file_text(file: usize) -> String {
         )
         .unwrap();
     }
-    for f in 0..6 {
+    for f in 0..FUNCTIONS {
         let n = format!("{file}_{f}");
         writeln!(
             text,
@@ -82,12 +83,29 @@ fn file_text(file: usize) -> String {
     text
 }
 
+/// The free functions of each file.
+const FUNCTIONS: usize = 6;
+
+/// The top-level statements: a call of every free function of every file,
+/// so that code generation reaches all of them.
+fn entry_text() -> String {
+    let mut text = String::new();
+    for file in 0..FILES {
+        for f in 0..FUNCTIONS {
+            writeln!(
+                text,
+                "Console.WriteLine(Helper{file}_{f}({f}, true));\n\
+                 Console.WriteLine(Label{file}_{f}(\"a\", \"b\"));"
+            )
+            .unwrap();
+        }
+    }
+    text
+}
+
 /// The generated project: an entry point and `FILES` files.
 fn texts() -> Vec<(String, String)> {
-    let mut files = vec![(
-        "src/Program.mr".to_owned(),
-        "Console.WriteLine(\"hello\");\n".to_owned(),
-    )];
+    let mut files = vec![("src/Program.mr".to_owned(), entry_text())];
     for file in 0..FILES {
         files.push((format!("src/File{file}.mr"), file_text(file)));
     }
@@ -119,6 +137,9 @@ fn cold(c: &mut Criterion) {
     let project = project(&db);
     // Collecting runs every query the build needs.
     let program = Program::collect(&db, project).unwrap();
+    // The entry, the free functions of each file, and the two methods of
+    // the one struct of each file that its helpers create.
+    assert_eq!(program.functions().len(), 1 + FILES * (FUNCTIONS * 2 + 2));
     let mut group = c.benchmark_group("cold");
     group.bench_function("object-debug", |b| {
         b.iter(|| {
