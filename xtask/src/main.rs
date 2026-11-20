@@ -1,6 +1,6 @@
 //! Repository tooling, run as `cargo xtask <command>`: the layering, error
-//! code and spec example checks, code generation, the runtime and sysroot
-//! builds, and benchmark comparison. See [`USAGE`].
+//! code and spec example checks, code generation, the fuzz lockfile, the
+//! runtime and sysroot builds, and benchmark comparison. See [`USAGE`].
 
 // Test and tooling code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -9,6 +9,7 @@ mod bench_compare;
 mod bench_run;
 mod codegen;
 mod error_codes;
+mod fuzz_lock;
 mod layers;
 mod paths;
 mod runtime;
@@ -25,7 +26,7 @@ use mora_diag::registry;
 
 use crate::paths::root;
 
-const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | runtime [--test] [target...] | sysroot | bench-compare [--base <rev>] [--threshold <percent>]>";
+const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | fuzz-lock [--check] | runtime [--test] [target...] | sysroot | bench-compare [--base <rev>] [--threshold <percent>]>";
 
 /// What a command ends with: its exit code, or the reason it could not run,
 /// which `main` prints after the command's name.
@@ -184,6 +185,78 @@ fn run_codegen_check() -> CommandResult {
     }
 }
 
+/// `cargo metadata` for the fuzz crate, which cargo resolves against
+/// `fuzz/Cargo.lock`.
+fn fuzz_metadata(root: &Path) -> MetadataCommand {
+    let mut command = MetadataCommand::new();
+    command.manifest_path(root.join(fuzz_lock::FUZZ_MANIFEST));
+    command
+}
+
+/// Reads a lockfile under the repository root.
+fn read_lock(root: &Path, lock: &str) -> Result<String, String> {
+    let path = root.join(lock);
+    std::fs::read_to_string(&path).map_err(paths::error_at(&path))
+}
+
+/// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
+/// crates only the fuzz crate uses, and lets cargo drop the rest.
+fn run_fuzz_lock() -> CommandResult {
+    let root = root();
+    let text = fuzz_lock::merged(
+        &read_lock(&root, fuzz_lock::ROOT_LOCK)?,
+        &read_lock(&root, fuzz_lock::FUZZ_LOCK)?,
+    );
+    let path = root.join(fuzz_lock::FUZZ_LOCK);
+    std::fs::write(&path, text).map_err(paths::error_at(&path))?;
+    fuzz_metadata(&root)
+        .exec()
+        .map_err(|err| format!("cargo metadata failed: {err}"))?;
+    println!("fuzz-lock: wrote {}", fuzz_lock::FUZZ_LOCK);
+    run_fuzz_lock_check()
+}
+
+/// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or locks a
+/// crate it shares with the workspace at another version than `Cargo.lock`.
+fn run_fuzz_lock_check() -> CommandResult {
+    let root = root();
+    let mut problems = Vec::new();
+    if let Err(err) = fuzz_metadata(&root)
+        .other_options(["--locked".to_owned()])
+        .exec()
+    {
+        problems.push(format!(
+            "{} does not match {}: {err}",
+            fuzz_lock::FUZZ_LOCK,
+            fuzz_lock::FUZZ_MANIFEST
+        ));
+    }
+    let root_lock = read_lock(&root, fuzz_lock::ROOT_LOCK)?;
+    let fuzz = read_lock(&root, fuzz_lock::FUZZ_LOCK)?;
+    problems.extend(
+        fuzz_lock::drift(&root_lock, &fuzz)
+            .iter()
+            .map(ToString::to_string),
+    );
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
+    if problems.is_empty() {
+        println!(
+            "fuzz-lock: {} packages, shared crates on the versions of {}, ok",
+            fuzz_lock::packages(&fuzz).len(),
+            fuzz_lock::ROOT_LOCK
+        );
+        Ok(ExitCode::SUCCESS)
+    } else {
+        eprintln!(
+            "fuzz-lock: {} problem(s); run `cargo xtask fuzz-lock`",
+            problems.len()
+        );
+        Ok(ExitCode::FAILURE)
+    }
+}
+
 /// Benchmarks a base revision and the working tree, and fails when a
 /// benchmark regresses by more than the threshold.
 fn run_bench_compare(args: &[&str]) -> CommandResult {
@@ -231,6 +304,8 @@ fn main() -> ExitCode {
         ("spec-examples", []) => run_spec_examples(),
         ("codegen", []) => run_codegen(),
         ("codegen", ["--check"]) => run_codegen_check(),
+        ("fuzz-lock", []) => run_fuzz_lock(),
+        ("fuzz-lock", ["--check"]) => run_fuzz_lock_check(),
         ("runtime", rest) => run_runtime(rest),
         ("sysroot", []) => run_sysroot(),
         ("bench-compare", rest) => run_bench_compare(rest),

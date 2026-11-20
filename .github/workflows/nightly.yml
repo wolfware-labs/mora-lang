@@ -66,6 +66,9 @@ jobs:
   # fuzz run.
   fuzz-deny:
     runs-on: ubuntu-latest
+    # Not sized from runs: checkout, the stable toolchain, a prebuilt
+    # cargo-deny and the advisory database take a minute or two, and ten
+    # minutes stops a hung download well before GitHub's six hours.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

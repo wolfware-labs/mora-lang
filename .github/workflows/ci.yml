@@ -84,9 +84,17 @@ jobs:
       - name: cargo deny
         if: ${{ !cancelled() }}
         run: cargo deny check
-      - name: fuzz lockfile
+      # The fuzz crate sits outside the workspace with a lockfile of its own
+      # (§20.1). It must match its manifest and keep every crate it shares
+      # with the workspace on the version Cargo.lock locks.
+      - name: xtask fuzz-lock
         if: ${{ !cancelled() }}
-        run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+        run: cargo xtask fuzz-lock --check
+      # Advisories for the fuzz crate run in the nightly `fuzz-deny` job, so
+      # a new advisory does not fail pull requests that do not touch it.
+      - name: cargo deny (fuzz)
+        if: ${{ !cancelled() }}
+        run: cargo deny --locked --manifest-path fuzz/Cargo.toml check bans licenses sources
       - name: xtask layers
         if: ${{ !cancelled() }}
         run: cargo xtask layers
