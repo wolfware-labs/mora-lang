@@ -3,12 +3,18 @@
 
 //! Runs the `mora` executable as a user would (§20.1, CLI layer).
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn mora(args: &[&str]) -> Output {
+    mora_into(args, Stdio::piped())
+}
+
+/// Runs `mora` with its stdout sent to `stdout`.
+fn mora_into(args: &[&str], stdout: impl Into<Stdio>) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mora"))
         .args(args)
         .env_remove("NO_COLOR")
+        .stdout(stdout)
         .output()
         .unwrap()
 }
@@ -185,71 +191,40 @@ fn version_lists_the_runtimes_installed_beside_the_executable() {
     );
 }
 
+/// Command lines that write to stdout: `mora version` in both formats, and
+/// the `--version` and `--help` options clap answers itself.
+const WRITERS: &[&[&str]] = &[
+    &["--message-format", "human", "version"],
+    &["--message-format", "json", "version"],
+    &["--version"],
+    &["--help"],
+];
+
 #[test]
-fn version_into_a_closed_pipe_exits_0_quietly() {
-    for format in ["human", "json"] {
+fn output_into_a_closed_pipe_exits_0_quietly() {
+    for args in WRITERS {
         let (reader, writer) = std::io::pipe().unwrap();
         // Closed before the process starts, so its first write fails.
         drop(reader);
-        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
-            .args(["--message-format", format, "version"])
-            .stdout(writer)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(0), "{format}");
-        assert_eq!(stderr(&output), "", "{format}");
+        let output = mora_into(args, writer);
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert_eq!(stderr(&output), "", "{args:?}");
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn version_into_a_full_disk_is_a_failure() {
-    let full = std::fs::File::create("/dev/full").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_mora"))
-        .args(["--color", "never", "version"])
-        .stdout(full)
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let text = stderr(&output);
-    assert!(
-        text.starts_with("error: cannot write to stdout: "),
-        "{text}"
-    );
-    assert!(!text.contains("panicked"), "{text}");
-}
-
-#[test]
-fn version_and_help_options_into_a_closed_pipe_exit_0_quietly() {
-    for option in ["--version", "--help"] {
-        let (reader, writer) = std::io::pipe().unwrap();
-        drop(reader);
-        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
-            .arg(option)
-            .stdout(writer)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(0), "{option}");
-        assert_eq!(stderr(&output), "", "{option}");
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn version_and_help_options_into_a_full_disk_are_failures() {
-    for option in ["--version", "--help"] {
+fn output_into_a_full_disk_is_a_failure() {
+    for args in WRITERS {
         let full = std::fs::File::create("/dev/full").unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
-            .arg(option)
-            .stdout(full)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1), "{option}");
+        let output = mora_into(args, full);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
         let text = stderr(&output);
         assert!(
             text.starts_with("error: cannot write to stdout: "),
-            "{option}: {text}"
+            "{args:?}: {text}"
         );
+        assert!(!text.contains("panicked"), "{args:?}: {text}");
     }
 }
 
