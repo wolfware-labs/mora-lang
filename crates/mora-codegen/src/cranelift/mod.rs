@@ -823,6 +823,10 @@ mod tests {
             .diagnostic()
             .unwrap();
         assert_eq!(diagnostic.code.to_string(), "MR0156");
+        assert_eq!(
+            diagnostic.primary.message.as_deref(),
+            Some("its stack frame is too large")
+        );
     }
 
     #[test]

@@ -229,7 +229,7 @@ pub(super) fn broken(body: &Body, what: &str) -> ! {
 }
 
 /// Panics with an internal error in `body`, which `what` describes.
-pub(super) fn internal(body: &Body, what: impl std::fmt::Display) -> ! {
+fn internal(body: &Body, what: impl std::fmt::Display) -> ! {
     panic!("internal error generating code for {}: {what}", body.name)
 }
 

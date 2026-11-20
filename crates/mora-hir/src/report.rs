@@ -16,8 +16,8 @@ use crate::items::{
     ItemKind, Visibility, item_source_map, item_tree, parse, signature_refs, signature_sources,
 };
 use crate::resolve::{
-    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, external_path,
-    item_data, resolve_using, value_visible, visible_names,
+    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
+    resolve_using, unaliased_external_path, value_visible, visible_names,
 };
 use crate::signature::{SignatureError, SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
@@ -1617,7 +1617,7 @@ fn names_result(db: &dyn Db, main: ItemId) -> bool {
         file: main.file,
         within: Some(main.item),
     };
-    external_path(db, scope, &path.segments)
+    unaliased_external_path(db, scope, &path.segments)
         .is_some_and(|path| path.last().is_some_and(|name| name == "Result"))
 }
 

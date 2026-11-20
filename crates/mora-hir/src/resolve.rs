@@ -97,11 +97,16 @@ pub fn resolve_path(db: &dyn Db, scope: Scope, path: &[String]) -> Result<Resolv
     resolve(db, scope, path, true)
 }
 
-/// The path under `Std` that `path` names from `scope`, while the standard
-/// library is not loaded, so that only the path tells its names apart: the
-/// written path, with a first segment that is a `using` alias replaced by
-/// the path the alias stands for. `None` when `path` names something else.
-pub(crate) fn external_path(db: &dyn Db, scope: Scope, path: &[String]) -> Option<Vec<String>> {
+/// The path `path` stands for from `scope` when it names something of
+/// `Std` while the standard library is not loaded, so that only the path
+/// tells its names apart: the written path, with a first segment that is a
+/// `using` alias replaced by the path the alias stands for. `None` when
+/// `path` names something else.
+pub(crate) fn unaliased_external_path(
+    db: &dyn Db,
+    scope: Scope,
+    path: &[String],
+) -> Option<Vec<String>> {
     if resolve_path(db, scope, path) != Ok(Resolved::External) {
         return None;
     }
@@ -109,9 +114,9 @@ pub(crate) fn external_path(db: &dyn Db, scope: Scope, path: &[String]) -> Optio
     let aliased = imports(db, scope.project, scope.file)
         .aliases
         .iter()
-        .find(|(alias, target, _)| alias == first && *target == Resolved::External);
+        .find(|alias| alias.name == *first && alias.target == Resolved::External);
     Some(match aliased {
-        Some((_, _, target)) => target.iter().chain(rest).cloned().collect(),
+        Some(alias) => alias.path.iter().chain(rest).cloned().collect(),
         None => path.to_vec(),
     })
 }
@@ -320,9 +325,9 @@ fn first_segment_in(
     if with_imports {
         let imports = imports(db, scope.project, scope.file);
         let mut found = Vec::new();
-        for (alias, target, _) in &imports.aliases {
-            if alias == name {
-                found.push(target.clone());
+        for alias in &imports.aliases {
+            if alias.name == name {
+                found.push(alias.target.clone());
             }
         }
         for &namespace in &imports.namespaces {
@@ -548,8 +553,8 @@ fn dependency(db: &dyn Db, project: Project, name: &str) -> Option<NamespaceRef>
 /// What the `using` directives that apply to a file open.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Imports {
-    /// `using Name = Target;`, by name, with the path written as `Target`.
-    aliases: Vec<(String, Resolved, Vec<String>)>,
+    /// `using Name = Target;`.
+    aliases: Vec<ImportAlias>,
     /// `using Namespace;`.
     namespaces: Vec<NamespaceRef>,
     /// `using static Type;`.
@@ -557,6 +562,17 @@ pub(crate) struct Imports {
     /// Whether a `using Namespace;` or `using static Type;` opens a part of
     /// `Std` while the standard library is not loaded.
     opens_external: bool,
+}
+
+/// A `using Name = Target;` directive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImportAlias {
+    /// `Name`.
+    name: String,
+    /// What `Target` names.
+    target: Resolved,
+    /// `Target`, as written.
+    path: Vec<String>,
 }
 
 /// The file's own directives and every `global using` of the project. A
@@ -575,11 +591,11 @@ pub(crate) fn imports(db: &dyn Db, project: Project, file: SourceFile) -> Import
                 continue;
             };
             match (&using.alias, using.is_static, target) {
-                (Some(alias), _, target) => {
-                    imports
-                        .aliases
-                        .push((alias.clone(), target, using.path.clone()));
-                }
+                (Some(alias), _, target) => imports.aliases.push(ImportAlias {
+                    name: alias.clone(),
+                    target,
+                    path: using.path.clone(),
+                }),
                 (None, false, Resolved::Namespace(namespace)) => {
                     imports.namespaces.push(namespace);
                 }
@@ -824,7 +840,7 @@ pub(crate) fn visible_names(
             );
             if with_imports {
                 let imports = imports(db, scope.project, scope.file);
-                names.extend(imports.aliases.iter().map(|(alias, ..)| alias.clone()));
+                names.extend(imports.aliases.iter().map(|alias| alias.name.clone()));
                 for &namespace in &imports.namespaces {
                     for name in namespace_names(namespace, false) {
                         add(

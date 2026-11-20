@@ -16,8 +16,7 @@ use rustc_hash::FxHashMap;
 use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
-    Propagated, TypeError, constant, converts, is_entry_return, is_exit_value, is_known, numeric,
-    same,
+    Propagated, TypeError, constant, converts, is_entry_return, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -654,22 +653,16 @@ impl Check<'_> {
             (_, Some(ty)) => Some(ty.clone()),
             (_, None) => return,
         };
-        let propagate = self.entry_propagate.clone();
-        let allowed = match (&ty, &propagate) {
-            (None, _) => false,
-            // Without a `?`, the value's type; with one, a value that is a
-            // `Result` already is what the generated `Main` returns.
-            (Some(ty), None) => is_entry_return(ty),
-            (Some(ty), Some(_)) if ty.as_external().is_some() => is_entry_return(ty),
-            // Otherwise `Result<T, E>`, whose `T` is the value's type; a
-            // call that does not return gives no value.
-            (Some(ty), Some(_)) => *ty == Ty::Never || is_exit_value(ty),
-        };
-        if !allowed {
+        // The `?` changes what the generated `Main` returns, not which values
+        // it accepts: a `Result<T, E>` whose `T` is the value's type takes
+        // the values an entry point returns by themselves (a call that does
+        // not return gives none), and a value that is a `Result` already is
+        // the return type either way.
+        if !ty.as_ref().is_some_and(is_entry_return) {
             self.errors.push(TypeError::EntryReturn {
                 stmt,
                 ty,
-                propagate,
+                propagate: self.entry_propagate.clone(),
             });
         }
     }

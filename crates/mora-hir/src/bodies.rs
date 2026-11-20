@@ -1350,9 +1350,6 @@ mod tests {
         ] {
             assert_eq!(reported(text), Vec::<String>::new(), "{text:?}");
         }
-        // Only the rejected token is text: the name after an unclosed quote
-        // is code, and is looked up.
-        assert_eq!(reported("let b = (1\u{201c}two);\n"), ["MR0127"]);
     }
 
     #[test]
@@ -1373,6 +1370,9 @@ mod tests {
             "let a = \u{201c}hello\nworld\u{201d};\nnope();\n",
             "Console.WriteLine(\u{201e}a, b\u{201c}, nope);\n",
             "Console.WriteLine(\u{201d}a, b\u{201d}, nope);\n",
+            // Only the rejected token is text: the name after a quote that
+            // is not closed is code.
+            "let b = (1\u{201c}nope);\n",
         ] {
             assert_eq!(reported(text), ["MR0127"], "{text:?}");
         }

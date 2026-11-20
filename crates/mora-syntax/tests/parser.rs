@@ -502,7 +502,7 @@ fn a_usable_token_with_a_lexer_error_still_gets_its_missing_semicolon() {
 }
 
 #[test]
-fn a_rejected_run_takes_its_brackets_whole() {
+fn a_quoted_run_takes_its_brackets_whole() {
     assert_eq!(
         codes_of("F(\u{201c}G(a, b)\u{201d});\n"),
         ["MR0017", "MR0017"]
@@ -586,6 +586,16 @@ const UNCLOSED_CHARACTERS: &[(&str, &str)] = &[
     ("let a = ['a', 'b;", "let a = ['a', 'b';"),
     ("F('a;", "F('a';"),
 ];
+
+#[test]
+fn the_rest_of_an_unclosed_literal_is_one_error() {
+    // `$` and a backtick open an interpolated raw string, which the lexer
+    // also finds unclosed; its text is the rest of that literal in turn.
+    let text = "F('a$`, b);\n";
+    let tree = parse(text).syntax().debug_tree();
+    assert_eq!(tree.matches("Error@").count(), 1, "{tree}");
+    assert!(tree.contains("Error@4..12"), "{tree}");
+}
 
 #[test]
 fn an_unclosed_character_literal_reports_only_what_a_closed_one_would_more() {

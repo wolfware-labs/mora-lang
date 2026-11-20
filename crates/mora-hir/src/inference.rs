@@ -635,7 +635,7 @@ pub(crate) fn is_entry_return(ty: &Ty) -> bool {
 /// Whether an entry point may return a value of `ty`, by itself or as the
 /// value of its `Result` (§4.6): `()` or `int`, or a type with an error,
 /// reported already.
-pub(crate) fn is_exit_value(ty: &Ty) -> bool {
+fn is_exit_value(ty: &Ty) -> bool {
     matches!(ty, Ty::Error | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT)
 }
 

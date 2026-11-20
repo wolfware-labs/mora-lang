@@ -866,9 +866,12 @@ fn skip_rejected(p: &mut Parser<'_>) {
         }
         return;
     }
-    let cut = !p.at(K::Unknown);
+    if p.at(K::Unknown) {
+        p.bump_any();
+        return;
+    }
     p.bump_any();
-    while cut && p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p) {
+    while p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p) {
         p.bump_any();
     }
 }

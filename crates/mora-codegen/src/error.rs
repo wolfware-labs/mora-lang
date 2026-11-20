@@ -57,7 +57,7 @@ impl CodegenError {
             ),
             CodegenError::FrameTooLarge { span, .. } => (
                 span,
-                "its locals take too much of the stack".to_owned(),
+                "its stack frame is too large".to_owned(),
                 format!(
                     "a stack frame holds at most 2^30 bytes; the locals of one function, with the \
                      temporaries the compiler makes, take at most {MAX_FRAME_SLOTS} of them, and \
