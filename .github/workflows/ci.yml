@@ -48,11 +48,15 @@ jobs:
           # would fail `git diff` and skip a real change.
           git diff --name-only --no-renames "$BASE" HEAD > "$RUNNER_TEMP/changed-files"
           inert_docs='^((CLA|CODE_OF_CONDUCT|CONTRIBUTING|README|SECURITY)\.md|\.github/[^/]+\.md)$'
-          if grep -qvE "$inert_docs" "$RUNNER_TEMP/changed-files"; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          fi
+          # grep exits 1 when every changed file is inert, and 2 on an error
+          # such as a broken pattern, which must fail the job, not skip it.
+          rc=0
+          grep -qvE "$inert_docs" "$RUNNER_TEMP/changed-files" || rc=$?
+          case $rc in
+            0) echo "code=true" >> "$GITHUB_OUTPUT" ;;
+            1) echo "code=false" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
 
   # Every check, on x86_64 Linux. Steps after the first run with
   # `!cancelled()`, so one run reports every failing check.
