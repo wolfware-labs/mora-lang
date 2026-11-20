@@ -556,7 +556,7 @@ fn a_rejected_token_starts_an_error_expression_anywhere() {
 }
 
 #[test]
-fn a_rejected_token_after_an_operand_joins_it_in_one_error() {
+fn a_rejected_token_after_an_operand_is_one_error() {
     assert_eq!(codes_of("let a = (1\u{201c}2);\n"), ["MR0017"]);
     // What follows the brackets is still checked.
     assert_eq!(codes_of("let a = (1\u{201c}2) + ;\n"), ["MR0017", "MR0110"]);
@@ -568,4 +568,113 @@ fn the_rest_of_an_unclosed_character_literal_is_part_of_its_error() {
     assert_eq!(codes_of("F('ab);\n"), ["MR0012"]);
     // The line has no `;`.
     assert_eq!(codes_of("let c = 'ab\nlet d = 1;\n"), ["MR0012", "MR0110"]);
+}
+
+/// Unclosed character literals followed by what ends a statement, an
+/// argument or a group, with the codes each reports. The `;` that would go
+/// where the literal was cut is not asked for; a `,` or `}` that no `let`
+/// takes is reported as it is after a closed literal.
+const UNCLOSED_CHARACTERS: &[(&str, &[&str])] = &[
+    ("let a = 'a;", &["MR0012"]),
+    ("Console.WriteLine('a);", &["MR0012"]),
+    ("let a = ('a);", &["MR0012"]),
+    ("let a = ['a, 2];", &["MR0012"]),
+    ("let a = 1 + 'a, 2;", &["MR0012", "MR0110"]),
+    ("let a = 'a}", &["MR0012", "MR0110"]),
+    ("let a = 'a,", &["MR0012", "MR0110"]),
+    ("let a = ['a', 'b;", &["MR0012"]),
+];
+
+#[test]
+fn an_unclosed_character_literal_before_a_closer_reports_once() {
+    for (text, codes) in UNCLOSED_CHARACTERS {
+        let parse = parse(text);
+        assert_eq!(parse.syntax().text(), *text, "{text:?}: not lossless");
+        assert_eq!(codes_of(text), *codes, "{text:?}");
+        let closed = text.replacen("'a", "'a'", 1).replacen("'b", "'b'", 1);
+        for error in parse
+            .errors()
+            .iter()
+            .filter(|error| error.code.to_string() == "MR0110")
+        {
+            assert!(
+                parse_messages(&closed).contains(&error.message),
+                "{text:?}: {} is not reported for {closed:?}",
+                error.message
+            );
+        }
+    }
+}
+
+fn parse_messages(text: &str) -> Vec<String> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| error.message.clone())
+        .collect()
+}
+
+#[test]
+fn every_unclosed_character_literal_parses_in_a_bounded_number_of_steps() {
+    // The parser fails once it emits more than a fixed number of events per
+    // token, so a loop that stops taking tokens fails here instead of
+    // hanging.
+    for (text, _) in UNCLOSED_CHARACTERS {
+        assert!(std::panic::catch_unwind(|| parse(text)).is_ok(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_rejected_run_after_an_operand_keeps_the_operand() {
+    for text in [
+        "let a = nope \u{201c}y\u{201d};\n",
+        "let a = nope(1, 2) \u{201c}y\u{201d};\n",
+    ] {
+        let tree = parse(text).syntax().debug_tree();
+        assert!(tree.contains("NameRef"), "{text:?}:\n{tree}");
+        assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
+    }
+}
+
+#[test]
+fn a_rejected_run_ends_at_a_statement_on_the_next_line() {
+    // The `;` is missing after the run; the call on the next line is a
+    // statement of its own.
+    for text in [
+        "let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n",
+        "let a = \u{201c}x\nnope(1);\nlet b = 2;\n",
+        "let a = 1 \\\nb = 2;\n",
+        "let a = 1 \\\n\nb = 2;\n",
+    ] {
+        let tree = parse(text).syntax().debug_tree();
+        assert!(tree.contains("ExprStmt"), "{text:?}:\n{tree}");
+        let codes = codes_of(text);
+        assert_eq!(codes.last().map(String::as_str), Some("MR0110"), "{text:?}");
+        assert_eq!(
+            codes.iter().filter(|code| *code == "MR0110").count(),
+            1,
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_quoted_run_ends_at_its_closing_quote() {
+    // What follows the closing quote is parsed: `+ + 1` adds a unary `+ 1`.
+    let tree = parse("let a = \u{201c}x\u{201d} + + 1;\n")
+        .syntax()
+        .debug_tree();
+    assert!(
+        tree.contains("BinExpr") && tree.contains("PrefixExpr"),
+        "{tree}"
+    );
+    assert_eq!(
+        codes_of("let a = \u{201c}x\u{201d} + * 1;\n"),
+        ["MR0017", "MR0017", "MR0110"]
+    );
+    // A `,` inside the quotes is part of the run.
+    assert_eq!(
+        codes_of("F(\u{201c}a, b\u{201d}, c);\n"),
+        ["MR0017", "MR0017"]
+    );
 }

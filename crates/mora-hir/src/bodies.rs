@@ -1354,6 +1354,21 @@ mod tests {
     }
 
     #[test]
+    fn names_around_a_rejected_run_are_still_resolved() {
+        for text in [
+            "let a = nope \u{201c}y\u{201d};\n",
+            "let a = nope(1, 2) \u{201c}y\u{201d};\n",
+            "let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n",
+            // What follows the closing quote is checked.
+            "let a = \u{201c}x\u{201d} + + nope;\n",
+            // A `,` ends a run that is not quoted.
+            "Console.WriteLine('ab, nope);\n",
+        ] {
+            assert_eq!(reported(text), ["MR0127"], "{text:?}");
+        }
+    }
+
+    #[test]
     fn a_generic_local_function_sees_its_type_parameters() {
         assert_eq!(
             reported("F() {\n    Id<T>(x: T): T => x;\n    let y: T = 1;\n}\n"),

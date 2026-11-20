@@ -242,12 +242,12 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             continue;
         }
         // A token the lexer rejected where an operator would go, or the rest
-        // of a literal it found unclosed: the operand and the run are one
-        // error.
-        if p.at_rejected() {
-            let m = lhs.precede(p);
+        // of a literal it found unclosed: the run is an error of its own,
+        // after the operand, which stays an expression to check.
+        if at_rejected(p) {
+            let e = p.start();
             skip_rejected(p);
-            lhs = m.complete(p, K::Error);
+            e.complete(p, K::Error);
             continue;
         }
         return Some(lhs);
@@ -758,11 +758,10 @@ fn arg_inner(p: &mut Parser<'_>) {
 }
 
 /// What ends a run of tokens that starts with one the lexer rejected, at
-/// the run's own nesting level: the `,` or `;` that ends an argument, an
-/// element or a statement, and a keyword that starts a statement, which no
-/// expression holds.
+/// the run's own nesting level: the `;` that ends a statement, and a
+/// keyword that starts one, which no expression holds. A `,` ends it too,
+/// unless the run is quoted ([`OPENING_QUOTES`]).
 const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
-    K::Comma,
     K::Semicolon,
     K::LetKw,
     K::VarKw,
@@ -776,15 +775,56 @@ const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
     K::ContinueKw,
 ];
 
+/// What starts a statement on a new line after a run, besides the
+/// keywords in [`REJECTED_RUN_ENDS`]: an expression statement, a block or
+/// an attribute.
+const LINE_STATEMENT_STARTS: &[SyntaxKind] = &[
+    K::Ident,
+    K::ThisKw,
+    K::AwaitKw,
+    K::PlusPlus,
+    K::MinusMinus,
+    K::LBrace,
+    K::At,
+];
+
+/// The curly quotes that open a run meant as a string or a character. The
+/// lexer rejects them, so only an `Unknown` token has this text.
+const OPENING_QUOTES: &[&str] = &["\u{201c}", "\u{2018}"];
+/// The curly quotes that close it.
+const CLOSING_QUOTES: &[&str] = &["\u{201d}", "\u{2019}"];
+
+/// Whether a run of rejected tokens starts at the next token: one the lexer
+/// rejected, or the rest of a literal it found unclosed, as `b` in `'ab`.
+/// What would end the run is not part of it: in `F('a)` the `)` still
+/// closes the call.
+fn at_rejected(p: &Parser<'_>) -> bool {
+    p.at(K::Unknown) || (p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p, false))
+}
+
+/// Whether the next token ends a run at the run's own nesting level.
+fn ends_rejected_run(p: &Parser<'_>, quoted: bool) -> bool {
+    (!quoted && p.at(K::Comma))
+        || p.at_any(REJECTED_RUN_ENDS)
+        || (p.at_line_start() && p.at_any(LINE_STATEMENT_STARTS))
+}
+
 /// Takes a run of tokens that starts with one the lexer rejected, such as
 /// the text between two curly quotes, up to what ends it
-/// ([`REJECTED_RUN_ENDS`]) or a closing bracket that is not its own; a
-/// bracketed group inside it is taken whole. The lexer reported the token,
-/// so the caller makes the run one `Error` node and the parser reports
-/// nothing more about it.
+/// ([`ends_rejected_run`]), a closing bracket that is not its own, or, when
+/// it opens with a quote, the quote that closes it. A bracketed group
+/// inside it is taken whole. The lexer reported the token, so the caller
+/// makes the run one `Error` node and the parser reports nothing more about
+/// it. Always takes at least the first token.
 fn skip_rejected(p: &mut Parser<'_>) {
-    let mut open = 0usize;
+    let quoted = OPENING_QUOTES.contains(&p.nth_text(0));
+    let mut open = usize::from(p.at_any(OPENERS));
+    p.bump_any();
     while !p.at_end() {
+        if open == 0 && ends_rejected_run(p, quoted) {
+            return;
+        }
+        let closes = open == 0 && quoted && CLOSING_QUOTES.contains(&p.nth_text(0));
         if p.at_any(OPENERS) {
             open += 1;
         } else if p.at_any(CLOSERS) {
@@ -792,10 +832,11 @@ fn skip_rejected(p: &mut Parser<'_>) {
                 return;
             }
             open -= 1;
-        } else if open == 0 && p.at_any(REJECTED_RUN_ENDS) {
-            return;
         }
         p.bump_any();
+        if closes {
+            return;
+        }
     }
 }
 

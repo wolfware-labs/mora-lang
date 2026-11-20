@@ -94,6 +94,8 @@ pub(crate) struct Input<'t> {
     /// literal it found unclosed (`MR0012`), so that it is the rest of what
     /// was meant as the literal.
     cut: Vec<bool>,
+    /// Whether a line break comes between the token and the one before it.
+    line_start: Vec<bool>,
 }
 
 impl<'t> Input<'t> {
@@ -105,11 +107,16 @@ impl<'t> Input<'t> {
             raw: Vec::new(),
             joined: Vec::new(),
             cut: Vec::new(),
+            line_start: Vec::new(),
         };
+        let mut line_break = false;
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
+                line_break |= token.kind == K::Newline;
                 continue;
             }
+            input.line_start.push(line_break);
+            line_break = false;
             input.kinds.push(token.kind);
             input.ranges.push(token.range);
             input.raw.push(i);
@@ -199,6 +206,12 @@ pub(crate) struct TokenFix {
 /// How many expressions, statements, types, patterns and member lists can
 /// nest inside each other (§14.4).
 pub(crate) const MAX_DEPTH: usize = 256;
+
+/// How many events the parser may emit for each token before it counts as
+/// stuck. Every loop in the parser takes a token or ends, so a parse emits
+/// a handful of events per token; a loop that stopped taking tokens would
+/// otherwise open nodes until memory runs out.
+const EVENTS_PER_TOKEN: usize = 64;
 
 pub(crate) struct Parser<'t> {
     /// The tokens to parse.
@@ -371,8 +384,20 @@ impl<'t> Parser<'t> {
         !self.no_lambda
     }
 
+    /// Opens a node.
+    ///
+    /// # Panics
+    ///
+    /// When the parser emitted more than [`EVENTS_PER_TOKEN`] events per
+    /// token: it stopped taking tokens, which is a bug in the parser, and
+    /// it fails instead of running until memory runs out.
     pub(crate) fn start(&mut self) -> Marker {
         let pos = self.events.len();
+        assert!(
+            pos < EVENTS_PER_TOKEN * (self.input.len() + 1),
+            "the parser stopped taking tokens at token {}",
+            self.pos
+        );
         self.events.push(Event::Start {
             kind: K::Error,
             forward_parent: None,
@@ -431,11 +456,19 @@ impl<'t> Parser<'t> {
         kinds.iter().any(|&kind| self.at(kind))
     }
 
-    /// Whether the next token is one the lexer rejected, or the rest of a
-    /// literal it found unclosed, as `b` in `'ab`: the lexer reported its
-    /// cause, and the parser takes it into an `Error` node.
-    pub(crate) fn at_rejected(&self) -> bool {
-        self.at(K::Unknown) || self.input.cut.get(self.pos).copied().unwrap_or(false)
+    /// Whether the next token starts where the lexer ended a literal it
+    /// found unclosed, as `b` in `'ab`.
+    pub(crate) fn at_cut(&self) -> bool {
+        self.input.cut.get(self.pos).copied().unwrap_or(false)
+    }
+
+    /// Whether a line break comes before the next token.
+    pub(crate) fn at_line_start(&self) -> bool {
+        self.input
+            .line_start
+            .get(self.pos)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Whether the next token is the identifier `word`, which the grammar
@@ -521,3 +554,36 @@ pub(crate) fn describe(kind: SyntaxKind) -> String {
 
 /// The code of every syntax error.
 pub(crate) const SYNTAX_ERROR: mora_diag::Code = codes::MR0110;
+
+#[cfg(test)]
+mod tests {
+    use super::{EVENTS_PER_TOKEN, Event, Input, Parser};
+    use crate::lexer::lex;
+
+    /// Opens a node in a parser of `let a = 1;` that already emitted
+    /// `events` events.
+    fn start_after(events: usize) {
+        let text = "let a = 1;";
+        let lexed = lex(text);
+        let input = Input::new(text, &lexed);
+        let mut p = Parser::new(&input);
+        p.events.resize(events, Event::Finish);
+        p.start();
+    }
+
+    fn budget() -> usize {
+        // `let`, `a`, `=`, `1`, `;`, and one for the end.
+        EVENTS_PER_TOKEN * 6
+    }
+
+    #[test]
+    fn a_parser_within_its_budget_goes_on() {
+        start_after(budget() - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "the parser stopped taking tokens at token 0")]
+    fn a_parser_past_its_budget_stops() {
+        start_after(budget());
+    }
+}
