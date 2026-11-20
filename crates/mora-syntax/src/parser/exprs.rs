@@ -6,8 +6,7 @@
 //! `await` through [`unary`]; member access, calls, indexing, `++`/`--` and
 //! propagation through [`postfix`].
 
-use super::items::ITEM_RECOVERY;
-use super::stmts::{CLOSERS, OPENERS};
+use super::stmts::CLOSERS;
 use super::types::{self, PREDEFINED_TYPES, scan_type_no_fn};
 use super::{CompletedMarker, Input, Parser, items, patterns, stmts};
 use crate::SyntaxKind;
@@ -243,8 +242,9 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             continue;
         }
         // A token the lexer rejected where an operator would go, or the rest
-        // of a literal it found unclosed: the run is an error of its own,
-        // after the operand, which stays an expression to check.
+        // of a literal it found unclosed: it is an error of its own, after
+        // the operand, which stays an expression to check, and the
+        // expression goes on after it.
         if at_rejected(p) {
             let e = p.start();
             skip_rejected(p);
@@ -470,7 +470,14 @@ fn primary(p: &mut Parser<'_>) -> Option<CompletedMarker> {
     if p.at(K::Unknown) {
         let e = p.start();
         skip_rejected(p);
-        return Some(e.complete(p, K::Error));
+        let error = e.complete(p, K::Error);
+        // The operand is what follows, as if the rejected text were not
+        // there. When no operand follows, or an operator does, which the
+        // caller parses after an operand, the rejected text stands for it.
+        if !at_expr_start(p) || p.at_any(PREFIX) {
+            return Some(error);
+        }
+        return primary(p);
     }
     let kind = p.current();
     if LITERALS.contains(&kind) {
@@ -758,10 +765,10 @@ fn arg_inner(p: &mut Parser<'_>) {
     m.complete(p, K::Arg);
 }
 
-/// What ends a run of tokens that starts with one the lexer rejected, at
-/// the run's own nesting level: the `;` that ends a statement, and a
-/// keyword that starts one, which no expression holds. A `,` ends it too,
-/// unless the run opens with a quote ([`QUOTES`]).
+/// What ends the rest of a literal the lexer found unclosed
+/// ([`ends_rejected_run`]), and what a quote's closing quote must come
+/// before ([`closing_quote`]): the `;` that ends a statement, and a keyword
+/// that starts one, which no expression holds.
 const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
     K::Semicolon,
     K::LetKw,
@@ -776,9 +783,9 @@ const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
     K::ContinueKw,
 ];
 
-/// What starts a statement on a new line after a run, besides the
-/// keywords in [`REJECTED_RUN_ENDS`]: an expression statement, a block or
-/// an attribute.
+/// What starts a statement on a new line after the rest of an unclosed
+/// literal, besides the keywords in [`REJECTED_RUN_ENDS`]: an expression
+/// statement, a block or an attribute.
 const LINE_STATEMENT_STARTS: &[SyntaxKind] = &[
     K::Ident,
     K::ThisKw,
@@ -789,8 +796,8 @@ const LINE_STATEMENT_STARTS: &[SyntaxKind] = &[
     K::At,
 ];
 
-/// Each quote that opens a run meant as a string or a character, with the
-/// quotes that close it. The lexer rejects them all, so only an `Unknown`
+/// Each quote meant to open a string or a character, with the quotes that
+/// close it. The lexer rejects them all, so only an `Unknown`
 /// token has one of these texts.
 const QUOTES: &[(&str, &[&str])] = &[
     ("\u{201c}", &["\u{201d}"]),
@@ -801,17 +808,19 @@ const QUOTES: &[(&str, &[&str])] = &[
     ("\u{201a}", &["\u{2018}", "\u{2019}"]),
 ];
 
-/// Whether a run of rejected tokens starts at the next token: one the lexer
+/// Whether rejected text starts at the next token: a token the lexer
 /// rejected, or the rest of a literal it found unclosed, as `b` in `'ab`.
-/// What would end the run is not part of it: in `F('a)` the `)` still
-/// closes the call.
+/// What ends that rest is not part of it: in `F('a)` the `)` still closes
+/// the call.
 fn at_rejected(p: &Parser<'_>) -> bool {
-    p.at(K::Unknown) || (p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p, false))
+    p.at(K::Unknown) || (p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p))
 }
 
-/// Whether the next token ends a run at the run's own nesting level.
-fn ends_rejected_run(p: &Parser<'_>, quoted: bool) -> bool {
-    (!quoted && p.at(K::Comma))
+/// Whether the next token ends the rest of a literal the lexer found
+/// unclosed: a `,`, a token of [`REJECTED_RUN_ENDS`], or a line that starts
+/// with one of [`LINE_STATEMENT_STARTS`].
+fn ends_rejected_run(p: &Parser<'_>) -> bool {
+    p.at(K::Comma)
         || p.at_any(REJECTED_RUN_ENDS)
         || (p.at_line_start() && p.at_any(LINE_STATEMENT_STARTS))
 }
@@ -838,16 +847,14 @@ fn closing_quote(p: &Parser<'_>, closers: &[&str]) -> Option<usize> {
     None
 }
 
-/// Takes a run of tokens that starts with one the lexer rejected, such as
-/// the text between two curly quotes. A run that opens with a quote whose
-/// closing quote follows ([`closing_quote`]) ends there, whatever it holds.
-/// Any other run ends at what ends it ([`ends_rejected_run`]) or at a
-/// closing bracket that is not its own, and takes a bracketed group inside
-/// it whole, so an argument list or a lambda's block inside it stays in it.
-/// An unclosed bracket still does not take what follows it
-/// ([`ends_rejected_group`]). The lexer reported the token, so the caller
-/// makes the run one `Error` node and the parser reports nothing more
-/// about it. Always takes at least the first token.
+/// Takes the rejected text at the next token ([`at_rejected`]): a quote of
+/// [`QUOTES`] with everything up to its closing quote, when one comes
+/// before the statement ends ([`closing_quote`]); otherwise a rejected
+/// token alone; or the rest of an unclosed literal up to a closing bracket
+/// or what [`ends_rejected_run`] names. The caller makes what it takes one
+/// `Error` node and parses on as if it were not there, so a mistake after
+/// it is reported as it would be without it. Always takes at least the
+/// first token.
 fn skip_rejected(p: &mut Parser<'_>) {
     let closers = QUOTES
         .iter()
@@ -859,53 +866,11 @@ fn skip_rejected(p: &mut Parser<'_>) {
         }
         return;
     }
-    let quoted = closers.is_some();
-    // The closer each open bracket waits for, innermost last.
-    let mut open = Vec::new();
-    open.extend(closer_of(p.current()));
+    let cut = !p.at(K::Unknown);
     p.bump_any();
-    while !p.at_end() {
-        let ends = if open.is_empty() {
-            ends_rejected_run(p, quoted)
-        } else {
-            ends_rejected_group(p, &open)
-        };
-        if ends {
-            return;
-        }
-        if let Some(closer) = closer_of(p.current()) {
-            open.push(closer);
-        } else if p.at_any(CLOSERS) {
-            if open.last() != Some(&p.current()) {
-                return;
-            }
-            open.pop();
-        }
+    while cut && p.at_cut() && !p.at_any(CLOSERS) && !ends_rejected_run(p) {
         p.bump_any();
     }
-}
-
-/// Whether the next token ends a run inside the brackets whose closers are
-/// `open`, innermost last. Inside a block, the run holds the block's
-/// statements, and only a line that starts a declaration ends it; a line
-/// that starts with `@` does not, since an attribute also marks a statement
-/// in the block. Inside only parentheses and square brackets, which hold
-/// no statement, a `;` or a line that starts with a statement keyword ends
-/// it too, while a line that starts with a name continues an argument list.
-/// A closer of another kind ends either, which the caller checks.
-fn ends_rejected_group(p: &Parser<'_>, open: &[SyntaxKind]) -> bool {
-    if open.contains(&K::RBrace) {
-        return p.at_line_start() && p.at_any(ITEM_RECOVERY) && !p.at(K::At);
-    }
-    p.at(K::Semicolon) || (p.at_line_start() && p.at_any(REJECTED_RUN_ENDS))
-}
-
-/// The bracket that closes `kind`, when `kind` opens one.
-fn closer_of(kind: SyntaxKind) -> Option<SyntaxKind> {
-    OPENERS
-        .iter()
-        .position(|&opener| opener == kind)
-        .map(|i| CLOSERS[i])
 }
 
 /// `(e)`, `()`, `(a, b)`, `(Id: 1, Name: "a")`. A parenthesized

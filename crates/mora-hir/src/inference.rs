@@ -332,8 +332,9 @@ pub(crate) enum TypeError {
     /// The `return` statement `stmt`, the first of the top-level statements
     /// with a value, gives the generated `Main` a type that an entry point
     /// cannot return (`MR0120`): `ty`, the value's type, or with a `?` in
-    /// the statements, `propagate`, a `Result` of it. `ty` is `None` for a
-    /// lambda, whose type is a function's.
+    /// the statements, `propagate`, a `Result` of it, unless the value is a
+    /// `Result` already. `ty` is `None` for a lambda, whose type is a
+    /// function's.
     EntryReturn {
         stmt: StmtId,
         ty: Option<Ty>,

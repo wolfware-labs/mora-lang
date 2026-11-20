@@ -177,8 +177,10 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
 ///
 /// [`CodegenError::TypeTooLarge`] when a struct of the project or the type
 /// of a local takes more than 2^31 bytes, checked before anything is
-/// generated, and [`CodegenError::Cranelift`] when Cranelift rejects a
-/// function.
+/// generated; [`CodegenError::FrameTooLarge`] when the stack frame of a
+/// function would pass 2^30 bytes, by its stack slots or once Cranelift
+/// adds what it needs; and [`CodegenError::Cranelift`] when Cranelift
+/// rejects a function otherwise.
 ///
 /// # Panics
 ///
@@ -273,12 +275,11 @@ fn define_functions<M: Module>(
         module
             .define_function(*id, &mut context)
             .map_err(|error| match error {
+                // The stack slots fit, but with the spilled values, saved
+                // registers and call arguments Cranelift adds, the frame
+                // does not.
                 ModuleError::Compilation(cranelift_codegen::CodegenError::ImplLimitExceeded) => {
-                    function::internal(
-                        function.body,
-                        "Cranelift found the frame or the code too large after the size \
-                         checks passed",
-                    )
+                    crate::size::frame_too_large(program.db(), function)
                 }
                 error => cranelift_error(error),
             })?;

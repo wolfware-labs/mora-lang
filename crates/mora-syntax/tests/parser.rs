@@ -552,10 +552,15 @@ fn a_rejected_token_starts_an_error_expression_anywhere() {
 }
 
 #[test]
-fn a_rejected_token_after_an_operand_is_one_error() {
-    assert_eq!(codes_of("let a = (1\u{201c}2);\n"), ["MR0017"]);
-    // What follows the brackets is still checked.
-    assert_eq!(codes_of("let a = (1\u{201c}2) + ;\n"), ["MR0017", "MR0110"]);
+fn a_rejected_token_after_an_operand_is_parsed_past() {
+    // The parser goes on after the token as if it were not there: `2` after
+    // `(1` needs the `)` that the call of a parenthesized expression
+    // expects, and what follows is the rest of the statement.
+    assert_eq!(
+        codes_of("let a = (1\u{201c}2);\n"),
+        ["MR0017", "MR0110", "MR0110", "MR0110", "MR0110"]
+    );
+    // A missing `;` after it is still reported.
     assert_eq!(codes_of("let a = 1 \\\nlet b = 2;\n"), ["MR0017", "MR0110"]);
 }
 
@@ -631,11 +636,10 @@ fn a_rejected_run_after_an_operand_keeps_the_operand() {
 }
 
 #[test]
-fn a_rejected_run_ends_at_a_statement_on_the_next_line() {
-    // The `;` is missing after the run; the call on the next line is a
-    // statement of its own.
+fn a_rejected_token_ends_at_a_statement_on_the_next_line() {
+    // The `;` is missing after the token; the statement on the next line is
+    // one of its own.
     for text in [
-        "let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n",
         "let a = \u{201c}x\nnope(1);\nlet b = 2;\n",
         "let a = 1 \\\nb = 2;\n",
         "let a = 1 \\\n\nb = 2;\n",
@@ -683,14 +687,18 @@ fn a_quoted_run_ends_at_its_closing_quote() {
     ] {
         assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
     }
-    // Without its closing quote before the `;`, a quoted run ends at the
-    // statement on the next line, unless an open `(` makes that line part
-    // of it, as for the arguments of a call; then the `;` ends it.
+    // An operand after a closing quote is the value, as if the quoted text
+    // were not there: `let a = nope(1);`.
+    assert_eq!(
+        codes_of("let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n"),
+        ["MR0017", "MR0017"]
+    );
+    // Without its closing quote before the `;`, a quote is one token, and
+    // what follows it is parsed.
     assert_eq!(
         codes_of("let a = \u{201c}x y\nnope(1);\n"),
-        ["MR0017", "MR0110"]
+        ["MR0017", "MR0110", "MR0110"]
     );
-    assert_eq!(codes_of("let a = \u{201c}x (y\nnope(1);\n"), ["MR0017"]);
     assert_eq!(
         codes_of("let a = \u{201c}x\nlet b = \u{201c}y\u{201d};\n"),
         ["MR0017", "MR0110", "MR0017", "MR0017"]
@@ -720,85 +728,99 @@ fn top_level_kinds(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parses `text` and the same text without its rejected tokens, as if they
+/// were not there.
+fn with_and_without(text: &str) -> (Vec<String>, Vec<String>) {
+    (codes_of(text), codes_of(&text.replace("\\ ", "")))
+}
+
 #[test]
-fn a_rejected_run_ends_at_a_semicolon_inside_its_brackets() {
-    // The `(` is never closed; the `;` still ends the statement, and the
-    // functions after it are parsed and checked.
-    let text = "let a = 1 \u{2018} (;\nMain(): int { return 1 }\nG(): int { let = ; }\n";
-    let codes = coded_offsets(text);
+fn a_rejected_token_keeps_the_declarations_after_it() {
+    for text in [
+        "let a = 1 \u{2018} (;\nMain(): int { return 1 }\nG(): int { let = ; }\n",
+        "G(): int { let a = 1 \\ (; return 1; }\nMain(): int { return G(); }\n",
+        "G(): int { let a = 1 \\ ( return 1; }\nMain(): int { return G(); }\n",
+        "G(): int {\n    let a = 1 \\ [ x\n    return 1;\n}\nMain(): int { return G(); }\n",
+        "A(n: int): int {\n    if \\ (n < 0) {\n        return -1;\n    }\n}\n\n\
+         B(): int {\n    return 1;\n}\n\nC(): int {\n    return 2;\n}\n",
+        "A(n: int): int {\n    while \\ (ready) {\n        return -1;\n    }\n}\n\n\
+         B(): int {\n    return 1;\n}\n",
+    ] {
+        let kinds = top_level_kinds(text);
+        let functions = kinds.iter().filter(|kind| *kind == "FunctionDecl").count();
+        assert_eq!(
+            functions,
+            text.matches("): int").count(),
+            "{text:?}: {kinds:?}"
+        );
+        assert!(codes_of(text).contains(&"MR0017".to_owned()), "{text:?}");
+    }
+    // Main's missing `;` and G's two errors are still reported.
+    let codes =
+        coded_offsets("let a = 1 \u{2018} (;\nMain(): int { return 1 }\nG(): int { let = ; }\n");
     for expected in [("MR0110", 39), ("MR0110", 56), ("MR0110", 58)] {
         assert!(
             codes.contains(&(expected.0.to_string(), expected.1)),
             "{expected:?} in {codes:?}"
         );
     }
+    // A `{` after the token opens a block, which the `}`s that follow close:
+    // left open, it holds the function after it, as a local function, up to
+    // the line that starts with an access modifier.
+    let text = "let a = \\ {\n    return 1;\nB(): int {\n    return 1;\n}\npublic struct S { }\n";
     assert_eq!(
         top_level_kinds(text),
-        ["LocalDeclStmt", "FunctionDecl", "FunctionDecl"]
+        ["LocalDeclStmt", "Block", "StructDecl"]
     );
 }
 
 #[test]
-fn a_rejected_run_does_not_close_its_bracket_with_another_kind() {
-    // The `(` is not closed by G's `}`: `Main` stays a function of its own.
-    let text = "G(): int { let a = 1 \\ (; return 1; }\nMain(): int { return G(); }\n";
-    assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
-    assert_eq!(codes_of(text), ["MR0017"]);
-    for opener in ["(", "["] {
-        let text = format!(
-            "G(): int {{ let a = 1 \\ {opener} return 1; }}\nMain(): int {{ return G(); }}\n"
-        );
-        assert_eq!(
-            top_level_kinds(&text),
-            ["FunctionDecl", "FunctionDecl"],
-            "{text:?}"
-        );
-        let text = format!(
-            "G(): int {{\n    let a = 1 \\ {opener} x\n    return 1;\n}}\nMain(): int {{ return G(); }}\n"
-        );
-        assert_eq!(
-            top_level_kinds(&text),
-            ["FunctionDecl", "FunctionDecl"],
-            "{text:?}"
-        );
-        // G's `}` on a line of its own is a closer of another kind.
-        let text = format!(
-            "G(): int {{\n    let a = 1 \\ {opener} x\n}}\nMain(): int {{ return G(); }}\n"
-        );
-        assert_eq!(
-            top_level_kinds(&text),
-            ["FunctionDecl", "FunctionDecl"],
-            "{text:?}"
-        );
-    }
-    // A `{` holds statements, so the run takes `{ return 1; }` whole, and
-    // G's own `}` closes it: `Main` is then inside G.
-    let text = "G(): int { let a = 1 \\ { return 1; }\nMain(): int { return G(); }\n";
-    assert_eq!(top_level_kinds(text), ["FunctionDecl"]);
-    // A `{` left open ends at a line that starts a declaration.
-    let text = "G(): int {\n    let a = 1 \\ { {\n    }\npublic struct S {}\n";
-    assert!(
-        top_level_kinds(text).contains(&"StructDecl".to_owned()),
-        "{:?}",
-        top_level_kinds(text)
-    );
-    for opener in ["(", "[", "{"] {
-        // A closer of another kind ends the run and is not taken.
-        let text = format!("F(\u{201c}{opener} a);\n");
-        assert_eq!(top_level_kinds(&text), ["ExprStmt"], "{text:?}");
-    }
-}
-
-#[test]
-fn a_rejected_run_takes_ordinary_code_after_it_whole() {
+fn a_rejected_token_is_parsed_past_as_if_it_were_not_there() {
+    // Each reports the token, then what the text without it reports.
     for text in [
         "let x = a \\ F(() => { return 1; });\n",
         "let x = a \\ F(b,\n    c);\n",
         "let f = G(\\ x => {\n    let y = 1;\n    return y;\n});\n",
         "F(a \\ G(\n    b,\n    c\n));\n",
         "let x = a \\ new P {\n    A = 1,\n    B = 2\n};\n",
-        "let f = a \\ (x) => {\n    return x;\n};\n",
+        "let a = 1 \\ + 2;\n",
     ] {
-        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
+        let (with, without) = with_and_without(text);
+        assert_eq!(with[0], "MR0017", "{text:?}");
+        assert_eq!(with[1..], without, "{text:?}");
     }
+    // After an operand, a lambda is a second operand: its `=>` ends the
+    // statement, without the `;` the text without the token also misses.
+    for text in [
+        "let f = a \\ (x) => {\n    return x;\n};\n",
+        "let f = a \\ (x) => {\n    @Inline\n    let y = x;\n    return y;\n};\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017", "MR0110"], "{text:?}");
+    }
+    // A rejected token between an extension's parameters and its body.
+    assert_eq!(
+        codes_of("extension(p: Point) \\ {\n    public X(): int => 1;\n}\n"),
+        ["MR0017", "MR0110", "MR0110", "MR0110"]
+    );
+}
+
+#[test]
+fn a_missing_body_leaves_the_closing_brace() {
+    for keyword in [
+        "if (n < 0)",
+        "while (n < 0)",
+        "for (;;)",
+        "foreach (let x in xs)",
+    ] {
+        let text = format!("A(n: int): int {{\n    {keyword}\n}}\nB(): int {{ return 1; }}\n");
+        assert_eq!(
+            top_level_kinds(&text),
+            ["FunctionDecl", "FunctionDecl"],
+            "{text:?}"
+        );
+        assert_eq!(codes_of(&text), ["MR0110"], "{text:?}");
+    }
+    let text = "A(n: int): int {\n    if (n < 0) { } else\n}\nB(): int { return 1; }\n";
+    assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
+    assert_eq!(codes_of("if (true)"), ["MR0110"]);
 }

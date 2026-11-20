@@ -114,6 +114,14 @@ pub(crate) fn check_frame(
     if end <= MAX_FRAME_SLOTS {
         return Ok(());
     }
+    Err(frame_too_large(db, function))
+}
+
+/// [`CodegenError::FrameTooLarge`] for `function`, at its name, or its span
+/// for the top-level statements and a local function: the stack slots that
+/// [`check_frame`] counts passed the limit, or Cranelift found the frame too
+/// large once it added what register allocation and the prologue need.
+pub(crate) fn frame_too_large(db: &dyn Db, function: &Function<'_>) -> CodegenError {
     let key = function.key;
     let span = match key.owner {
         BodyOwner::Item(item) if key.local == 0 => item_name_span(
@@ -126,10 +134,10 @@ pub(crate) fn check_frame(
         ),
         _ => function.body.span,
     };
-    Err(CodegenError::FrameTooLarge {
+    CodegenError::FrameTooLarge {
         name: function.body.name.clone(),
         span,
-    })
+    }
 }
 
 /// Lays out `ty`. A tuple too large that no struct holds is reported at

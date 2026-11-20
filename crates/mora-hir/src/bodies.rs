@@ -1346,11 +1346,13 @@ mod tests {
     fn a_rejected_run_anywhere_in_an_expression_reports_no_unknown_name() {
         for text in [
             "let a = \"x\" + \u{201c}y\u{201d};\n",
-            "let b = (1\u{201c}two);\n",
             "Console.WriteLine('ab);\n",
         ] {
             assert_eq!(reported(text), Vec::<String>::new(), "{text:?}");
         }
+        // Only the rejected token is text: the name after an unclosed quote
+        // is code, and is looked up.
+        assert_eq!(reported("let b = (1\u{201c}two);\n"), ["MR0127"]);
     }
 
     #[test]

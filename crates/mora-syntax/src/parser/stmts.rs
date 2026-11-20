@@ -308,15 +308,26 @@ pub(crate) fn parenthesized(p: &mut Parser<'_>) {
     p.expect(K::RParen);
 }
 
+/// The body of an `if`, an `else` or a loop: one statement. A `}` or the
+/// end of the file where the body should start means it is missing, which
+/// is reported here; the `}` is left to the block around the statement.
+fn body(p: &mut Parser<'_>) {
+    if p.at(K::RBrace) || p.at_end() {
+        p.error("expected a statement");
+        return;
+    }
+    statement(p);
+}
+
 fn if_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::IfKw);
     parenthesized(p);
-    statement(p);
+    body(p);
     if p.at(K::ElseKw) {
         let e = p.start();
         p.bump(K::ElseKw);
-        statement(p);
+        body(p);
         e.complete(p, K::ElseClause);
     }
     m.complete(p, K::IfStmt);
@@ -326,14 +337,14 @@ fn while_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::WhileKw);
     parenthesized(p);
-    statement(p);
+    body(p);
     m.complete(p, K::WhileStmt);
 }
 
 fn do_while_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::DoKw);
-    statement(p);
+    body(p);
     p.expect(K::WhileKw);
     parenthesized(p);
     p.expect(K::Semicolon);
@@ -365,7 +376,7 @@ fn for_stmt(p: &mut Parser<'_>) {
         update.complete(p, K::ForUpdate);
     }
     p.expect(K::RParen);
-    statement(p);
+    body(p);
     m.complete(p, K::ForStmt);
 }
 
@@ -390,6 +401,6 @@ fn foreach_stmt(p: &mut Parser<'_>) {
     p.expect(K::InKw);
     exprs::expr(p);
     p.expect(K::RParen);
-    statement(p);
+    body(p);
     m.complete(p, K::ForeachStmt);
 }

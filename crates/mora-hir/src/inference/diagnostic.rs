@@ -493,6 +493,29 @@ fn entry_return(
             "this gives the generated `Main` its return type",
         );
     };
+    let question = || {
+        Label::new(
+            source.span(propagate.expr),
+            "this `?` makes the generated `Main` return a `Result`",
+        )
+    };
+    // A value that is a `Result` already: the `?` makes it the type.
+    if let Some(parts) = ty.as_external() {
+        let what = match parts {
+            [value, error] => format!(
+                "`Result<{}, {}>`",
+                plain(source, value),
+                plain(source, error)
+            ),
+            _ => describe(source, ty),
+        };
+        return entry_return_error(
+            &what,
+            span,
+            "this gives the generated `Main` its return type",
+        )
+        .with_secondary(question());
+    }
     let error = propagate
         .error
         .as_ref()
@@ -504,10 +527,7 @@ fn entry_return(
         span,
         &format!("with the `?`, this gives the generated `Main` the return type {result}"),
     )
-    .with_secondary(Label::new(
-        source.span(propagate.expr),
-        "this `?` makes the generated `Main` return a `Result`",
-    ))
+    .with_secondary(question())
 }
 
 /// How a message names the type `ty` an entry point returns: in backticks

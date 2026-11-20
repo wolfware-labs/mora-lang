@@ -654,15 +654,16 @@ impl Check<'_> {
             (_, Some(ty)) => Some(ty.clone()),
             (_, None) => return,
         };
-        let propagate = self
-            .entry_propagate
-            .clone()
-            .filter(|_| ty.as_ref().is_none_or(|ty| ty.as_external().is_none()));
+        let propagate = self.entry_propagate.clone();
         let allowed = match (&ty, &propagate) {
             (None, _) => false,
+            // Without a `?`, the value's type; with one, a value that is a
+            // `Result` already is what the generated `Main` returns.
             (Some(ty), None) => is_entry_return(ty),
-            // `Result<T, E>`, whose `T` is the value's type.
-            (Some(ty), Some(_)) => is_exit_value(ty),
+            (Some(ty), Some(_)) if ty.as_external().is_some() => is_entry_return(ty),
+            // Otherwise `Result<T, E>`, whose `T` is the value's type; a
+            // call that does not return gives no value.
+            (Some(ty), Some(_)) => *ty == Ty::Never || is_exit_value(ty),
         };
         if !allowed {
             self.errors.push(TypeError::EntryReturn {

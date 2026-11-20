@@ -59,9 +59,10 @@ impl CodegenError {
                 span,
                 "its locals take too much of the stack".to_owned(),
                 format!(
-                    "the locals of one function take at most {MAX_FRAME_SLOTS} bytes, 2^30 less \
-                     64 KiB the compiler keeps for its own use; keep large values in a class or \
-                     a collection"
+                    "a stack frame holds at most 2^30 bytes; the locals of one function, with the \
+                     temporaries the compiler makes, take at most {MAX_FRAME_SLOTS} of them, and \
+                     what the compiler adds to the frame can still pass the limit; keep large \
+                     values in a class or a collection"
                 ),
             ),
             CodegenError::NoEntryPoint
@@ -91,7 +92,7 @@ impl fmt::Display for CodegenError {
             }
             Self::FrameTooLarge { name, .. } => write!(
                 f,
-                "the locals of `{name}` would take more than {MAX_FRAME_SLOTS} bytes of stack"
+                "the stack frame of `{name}` would take more than 2^30 bytes"
             ),
         }
     }

@@ -40,9 +40,10 @@ pub trait Backend {
     /// # Errors
     ///
     /// [`CodegenError::UnsupportedTarget`] for a target the backend cannot
-    /// generate for, [`CodegenError::TypeTooLarge`] for a type larger than
-    /// 2^31 bytes on it, and [`CodegenError::Cranelift`] when code
-    /// generation fails.
+    /// generate for; [`CodegenError::TypeTooLarge`] for a type larger than
+    /// 2^31 bytes on it; [`CodegenError::FrameTooLarge`] for a function
+    /// whose stack frame would pass 2^30 bytes; and
+    /// [`CodegenError::Cranelift`] when code generation fails otherwise.
     fn object(
         &self,
         program: &Program<'_>,
@@ -58,7 +59,9 @@ pub trait JitBackend {
     /// # Errors
     ///
     /// [`CodegenError::UnsupportedTarget`] when the host has no built-in
-    /// target, [`CodegenError::TypeTooLarge`] for a type larger than 2^31
-    /// bytes, and [`CodegenError::Cranelift`] when code generation fails.
+    /// target; [`CodegenError::TypeTooLarge`] for a type larger than 2^31
+    /// bytes; [`CodegenError::FrameTooLarge`] for a function whose stack
+    /// frame would pass 2^30 bytes; and [`CodegenError::Cranelift`] when
+    /// code generation fails otherwise.
     fn jit(&self, program: &Program<'_>, profile: Profile) -> Result<JitProgram, CodegenError>;
 }

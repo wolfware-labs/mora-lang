@@ -16,8 +16,8 @@ use crate::items::{
     ItemKind, Visibility, item_source_map, item_tree, parse, signature_refs, signature_sources,
 };
 use crate::resolve::{
-    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
-    resolve_using, value_visible, visible_names,
+    ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, external_path,
+    item_data, resolve_using, value_visible, visible_names,
 };
 use crate::signature::{SignatureError, SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
@@ -1599,15 +1599,26 @@ fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
     ));
 }
 
-/// Whether the return type written on the function `main` is a path named
-/// `Result`: of an external type, only the name tells a `Result` apart.
+/// Whether the return type written on the function `main` names `Result`
+/// of the standard library: of an external type, only its path tells a
+/// `Result` apart, followed through a `using` alias as names resolve.
 fn names_result(db: &dyn Db, main: ItemId) -> bool {
     let refs = &signature_refs(db, main.file)[arena_index(main.item)];
-    matches!(
-        &refs.kind,
-        SignatureRefKind::Function { ret: Some(TypeRef::Path(path)), .. }
-            if path.segments.last().is_some_and(|name| name == "Result")
-    )
+    let SignatureRefKind::Function {
+        ret: Some(TypeRef::Path(path)),
+        ..
+    } = &refs.kind
+    else {
+        return false;
+    };
+    // Looked up as the signature's own types are.
+    let scope = Scope {
+        project: main.project,
+        file: main.file,
+        within: Some(main.item),
+    };
+    external_path(db, scope, &path.segments)
+        .is_some_and(|path| path.last().is_some_and(|name| name == "Result"))
 }
 
 /// `MR0120` at `span`, `label`ed: an entry point returns `what`, a type
@@ -3167,6 +3178,55 @@ mod tests {
             let reported = codes(&diagnostics_of(text));
             assert!(
                 !reported.contains(&"MR0120".to_owned()),
+                "{text:?}: {reported:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_mark_with_a_value_that_does_not_return_or_is_a_result() {
+        // A value that does not return gives the generated `Main` no type.
+        let text = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn panic(\"no\");\n";
+        assert!(
+            !codes(&diagnostics_of(text)).contains(&"MR0120".to_owned()),
+            "{:?}",
+            codes(&diagnostics_of(text))
+        );
+        // A value that is a `Result` already is named as one.
+        let text = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn F();\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(codes(&reported), ["MR0120"]);
+        assert_eq!(
+            reported[0].message,
+            "an entry point cannot return `Result<long, string>`"
+        );
+        assert_eq!(
+            reported[0].primary.message.as_deref(),
+            Some("this gives the generated `Main` its return type")
+        );
+    }
+
+    #[test]
+    fn a_main_returns_the_result_of_the_standard_library_by_any_name() {
+        for text in [
+            "using R = Std.Result;\nMain(): R<int, string> { return Ok(1); }\n",
+            "Main(): Std.Result<int, string> { return Ok(1); }\n",
+            "using Std;\nMain(): Result<(), string> { return Ok(()); }\n",
+        ] {
+            let reported = codes(&diagnostics_of(text));
+            assert!(
+                !reported.contains(&"MR0120".to_owned()),
+                "{text:?}: {reported:?}"
+            );
+        }
+        // Another type named `Result`, or an alias of another type, is not.
+        for text in [
+            "struct Result<T, E> { }\nMain(): Result<int, string> { return new Result<int, string>(); }\n",
+            "using R = Std.Dictionary;\nMain(): R<int, string> { return []; }\n",
+        ] {
+            let reported = codes(&diagnostics_of(text));
+            assert!(
+                reported.contains(&"MR0120".to_owned()),
                 "{text:?}: {reported:?}"
             );
         }
