@@ -242,8 +242,11 @@ struct VersionJson<'a> {
     /// The schema name and version, the first key of every JSON object the
     /// toolchain prints (§17.10).
     schema: &'static str,
+    /// The toolchain version.
     version: &'a str,
+    /// The commit the toolchain was built from.
     commit: &'a str,
+    /// The targets whose runtime library is installed, sorted (§19.2).
     runtime_targets: &'a [String],
 }
 
