@@ -184,3 +184,37 @@ fn version_lists_the_runtimes_installed_beside_the_executable() {
         "{json}"
     );
 }
+
+#[test]
+fn version_into_a_closed_pipe_exits_0_quietly() {
+    for format in ["human", "json"] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        // Closed before the process starts, so its first write fails.
+        drop(reader);
+        let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+            .args(["--message-format", format, "version"])
+            .stdout(writer)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{format}");
+        assert_eq!(stderr(&output), "", "{format}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn version_into_a_full_disk_is_a_failure() {
+    let full = std::fs::File::create("/dev/full").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+        .args(["--color", "never", "version"])
+        .stdout(full)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(
+        text.starts_with("error: cannot write to stdout: "),
+        "{text}"
+    );
+    assert!(!text.contains("panicked"), "{text}");
+}

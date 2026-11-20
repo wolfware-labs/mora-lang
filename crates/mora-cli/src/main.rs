@@ -1,6 +1,6 @@
 //! The `mora` executable (§17.1).
 
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -8,8 +8,7 @@ use serde::Serialize;
 
 /// The exit codes of §17.1.
 mod exit {
-    /// A build or test failed.
-    #[expect(dead_code, reason = "used once `build` and `test` exist")]
+    /// A build or test failed, or the output could not be written.
     pub const FAILURE: u8 = 1;
     /// The command line is wrong, or the command does not exist yet.
     pub const USAGE: u8 = 2;
@@ -155,13 +154,42 @@ impl Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match &cli.command {
-        Command::Version => version(cli.message_format),
+        Command::Version => version(cli.message_format, cli.color),
         command => {
-            let error = paint("error", "1;31", colored(cli.color));
-            eprintln!("{error}: `mora {}` is not implemented yet", command.name());
+            let message = format!("`mora {}` is not implemented yet", command.name());
+            report_error(&message, cli.color);
             ExitCode::from(exit::USAGE)
         }
     }
+}
+
+/// Writes `text` and a newline to stdout. Every command prints through here:
+/// `println!` panics when the write fails, and a panic exits with 101.
+fn write_stdout(text: &str) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{text}")?;
+    stdout.flush()
+}
+
+/// The exit code of a command that ends with `code` once its output is
+/// written. A reader that closed the pipe early, as `head -1` does, is not a
+/// failure; any other write error is one, and is reported on stderr.
+fn finish(written: io::Result<()>, code: ExitCode, color: Color) -> ExitCode {
+    match written {
+        Ok(()) => code,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => code,
+        Err(error) => {
+            report_error(&format!("cannot write to stdout: {error}"), color);
+            ExitCode::from(exit::FAILURE)
+        }
+    }
+}
+
+/// Writes `error: <message>` to stderr. A failed write is dropped, since
+/// there is nowhere left to report it.
+fn report_error(message: &str, color: Color) {
+    let error = paint("error", "1;31", colored(color));
+    let _ = writeln!(io::stderr(), "{error}: {message}");
 }
 
 /// Whether stderr gets color.
@@ -194,27 +222,27 @@ struct VersionJson<'a> {
     runtime_targets: &'a [String],
 }
 
-fn version(format: MessageFormat) -> ExitCode {
+fn version(format: MessageFormat, color: Color) -> ExitCode {
     let version = env!("CARGO_PKG_VERSION");
     let commit = env!("MORA_COMMIT");
     let targets = runtime_targets();
-    if format == MessageFormat::Json {
+    let text = if format == MessageFormat::Json {
         let json = VersionJson {
             version,
             commit,
             runtime_targets: &targets,
         };
         // Serializing a plain struct of strings cannot fail.
-        println!("{}", serde_json::to_string(&json).unwrap_or_default());
+        serde_json::to_string(&json).unwrap_or_default()
     } else {
         let targets = if targets.is_empty() {
             "none".to_owned()
         } else {
             targets.join(", ")
         };
-        println!("mora {version}\ncommit: {commit}\nruntime targets: {targets}");
-    }
-    ExitCode::SUCCESS
+        format!("mora {version}\ncommit: {commit}\nruntime targets: {targets}")
+    };
+    finish(write_stdout(&text), ExitCode::SUCCESS, color)
 }
 
 /// The targets with a runtime library in the toolchain's `lib/rt/` (§19.2),

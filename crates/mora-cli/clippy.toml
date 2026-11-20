@@ -1,0 +1,13 @@
+# Clippy reads only the nearest clippy.toml, so this one repeats the
+# workspace's settings before adding its own.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# These panic when the write fails, and a panic exits with 101, the code of an
+# internal compiler error. Print through `write_stdout` and `report_error`.
+disallowed-macros = [
+    { path = "std::print", reason = "panics on a write error; use `write_stdout`" },
+    { path = "std::println", reason = "panics on a write error; use `write_stdout`" },
+    { path = "std::eprint", reason = "panics on a write error; use `report_error`" },
+    { path = "std::eprintln", reason = "panics on a write error; use `report_error`" },
+]
