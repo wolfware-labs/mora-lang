@@ -1714,7 +1714,7 @@ Spec: [§19.2](docs/design/mora.md#192-toolchain-archive), [§19.3](docs/design/
 Done when:
 
 - A release candidate tag produces signed archives for every host of §19.1.
-- `cosign verify-blob` succeeds on each archive.
+- `cosign verify-blob` succeeds on each archive and on `install.sh` and `install.ps1`, and `SHA256SUMS` lists them.
 - The workflow starts only for tags that match the version pattern, checks that the tagged commit is on `main` and that the tag equals the workspace version, and fails otherwise before building.
 - The workflow file declares `permissions: {}` at the top and grants each job only what the scope gives it; every third-party action is pinned by commit SHA (§20.5); the build jobs run with `--locked`.
 - Each publishing job can read only its own destination's credential, and only the release job's token has `contents: write`: shown by the workflow's `permissions` and environments and by the lists of Actions, Dependabot and Codespaces secrets of the repository and the organization and the secrets of each environment (recorded in the issue).
