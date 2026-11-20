@@ -684,11 +684,13 @@ fn a_quoted_run_ends_at_its_closing_quote() {
         assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
     }
     // Without its closing quote before the `;`, a quoted run ends at the
-    // statement on the next line.
+    // statement on the next line, unless an open `(` makes that line part
+    // of it, as for the arguments of a call; then the `;` ends it.
     assert_eq!(
-        codes_of("let a = \u{201c}x (y\nnope(1);\n"),
+        codes_of("let a = \u{201c}x y\nnope(1);\n"),
         ["MR0017", "MR0110"]
     );
+    assert_eq!(codes_of("let a = \u{201c}x (y\nnope(1);\n"), ["MR0017"]);
     assert_eq!(
         codes_of("let a = \u{201c}x\nlet b = \u{201c}y\u{201d};\n"),
         ["MR0017", "MR0110", "MR0017", "MR0017"]
@@ -742,7 +744,7 @@ fn a_rejected_run_does_not_close_its_bracket_with_another_kind() {
     let text = "G(): int { let a = 1 \\ (; return 1; }\nMain(): int { return G(); }\n";
     assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
     assert_eq!(codes_of(text), ["MR0017"]);
-    for opener in ["(", "[", "{"] {
+    for opener in ["(", "["] {
         let text = format!(
             "G(): int {{ let a = 1 \\ {opener} return 1; }}\nMain(): int {{ return G(); }}\n"
         );
@@ -759,8 +761,44 @@ fn a_rejected_run_does_not_close_its_bracket_with_another_kind() {
             ["FunctionDecl", "FunctionDecl"],
             "{text:?}"
         );
+        // G's `}` on a line of its own is a closer of another kind.
+        let text = format!(
+            "G(): int {{\n    let a = 1 \\ {opener} x\n}}\nMain(): int {{ return G(); }}\n"
+        );
+        assert_eq!(
+            top_level_kinds(&text),
+            ["FunctionDecl", "FunctionDecl"],
+            "{text:?}"
+        );
+    }
+    // A `{` holds statements, so the run takes `{ return 1; }` whole, and
+    // G's own `}` closes it: `Main` is then inside G.
+    let text = "G(): int { let a = 1 \\ { return 1; }\nMain(): int { return G(); }\n";
+    assert_eq!(top_level_kinds(text), ["FunctionDecl"]);
+    // A `{` left open ends at a line that starts a declaration.
+    let text = "G(): int {\n    let a = 1 \\ { {\n    }\npublic struct S {}\n";
+    assert!(
+        top_level_kinds(text).contains(&"StructDecl".to_owned()),
+        "{:?}",
+        top_level_kinds(text)
+    );
+    for opener in ["(", "[", "{"] {
         // A closer of another kind ends the run and is not taken.
         let text = format!("F(\u{201c}{opener} a);\n");
         assert_eq!(top_level_kinds(&text), ["ExprStmt"], "{text:?}");
+    }
+}
+
+#[test]
+fn a_rejected_run_takes_ordinary_code_after_it_whole() {
+    for text in [
+        "let x = a \\ F(() => { return 1; });\n",
+        "let x = a \\ F(b,\n    c);\n",
+        "let f = G(\\ x => {\n    let y = 1;\n    return y;\n});\n",
+        "F(a \\ G(\n    b,\n    c\n));\n",
+        "let x = a \\ new P {\n    A = 1,\n    B = 2\n};\n",
+        "let f = a \\ (x) => {\n    return x;\n};\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
     }
 }

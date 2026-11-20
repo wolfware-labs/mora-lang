@@ -6,6 +6,7 @@ use mora_diag::{Diagnostic, Label, codes};
 use mora_span::Span;
 
 use crate::layout::MAX_SIZE;
+use crate::size::MAX_FRAME_SLOTS;
 
 /// An error from code generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,25 +32,43 @@ pub enum CodegenError {
         /// of the function with a local of it.
         span: Span,
     },
+    /// The stack frame of the function `name` would take more than 2^30
+    /// bytes (§13.5).
+    FrameTooLarge {
+        /// The function, by its full name.
+        name: String,
+        /// The function's name in its declaration, or its span for the
+        /// top-level statements and a local function.
+        span: Span,
+    },
 }
 
 impl CodegenError {
     /// The diagnostic of an error that is the program's own mistake rather
     /// than the compiler's or the target's: `MR0156` for
-    /// [`CodegenError::TypeTooLarge`]. `None` for the others.
+    /// [`CodegenError::TypeTooLarge`] and [`CodegenError::FrameTooLarge`].
+    /// `None` for the others.
     pub fn diagnostic(&self) -> Option<Diagnostic> {
-        let CodegenError::TypeTooLarge { name, span } = self else {
-            return None;
+        let (span, label, note) = match self {
+            CodegenError::TypeTooLarge { name, span } => (
+                span,
+                format!("`{name}` is too large"),
+                format!("a value of any type takes at most 2^31 = {MAX_SIZE} bytes"),
+            ),
+            CodegenError::FrameTooLarge { span, .. } => (
+                span,
+                "its locals take too much of the stack".to_owned(),
+                format!(
+                    "the locals of one function take at most {MAX_FRAME_SLOTS} bytes, 2^30 less \
+                     64 KiB the compiler keeps for its own use; keep large values in a class or \
+                     a collection"
+                ),
+            ),
+            _ => return None,
         };
         Some(
-            Diagnostic::error(
-                codes::MR0156,
-                self.to_string(),
-                Label::new(*span, format!("`{name}` is too large")),
-            )
-            .with_note(format!(
-                "a value of any type takes at most 2^31 = {MAX_SIZE} bytes"
-            )),
+            Diagnostic::error(codes::MR0156, self.to_string(), Label::new(*span, label))
+                .with_note(note),
         )
     }
 }
@@ -68,6 +87,10 @@ impl fmt::Display for CodegenError {
                     "a value of `{name}` would take more than {MAX_SIZE} bytes"
                 )
             }
+            Self::FrameTooLarge { name, .. } => write!(
+                f,
+                "the locals of `{name}` would take more than {MAX_FRAME_SLOTS} bytes of stack"
+            ),
         }
     }
 }

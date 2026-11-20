@@ -29,7 +29,7 @@ use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeI
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::ty::{ParamMode, Primitive, Ty};
+use crate::ty::{Construct, ParamMode, Primitive, Ty, Unsupported};
 
 pub use constant::literal_constant;
 pub(crate) use diagnostic::{Source, type_error};
@@ -304,6 +304,16 @@ pub(crate) enum NewTarget {
     Written(Ty),
 }
 
+/// The first `?` of the top-level statements, which makes the generated
+/// `Main` return a `Result` (§4.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Propagated {
+    /// The `?` expression.
+    pub(crate) expr: ExprId,
+    /// The error type of its operand, when the checker sees it.
+    pub(crate) error: Option<Ty>,
+}
+
 /// A type error in a body, by the expression it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TypeError {
@@ -320,9 +330,15 @@ pub(crate) enum TypeError {
     /// `return` gave it (`MR0203`).
     MissingValue { stmt: StmtId, expected: Ty },
     /// The `return` statement `stmt`, the first of the top-level statements
-    /// with a value, gives the generated `Main` the type `ty`, which an
-    /// entry point cannot return (`MR0120`).
-    EntryReturn { stmt: StmtId, ty: Ty },
+    /// with a value, gives the generated `Main` a type that an entry point
+    /// cannot return (`MR0120`): `ty`, the value's type, or with a `?` in
+    /// the statements, `propagate`, a `Result` of it. `ty` is `None` for a
+    /// lambda, whose type is a function's.
+    EntryReturn {
+        stmt: StmtId,
+        ty: Option<Ty>,
+        propagate: Option<Propagated>,
+    },
     /// The literal `expr`, a negated literal or an expression made only of
     /// literals, does not fit `ty`, or no integer type when `ty` is `None`
     /// (`MR0010`).
@@ -598,11 +614,30 @@ pub fn is_known(ty: &Ty) -> bool {
     }
 }
 
-/// Whether an entry point may return `ty` (§4.6): `()`, `int`, or a type
-/// not known here, such as a `Result`, which is left to a later pass. A
-/// call that does not return gives no value to check.
+/// Whether an entry point may return `ty` (§4.6): `()`, `int`, or
+/// `Result<(), E>` or `Result<int, E>`. A call that does not return gives
+/// no value to check, and a type with an error has been reported already.
+///
+/// While the standard library is not loaded, a `Result` is an external
+/// type, whose name the checker does not see: one with two arguments the
+/// first of which is `()` or `int`, or one whose arguments it does not see,
+/// may be a `Result`. Every other type is not one.
 pub(crate) fn is_entry_return(ty: &Ty) -> bool {
-    !is_known(ty) || matches!(ty, Ty::Never | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT)
+    let exit =
+        |ty: &Ty| matches!(ty, Ty::Error | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT);
+    match ty {
+        Ty::Never => true,
+        Ty::Unsupported(Unsupported {
+            construct: Construct::External,
+            parts,
+            ..
+        }) => match parts.as_slice() {
+            [] => true,
+            [ok, _] => exit(ok),
+            _ => false,
+        },
+        ty => exit(ty),
+    }
 }
 
 /// Whether two types are the same, the names of tuple elements aside: the

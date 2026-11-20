@@ -107,3 +107,42 @@ fn a_runner_without_a_path_is_a_usage_error() {
         "jit-runner: internal error: usage: jit-runner <path>, with the program on standard input\n"
     );
 }
+
+#[test]
+fn an_error_only_code_generation_finds_is_a_compile_error() {
+    // A tuple of two 1 GiB structs is too large, which only code
+    // generation sees.
+    let mut text = "struct S0 { public A: long; }\n".to_owned();
+    for i in 1..=28 {
+        let before = i - 1;
+        text.push_str(&format!(
+            "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
+        ));
+    }
+    text.push_str("var t: (S28, S28);\n");
+    // The runner reports it as a build that fails, not as its own error.
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_jit-runner"))
+        .arg("a.mr")
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), text.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(mora_testkit::runner::COMPILE_ERROR_EXIT)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("jit-runner: the program has errors\nerror[MR0156]"),
+        "{stderr}"
+    );
+    let checked = front_end().run("a.mr", &text, Backend::Jit).unwrap_err();
+    let codes: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.to_string())
+        .collect();
+    assert_eq!(codes, ["MR0156"]);
+}

@@ -14,13 +14,14 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
 use super::{
-    Context, InstanceMember, InstanceUse, NotAPlace, TypeError, constant, numeric, ty_name,
+    Context, InstanceMember, InstanceUse, NotAPlace, Propagated, TypeError, constant, is_known,
+    numeric, ty_name,
 };
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, StmtId, UnaryOp};
 use crate::items::ItemKind;
 use crate::report::{Declared, entry_return_error, full_name, kind_name};
 use crate::resolve::{Resolved, item_data};
-use crate::ty::{Primitive, Ty};
+use crate::ty::{Construct, Primitive, Ty, Unsupported};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
 pub(crate) struct Source<'a> {
@@ -146,7 +147,11 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             context,
         } => mismatch(source, *expr, expected, found, *context),
         TypeError::MissingValue { stmt, expected } => missing_value(source, *stmt, expected),
-        TypeError::EntryReturn { stmt, ty } => entry_return(source, *stmt, ty),
+        TypeError::EntryReturn {
+            stmt,
+            ty,
+            propagate,
+        } => entry_return(source, *stmt, ty.as_ref(), propagate.as_ref()),
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
         TypeError::Binary {
             expr,
@@ -470,15 +475,72 @@ fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic
 
 /// `MR0120`: the first `return` with a value of the top-level statements
 /// gives the generated `Main` a type an entry point cannot return.
-fn entry_return(source: &Source<'_>, stmt: StmtId, ty: &Ty) -> Diagnostic {
+fn entry_return(
+    source: &Source<'_>,
+    stmt: StmtId,
+    ty: Option<&Ty>,
+    propagate: Option<&Propagated>,
+) -> Diagnostic {
     let Some(&range) = source.map.stmts.get(&stmt) else {
         panic!("inference: the statement {stmt:?} has no range in the source map");
     };
+    let span = Span::new(source.file.id(source.db), range);
+    let Some(ty) = ty else {
+        return entry_return_error(
+            "a function",
+            span,
+            "this gives the generated `Main` its return type",
+        );
+    };
+    let Some(propagate) = propagate else {
+        return entry_return_error(
+            &describe(source, ty),
+            span,
+            "this gives the generated `Main` its return type",
+        );
+    };
+    let error = propagate
+        .error
+        .as_ref()
+        .filter(|error| is_known(error))
+        .map_or_else(|| "E".to_owned(), |error| source.name(error));
+    let result = format!("`Result<{}, {error}>`", plain(source, ty));
     entry_return_error(
-        &source.name(ty),
-        Span::new(source.file.id(source.db), range),
-        "this gives the generated `Main` its return type",
+        &result,
+        span,
+        &format!("with the `?`, this gives the generated `Main` the return type {result}"),
     )
+    .with_secondary(Label::new(
+        source.span(propagate.expr),
+        "this `?` makes the generated `Main` return a `Result`",
+    ))
+}
+
+/// How a message names the type `ty` an entry point returns: in backticks
+/// when the checker knows it, as `` `int?` ``, or by what kind of type it
+/// is, as "a type of the standard library".
+fn describe(source: &Source<'_>, ty: &Ty) -> String {
+    match ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::Optional,
+            parts,
+            ..
+        }) if parts.iter().all(is_known) => format!("`{}`", plain(source, ty)),
+        Ty::Unsupported(unsupported) => unsupported.construct.description().to_owned(),
+        ty => format!("`{}`", source.name(ty)),
+    }
+}
+
+/// The name of `ty`, an option of a known type written `T?`.
+fn plain(source: &Source<'_>, ty: &Ty) -> String {
+    match ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::Optional,
+            parts,
+            ..
+        }) if let [inner] = parts.as_slice() => format!("{}?", source.name(inner)),
+        ty => source.name(ty),
+    }
 }
 
 /// `MR0203`: a value whose type does not convert to the expected one.

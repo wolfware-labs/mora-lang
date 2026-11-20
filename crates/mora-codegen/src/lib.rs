@@ -20,7 +20,7 @@ pub use jit::JitProgram;
 pub use layout::{Layout, Layouts, Scalar, Shape};
 pub use mangle::mangle;
 pub use program::{BodyKey, Function, FunctionId, Program};
-pub use size::check_sizes;
+pub use size::{check_sizes, check_sizes_on_host};
 
 use mora_target::Target;
 

@@ -11,16 +11,18 @@ use crate::bodies::{
     body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::inference::{Source, is_entry_return, ty_name, type_error, type_errors};
-use crate::items::{ItemKind, Visibility, item_source_map, item_tree, parse, signature_sources};
+use crate::inference::{Source, is_entry_return, type_error, type_errors};
+use crate::items::{
+    ItemKind, Visibility, item_source_map, item_tree, parse, signature_refs, signature_sources,
+};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
     resolve_using, value_visible, visible_names,
 };
 use crate::signature::{SignatureError, SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
-use crate::ty::Signature;
-use crate::type_ref::type_keywords;
+use crate::ty::{Construct, Signature, Ty, Unsupported};
+use crate::type_ref::{SignatureRefKind, TypeRef, type_keywords};
 
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
 /// `using` directives, signatures and bodies (`MR0127`, `MR0128`, `MR0129`,
@@ -1579,26 +1581,49 @@ fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
     let Signature::Function(function) = signature(db, main) else {
         return;
     };
-    if is_entry_return(&function.ret) {
+    if is_entry_return(&function.ret) && (!is_external(&function.ret) || names_result(db, main)) {
         return;
     }
     let Some(range) = signature_sources(db, main.file)[arena_index(main.item)].ret else {
         return;
     };
+    let written = &main.file.text(db)[range];
     out.push(entry_return_error(
-        &ty_name(db, &function.ret),
+        &format!("`{written}`"),
         Span::new(main.file.id(db), range),
         "the return type of `Main`",
     ));
 }
 
-/// `MR0120` at `span`, `label`ed: an entry point returns the type `name`,
-/// which it cannot (§4.6). Both a `Main` and the top-level statements
-/// report it.
-pub(crate) fn entry_return_error(name: &str, span: Span, label: &str) -> Diagnostic {
+/// Whether `ty` is a type of the standard library while it is not loaded.
+fn is_external(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Unsupported(Unsupported {
+            construct: Construct::External,
+            ..
+        })
+    )
+}
+
+/// Whether the return type written on the function `main` is a path named
+/// `Result`: of an external type, only the name tells a `Result` apart.
+fn names_result(db: &dyn Db, main: ItemId) -> bool {
+    let refs = &signature_refs(db, main.file)[arena_index(main.item)];
+    matches!(
+        &refs.kind,
+        SignatureRefKind::Function { ret: Some(TypeRef::Path(path)), .. }
+            if path.segments.last().is_some_and(|name| name == "Result")
+    )
+}
+
+/// `MR0120` at `span`, `label`ed: an entry point returns `what`, a type
+/// in backticks or a kind of type, which it cannot (§4.6). Both a `Main`
+/// and the top-level statements report it.
+pub(crate) fn entry_return_error(what: &str, span: Span, label: &str) -> Diagnostic {
     Diagnostic::error(
         codes::MR0120,
-        format!("an entry point cannot return `{name}`"),
+        format!("an entry point cannot return {what}"),
         Label::new(span, label),
     )
     .with_note("an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`")
@@ -3048,6 +3073,103 @@ mod tests {
         for text in [
             "Main(): Result<(), string> { return Ok(()); }\n",
             "Main(): Result<int, string> { return Ok(1); }\n",
+        ] {
+            let reported = codes(&diagnostics_of(text));
+            assert!(
+                !reported.contains(&"MR0120".to_owned()),
+                "{text:?}: {reported:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_point_rejects_types_not_lowered_yet() {
+        // Each case with the text the error points at.
+        for (text, at) in [
+            ("Main(): int? { return 1; }\n", "int?"),
+            (
+                "Main(): Result<string, string> { return Ok(\"x\"); }\n",
+                "Result<string, string>",
+            ),
+            ("Main(): List<int> { return []; }\n", "List<int>"),
+            (
+                "Main(): Dictionary<int, string> { return []; }\n",
+                "Dictionary<int, string>",
+            ),
+            ("return () => 3;\n", "return () => 3;"),
+            ("F(): int? => 1;\nreturn F();\n", "return F();"),
+            (
+                "F(): Result<string, string> => Ok(\"x\");\nreturn F();\n",
+                "return F();",
+            ),
+        ] {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            let reported: Vec<_> = diagnostics(&db, project)
+                .iter()
+                .filter(|d| d.code.to_string() == "MR0120")
+                .collect();
+            assert_eq!(
+                reported.len(),
+                1,
+                "{text:?}: {:?}",
+                codes(diagnostics(&db, project))
+            );
+            assert_eq!(primary_text(&db, project, reported[0]), at, "{text:?}");
+        }
+        for text in [
+            "Main(): Result<(), string> { return Ok(()); }\n",
+            "Main(): Result<int, string> { return Ok(1); }\n",
+            "Main(): Std.Result<int, string> { return Ok(1); }\n",
+            "F(): Result<int, string> => Ok(1);\nreturn F();\n",
+            "F(): Result<(), string> => Ok(());\nreturn F();\n",
+            // A type with an error is reported once, by its own code.
+            "Main(): Nope { }\n",
+            "return Nope();\n",
+        ] {
+            let reported = codes(&diagnostics_of(text));
+            assert!(
+                !reported.contains(&"MR0120".to_owned()),
+                "{text:?}: {reported:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_mark_makes_the_generated_main_return_a_result() {
+        for text in [
+            "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn 3L;\n",
+            // The `?` may come after the `return`.
+            "F(): Result<long, string> => Ok(1);\nif (true) { return 3L; }\nlet x = F()?;\n",
+        ] {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            let reported = diagnostics(&db, project);
+            assert_eq!(codes(reported), ["MR0120"], "{text:?}");
+            let diagnostic = &reported[0];
+            assert_eq!(
+                diagnostic.message,
+                "an entry point cannot return `Result<long, string>`"
+            );
+            assert_eq!(
+                diagnostic.primary.message.as_deref(),
+                Some(
+                    "with the `?`, this gives the generated `Main` the return type \
+                     `Result<long, string>`"
+                )
+            );
+            assert_eq!(primary_text(&db, project, diagnostic), "return 3L;");
+            let secondary = &diagnostic.secondary[0];
+            let file = project.files(&db)[0];
+            assert_eq!(&file.text(&db)[secondary.span.range], "F()?");
+        }
+        for text in [
+            "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn 3;\n",
+            "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn;\n",
+            // A value that is a `Result` already is what the `Main` returns.
+            "F(): Result<int, string> => Ok(1);\nlet x = F()?;\nreturn F();\n",
+            // A `?` in a local function is that function's.
+            "G(): Result<int, string> {\n    let y = G()?;\n    return Ok(1);\n}\nreturn 3;\n",
         ] {
             let reported = codes(&diagnostics_of(text));
             assert!(

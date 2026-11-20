@@ -1,0 +1,7 @@
+error[MR0120]: an entry point cannot return a function
+ --> tests/ui/entry/return_lambda.mr:2:1
+  |
+2 | return () => 3; //~ ERROR MR0120
+  | ^^^^^^^^^^^^^^^ this gives the generated `Main` its return type
+  |
+  = note: an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`

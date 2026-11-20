@@ -1,0 +1,9 @@
+error[MR0120]: an entry point cannot return `Result<long, string>`
+ --> tests/ui/entry/question_mark_long.mr:4:1
+  |
+3 | let x = F()?;
+  |         ---- this `?` makes the generated `Main` return a `Result`
+4 | return 3L; //~ ERROR MR0120
+  | ^^^^^^^^^^ with the `?`, this gives the generated `Main` the return type `Result<long, string>`
+  |
+  = note: an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`

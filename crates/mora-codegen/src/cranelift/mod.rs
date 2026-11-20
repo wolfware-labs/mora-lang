@@ -17,7 +17,7 @@ use cranelift_codegen::isa::{self, CallConv as IsaCallConv, OwnedTargetIsa};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
+use cranelift_module::{FuncId, Linkage, Module, ModuleError, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, LocalTy, TerminatorKind};
@@ -269,9 +269,19 @@ fn define_functions<M: Module>(
             module.isa().frontend_config(),
             &env,
         );
+        crate::size::check_frame(program.db(), function, &context.func)?;
         module
             .define_function(*id, &mut context)
-            .map_err(cranelift_error)?;
+            .map_err(|error| match error {
+                ModuleError::Compilation(cranelift_codegen::CodegenError::ImplLimitExceeded) => {
+                    panic!(
+                        "internal error generating code for {}: Cranelift found the frame or \
+                         the code too large after the size checks passed",
+                        function.body.name
+                    )
+                }
+                error => cranelift_error(error),
+            })?;
         module.clear_context(&mut context);
     }
     Ok(ids)
@@ -769,5 +779,73 @@ mod tests {
         let file = object::File::parse(&*bytes).unwrap();
         let code = file.section_by_name(".text").unwrap().data().unwrap();
         assert!(code.windows(PROBE.len()).any(|w| w == PROBE));
+    }
+
+    /// The structs of [`doubling`] up to `S28`, a function `F` with a local
+    /// of each struct `S{i}` for `i` in `sizes`, and a call of it.
+    fn frame_of(sizes: impl IntoIterator<Item = u32>) -> String {
+        let mut text = doubling(28);
+        text.push_str("F(): int {\n");
+        for i in sizes {
+            text.push_str(&format!("    var a{i}: S{i};\n"));
+        }
+        text.push_str("    return 1;\n}\nF();\n");
+        text
+    }
+
+    /// What building the app of `text` for x86_64 gives.
+    fn build(text: &str) -> Result<Vec<u8>, CodegenError> {
+        let db = TestDb::default();
+        let project = app_of(&db, text);
+        let program = Program::collect(&db, project).unwrap();
+        Cranelift.object(&program, &x86_64(), Profile::Debug)
+    }
+
+    #[test]
+    fn a_frame_at_the_limit_builds() {
+        // `S13` to `S26` take 2^30 - 2^16 bytes. Running it would need a
+        // 1 GiB stack, so it is only built.
+        let size: u64 = (13..=26).map(|i| 8u64 << i).sum();
+        assert_eq!(size, crate::size::MAX_FRAME_SLOTS);
+        assert!(build(&frame_of(13..=26)).is_ok());
+    }
+
+    #[test]
+    fn a_frame_past_the_limit_is_reported_at_its_function() {
+        let text = frame_of((13..=26).chain([0]));
+        let Err(CodegenError::FrameTooLarge { name, span }) = build(&text) else {
+            panic!("built");
+        };
+        assert_eq!(name, "UsersApi.F");
+        assert_eq!(&text[std::ops::Range::<usize>::from(span.range)], "F");
+        let diagnostic = CodegenError::FrameTooLarge { name, span }
+            .diagnostic()
+            .unwrap();
+        assert_eq!(diagnostic.code.to_string(), "MR0156");
+    }
+
+    #[test]
+    fn large_locals_of_the_top_level_statements_are_reported() {
+        for locals in [
+            "var t: S28;\n",
+            "var t: S27;\n",
+            "var a: S26;\nvar b: S26;\nvar c: S26;\n",
+        ] {
+            let text = format!("{}{locals}", doubling(28));
+            assert!(
+                matches!(build(&text), Err(CodegenError::FrameTooLarge { .. })),
+                "{locals:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_parameter_has_no_slot() {
+        let program = function::tests::jit_one_in(
+            &format!("{}F(a: S28): int => 1;\n", doubling(28)),
+            "F",
+            Profile::Debug,
+        );
+        let _ = func::<extern "C" fn(*const u8) -> i32>(&program, "F");
     }
 }

@@ -30,7 +30,7 @@ const MODIFIERS: &[SyntaxKind] = &[
 
 /// Tokens a member list or the file can recover at: the start of the next
 /// declaration.
-const ITEM_RECOVERY: &[SyntaxKind] = &[
+pub(super) const ITEM_RECOVERY: &[SyntaxKind] = &[
     K::At,
     K::PublicKw,
     K::InternalKw,

@@ -6,6 +6,7 @@
 //! `await` through [`unary`]; member access, calls, indexing, `++`/`--` and
 //! propagation through [`postfix`].
 
+use super::items::ITEM_RECOVERY;
 use super::stmts::{CLOSERS, OPENERS};
 use super::types::{self, PREDEFINED_TYPES, scan_type_no_fn};
 use super::{CompletedMarker, Input, Parser, items, patterns, stmts};
@@ -842,11 +843,11 @@ fn closing_quote(p: &Parser<'_>, closers: &[&str]) -> Option<usize> {
 /// closing quote follows ([`closing_quote`]) ends there, whatever it holds.
 /// Any other run ends at what ends it ([`ends_rejected_run`]) or at a
 /// closing bracket that is not its own, and takes a bracketed group inside
-/// it whole. Inside a group it still ends at a `;`, or at a line that
-/// starts a statement or with a `}`, so an unclosed bracket does not take
-/// the statements after it. The lexer reported the token, so the
-/// caller makes the run one `Error` node and the parser reports nothing
-/// more about it. Always takes at least the first token.
+/// it whole, so an argument list or a lambda's block inside it stays in it.
+/// An unclosed bracket still does not take what follows it
+/// ([`ends_rejected_group`]). The lexer reported the token, so the caller
+/// makes the run one `Error` node and the parser reports nothing more
+/// about it. Always takes at least the first token.
 fn skip_rejected(p: &mut Parser<'_>) {
     let closers = QUOTES
         .iter()
@@ -864,15 +865,7 @@ fn skip_rejected(p: &mut Parser<'_>) {
     open.extend(closer_of(p.current()));
     p.bump_any();
     while !p.at_end() {
-        if open.is_empty() && ends_rejected_run(p, quoted) {
-            return;
-        }
-        if p.at(K::Semicolon)
-            || (p.at_line_start()
-                && (p.at_any(REJECTED_RUN_ENDS)
-                    || p.at_any(LINE_STATEMENT_STARTS)
-                    || p.at(K::RBrace)))
-        {
+        if open.is_empty() && ends_rejected_run(p, quoted) || ends_rejected_group(p, &open) {
             return;
         }
         if let Some(closer) = closer_of(p.current()) {
@@ -885,6 +878,23 @@ fn skip_rejected(p: &mut Parser<'_>) {
         }
         p.bump_any();
     }
+}
+
+/// Whether the next token ends a run inside the brackets whose closers are
+/// `open`, innermost last. Inside a block, the run holds the block's
+/// statements, and only a line that starts a declaration ends it. Inside
+/// only parentheses and square brackets, which hold no statement, a `;` or
+/// a line that starts with a statement keyword ends it too, while a line
+/// that starts with a name continues an argument list. A closer of another
+/// kind ends either, which the caller checks.
+fn ends_rejected_group(p: &Parser<'_>, open: &[SyntaxKind]) -> bool {
+    if open.is_empty() {
+        return false;
+    }
+    if open.contains(&K::RBrace) {
+        return p.at_line_start() && p.at_any(ITEM_RECOVERY) && !p.at(K::At);
+    }
+    p.at(K::Semicolon) || (p.at_line_start() && p.at_any(REJECTED_RUN_ENDS))
 }
 
 /// The bracket that closes `kind`, when `kind` opens one.

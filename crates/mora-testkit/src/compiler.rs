@@ -176,11 +176,8 @@ impl FrontEnd {
         if !has_error(&diagnostics) {
             diagnostics.extend(mora_mir::diagnostics(&db, project).iter().cloned());
         }
-        // The sizes of types depend on the target: the host's, which the
-        // JIT runs on.
         if !has_error(&diagnostics)
-            && let Ok(host) = mora_target::Target::host()
-            && let Err(error) = mora_codegen::check_sizes(&db, project, &host)
+            && let Err(error) = mora_codegen::check_sizes_on_host(&db, project)
         {
             diagnostics.extend(error.diagnostic());
         }
@@ -229,7 +226,15 @@ impl Compiler for FrontEnd {
         if has_error(&analysis.checked.diagnostics) {
             return Err(analysis.checked);
         }
-        Ok(crate::runner::run_child(runner, path, text, self.timeout))
+        match crate::runner::run_child(runner, path, text, self.timeout) {
+            Ok(output) => Ok(output),
+            // The program has errors only code generation finds. The build
+            // that finds them again here gives them as diagnostics.
+            Err(shown) => match crate::runner::build(path, text) {
+                Err(crate::runner::BuildError::Program(checked)) => Err(checked),
+                _ => panic!("the runner reported errors that a build here does not:\n{shown}"),
+            },
+        }
     }
 
     /// The HIR of each file of the case. A case of several files shows each

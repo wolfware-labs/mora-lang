@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
-    TypeError, constant, converts, is_entry_return, is_known, numeric, same,
+    Propagated, TypeError, constant, converts, is_entry_return, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -32,7 +32,7 @@ use crate::signature::{
     struct_field, this_type,
 };
 use crate::suggest::closest;
-use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
+use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty, Unsupported};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -156,6 +156,8 @@ pub(super) fn infer_body(
         ret_later: false,
         entry: owner == BodyOwner::TopLevel,
         entry_ret: None,
+        entry_value: None,
+        entry_propagate: None,
         scope: body_scope(project, file, owner),
         item: None,
         tree: Cell::new(None),
@@ -232,6 +234,7 @@ pub(super) fn infer_body(
         );
         check.function_body(root, expected, statement);
     }
+    check.entry_return();
     check.instance_uses(owner);
     check.types_as_values();
     Inference {
@@ -298,6 +301,10 @@ struct Check<'a> {
     entry: bool,
     /// The type the generated `Main` returns, once a `return` gives it.
     entry_ret: Option<Ty>,
+    /// The first `return` with a value of the top-level statements.
+    entry_value: Option<StmtId>,
+    /// The first `?` of the top-level statements.
+    entry_propagate: Option<Propagated>,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
@@ -613,12 +620,7 @@ impl Check<'_> {
                         Some(ty) => self.check(*expr, &ty),
                         None => {
                             self.entry_ret = self.infer(*expr);
-                            if let Some(ty) = &self.entry_ret
-                                && !is_entry_return(ty)
-                            {
-                                let ty = ty.clone();
-                                self.errors.push(TypeError::EntryReturn { stmt, ty });
-                            }
+                            self.entry_value = Some(stmt);
                         }
                     },
                     None => {
@@ -630,6 +632,60 @@ impl Check<'_> {
             }
             Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
+        }
+    }
+
+    /// `MR0120` when the first `return` with a value of the top-level
+    /// statements gives the generated `Main` a type an entry point cannot
+    /// return (§4.6). With a `?` in the statements the generated `Main`
+    /// returns a `Result` of the value, unless the value is one already.
+    fn entry_return(&mut self) {
+        let Some(stmt) = self.entry_value else {
+            return;
+        };
+        let Stmt::Return(Some(value)) = self.body.stmts[stmt] else {
+            return;
+        };
+        // A lambda has no type of its own here, and is a function value
+        // whichever it would get.
+        let lambda = matches!(self.body.exprs[value], Expr::Lambda(_));
+        let ty = if lambda {
+            None
+        } else {
+            let Some(ty) = self.entry_ret.clone() else {
+                return;
+            };
+            Some(ty)
+        };
+        let external = |ty: &Ty| {
+            matches!(
+                ty,
+                Ty::Unsupported(Unsupported {
+                    construct: Construct::External,
+                    ..
+                })
+            )
+        };
+        let propagate = self
+            .entry_propagate
+            .clone()
+            .filter(|_| !ty.as_ref().is_some_and(external));
+        let allowed = match (&ty, &propagate) {
+            (None, _) => false,
+            (Some(ty), None) => is_entry_return(ty),
+            // `Result<T, E>`, whose `T` is the value's type.
+            (Some(ty), Some(_)) => is_entry_return(&Ty::Unsupported(Unsupported {
+                construct: Construct::External,
+                item: None,
+                parts: vec![ty.clone(), Ty::Error],
+            })),
+        };
+        if !allowed {
+            self.errors.push(TypeError::EntryReturn {
+                stmt,
+                ty,
+                propagate,
+            });
         }
     }
 
@@ -857,7 +913,24 @@ impl Check<'_> {
                 self.assign(expr, *op, *lhs, *rhs);
                 None
             }
-            Expr::Propagate(inner) | Expr::Await(inner) | Expr::As { expr: inner, .. } => {
+            Expr::Propagate(inner) => {
+                let operand = self.infer(*inner);
+                if self.entry && self.entry_propagate.is_none() {
+                    // The error type of a `Result`, the second of the two
+                    // arguments the checker sees of it.
+                    let error = match operand {
+                        Some(Ty::Unsupported(Unsupported {
+                            construct: Construct::External,
+                            parts,
+                            ..
+                        })) if parts.len() == 2 => parts.into_iter().nth(1),
+                        _ => None,
+                    };
+                    self.entry_propagate = Some(Propagated { expr, error });
+                }
+                None
+            }
+            Expr::Await(inner) | Expr::As { expr: inner, .. } => {
                 self.infer(*inner);
                 None
             }

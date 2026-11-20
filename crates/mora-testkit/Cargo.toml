@@ -18,7 +18,6 @@ mora-diag.workspace = true
 mora-hir.workspace = true
 mora-mir.workspace = true
 mora-span.workspace = true
-mora-target.workspace = true
 salsa.workspace = true
 
 # Both read the `tests/ui` and `tests/run` suites at the repository root, with

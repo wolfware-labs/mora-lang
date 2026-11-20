@@ -1,0 +1,4 @@
+// With a `?`, the generated `Main` returns a `Result` of what `return` gives.
+F(): Result<long, string> => Ok(1);
+let x = F()?;
+return 3L; //~ ERROR MR0120

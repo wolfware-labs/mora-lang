@@ -130,7 +130,7 @@ registry! {
     MR0153 = 153: "memberwise creation of a type that declares a constructor or is positional",
     MR0154 = 154: "`new` of a type that is not a struct or a class, or without a type where no target type gives it one",
     MR0155 = 155: "a static member named through a value instead of its type",
-    MR0156 = 156: "a type whose values would take more than 2^31 bytes",
+    MR0156 = 156: "a type whose values would take more than 2^31 bytes, or a function whose locals would not fit a 2^30-byte stack frame",
     MR0161 = 161: "`r?.Name` on a `Result`: member access after propagation needs parentheses",
     MR0162 = 162: "member access on an optional value",
     MR0170 = 170: "a match that is not exhaustive",
