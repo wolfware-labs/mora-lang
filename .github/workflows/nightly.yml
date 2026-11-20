@@ -31,17 +31,13 @@ jobs:
         run: rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
-          tool: cargo-fuzz,cargo-deny
+          tool: cargo-fuzz
       # cargo-fuzz has no --locked flag. Fetching with it fails the job when
       # fuzz/Cargo.lock no longer matches the manifest; the build below then
       # uses the lockfile as it is.
       - name: Check the lockfile
         working-directory: fuzz
         run: cargo +"$FUZZ_TOOLCHAIN" fetch --locked
-      # The fuzz crate sits outside the workspace, so ci.yml's cargo deny does
-      # not see its dependencies.
-      - name: cargo deny
-        run: cargo deny --manifest-path fuzz/Cargo.toml check
       - name: Seed the corpus
         shell: bash
         run: |
@@ -64,3 +60,21 @@ jobs:
           name: fuzz-parse-artifacts
           path: fuzz/artifacts/
           retention-days: 14
+
+  # The fuzz crate sits outside the workspace, so ci.yml's cargo deny does not
+  # see its dependencies. A job of its own, so an advisory does not stop the
+  # fuzz run.
+  fuzz-deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: cargo deny --locked --manifest-path fuzz/Cargo.toml check
