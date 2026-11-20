@@ -50,7 +50,7 @@ exclude_re = [
     # - `main` is built only into the runtime library; `cargo xtask runtime
     #   --test` links a C program whose `__mora_main` returns 42 and checks
     #   the process exits with 42.
-    '^crates/mora-rt/src/start\.rs:16:5: replace main -> c_int with Default::default\(\)$',
+    '^crates/mora-rt/src/start\.rs:18:5: replace main -> c_int with Default::default\(\)$',
     # - Windows hosts only; the Windows legs run `cargo xtask sysroot`,
     #   which installs llvm-mingw and checks the linker it copied.
     '^xtask/src/sysroot\.rs:291:18: replace == with != in install_llvm_mingw$',
