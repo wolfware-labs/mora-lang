@@ -1763,7 +1763,7 @@ Checks §1.5 end to end on fresh machines, revises the §20.6 budgets with measu
 Done when:
 
 - A developer who has not seen Mora installs it, opens §2.2 in VS Code and gets diagnostics, hover and go-to-definition (recorded in the issue).
-- Every channel of §19.3 serves v0.1.0, and on a fresh machine each passes the integrity and authenticity check of its row of §19.3: the scripts with and without `cosign`, `mora self update` from the last release candidate, the pinned checksums of the Homebrew formula and the winget manifest against `SHA256SUMS` (the formula and the manifest the install used are the ones the release workflow committed to the tap and to the winget repository), and `cosign verify-blob` on every archive (recorded in the issue).
+- Every channel of §19.3 serves v0.1.0, and on a fresh machine each passes the integrity and authenticity check of its row of §19.3: the scripts with and without `cosign`, `mora self update` from the last release candidate, the pinned checksums of the Homebrew formula and the winget manifest against `SHA256SUMS` (the formula and the manifest the install used are the ones the release workflow published to the tap and to the winget repository), and `cosign verify-blob` on every archive (recorded in the issue).
 - The spec says what an edition may change, how an edition is chosen in `mora.toml`, and that every edition change ships with a `safe` fix.
 - The extension-store tokens are read only by the publishing job (shown by the workflow's `permissions` and its use of secrets).
 - A check after each site deploy (M7.9) downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
