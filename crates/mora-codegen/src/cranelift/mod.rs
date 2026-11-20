@@ -830,6 +830,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compiling a call with 9,000 arguments takes over a minute in the test profile"]
+    fn a_frame_too_large_for_the_code_generator_is_reported_at_its_function() {
+        // The call to `G` keeps each of its 9,000 arguments in a stack slot
+        // of 8 bytes, and passes each on the stack too. The locals and the
+        // slots of the arguments take 2^30 - 71,360 bytes, within the limit
+        // of the slots; the 72,000 bytes of arguments passed on the stack
+        // take the frame past 2^30.
+        let locals = [9, 11, 12, 13].into_iter().chain(15..=26);
+        let size: u64 = locals.clone().map(|i| 8u64 << i).sum::<u64>() + 9000 * 8;
+        assert_eq!(size, (1 << 30) - 71_360);
+        assert!(size <= crate::size::MAX_FRAME_SLOTS);
+        let arguments: Vec<String> = (0..9000).map(|i| i.to_string()).collect();
+        let parameters: Vec<String> = (0..9000).map(|i| format!("p{i}: int")).collect();
+        let mut text = frame_of(locals).replace(
+            "    return 1;\n",
+            &format!("    return G({});\n", arguments.join(", ")),
+        );
+        text.push_str(&format!("G({}): int => 1;\n", parameters.join(", ")));
+        let error = build(&text).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the stack frame of `UsersApi.F` would take more than 2^30 bytes"
+        );
+        let CodegenError::FrameTooLarge { span, .. } = error else {
+            panic!("{error}");
+        };
+        assert_eq!(&text[std::ops::Range::<usize>::from(span.range)], "F");
+    }
+
+    #[test]
     fn large_locals_of_the_top_level_statements_are_reported() {
         for locals in [
             "var t: S28;\n",

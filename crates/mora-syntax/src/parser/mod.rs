@@ -249,6 +249,12 @@ pub(crate) struct Parser<'t> {
     /// sees the end of the input and reports nothing, and
     /// [`Parser::finish_stopped`] takes the rest.
     stopped: Option<usize>,
+    /// For each set of closing quotes a scan found none of, the token where
+    /// that scan stopped ([`Parser::closing_quote_missing`]).
+    unclosed_quotes: Vec<(&'static [&'static str], usize)>,
+    /// How many tokens the scans for a closing quote looked at.
+    #[cfg(test)]
+    scanned: usize,
 }
 
 /// A node that is open: it must be completed or abandoned.
@@ -312,6 +318,9 @@ impl<'t> Parser<'t> {
             depth: 0,
             budget: EVENTS_PER_TOKEN * (input.len() + 1),
             stopped: None,
+            unclosed_quotes: Vec::new(),
+            #[cfg(test)]
+            scanned: 0,
         }
     }
 
@@ -498,6 +507,28 @@ impl<'t> Parser<'t> {
             .unwrap_or(false)
     }
 
+    /// Whether an earlier scan for one of `closers` found none and stopped
+    /// past the next token. A scan stops where the statement ends, so a
+    /// scan from the next token would stop there too and find none.
+    pub(crate) fn closing_quote_missing(&self, closers: &[&str]) -> bool {
+        self.unclosed_quotes
+            .iter()
+            .any(|&(missing, end)| missing == closers && self.pos < end)
+    }
+
+    /// Records that a scan for one of `closers` found none before the
+    /// token at `end`, so that each token is scanned for them once.
+    pub(crate) fn no_closing_quote(&mut self, closers: &'static [&'static str], end: usize) {
+        match self
+            .unclosed_quotes
+            .iter_mut()
+            .find(|(missing, _)| *missing == closers)
+        {
+            Some((_, last)) => *last = end,
+            None => self.unclosed_quotes.push((closers, end)),
+        }
+    }
+
     /// Whether the next token is the identifier `word`, which the grammar
     /// uses as a contextual keyword here.
     pub(crate) fn at_contextual(&self, word: &str) -> bool {
@@ -609,7 +640,7 @@ pub(crate) const SYNTAX_ERROR: mora_diag::Code = codes::MR0110;
 
 #[cfg(test)]
 mod tests {
-    use super::{STUCK, parse, parse_within};
+    use super::{Input, Parser, STUCK, items, lex, parse, parse_within};
 
     #[test]
     fn a_parser_past_its_budget_takes_the_rest_into_one_error() {
@@ -638,5 +669,55 @@ mod tests {
         let events = super::Parser::new(&super::Input::new(text, &super::lex(text))).budget;
         assert_eq!(events, super::EVENTS_PER_TOKEN * 6);
         assert!(parse_within(text, Some(events)).errors().is_empty());
+    }
+
+    /// How many tokens `text` has and how many of them the scans for a
+    /// closing quote looked at.
+    fn scanned(text: &str) -> (usize, usize) {
+        let lexed = lex(text);
+        let input = Input::new(text, &lexed);
+        let mut p = Parser::new(&input);
+        items::source_file(&mut p);
+        (input.len(), p.scanned)
+    }
+
+    #[test]
+    fn each_token_is_scanned_for_a_closing_quote_once() {
+        // None of these quotes is closed, so each scan runs to the `;`.
+        let mut names = String::from("let names = [\n");
+        for i in 0..20_000 {
+            names.push_str(&format!("    \u{201c}name{i}\u{201c},\n"));
+        }
+        names.push_str("];\n");
+        let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(40_000));
+        let operands = format!("let a = 1{};\n", " + \u{201c}x".repeat(40_000));
+        for text in [&names, &arguments, &operands] {
+            let (tokens, scanned) = scanned(text);
+            // The first quote scans the statement, and no quote rescans it.
+            assert!(scanned >= tokens / 2, "{scanned} of {tokens}");
+            assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");
+        }
+        let errors = parse(&names).errors().to_vec();
+        assert_eq!(errors.len(), 40_000);
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.code.to_string() == "MR0017")
+        );
+    }
+
+    #[test]
+    fn a_quote_with_other_closers_is_still_scanned() {
+        // `\u{2018}` finds no closing quote; the `\u{201c}` after it closes
+        // at the `\u{201d}`, so the quoted text is one `Error` node, as is
+        // the first quote.
+        for text in [
+            "F(\u{2018}a, \u{201c}b\u{201d});\n",
+            "let a = \u{201c}x;\nlet b = \u{2018}y + \u{201c}z\u{201d};\n",
+        ] {
+            let tree = parse(text).syntax().debug_tree();
+            let quotes = text.matches(['\u{201c}', '\u{2018}']).count();
+            assert_eq!(tree.matches("Error@").count(), quotes, "{text:?}\n{tree}");
+        }
     }
 }

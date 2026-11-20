@@ -308,15 +308,19 @@ pub(crate) fn parenthesized(p: &mut Parser<'_>) {
     p.expect(K::RParen);
 }
 
-/// The body of an `if`, an `else` or a loop: one statement. A `}` or the
-/// end of the file where the body should start means it is missing, which
-/// is reported here; the `}` is left to the block around the statement.
-fn body(p: &mut Parser<'_>) {
+/// The body of an `if`, an `else` or a loop: one statement. Rejected text
+/// where the body starts is an `Error` node of its own, and the statement
+/// after it is the body. A `}` or the end of the file where the body should
+/// start means it is missing, which is reported here; the `}` is left to
+/// the block around the statement. Returns whether the body is there.
+fn body(p: &mut Parser<'_>) -> bool {
+    exprs::rejected(p);
     if p.at(K::RBrace) || p.at_end() {
         p.error("expected a statement");
-        return;
+        return false;
     }
     statement(p);
+    true
 }
 
 fn if_stmt(p: &mut Parser<'_>) {
@@ -344,7 +348,12 @@ fn while_stmt(p: &mut Parser<'_>) {
 fn do_while_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::DoKw);
-    body(p);
+    // Without its body, the `while` is not looked for either: the `}` that
+    // follows closes the block around the statement.
+    if !body(p) {
+        m.complete(p, K::DoWhileStmt);
+        return;
+    }
     p.expect(K::WhileKw);
     parenthesized(p);
     p.expect(K::Semicolon);

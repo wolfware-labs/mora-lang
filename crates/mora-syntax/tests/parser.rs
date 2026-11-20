@@ -821,6 +821,7 @@ fn a_missing_body_leaves_the_closing_brace() {
         "while (n < 0)",
         "for (;;)",
         "foreach (let x in xs)",
+        "do",
     ] {
         let text = format!("A(n: int): int {{\n    {keyword}\n}}\nB(): int {{ return 1; }}\n");
         assert_eq!(
@@ -833,4 +834,50 @@ fn a_missing_body_leaves_the_closing_brace() {
     let text = "A(n: int): int {\n    if (n < 0) { } else\n}\nB(): int { return 1; }\n";
     assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
     assert_eq!(codes_of("if (true)"), ["MR0110"]);
+    assert_eq!(codes_of("{ do }\nA();\n"), ["MR0110"]);
+}
+
+#[test]
+fn rejected_tokens_in_a_row_are_one_error() {
+    for text in [
+        "let a = \u{a0}\u{a0}b + 1;\n",
+        "let c = F(\u{a0}\u{a0}b);\n",
+        "let a = \\\\x;\n",
+        // A `..` after them is the range operator after an operand.
+        "let r = (a.., \u{a0}\u{a0}..b);\n",
+        "let r = (a.., \\..b);\n",
+    ] {
+        let rejected = text.matches(['\u{a0}', '\\']).count();
+        assert_eq!(codes_of(text), vec!["MR0017"; rejected], "{text:?}");
+    }
+    let tree = parse("let c = F(\u{a0}\u{a0}b);\n").syntax().debug_tree();
+    assert!(tree.contains("RParen"), "{tree}");
+}
+
+#[test]
+fn a_rejected_token_where_a_body_starts_is_not_the_body() {
+    for text in [
+        "if (c) \\ { A(); } else { B(); }\n",
+        "do \\ { A(); } while (c);\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
+        // The block, and the `else` or the `while`, are part of the statement.
+        assert_eq!(top_level_kinds(text).len(), 1, "{text:?}");
+    }
+    // The block is the body of the `if`, and the `else` is its own.
+    let tree = parse("if (c) \\ { A(); } else { B(); }\n")
+        .syntax()
+        .debug_tree();
+    assert!(tree.contains("ElseClause"), "{tree}");
+    // A missing body after the token is reported as it is without the
+    // token; at the top level, the `}` is a stray one of its own.
+    let (with, without) = with_and_without("if (c) A(); else \\ }\n");
+    assert_eq!(with[0], "MR0017");
+    assert_eq!(with[1..], without);
+    let text = "F() {\n    if (c) A(); else \\ }\nG() { }\n";
+    assert_eq!(
+        coded_offsets(text),
+        [("MR0017".to_owned(), 27), ("MR0110".to_owned(), 28)]
+    );
+    assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
 }

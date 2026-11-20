@@ -3184,7 +3184,7 @@ mod tests {
     }
 
     #[test]
-    fn a_question_mark_with_a_value_that_does_not_return_or_is_a_result() {
+    fn a_question_mark_with_a_value_that_does_not_return_or_is_external() {
         // A value that does not return gives the generated `Main` no type.
         let text = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn panic(\"no\");\n";
         assert!(
@@ -3192,18 +3192,26 @@ mod tests {
             "{:?}",
             codes(&diagnostics_of(text))
         );
-        // A value that is a `Result` already is named as one.
-        let text = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn F();\n";
-        let reported = diagnostics_of(text);
-        assert_eq!(codes(&reported), ["MR0120"]);
-        assert_eq!(
-            reported[0].message,
-            "an entry point cannot return `Result<long, string>`"
-        );
-        assert_eq!(
-            reported[0].primary.message.as_deref(),
-            Some("this gives the generated `Main` its return type")
-        );
+        // A value of a type of the standard library is named by what it is:
+        // the checker does not see whether it is a `Result`, whatever
+        // arguments it has.
+        for text in [
+            "F(): Result<long, string> => Ok(1);\nlet x = F()?;\nreturn F();\n",
+            "F(): Result<long, string> => Ok(1);\nlet d: Dictionary<long, string> = [];\n\
+             let x = F()?;\nreturn d;\n",
+        ] {
+            let reported = diagnostics_of(text);
+            assert_eq!(codes(&reported), ["MR0120"], "{text:?}");
+            assert_eq!(
+                reported[0].message, "an entry point cannot return a type of the standard library",
+                "{text:?}"
+            );
+            assert_eq!(
+                reported[0].primary.message.as_deref(),
+                Some("this gives the generated `Main` its return type"),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

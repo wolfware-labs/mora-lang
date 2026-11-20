@@ -499,18 +499,12 @@ fn entry_return(
             "this `?` makes the generated `Main` return a `Result`",
         )
     };
-    // A value that is a `Result` already: the `?` makes it the type.
-    if let Some(parts) = ty.as_external() {
-        let what = match parts {
-            [value, error] => format!(
-                "`Result<{}, {}>`",
-                plain(source, value),
-                plain(source, error)
-            ),
-            _ => describe(source, ty),
-        };
+    // A value of a type of the standard library, which may be a `Result`
+    // already, is the type itself; the checker does not see its name, so it
+    // is named by what it is.
+    if ty.as_external().is_some() {
         return entry_return_error(
-            &what,
+            &describe(source, ty),
             span,
             "this gives the generated `Main` its return type",
         )
