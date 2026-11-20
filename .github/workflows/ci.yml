@@ -45,14 +45,15 @@ jobs:
             exit 0
           fi
           # A file, not a pipe: with pipefail, `grep -q` closing a pipe early
-          # would fail `git diff` and skip a real change.
+          # would fail `git diff` and skip a real change. `--no-renames` lists
+          # both names of a moved file, so code moved to an inert name builds.
           git diff --name-only --no-renames "$BASE" HEAD > "$RUNNER_TEMP/changed-files"
           inert_docs='^((CLA|CODE_OF_CONDUCT|CONTRIBUTING|README|SECURITY)\.md|\.github/[^/]+\.md)$'
           # grep exits 1 when every changed file is inert, and 2 on an error
           # such as a broken pattern, which must fail the job, not skip it.
           rc=0
           grep -qvE "$inert_docs" "$RUNNER_TEMP/changed-files" || rc=$?
-          case $rc in
+          case "$rc" in
             0) echo "code=true" >> "$GITHUB_OUTPUT" ;;
             1) echo "code=false" >> "$GITHUB_OUTPUT" ;;
             *) exit "$rc" ;;
