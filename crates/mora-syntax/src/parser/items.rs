@@ -89,6 +89,7 @@ fn using_directive(p: &mut Parser<'_>) {
     }
     p.bump(K::UsingKw);
     p.eat(K::StaticKw);
+    exprs::rejected(p);
     if p.at(K::Ident) && p.nth(1) == K::Eq {
         let alias = p.start();
         name(p);
@@ -257,6 +258,11 @@ fn at_contextual_modifier(p: &Parser<'_>) -> bool {
 fn modifiers(p: &mut Parser<'_>) -> Vec<SyntaxKind> {
     let mut kinds = Vec::new();
     loop {
+        // Rejected text among the modifiers is an error of its own, and the
+        // declaration goes on after it.
+        if !kinds.is_empty() {
+            exprs::rejected(p);
+        }
         let m = p.start();
         if let Some(kind) = contextual_modifier(p) {
             p.bump_remap(kind);
@@ -280,22 +286,44 @@ fn modifiers(p: &mut Parser<'_>) -> Vec<SyntaxKind> {
 
 /// One word in parentheses after `mut`: a write scope (§6.9).
 fn at_write_scope(p: &Parser<'_>) -> bool {
-    p.at(K::LParen) && p.nth(2) == K::RParen
+    if !p.at(K::LParen) {
+        return false;
+    }
+    // Rejected tokens around the word are errors of their own.
+    let mut words = 0;
+    let mut n = 1;
+    loop {
+        match p.nth(n) {
+            K::Unknown => {}
+            K::RParen => return words == 1,
+            _ if words == 0 => words = 1,
+            _ => return false,
+        }
+        n += 1;
+    }
 }
 
 /// `(private)`, `(ns)` or `(internal)`; any other word is reported.
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
-    if p.at_any(&[K::PrivateKw, K::InternalKw]) {
-        p.bump_any();
-    } else if p.at_contextual("ns") {
-        p.bump_remap(K::NsKw);
-    } else {
-        let e = p.start();
-        p.error("expected `private`, `ns` or `internal`");
-        p.bump_any();
-        e.complete(p, K::Error);
+    // The word, and each rejected token around it as an error of its own:
+    // [`at_write_scope`] found the `)`.
+    while !p.at(K::RParen) {
+        if p.at(K::Unknown) {
+            let e = p.start();
+            p.bump_any();
+            e.complete(p, K::Error);
+        } else if p.at_any(&[K::PrivateKw, K::InternalKw]) {
+            p.bump_any();
+        } else if p.at_contextual("ns") {
+            p.bump_remap(K::NsKw);
+        } else {
+            let e = p.start();
+            p.error("expected `private`, `ns` or `internal`");
+            p.bump_any();
+            e.complete(p, K::Error);
+        }
     }
     p.bump(K::RParen);
     m.complete(p, K::WriteScope);
@@ -434,6 +462,7 @@ fn enum_decl(p: &mut Parser<'_>, m: Marker) {
             while p.at(K::At) {
                 attribute(p);
             }
+            exprs::rejected(p);
             name(p);
             if p.eat(K::Eq) {
                 exprs::expr(p);
@@ -979,7 +1008,9 @@ fn base_list(p: &mut Parser<'_>) {
 fn where_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::WhereKw);
+    exprs::rejected(p);
     name_ref(p);
+    exprs::rejected(p);
     p.expect(K::Colon);
     loop {
         let c = p.start();

@@ -881,3 +881,66 @@ fn a_rejected_token_where_a_body_starts_is_not_the_body() {
     );
     assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
 }
+
+#[test]
+fn a_rejected_token_where_a_type_a_value_or_a_semicolon_starts_is_parsed_past() {
+    for text in [
+        "let a: \\ int = 1;\n",
+        "F(a: \\ int) { }\n",
+        "F(): int {\n    return \\ x;\n}\n",
+        "let p = new \\ P();\n",
+        "do { } while (false)\\;\n",
+        "F() {\n    break \\;\n}\n",
+        // Among modifiers and where a declaration or a member starts.
+        "static \\ F() {}\n",
+        "public \\ struct S {}\n",
+        "struct S {\n    public \\ X: int;\n}\n",
+        "F() {\n    static \\ G() {}\n}\n",
+        "using \\ Std;\n",
+        "enum E { \\ A, B }\n",
+        "struct S {\n    public mut(private\\) Step: int = 1;\n}\n",
+        "struct S {\n    public mut(\\private) Step: int = 1;\n}\n",
+        "Max<T>(a: T): T where \\T : IComparable<T> => a;\n",
+        "Max<T>(a: T): T where T \\: IComparable<T> => a;\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
+        // A run of rejected tokens is one error, wherever one token is.
+        for run in ["\\\\", "\\\\\\", "\u{a0}\u{a0}"] {
+            let longer = text.replacen('\\', run, 1);
+            let rejected = run.chars().count();
+            assert_eq!(codes_of(&longer), vec!["MR0017"; rejected], "{longer:?}");
+        }
+    }
+}
+
+#[test]
+fn a_do_without_a_body_reports_only_the_body() {
+    assert_eq!(codes_of("do while (c);\n"), ["MR0110"]);
+    let tree = parse("do while (c);\n").syntax().debug_tree();
+    assert!(
+        !tree
+            .lines()
+            .any(|line| line.trim_start().starts_with("WhileStmt@")),
+        "{tree}"
+    );
+    // A `while` loop with an empty body is the body when the `do` has its
+    // own `while` after it.
+    assert!(codes_of("do while (c); while (d);\n").is_empty());
+    assert!(codes_of("do while (c) A(); while (d);\n").is_empty());
+    // A body without the `while` after it is not a missing body.
+    assert_eq!(
+        parse_messages("F() {\n    do A();\n}\n")
+            .first()
+            .map(String::as_str),
+        Some("expected `while`")
+    );
+}
+
+#[test]
+fn a_write_scope_is_one_word_with_rejected_tokens_around_it() {
+    let scope = |text: &str| parse(text).syntax().debug_tree().contains("WriteScope@");
+    assert!(scope("struct S {\n    public mut(private\\) X: int;\n}\n"));
+    assert!(!scope(
+        "struct S {\n    public mut(private internal) X: int;\n}\n"
+    ));
+}

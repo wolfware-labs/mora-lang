@@ -26,9 +26,20 @@ pub(super) fn build(
     lexed: &Lexed,
     mut events: Vec<Event>,
 ) -> (GreenNode, Vec<SyntaxError>) {
+    // Where each string the lexer found unclosed ends, in order. A
+    // character literal is left out: it ends after its first character and
+    // takes nothing, so what is missing after it is reported.
+    let mut unclosed_strings: Vec<TextSize> = lexed
+        .errors
+        .iter()
+        .filter(|error| error.code == codes::MR0012 && !text[error.range].starts_with('\''))
+        .map(|error| error.range.end())
+        .collect();
+    unclosed_strings.sort_unstable();
     let mut sink = Sink {
         text,
         lexed,
+        unclosed_strings,
         raw: 0,
         open: Vec::new(),
         levels: 0,
@@ -89,6 +100,8 @@ struct Sink<'a> {
     text: &'a str,
     /// Every token of the text, trivia included.
     lexed: &'a Lexed,
+    /// Where each string the lexer found unclosed (`MR0012`) ends, in order.
+    unclosed_strings: Vec<TextSize>,
     /// The next token of `lexed` to add.
     raw: usize,
     /// Each open node and whether it counts toward the nesting limit.
@@ -285,11 +298,13 @@ impl Sink<'_> {
         if wraps {
             return wrapped_kind == Some(K::Unknown);
         }
-        self.lexed.errors.iter().any(|error| {
-            error.code == codes::MR0012
-                && error.range.end() == range.start()
-                && !self.text[error.range].starts_with('\'')
-        })
+        self.unclosed_strings
+            .binary_search_by(|end| {
+                #[cfg(test)]
+                COMPARED.set(COMPARED.get() + 1);
+                end.cmp(&range.start())
+            })
+            .is_ok()
     }
 
     /// Reports `code`: on the token that follows, when the error wraps it
@@ -333,6 +348,13 @@ impl Sink<'_> {
         }
         self.errors.push(error);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many comparisons the lookups of [`Sink::lexer_reported`] made on
+    /// this thread.
+    pub(super) static COMPARED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// The message of `MR0018`.

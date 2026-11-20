@@ -976,6 +976,7 @@ fn collection_inner(p: &mut Parser<'_>) -> CompletedMarker {
 fn new_expr(p: &mut Parser<'_>) -> CompletedMarker {
     let m = p.start();
     p.bump(K::NewKw);
+    rejected(p);
     if types::at_type_start(p) && !p.at(K::LParen) {
         types::element_ty(p);
         if p.at(K::LBracket) {

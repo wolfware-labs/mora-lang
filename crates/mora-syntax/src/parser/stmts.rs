@@ -239,7 +239,7 @@ fn statement_inner(p: &mut Parser<'_>) {
         _ if at_expr_start(p) => {
             let m = p.start();
             exprs::expr(p);
-            p.expect(K::Semicolon);
+            semicolon(p);
             m.complete(p, K::ExprStmt);
         }
         _ => {}
@@ -251,7 +251,11 @@ fn statement_inner(p: &mut Parser<'_>) {
 fn at_local_function(p: &Parser<'_>) -> bool {
     let input = p.input();
     let mut at = p.pos();
-    while matches!(input.kind(at), K::StaticKw | K::AsyncKw | K::ExternKw) {
+    // Rejected tokens after a modifier are skipped, as the modifiers skip
+    // them.
+    while matches!(input.kind(at), K::StaticKw | K::AsyncKw | K::ExternKw)
+        || (at > p.pos() && input.kind(at) == K::Unknown)
+    {
         at += 1;
     }
     items::at_function(input, at)
@@ -261,7 +265,7 @@ fn at_local_function(p: &Parser<'_>) -> bool {
 fn local_decl_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     local_decl(p);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::LocalDeclStmt);
 }
 
@@ -280,25 +284,35 @@ fn deconstruct_stmt(p: &mut Parser<'_>) {
     patterns::tuple_designation(p, true);
     p.expect(K::Eq);
     exprs::expr(p);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::DeconstructStmt);
 }
 
 fn keyword_stmt(p: &mut Parser<'_>, keyword: SyntaxKind, kind: SyntaxKind) {
     let m = p.start();
     p.bump(keyword);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, kind);
 }
 
 fn return_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::ReturnKw);
+    // Rejected text where the value starts is an error of its own, and the
+    // value is what follows it.
+    exprs::rejected(p);
     if !p.at(K::Semicolon) && at_expr_start(p) {
         exprs::expr(p);
     }
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::ReturnStmt);
+}
+
+/// The `;` that ends a statement. Rejected text before it is an error of
+/// its own, which the `;` still ends.
+fn semicolon(p: &mut Parser<'_>) {
+    exprs::rejected(p);
+    p.expect(K::Semicolon);
 }
 
 /// `( condition )` after `if`, `while` and `match`.
@@ -350,12 +364,29 @@ fn do_while_stmt(p: &mut Parser<'_>) {
     p.bump(K::DoKw);
     // Without its body, the `while` is not looked for either: the `}` that
     // follows closes the block around the statement.
-    if body(p) {
+    let has_end = if at_do_end(p) {
+        p.error("expected a statement");
+        true
+    } else {
+        body(p)
+    };
+    if has_end {
         p.expect(K::WhileKw);
         parenthesized(p);
-        p.expect(K::Semicolon);
+        semicolon(p);
     }
     m.complete(p, K::DoWhileStmt);
+}
+
+/// Whether `while (c);` follows `do` and no `while` comes after it: then
+/// it ends the `do`, whose body is missing. As the body, a `while` loop
+/// with an empty body would leave the `do` without its own `while`.
+fn at_do_end(p: &Parser<'_>) -> bool {
+    let input = p.input();
+    p.at(K::WhileKw)
+        && input.after_parens(p.pos() + 1).is_some_and(|after| {
+            input.kind(after) == K::Semicolon && input.kind(after + 1) != K::WhileKw
+        })
 }
 
 /// `for (init; condition; update) body`.
