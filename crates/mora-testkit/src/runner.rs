@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
+use mora_diag::render;
 
 use crate::compiler::{FrontEnd, Output, has_error};
 use crate::harness::{panic_text, without_panic_output};
@@ -71,7 +72,7 @@ fn build_and_run(path: &str, text: &str) -> Result<i32, String> {
 /// Analyzes `text` as `path` and compiles it with the debug profile. A panic
 /// of the compiler is an error, not a crash.
 fn build(path: &str, text: &str) -> Result<JitProgram, String> {
-    catch_unwind(AssertUnwindSafe(|| {
+    caught(|| {
         let analysis = FrontEnd::new().analyze(path, text);
         if has_error(&analysis.checked.diagnostics) {
             return Err("the program has errors".to_owned());
@@ -80,9 +81,18 @@ fn build(path: &str, text: &str) -> Result<JitProgram, String> {
             Program::collect(&analysis.db, analysis.project).map_err(|error| error.to_string())?;
         Cranelift
             .jit(&program, Profile::Debug)
-            .map_err(|error| error.to_string())
-    }))
-    .map_err(|payload| {
+            .map_err(|error| match error.diagnostic() {
+                // A mistake of the program, as the front end would show it.
+                Some(diagnostic) => render(&diagnostic, &analysis.checked.files, false),
+                None => error.to_string(),
+            })
+    })
+}
+
+/// What `compile` gives, with a panic in it as an error: its message, or a
+/// fixed text for a payload that is not a string.
+fn caught<T>(compile: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(compile)).map_err(|payload| {
         panic_text(payload.as_ref()).unwrap_or_else(|| "the compiler panicked".to_owned())
     })?
 }
@@ -216,20 +226,57 @@ mod tests {
     }
 
     #[test]
+    fn a_tuple_too_large_is_shown_as_its_diagnostic() {
+        let mut text = "struct S0 { public A: long; }\n".to_owned();
+        for i in 1..=28 {
+            let before = i - 1;
+            text.push_str(&format!(
+                "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
+            ));
+        }
+        text.push_str("var t: (S28, S28);\n");
+        let Err(shown) = build_and_run("a.mr", &text) else {
+            panic!("the program was built");
+        };
+        assert!(
+            shown.starts_with("error[MR0156]: a value of `(S28, S28)` would take more than"),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn a_program_without_an_entry_point_is_an_error() {
         assert!(build_and_run("a.mr", "").is_err());
     }
 
     #[test]
+    fn a_panic_of_the_compiler_is_an_error() {
+        // The panic hook is left alone: a test that changes it races with
+        // `a_quiet_build_gives_the_hook_back`.
+        assert_eq!(caught::<()>(|| panic!("boom")), Err("boom".to_owned()));
+        assert_eq!(
+            caught::<()>(|| std::panic::panic_any(1)),
+            Err("the compiler panicked".to_owned())
+        );
+        assert_eq!(caught::<()>(|| Err("no".to_owned())), Err("no".to_owned()));
+        assert_eq!(caught(|| Ok(())), Ok(()));
+    }
+
+    #[test]
     fn a_quiet_build_gives_the_hook_back() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static CALLED: AtomicBool = AtomicBool::new(false);
+        use std::cell::Cell;
+        // The hook runs on the thread that panics, so other tests that panic
+        // while it is installed do not set this thread's flag.
+        thread_local! {
+            static CALLED: Cell<bool> = const { Cell::new(false) };
+        }
         let original = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| CALLED.store(true, Ordering::SeqCst)));
+        std::panic::set_hook(Box::new(|_| CALLED.with(|called| called.set(true))));
         assert!(build_quietly("a.mr", "return 3;\n").is_ok());
         assert!(build_quietly("a.mr", "").is_err());
+        assert!(!CALLED.with(Cell::get));
         let _ = catch_unwind(|| panic!("after the build"));
         std::panic::set_hook(original);
-        assert!(CALLED.load(Ordering::SeqCst));
+        assert!(CALLED.with(Cell::get));
     }
 }

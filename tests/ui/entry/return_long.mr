@@ -1,0 +1,4 @@
+// The first `return` with a value gives the generated `Main` its return
+// type, and an entry point cannot return a `long`.
+let total: long = 3;
+return total; //~ ERROR MR0120

@@ -88,6 +88,8 @@ pub(crate) struct SignatureSource {
     pub(crate) paths: Vec<Vec<TextRange>>,
     /// The name of each field of a struct, in order.
     pub(crate) fields: Vec<TextRange>,
+    /// The return type of a function, when one is written.
+    pub(crate) ret: Option<TextRange>,
 }
 
 /// The signature of the declaration `node`, which the item tree keeps.
@@ -105,7 +107,10 @@ pub(crate) fn signature(node: &SyntaxNode) -> (SignatureRef, SignatureSource) {
             .collect();
         signature.kind = SignatureRefKind::Function {
             params,
-            ret: it.ret().map(|ty| lower.ty(&ty)),
+            ret: it.ret().map(|ty| {
+                lower.source.ret = Some(ty.syntax().text_range());
+                lower.ty(&ty)
+            }),
             is_async: Written::of(it.modifiers()).is_async,
             receiver: receiver_mode(it.modifiers()),
         };

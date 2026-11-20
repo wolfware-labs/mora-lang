@@ -2,6 +2,11 @@
 
 use std::fmt;
 
+use mora_diag::{Diagnostic, Label, codes};
+use mora_span::Span;
+
+use crate::layout::MAX_SIZE;
+
 /// An error from code generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodegenError {
@@ -17,6 +22,36 @@ pub enum CodegenError {
     },
     /// Cranelift reported an error.
     Cranelift(String),
+    /// A value of the type `name` would take more than 2^31 bytes (§13.3).
+    TypeTooLarge {
+        /// The type: the innermost struct that is too large, or a tuple no
+        /// struct holds.
+        name: String,
+        /// The struct's name in its declaration, or for a tuple the body
+        /// of the function with a local of it.
+        span: Span,
+    },
+}
+
+impl CodegenError {
+    /// The diagnostic of an error that is the program's own mistake rather
+    /// than the compiler's or the target's: `MR0156` for
+    /// [`CodegenError::TypeTooLarge`]. `None` for the others.
+    pub fn diagnostic(&self) -> Option<Diagnostic> {
+        let CodegenError::TypeTooLarge { name, span } = self else {
+            return None;
+        };
+        Some(
+            Diagnostic::error(
+                codes::MR0156,
+                format!("a value of `{name}` would take more than {MAX_SIZE} bytes"),
+                Label::new(*span, format!("`{name}` is too large")),
+            )
+            .with_note(format!(
+                "a value of any type takes at most 2^31 = {MAX_SIZE} bytes"
+            )),
+        )
+    }
 }
 
 impl fmt::Display for CodegenError {
@@ -27,6 +62,12 @@ impl fmt::Display for CodegenError {
                 write!(f, "the target `{target}` is not supported: {reason}")
             }
             Self::Cranelift(message) => write!(f, "code generation failed: {message}"),
+            Self::TypeTooLarge { name, .. } => {
+                write!(
+                    f,
+                    "a value of `{name}` would take more than {MAX_SIZE} bytes"
+                )
+            }
         }
     }
 }

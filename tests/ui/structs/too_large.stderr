@@ -1,0 +1,7 @@
+error[MR0156]: a value of `S29` would take more than 2147483648 bytes
+  --> tests/ui/structs/too_large.mr:32:8
+   |
+32 | struct S29 { public A: S28; public B: S28; } //~ ERROR MR0156
+   |        ^^^ `S29` is too large
+   |
+   = note: a value of any type takes at most 2^31 = 2147483648 bytes

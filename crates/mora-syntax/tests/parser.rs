@@ -703,3 +703,67 @@ fn a_quoted_run_ends_at_its_closing_quote() {
         ["MR0017", "MR0017"]
     );
 }
+
+/// Each error as its code and where it starts.
+fn coded_offsets(text: &str) -> Vec<(String, u32)> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| (error.code.to_string(), u32::from(error.range.start())))
+        .collect()
+}
+
+fn top_level_kinds(text: &str) -> Vec<String> {
+    parse(text)
+        .syntax()
+        .children()
+        .map(|n| format!("{:?}", n.kind()))
+        .collect()
+}
+
+#[test]
+fn a_rejected_run_ends_at_a_semicolon_inside_its_brackets() {
+    // The `(` is never closed; the `;` still ends the statement, and the
+    // functions after it are parsed and checked.
+    let text = "let a = 1 \u{2018} (;\nMain(): int { return 1 }\nG(): int { let = ; }\n";
+    let codes = coded_offsets(text);
+    for expected in [("MR0110", 39), ("MR0110", 56), ("MR0110", 58)] {
+        assert!(
+            codes.contains(&(expected.0.to_string(), expected.1)),
+            "{expected:?} in {codes:?}"
+        );
+    }
+    assert_eq!(
+        top_level_kinds(text),
+        ["LocalDeclStmt", "FunctionDecl", "FunctionDecl"]
+    );
+}
+
+#[test]
+fn a_rejected_run_does_not_close_its_bracket_with_another_kind() {
+    // The `(` is not closed by G's `}`: `Main` stays a function of its own.
+    let text = "G(): int { let a = 1 \\ (; return 1; }\nMain(): int { return G(); }\n";
+    assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
+    assert_eq!(codes_of(text), ["MR0017"]);
+    for opener in ["(", "[", "{"] {
+        let text = format!(
+            "G(): int {{ let a = 1 \\ {opener} return 1; }}\nMain(): int {{ return G(); }}\n"
+        );
+        assert_eq!(
+            top_level_kinds(&text),
+            ["FunctionDecl", "FunctionDecl"],
+            "{text:?}"
+        );
+        let text = format!(
+            "G(): int {{\n    let a = 1 \\ {opener} x\n    return 1;\n}}\nMain(): int {{ return G(); }}\n"
+        );
+        assert_eq!(
+            top_level_kinds(&text),
+            ["FunctionDecl", "FunctionDecl"],
+            "{text:?}"
+        );
+        // A closer of another kind ends the run and is not taken.
+        let text = format!("F(\u{201c}{opener} a);\n");
+        assert_eq!(top_level_kinds(&text), ["ExprStmt"], "{text:?}");
+    }
+}

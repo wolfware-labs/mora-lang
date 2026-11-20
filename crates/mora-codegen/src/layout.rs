@@ -54,6 +54,17 @@ pub enum Scalar {
     Pointer,
 }
 
+/// Why a type has no layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayoutError {
+    /// A value would take more than 2^31 bytes. The type is the innermost
+    /// struct that does, or the tuple when no struct holds it.
+    TooLarge(Ty),
+    /// Lowering gives the type no layout: `Ty::Unsupported`, `Ty::Error`,
+    /// or a struct that holds itself.
+    None(Ty),
+}
+
 /// The layouts of the types of one program on one target.
 pub struct Layouts<'db> {
     db: &'db dyn Db,
@@ -71,13 +82,20 @@ impl<'db> Layouts<'db> {
         }
     }
 
+    /// The database the types are read from.
+    pub(crate) fn db(&self) -> &'db dyn Db {
+        self.db
+    }
+
     /// The size of a pointer in bytes.
     pub fn pointer_bytes(&self) -> u32 {
         self.target.pointer_bytes()
     }
 
     /// The size of `layout` rounded up to whole words of the target, which
-    /// is what a slot needs so that a load of words stays inside it.
+    /// is what a slot needs so that a load of words stays inside it. A
+    /// layout is at most 2^31 bytes, a multiple of every word size, so this
+    /// does not overflow.
     pub fn word_size(&self, layout: &Layout) -> u32 {
         layout.size.next_multiple_of(self.pointer_bytes())
     }
@@ -95,13 +113,29 @@ impl<'db> Layouts<'db> {
     ///
     /// With an internal error for a type that lowering does not give a
     /// layout: `Ty::Unsupported` and `Ty::Error`, and a struct that holds
-    /// itself.
+    /// itself; and for one larger than 2^31 bytes, which code generation
+    /// rejects before it lays out anything.
     pub fn of(&self, ty: &Ty) -> Layout {
+        self.try_of(ty).unwrap_or_else(|error| match error {
+            LayoutError::None(ty) => panic!("internal error computing a layout: {ty:?} has none"),
+            LayoutError::TooLarge(ty) => {
+                panic!("internal error computing a layout: {ty:?} takes more than {MAX_SIZE} bytes")
+            }
+        })
+    }
+
+    /// The layout of a value of `ty`, or why it has none.
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutError::TooLarge`] for a value larger than 2^31 bytes, and
+    /// [`LayoutError::None`] for a type lowering does not give a layout.
+    pub fn try_of(&self, ty: &Ty) -> Result<Layout, LayoutError> {
         if let Some(layout) = self.cache.borrow().get(ty) {
-            return layout.clone();
+            return Ok(layout.clone());
         }
-        self.compute_fields_first(ty);
-        self.of(ty)
+        self.compute_fields_first(ty)?;
+        Ok(self.cache.borrow()[ty].clone())
     }
 
     /// Computes the layout of `ty` and of every type its fields hold, each
@@ -109,11 +143,13 @@ impl<'db> Layouts<'db> {
     /// of structs as long as the program writes must not overflow the
     /// thread's stack.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// With an internal error for a struct that holds itself, whose size
-    /// has no end.
-    fn compute_fields_first(&self, ty: &Ty) {
+    /// [`LayoutError::None`] for a struct that holds itself, whose size has
+    /// no end, or a type with no layout, and [`LayoutError::TooLarge`] for
+    /// one larger than 2^31 bytes, naming the innermost struct on the way
+    /// to it.
+    fn compute_fields_first(&self, ty: &Ty) -> Result<(), LayoutError> {
         // Each type, and whether its fields are on the stack above it.
         let mut stack = vec![(ty.clone(), false)];
         // The types whose fields are being computed: one that comes back
@@ -125,17 +161,31 @@ impl<'db> Layouts<'db> {
             }
             if expanded {
                 open.remove(&ty);
-                let layout = self.compute(&ty);
+                let Some(layout) = self.compute(&ty)? else {
+                    // The struct that holds it, or it when none does.
+                    let holder = std::iter::once(&ty)
+                        .chain(
+                            stack
+                                .iter()
+                                .rev()
+                                .filter(|(_, held)| *held)
+                                .map(|(ty, _)| ty),
+                        )
+                        .find(|ty| matches!(ty, Ty::Struct(_)))
+                        .unwrap_or(&ty);
+                    return Err(LayoutError::TooLarge(holder.clone()));
+                };
                 self.cache.borrow_mut().insert(ty, layout);
                 continue;
             }
             if !open.insert(ty.clone()) {
-                panic!("internal error computing a layout: {ty:?} holds itself");
+                return Err(LayoutError::None(ty));
             }
             let fields = self.field_tys(&ty);
             stack.push((ty, true));
             stack.extend(fields.into_iter().map(|field| (field, false)));
         }
+        Ok(())
     }
 
     /// The offset of field `index` of the struct or tuple type `ty` from the
@@ -191,22 +241,32 @@ impl<'db> Layouts<'db> {
         }
     }
 
-    /// The layout of `ty`, once the layouts of its fields are in the cache.
-    fn compute(&self, ty: &Ty) -> Layout {
-        match ty {
-            Ty::Primitive(primitive) => self.primitive(*primitive),
-            Ty::String => Layout {
+    /// The layout of `ty`, once the layouts of its fields are in the cache;
+    /// `None` when it is larger than [`MAX_SIZE`] bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`LayoutError::None`] for a type with no layout.
+    fn compute(&self, ty: &Ty) -> Result<Option<Layout>, LayoutError> {
+        Ok(match ty {
+            Ty::Primitive(primitive) => Some(self.primitive(*primitive)),
+            Ty::String => Some(Layout {
                 size: mora_rt_core::string::SIZE as u32,
                 align: self.target.align.pointer,
                 shape: Shape::String,
-            },
+            }),
             Ty::Tuple(_) | Ty::Struct(_) | Ty::Never => {
-                self.aggregate(self.field_tys(ty).iter().map(|ty| self.of(ty)).collect())
+                let cache = self.cache.borrow();
+                let fields = self
+                    .field_tys(ty)
+                    .iter()
+                    .map(|ty| cache[ty].clone())
+                    .collect();
+                drop(cache);
+                self.aggregate(fields)
             }
-            Ty::Unsupported(_) | Ty::Error => {
-                panic!("internal error computing a layout: {ty:?} has none")
-            }
-        }
+            Ty::Unsupported(_) | Ty::Error => return Err(LayoutError::None(ty.clone())),
+        })
     }
 
     fn pointer(&self) -> Layout {
@@ -249,24 +309,34 @@ impl<'db> Layouts<'db> {
     }
 
     /// Fields go by decreasing alignment, declaration order breaking ties.
-    fn aggregate(&self, fields: Vec<Layout>) -> Layout {
+    /// `None` when the aggregate is larger than [`MAX_SIZE`] bytes.
+    fn aggregate(&self, fields: Vec<Layout>) -> Option<Layout> {
         let mut order: Vec<usize> = (0..fields.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(fields[i].align));
         let mut offsets = vec![0; fields.len()];
         let mut end: u32 = 0;
         let mut align: u32 = 1;
         for i in order {
-            end = end.next_multiple_of(fields[i].align);
+            end = fits(end.checked_next_multiple_of(fields[i].align))?;
             offsets[i] = end;
-            end += fields[i].size;
+            end = fits(end.checked_add(fields[i].size))?;
             align = align.max(fields[i].align);
         }
-        Layout {
-            size: end.next_multiple_of(align),
+        Some(Layout {
+            size: fits(end.checked_next_multiple_of(align))?,
             align,
             shape: Shape::Aggregate(offsets),
-        }
+        })
     }
+}
+
+/// The largest size of a type in bytes: every offset inside one fits the
+/// signed 32-bit offset of a load or a store.
+pub(crate) const MAX_SIZE: u32 = 1 << 31;
+
+/// `size`, when it is known and at most [`MAX_SIZE`].
+fn fits(size: Option<u32>) -> Option<u32> {
+    size.filter(|&size| size <= MAX_SIZE)
 }
 
 #[cfg(test)]
@@ -276,7 +346,7 @@ mod tests {
     use mora_mir::LocalTy;
 
     use super::*;
-    use crate::test_util::{CHAIN, app_of, struct_chain, tuple, x86_64};
+    use crate::test_util::{CHAIN, app_of, doubling, struct_chain, tuple, x86_64};
 
     fn prim(p: Primitive) -> Ty {
         Ty::Primitive(p)
@@ -300,9 +370,15 @@ mod tests {
 
     /// The type of the struct `name` of `text`.
     fn struct_ty(db: &TestDb, text: &str, name: &str) -> Ty {
+        let [ty] = struct_tys(db, text, [name]);
+        ty
+    }
+
+    /// The structs `names` of the one app of `text`.
+    fn struct_tys<const N: usize>(db: &TestDb, text: &str, names: [&str; N]) -> [Ty; N] {
         let project = app_of(db, text);
         let file = file_named(db, project, "src/Program.mr");
-        Ty::Struct(item_named(db, project, file, name))
+        names.map(|name| Ty::Struct(item_named(db, project, file, name)))
     }
 
     #[test]
@@ -628,5 +704,64 @@ mod tests {
     fn an_error_type_has_no_layout() {
         let db = TestDb::new();
         Layouts::new(&db, &x86_64()).of(&Ty::Error);
+    }
+
+    #[test]
+    fn a_type_of_the_largest_size_has_a_layout() {
+        let db = TestDb::new();
+        let ty = struct_ty(&db, &doubling(28), "S28");
+        let layouts = Layouts::new(&db, &x86_64());
+        assert_eq!(layouts.of(&ty).size, 1 << 31);
+        assert_eq!(layouts.word_size(&layouts.of(&ty)), 1 << 31);
+    }
+
+    #[test]
+    fn a_type_past_the_largest_size_is_too_large() {
+        let db = TestDb::new();
+        let [ty, inner] = struct_tys(&db, &doubling(29), ["S29", "S28"]);
+        let layouts = Layouts::new(&db, &x86_64());
+        assert_eq!(layouts.try_of(&ty), Err(LayoutError::TooLarge(ty.clone())));
+        // The structs inside it still have their layouts.
+        assert_eq!(layouts.try_of(&inner).map(|l| l.size), Ok(1 << 31));
+    }
+
+    #[test]
+    fn a_type_whose_size_passes_the_integer_range_names_the_first_too_large() {
+        let db = TestDb::new();
+        // S29 is the first struct past the limit; S30 holds it.
+        let [outer, first] = struct_tys(&db, &doubling(30), ["S30", "S29"]);
+        assert_eq!(
+            Layouts::new(&db, &x86_64()).try_of(&outer),
+            Err(LayoutError::TooLarge(first))
+        );
+    }
+
+    #[test]
+    fn a_tuple_too_large_names_the_struct_that_holds_it() {
+        let db = TestDb::new();
+        let text = format!(
+            "{}struct Pair {{\n    public P: (S28, S28);\n}}\n",
+            doubling(28)
+        );
+        let [pair, s28] = struct_tys(&db, &text, ["Pair", "S28"]);
+        let layouts = Layouts::new(&db, &x86_64());
+        assert_eq!(
+            layouts.try_of(&pair),
+            Err(LayoutError::TooLarge(pair.clone()))
+        );
+        // A tuple no struct holds is named itself.
+        let tuple = tuple(vec![s28.clone(), s28]);
+        assert_eq!(
+            layouts.try_of(&tuple),
+            Err(LayoutError::TooLarge(tuple.clone()))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error computing a layout: Struct")]
+    fn a_layout_too_large_is_an_internal_error() {
+        let db = TestDb::new();
+        let ty = struct_ty(&db, &doubling(29), "S29");
+        Layouts::new(&db, &x86_64()).of(&ty);
     }
 }

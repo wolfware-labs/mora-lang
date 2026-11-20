@@ -842,9 +842,11 @@ fn closing_quote(p: &Parser<'_>, closers: &[&str]) -> Option<usize> {
 /// closing quote follows ([`closing_quote`]) ends there, whatever it holds.
 /// Any other run ends at what ends it ([`ends_rejected_run`]) or at a
 /// closing bracket that is not its own, and takes a bracketed group inside
-/// it whole. The lexer reported the token, so the caller makes the run one
-/// `Error` node and the parser reports nothing more about it. Always takes
-/// at least the first token.
+/// it whole. Inside a group it still ends at a `;`, or at a line that
+/// starts a statement or with a `}`, so an unclosed bracket does not take
+/// the statements after it. The lexer reported the token, so the
+/// caller makes the run one `Error` node and the parser reports nothing
+/// more about it. Always takes at least the first token.
 fn skip_rejected(p: &mut Parser<'_>) {
     let closers = QUOTES
         .iter()
@@ -857,22 +859,40 @@ fn skip_rejected(p: &mut Parser<'_>) {
         return;
     }
     let quoted = closers.is_some();
-    let mut open = usize::from(p.at_any(OPENERS));
+    // The closer each open bracket waits for, innermost last.
+    let mut open = Vec::new();
+    open.extend(closer_of(p.current()));
     p.bump_any();
     while !p.at_end() {
-        if open == 0 && ends_rejected_run(p, quoted) {
+        if open.is_empty() && ends_rejected_run(p, quoted) {
             return;
         }
-        if p.at_any(OPENERS) {
-            open += 1;
+        if p.at(K::Semicolon)
+            || (p.at_line_start()
+                && (p.at_any(REJECTED_RUN_ENDS)
+                    || p.at_any(LINE_STATEMENT_STARTS)
+                    || p.at(K::RBrace)))
+        {
+            return;
+        }
+        if let Some(closer) = closer_of(p.current()) {
+            open.push(closer);
         } else if p.at_any(CLOSERS) {
-            if open == 0 {
+            if open.last() != Some(&p.current()) {
                 return;
             }
-            open -= 1;
+            open.pop();
         }
         p.bump_any();
     }
+}
+
+/// The bracket that closes `kind`, when `kind` opens one.
+fn closer_of(kind: SyntaxKind) -> Option<SyntaxKind> {
+    OPENERS
+        .iter()
+        .position(|&opener| opener == kind)
+        .map(|i| CLOSERS[i])
 }
 
 /// `(e)`, `()`, `(a, b)`, `(Id: 1, Name: "a")`. A parenthesized

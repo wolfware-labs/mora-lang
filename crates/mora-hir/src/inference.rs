@@ -32,7 +32,7 @@ use crate::resolve::{Resolved, Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
 pub use constant::literal_constant;
-pub(crate) use diagnostic::{Source, type_error};
+pub(crate) use diagnostic::{ENTRY_RETURNS, Source, type_error};
 
 /// The types of a body's expressions and locals, and what is wrong with
 /// them. It holds no text range, so an edit in another body leaves it
@@ -319,6 +319,10 @@ pub(crate) enum TypeError {
     /// `Main` of top-level statements returns `expected`, which an earlier
     /// `return` gave it (`MR0203`).
     MissingValue { stmt: StmtId, expected: Ty },
+    /// The `return` statement `stmt`, the first of the top-level statements
+    /// with a value, gives the generated `Main` the type `ty`, which an
+    /// entry point cannot return (`MR0120`).
+    EntryReturn { stmt: StmtId, ty: Ty },
     /// The literal `expr`, a negated literal or an expression made only of
     /// literals, does not fit `ty`, or no integer type when `ty` is `None`
     /// (`MR0010`).
@@ -592,6 +596,13 @@ pub fn is_known(ty: &Ty) -> bool {
         Ty::Tuple(elems) => elems.iter().all(|elem| is_known(&elem.ty)),
         Ty::Unsupported(_) | Ty::Error => false,
     }
+}
+
+/// Whether an entry point may return `ty` (§4.6): `()`, `int`, or a type
+/// not known here, such as a `Result`, which is left to a later pass. A
+/// call that does not return gives no value to check.
+pub(crate) fn is_entry_return(ty: &Ty) -> bool {
+    !is_known(ty) || matches!(ty, Ty::Never | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT)
 }
 
 /// Whether two types are the same, the names of tuple elements aside: the

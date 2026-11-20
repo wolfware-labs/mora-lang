@@ -70,7 +70,8 @@ impl Compiler for Unbuilt {
 /// Stands in for the driver until it can compile: checking a case reports
 /// its lexical and syntax errors and the errors of name resolution,
 /// signatures, types, control flow and entry points, and, when none of those
-/// is an error, the errors of constant evaluation. A case may describe several files (see
+/// is an error, the errors of constant evaluation, then those of the sizes of
+/// the types it declares (`MR0156`). A case may describe several files (see
 /// [`crate::case`]); the standard library is not loaded, so names under
 /// `Std`, the names of the prelude and names in a file with a `using`
 /// directive of `Std` are not checked when nothing else declares them. It
@@ -174,6 +175,14 @@ impl FrontEnd {
         diagnostics.extend(mora_check::diagnostics(&db, project).iter().cloned());
         if !has_error(&diagnostics) {
             diagnostics.extend(mora_mir::diagnostics(&db, project).iter().cloned());
+        }
+        // The sizes of types depend on the target: the host's, which the
+        // JIT runs on.
+        if !has_error(&diagnostics)
+            && let Ok(host) = mora_target::Target::host()
+            && let Err(error) = mora_codegen::check_sizes(&db, project, &host)
+        {
+            diagnostics.extend(error.diagnostic());
         }
         Analysis {
             shown,

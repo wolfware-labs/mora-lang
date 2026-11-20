@@ -59,6 +59,22 @@ pub(crate) fn struct_chain(count: usize) -> String {
     text
 }
 
+/// The text of structs `S0` to `S{last}`: `S0` holds a `long`, and each
+/// other `S{i}` two of the one before it in `A` and `B`, so `S{i}` takes
+/// `8 << i` bytes.
+pub(crate) fn doubling(last: usize) -> String {
+    // Writing to a `String` cannot fail.
+    let mut text = "struct S0 {\n    public A: long;\n}\n".to_owned();
+    for i in 1..=last {
+        let before = i - 1;
+        let _ = writeln!(
+            text,
+            "struct S{i} {{\n    public A: S{before};\n    public B: S{before};\n}}"
+        );
+    }
+    text
+}
+
 /// The symbol of the function `name` of the app `app_of` builds, which is named
 /// `users-api`.
 pub(crate) fn symbol(name: &str) -> String {

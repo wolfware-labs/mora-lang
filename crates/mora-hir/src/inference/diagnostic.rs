@@ -146,6 +146,7 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             context,
         } => mismatch(source, *expr, expected, found, *context),
         TypeError::MissingValue { stmt, expected } => missing_value(source, *stmt, expected),
+        TypeError::EntryReturn { stmt, ty } => entry_return(source, *stmt, ty),
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
         TypeError::Binary {
             expr,
@@ -466,6 +467,27 @@ fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic
         "an earlier `return` of the top-level statements gives the generated `Main` the return type `{e}`"
     ))
 }
+
+/// `MR0120`: the first `return` with a value of the top-level statements
+/// gives the generated `Main` a type an entry point cannot return.
+fn entry_return(source: &Source<'_>, stmt: StmtId, ty: &Ty) -> Diagnostic {
+    let Some(&range) = source.map.stmts.get(&stmt) else {
+        panic!("inference: the statement {stmt:?} has no range in the source map");
+    };
+    Diagnostic::error(
+        codes::MR0120,
+        format!("an entry point cannot return `{}`", source.name(ty)),
+        Label::new(
+            Span::new(source.file.id(source.db), range),
+            "this gives the generated `Main` its return type",
+        ),
+    )
+    .with_note(ENTRY_RETURNS)
+}
+
+/// What the note of `MR0120` says an entry point may return.
+pub(crate) const ENTRY_RETURNS: &str =
+    "an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`";
 
 /// `MR0203`: a value whose type does not convert to the expected one.
 fn mismatch(

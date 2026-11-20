@@ -446,6 +446,8 @@ An app has exactly one entry point:
 
 The return type of generated `Main` is inferred: `()` when no statement uses `?` or `return`, otherwise the type that the `return` statements and `?` operators require (for example `Result<(), IoError>`).
 
+A `Main` declared with another return type, or top-level statements whose first `return` with a value gives the generated `Main` another type, is error `MR0120`.
+
 | Outcome | Process exit code | Output |
 |---|---|---|
 | Returns normally, `()` or `Ok(())` | 0 | |
@@ -1237,7 +1239,7 @@ let total = 4;       // MR0180: `total` is in scope
 - **Other operands.** `!`, `&&` and `||` take `bool` operands and give `bool`; `&`, `|` and `^` on two `bool` values give `bool` and evaluate both. `==` and `!=` compare two values of one type, and `<`, `>`, `<=` and `>=` order numbers, `char` values and `string` values (§8.5). `+` on two `string` values concatenates them (§5.3). An operator on operands it is not defined for, such as `string + int`, `!` on an `int` or `<` on two `bool` values, is error `MR0204`.
 - **Compound assignment.** `x op= y`, with `x` of type `T`, means `x = (T)(x op y)` with `x` evaluated once: whenever `x op y` is defined, its result converts back to `T` as the cast would, so `b += 1` with `b: byte` compiles although `byte + byte` is an `int`. Overflow follows the rules above, checked or wrapping as for `op`, so `+%=`, `-%=` and `*%=` always wrap. When `x op y` is not defined, as for `s += 1` with `s: string`, it is error `MR0204`.
 - **Overflow** in `+`, `-`, `*`, unary `-`, `++` and `--` panics in debug builds and wraps in release builds, unless the profile sets `overflow-checks = true` (§17.2). `+%`, `-%`, `*%` and their compound forms always wrap (D-12).
-- Integer division and remainder by zero panic in every build. `int.MinValue / -1` and `int.MinValue % -1` panic.
+- Integer division and remainder by zero panic in every build, and so do `T.MinValue / -1` and `T.MinValue % -1` for every signed integer type `T`, as `int.MinValue / -1`.
 - **Shifts.** The left operand of `<<`, `>>` and `>>>` widens from `byte`, `sbyte`, `short` and `ushort` to `int`, and the result has its type. The count converts implicitly to `int` and is masked to the width of the result type: `count & 31` for a 32-bit type and `count & 63` for a 64-bit one. `>>` fills with the sign bit for a signed type and with zeros for an unsigned one; `>>>` is the unsigned shift, which always fills with zeros.
 - Floating point follows IEEE 754 with round-to-nearest-even and no traps.
 
@@ -1794,7 +1796,7 @@ A panic happens on:
 | `Value` on `none` or on `Err` | `called Value on none: User?` / `called Value on Err: <error>` |
 | `Expect("msg")` failing | `msg: <error>` |
 | Index or slice out of range | `index 5 out of range for length 3` |
-| Integer overflow (debug builds) | `arithmetic overflow: 2147483647 + 1` |
+| Integer overflow (debug builds), and `T.MinValue / -1` or `T.MinValue % -1` (every build) | `arithmetic overflow: 2147483647 + 1` / `arithmetic overflow: -2147483648 % -1` |
 | Division by zero | `division by zero` |
 | Structural change during a view or enumeration | §10.10 |
 | Failed checked cast `(C)i` or enum cast | `cannot cast IShape holding Rect to Circle` |
@@ -2001,6 +2003,7 @@ These are all the paths that free memory: a strong release that brings both coun
 ### 13.5 Value layouts
 
 - **Structs and tuples** order fields by decreasing alignment, then by declaration order, unless the struct has `@Layout(C)`, which keeps declaration order with C alignment rules. Size is rounded up to the alignment.
+- **Size limit.** A value of any type takes at most 2^31 bytes (2,147,483,648), so every offset inside one fits a signed 32-bit number. A type larger than that is error `MR0156`, reported at the declaration of the innermost struct that is too large, or at the function whose local is a tuple that large. Sizes depend on the target, so the check uses the target being built.
 - **Unions** are a tag (`u8`, or `u16` beyond 256 cases) followed by the largest case payload. A union whose other cases carry no data puts its tag in a niche of the largest case's payload when that payload has a spare bit pattern for each of those cases; otherwise it keeps a separate tag.
 - **Niches** (D-78). These types have invalid bit patterns that a `T?` or a union tag uses, so `sizeof(T?) == sizeof(T)`: pointers (shared and unique classes, heap strings, arrays, escaping closures; null is `None`); dynamic interface values (a null data pointer); `string` (a spare tag value); `bool` (254 spare values); `char` (surrogates and values above U+10FFFF); enums without `@Flags`, when the backing type has a value no member declares (an enum that declares all 256 values of a `byte` has no niche, so its option is a tag byte plus the enum); unions with a spare tag value; and an option of any of these when its payload still has an unused pattern after `None` takes one. `bool??` keeps a niche; `User??`, whose payload's only spare pattern (null) is taken by the inner `None`, uses a tag. Several `bool` fields are never packed into one byte, because each field must stay addressable for `ref` borrows.
 - **`indirect` cases** store a pointer to an immortal-capable shared box holding the payload.

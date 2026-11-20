@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
-    TypeError, constant, converts, is_known, numeric, same,
+    TypeError, constant, converts, is_entry_return, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -611,7 +611,15 @@ impl Check<'_> {
                     // against it.
                     None if self.entry => match self.entry_ret.clone() {
                         Some(ty) => self.check(*expr, &ty),
-                        None => self.entry_ret = self.infer(*expr),
+                        None => {
+                            self.entry_ret = self.infer(*expr);
+                            if let Some(ty) = &self.entry_ret
+                                && !is_entry_return(ty)
+                            {
+                                let ty = ty.clone();
+                                self.errors.push(TypeError::EntryReturn { stmt, ty });
+                            }
+                        }
                     },
                     None => {
                         let expect = self.unknown_ret();

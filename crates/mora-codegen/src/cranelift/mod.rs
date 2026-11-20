@@ -142,6 +142,12 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
     flags
         .enable("enable_multi_ret_implicit_sret")
         .map_err(cranelift_error)?;
+    // A frame larger than a page touches each page as it grows, so that a
+    // stack overflow reaches the guard page instead of jumping past it.
+    flags.enable("enable_probestack").map_err(cranelift_error)?;
+    flags
+        .set("probestack_strategy", "inline")
+        .map_err(cranelift_error)?;
     let triple = Triple::from_str(&target.triple).map_err(|error| {
         unsupported(
             target,
@@ -169,7 +175,10 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
 ///
 /// # Errors
 ///
-/// [`CodegenError::Cranelift`] when Cranelift rejects a function.
+/// [`CodegenError::TypeTooLarge`] when a struct of the project or the type
+/// of a local takes more than 2^31 bytes, checked before anything is
+/// generated, and [`CodegenError::Cranelift`] when Cranelift rejects a
+/// function.
 ///
 /// # Panics
 ///
@@ -182,8 +191,10 @@ fn define_program<M: Module>(
     layouts: &Layouts<'_>,
     profile: Profile,
 ) -> Result<(), CodegenError> {
-    let entry = program.function(program.entry()).body;
-    let exit = Exit::of(entry, layouts);
+    let entry = program.function(program.entry());
+    crate::size::check_structs(layouts, entry.key.project)?;
+    crate::size::check_locals(layouts, program)?;
+    let exit = Exit::of(entry.body, layouts);
     let ids = define_functions(module, program, layouts, profile)?;
     let call_conv = module.isa().default_call_conv();
     let mut signature = Signature::new(call_conv);
@@ -355,13 +366,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use cranelift_codegen::settings::OptLevel;
+    use cranelift_codegen::settings::{OptLevel, ProbestackStrategy};
     use mora_hir::test_support::TestDb;
     use mora_target::builtin_names;
-    use object::{Object, ObjectSymbol};
+    use object::{Object, ObjectSection, ObjectSymbol};
 
     use super::*;
-    use crate::test_util::{app_of, func, jit, object_of, symbol, x86_64};
+    use crate::test_util::{app_of, doubling, func, jit, object_of, symbol, x86_64};
 
     fn is_unsupported(result: Result<OwnedTargetIsa, CodegenError>, reason: &str) {
         assert_eq!(
@@ -676,7 +687,12 @@ mod tests {
                                an entry point with parameters or a result other than `int` \
                                is not lowered until M1.13")]
     fn an_entry_returning_another_type_is_an_internal_error() {
-        jit("Main(): long { return 7; }\n", Profile::Debug);
+        // The front end reports it (`MR0120`); code generation still checks.
+        let db = TestDb::default();
+        let project =
+            mora_hir::test_support::app(&db, &[("src/Program.mr", "Main(): long { return 7; }\n")]);
+        let program = Program::collect(&db, project).unwrap();
+        let _ = Cranelift.jit(&program, Profile::Debug);
     }
 
     #[test]
@@ -701,5 +717,57 @@ mod tests {
         let mir = mora_mir::mir(&db, project, file, mora_hir::BodyOwner::Item(item.item));
         let program = Program::from_body(&db, project, file, &mir.bodies[0]);
         let _ = Cranelift.jit(&program, Profile::Debug);
+    }
+
+    #[test]
+    fn every_target_probes_the_stack_inline() {
+        for name in builtin_names() {
+            let target = Target::builtin(name).unwrap();
+            for profile in [Profile::Debug, Profile::Release] {
+                let isa = isa(&target, profile, true).unwrap();
+                assert!(isa.flags().enable_probestack(), "{name}");
+                assert_eq!(
+                    isa.flags().probestack_strategy(),
+                    ProbestackStrategy::Inline,
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    /// `F`, whose locals take 128 KiB, built up from a `long` of 7 that it
+    /// returns, and a call of it.
+    fn large_frame() -> String {
+        let mut text = doubling(13);
+        text.push_str("F(): long {\n    let s0 = new S0 { A = 7 };\n");
+        for i in 1..=13 {
+            let before = i - 1;
+            text.push_str(&format!(
+                "    let s{i} = new S{i} {{ A = s{before}, B = s{before} }};\n"
+            ));
+        }
+        text.push_str(&format!(
+            "    return s13{};\n}}\nF();\n",
+            ".B".repeat(13) + ".A"
+        ));
+        text
+    }
+
+    #[test]
+    fn a_large_frame_runs_with_its_pages_probed() {
+        let text = large_frame();
+        for profile in [Profile::Debug, Profile::Release] {
+            let program = jit(&text, profile);
+            assert_eq!(func::<extern "C" fn() -> i64>(&program, "F")(), 7);
+        }
+        // x86_64 touches each 4 KiB page as it moves the stack pointer down:
+        // `sub rsp, 0x1000` then `mov dword [rsp], 0`.
+        const PROBE: [u8; 14] = [
+            0x48, 0x81, 0xEC, 0x00, 0x10, 0x00, 0x00, 0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let bytes = object_of(&text, &x86_64(), Profile::Release);
+        let file = object::File::parse(&*bytes).unwrap();
+        let code = file.section_by_name(".text").unwrap().data().unwrap();
+        assert!(code.windows(PROBE.len()).any(|w| w == PROBE));
     }
 }

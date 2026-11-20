@@ -11,7 +11,7 @@ use crate::bodies::{
     body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::inference::{Source, type_error, type_errors};
+use crate::inference::{ENTRY_RETURNS, Source, is_entry_return, ty_name, type_error, type_errors};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, parse, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
@@ -1508,7 +1508,7 @@ fn file_namespace(db: &dyn Db, project: Project, file: SourceFile) -> Option<Str
     map.file_namespace(file).map(|id| map.namespace_path(id))
 }
 
-/// `MR0124` and `MR0125` (§4.6).
+/// `MR0124` and `MR0125` (§4.6), and `MR0120` for each `Main`.
 fn entry_point(db: &dyn Db, project: Project, map: &DefMap, out: &mut Vec<Diagnostic>) {
     let entry = project.entry(db);
     let first_statement = |file: SourceFile| {
@@ -1533,6 +1533,9 @@ fn entry_point(db: &dyn Db, project: Project, map: &DefMap, out: &mut Vec<Diagno
     }
     if project.kind(db) == ProjectKind::Lib {
         return;
+    }
+    for &main in map.mains() {
+        main_return(db, main, out);
     }
     let statements = map
         .entry_file()
@@ -1567,6 +1570,35 @@ fn entry_point(db: &dyn Db, project: Project, map: &DefMap, out: &mut Vec<Diagno
             .with_note("an app has exactly one entry point: top-level statements in the entry file, or one `Main`"),
         );
     }
+}
+
+/// `MR0120` when the `Main` function `main` returns a type an entry point
+/// cannot return, at its return type. A `Main` with no return type written
+/// returns `()`.
+fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
+    let Signature::Function(function) = signature(db, main) else {
+        return;
+    };
+    if is_entry_return(&function.ret) {
+        return;
+    }
+    let Some(range) = signature_sources(db, main.file)[arena_index(main.item)].ret else {
+        return;
+    };
+    out.push(
+        Diagnostic::error(
+            codes::MR0120,
+            format!(
+                "an entry point cannot return `{}`",
+                ty_name(db, &function.ret)
+            ),
+            Label::new(
+                Span::new(main.file.id(db), range),
+                "the return type of `Main`",
+            ),
+        )
+        .with_note(ENTRY_RETURNS),
+    );
 }
 
 #[cfg(test)]
@@ -2972,5 +3004,53 @@ mod tests {
         assert!(member_rule_may_apply(K::StructDecl, K::MacroDecl));
         assert!(!member_rule_may_apply(K::StructDecl, K::FieldDecl));
         assert!(!member_rule_may_apply(K::ClassDecl, K::FunctionDecl));
+    }
+
+    #[test]
+    fn an_entry_point_returns_unit_int_or_a_result() {
+        // Each case with the text the error points at: the return type of
+        // a `Main`, or the `return` that gives the generated `Main` its type.
+        for (text, at) in [
+            ("return \"x\";\n", "return \"x\";"),
+            ("return 3L;\n", "return 3L;"),
+            ("return 3000000000;\n", "return 3000000000;"),
+            ("let b: byte = 3;\nreturn b;\n", "return b;"),
+            ("return (1, 2);\n", "return (1, 2);"),
+            ("if (true) { return 3L; }\nreturn 4L;\n", "return 3L;"),
+            ("Main(): string { return \"x\"; }\n", "string"),
+            ("Main(): long { return 3; }\n", "long"),
+            ("class App {\n    static Main(): bool => true;\n}\n", "bool"),
+        ] {
+            let db = TestDb::new();
+            let project = app(&db, &[("src/Program.mr", text)]);
+            let reported = diagnostics(&db, project);
+            assert_eq!(codes(reported), ["MR0120"], "{text:?}");
+            assert_eq!(primary_text(&db, project, &reported[0]), at, "{text:?}");
+        }
+        for text in [
+            "let x = 1;\n",
+            "return;\n",
+            "return 3;\n",
+            "let x: int = 2;\nreturn x;\n",
+            "Main() {}\n",
+            "Main(): int { return 3; }\n",
+            "Main(): () {}\n",
+            // A function other than an entry point returns what it likes.
+            "F(): long => 3;\nreturn 0;\n",
+            "let f = () => { return 3L; };\nreturn 0;\n",
+        ] {
+            assert_eq!(codes(&diagnostics_of(text)), [""; 0], "{text:?}");
+        }
+        // `Result` is not checked here yet, and is allowed.
+        for text in [
+            "Main(): Result<(), string> { return Ok(()); }\n",
+            "Main(): Result<int, string> { return Ok(1); }\n",
+        ] {
+            let reported = codes(&diagnostics_of(text));
+            assert!(
+                !reported.contains(&"MR0120".to_owned()),
+                "{text:?}: {reported:?}"
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 //! Checked arithmetic and division: the overflow checks of a debug build,
-//! the zero divisor of both profiles, and the panics they call (§11.4).
+//! the zero divisor and the minimum divided by -1 of both profiles, and the
+//! panics they call (§11.4).
 
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{GlobalValue, InstBuilder, Type, Value, types};
@@ -8,7 +9,6 @@ use mora_rt::panic::OverflowOp;
 
 use super::function::{Lowering, UNREACHABLE, broken};
 use super::runtime::{DIVISION_BY_ZERO, RuntimeFn};
-use crate::Profile;
 use crate::layout::Scalar;
 
 /// An integer operation whose overflow a debug build checks.
@@ -140,9 +140,8 @@ impl Lowering<'_, '_> {
     }
 
     /// The quotient or remainder of the numbers `left` and `right` of the
-    /// type `scalar`. An integer divisor of zero panics; so does, in a debug
-    /// build, the minimum of a signed type divided by -1, which a release
-    /// build wraps.
+    /// type `scalar`. An integer divisor of zero panics, and so does the
+    /// minimum of a signed type divided by -1, in every build profile.
     ///
     /// # Panics
     ///
@@ -185,37 +184,25 @@ impl Lowering<'_, '_> {
                 self.builder.ins().urem(left, right)
             };
         }
+        // The minimum divided by -1 does not fit, in every build profile
+        // (§7.12); no other divisor makes `sdiv` or `srem` trap.
         let minus_one = self.builder.ins().iconst(ty, -1);
         let by_minus_one = self.builder.ins().icmp(IntCC::Equal, right, minus_one);
-        if self.env.profile == Profile::Debug {
-            let min = self.builder.ins().iconst(ty, i64::MIN >> (64 - ty.bits()));
-            let is_min = self.builder.ins().icmp(IntCC::Equal, left, min);
-            let overflows = self.builder.ins().band(is_min, by_minus_one);
-            let overflow = if div {
-                OverflowOp::Div
-            } else {
-                OverflowOp::Rem
-            };
-            self.panic_if(overflows, |lowering| {
-                lowering.panic_overflow(overflow, true, left, right);
-            });
-            return if div {
-                self.builder.ins().sdiv(left, right)
-            } else {
-                self.builder.ins().srem(left, right)
-            };
-        }
-        // A divisor of -1 becomes 1, so that no instruction traps; the
-        // result of `x / -1` is `-x` and of `x % -1` is 0, both wrapping.
-        let one = self.builder.ins().iconst(ty, 1);
-        let divisor = self.builder.ins().select(by_minus_one, one, right);
-        if div {
-            let quotient = self.builder.ins().sdiv(left, divisor);
-            let negated = self.builder.ins().ineg(left);
-            self.builder.ins().select(by_minus_one, negated, quotient)
+        let min = self.builder.ins().iconst(ty, i64::MIN >> (64 - ty.bits()));
+        let is_min = self.builder.ins().icmp(IntCC::Equal, left, min);
+        let overflows = self.builder.ins().band(is_min, by_minus_one);
+        let overflow = if div {
+            OverflowOp::Div
         } else {
-            let remainder = self.builder.ins().srem(left, divisor);
-            self.builder.ins().select(by_minus_one, zero, remainder)
+            OverflowOp::Rem
+        };
+        self.panic_if(overflows, |lowering| {
+            lowering.panic_overflow(overflow, true, left, right);
+        });
+        if div {
+            self.builder.ins().sdiv(left, right)
+        } else {
+            self.builder.ins().srem(left, right)
         }
     }
 
@@ -573,64 +560,75 @@ mod tests {
     }
 
     #[test]
-    fn min_divided_by_minus_one_overflows_in_debug() {
-        panics(
-            "child_min_div",
-            "panic at src/Program.mr:1:37: arithmetic overflow: -2147483648 / -1\n",
-        );
-        panics(
-            "child_min_rem",
-            "panic at src/Program.mr:1:37: arithmetic overflow: -2147483648 % -1\n",
-        );
-        panics(
-            "child_long_min_div",
-            "panic at src/Program.mr:1:40: arithmetic overflow: -9223372036854775808 / -1\n",
-        );
+    fn min_divided_by_minus_one_panics_in_every_build() {
+        for profile in ["debug", "release"] {
+            panics(
+                &format!("child_min_div_{profile}"),
+                "panic at src/Program.mr:1:37: arithmetic overflow: -2147483648 / -1\n",
+            );
+            panics(
+                &format!("child_min_rem_{profile}"),
+                "panic at src/Program.mr:1:37: arithmetic overflow: -2147483648 % -1\n",
+            );
+            panics(
+                &format!("child_long_min_div_{profile}"),
+                "panic at src/Program.mr:1:40: arithmetic overflow: -9223372036854775808 / -1\n",
+            );
+            panics(
+                &format!("child_sbyte_min_rem_{profile}"),
+                "panic at src/Program.mr:1:37: arithmetic overflow: -128 % -1\n",
+            );
+        }
+    }
+
+    /// Defines a test, run in a child process, that divides or takes the
+    /// remainder of the minimum of a type by -1 in each profile.
+    macro_rules! min_by_minus_one {
+        ($($debug:ident, $release:ident: $call:expr;)*) => {$(
+            #[test]
+            #[ignore = "runs in a child process"]
+            fn $debug() {
+                only_in_child(|| $call(Profile::Debug));
+            }
+
+            #[test]
+            #[ignore = "runs in a child process"]
+            fn $release() {
+                only_in_child(|| $call(Profile::Release));
+            }
+        )*};
+    }
+
+    min_by_minus_one! {
+        child_min_div_debug, child_min_div_release: |profile| {
+            call::<i32, i32>(INT_DIV, profile, i32::MIN, -1);
+        };
+        child_min_rem_debug, child_min_rem_release: |profile| {
+            call::<i32, i32>(INT_REM, profile, i32::MIN, -1);
+        };
+        child_long_min_div_debug, child_long_min_div_release: |profile| {
+            call::<i64, i64>(LONG_DIV, profile, i64::MIN, -1);
+        };
+        child_sbyte_min_rem_debug, child_sbyte_min_rem_release: |profile| {
+            call_as::<i8, i8>(INT_REM, Primitive::SByte, profile, i8::MIN, -1);
+        };
     }
 
     #[test]
-    #[ignore = "runs in a child process"]
-    fn child_min_div() {
-        only_in_child(|| {
-            call::<i32, i32>(INT_DIV, Profile::Debug, i32::MIN, -1);
-        });
-    }
-
-    #[test]
-    #[ignore = "runs in a child process"]
-    fn child_min_rem() {
-        only_in_child(|| {
-            call::<i32, i32>(INT_REM, Profile::Debug, i32::MIN, -1);
-        });
-    }
-
-    #[test]
-    #[ignore = "runs in a child process"]
-    fn child_long_min_div() {
-        only_in_child(|| {
-            call::<i64, i64>(LONG_DIV, Profile::Debug, i64::MIN, -1);
-        });
-    }
-
-    #[test]
-    fn release_division_wraps_min_by_minus_one() {
-        assert_eq!(
-            call::<i32, i32>(INT_DIV, Profile::Release, i32::MIN, -1),
-            i32::MIN
-        );
-        assert_eq!(call::<i32, i32>(INT_REM, Profile::Release, i32::MIN, -1), 0);
-        assert_eq!(
-            call::<i64, i64>(LONG_DIV, Profile::Release, i64::MIN, -1),
-            i64::MIN
-        );
-        let args = (Primitive::SByte, Profile::Release);
-        assert_eq!(
-            call_as::<i8, i8>(INT_DIV, args.0, args.1, i8::MIN, -1),
-            i8::MIN
-        );
-        assert_eq!(call_as::<i8, i8>(INT_REM, args.0, args.1, i8::MIN, -1), 0);
-        assert_eq!(call::<i32, i32>(INT_DIV, Profile::Release, 7, -1), -7);
-        assert_eq!(call::<i32, i32>(INT_REM, Profile::Release, 7, -1), 0);
+    fn other_division_by_minus_one_negates() {
+        for profile in [Profile::Debug, Profile::Release] {
+            assert_eq!(call::<i32, i32>(INT_DIV, profile, 7, -1), -7);
+            assert_eq!(call::<i32, i32>(INT_REM, profile, 7, -1), 0);
+            assert_eq!(
+                call::<i32, i32>(INT_DIV, profile, i32::MIN + 1, -1),
+                i32::MAX
+            );
+            assert_eq!(
+                call_as::<i8, i8>(INT_DIV, Primitive::SByte, profile, i8::MIN + 1, -1),
+                i8::MAX
+            );
+            assert_eq!(call::<i64, i64>(LONG_DIV, profile, i64::MIN, 1), i64::MIN);
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The lowering of operators, comparisons and casts on scalars. Their
 //! results match those of constant evaluation bit for bit (§14.6), except
-//! that a checked operation that overflows wraps in a release build; a debug
-//! build panics instead (checks.rs).
+//! that a checked `+`, `-`, `*` or unary `-` that overflows wraps in a
+//! release build; a debug build panics instead (checks.rs).
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Type, Value, types};

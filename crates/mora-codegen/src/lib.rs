@@ -9,6 +9,7 @@ mod jit;
 mod layout;
 mod mangle;
 mod program;
+mod size;
 #[cfg(test)]
 mod test_util;
 
@@ -16,9 +17,10 @@ pub use abi::{FnAbi, PassMode};
 pub use cranelift::Cranelift;
 pub use error::CodegenError;
 pub use jit::JitProgram;
-pub use layout::{Layout, Layouts, Scalar, Shape};
+pub use layout::{Layout, LayoutError, Layouts, Scalar, Shape};
 pub use mangle::mangle;
 pub use program::{BodyKey, Function, FunctionId, Program};
+pub use size::check_sizes;
 
 use mora_target::Target;
 
@@ -38,8 +40,9 @@ pub trait Backend {
     /// # Errors
     ///
     /// [`CodegenError::UnsupportedTarget`] for a target the backend cannot
-    /// generate for, and [`CodegenError::Cranelift`] when code generation
-    /// fails.
+    /// generate for, [`CodegenError::TypeTooLarge`] for a type larger than
+    /// 2^31 bytes on it, and [`CodegenError::Cranelift`] when code
+    /// generation fails.
     fn object(
         &self,
         program: &Program<'_>,
@@ -55,6 +58,7 @@ pub trait JitBackend {
     /// # Errors
     ///
     /// [`CodegenError::UnsupportedTarget`] when the host has no built-in
-    /// target, and [`CodegenError::Cranelift`] when code generation fails.
+    /// target, [`CodegenError::TypeTooLarge`] for a type larger than 2^31
+    /// bytes, and [`CodegenError::Cranelift`] when code generation fails.
     fn jit(&self, program: &Program<'_>, profile: Profile) -> Result<JitProgram, CodegenError>;
 }
