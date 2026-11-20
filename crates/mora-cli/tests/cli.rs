@@ -70,7 +70,7 @@ fn version_in_json_is_one_object() {
     assert!(!line.contains('\n'), "{text}");
     assert!(
         line.starts_with(&format!(
-            "{{\"version\":\"{}\",\"commit\":\"",
+            "{{\"schema\":\"mora.version/1\",\"version\":\"{}\",\"commit\":\"",
             env!("CARGO_PKG_VERSION")
         )),
         "{text}"

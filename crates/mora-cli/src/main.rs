@@ -239,9 +239,16 @@ fn paint(text: &str, code: &str, color: bool) -> String {
 /// What `mora version` prints as JSON, one object on one line.
 #[derive(Serialize)]
 struct VersionJson<'a> {
+    /// The schema name and version, the first key of every JSON object the
+    /// toolchain prints (§17.10).
+    schema: &'static str,
     version: &'a str,
     commit: &'a str,
     runtime_targets: &'a [String],
+}
+
+impl VersionJson<'_> {
+    const SCHEMA: &'static str = "mora.version/1";
 }
 
 fn version(format: MessageFormat, color: Color) -> ExitCode {
@@ -250,6 +257,7 @@ fn version(format: MessageFormat, color: Color) -> ExitCode {
     let targets = runtime_targets();
     let text = if format == MessageFormat::Json {
         let json = VersionJson {
+            schema: VersionJson::SCHEMA,
             version,
             commit,
             runtime_targets: &targets,
@@ -292,13 +300,17 @@ mod tests {
     #[test]
     fn version_json_escapes_quotes_backslashes_and_controls() {
         let json = VersionJson {
+            schema: VersionJson::SCHEMA,
             version: "1\"2",
             commit: "a\\b",
             runtime_targets: &["t\tx".to_owned(), "\u{1}".to_owned()],
         };
         assert_eq!(
             serde_json::to_string(&json).unwrap(),
-            r#"{"version":"1\"2","commit":"a\\b","runtime_targets":["t\tx","\u0001"]}"#
+            concat!(
+                r#"{"schema":"mora.version/1","version":"1\"2","commit":"a\\b","#,
+                r#""runtime_targets":["t\tx","\u0001"]}"#
+            )
         );
     }
 
