@@ -350,13 +350,11 @@ fn do_while_stmt(p: &mut Parser<'_>) {
     p.bump(K::DoKw);
     // Without its body, the `while` is not looked for either: the `}` that
     // follows closes the block around the statement.
-    if !body(p) {
-        m.complete(p, K::DoWhileStmt);
-        return;
+    if body(p) {
+        p.expect(K::WhileKw);
+        parenthesized(p);
+        p.expect(K::Semicolon);
     }
-    p.expect(K::WhileKw);
-    parenthesized(p);
-    p.expect(K::Semicolon);
     m.complete(p, K::DoWhileStmt);
 }
 

@@ -518,7 +518,7 @@ impl<'t> Parser<'t> {
 
     /// Records that a scan for one of `closers` found none before the
     /// token at `end`, so that each token is scanned for them once.
-    pub(crate) fn no_closing_quote(&mut self, closers: &'static [&'static str], end: usize) {
+    pub(crate) fn record_no_closing_quote(&mut self, closers: &'static [&'static str], end: usize) {
         match self
             .unclosed_quotes
             .iter_mut()

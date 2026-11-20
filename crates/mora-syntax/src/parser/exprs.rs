@@ -842,9 +842,9 @@ fn ends_rejected_run(p: &Parser<'_>) -> bool {
 /// line that starts with a statement keyword or a `}`. Brackets in between
 /// are text.
 ///
-/// A scan that finds none is recorded ([`Parser::no_closing_quote`]), and a
-/// later quote before where it stopped is not scanned again, so a statement
-/// with many unclosed quotes is scanned once.
+/// A scan that finds none is recorded ([`Parser::record_no_closing_quote`]),
+/// and a later quote before where it stopped is not scanned again, so a
+/// statement with many unclosed quotes is scanned once.
 fn closing_quote(p: &mut Parser<'_>, closers: &'static [&'static str]) -> Option<usize> {
     if p.closing_quote_missing(closers) {
         return None;
@@ -871,7 +871,7 @@ fn closing_quote(p: &mut Parser<'_>, closers: &'static [&'static str]) -> Option
         p.scanned += n;
     }
     if found.is_none() {
-        p.no_closing_quote(closers, p.pos() + n);
+        p.record_no_closing_quote(closers, p.pos() + n);
     }
     found
 }

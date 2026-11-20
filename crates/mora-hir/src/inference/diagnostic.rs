@@ -485,13 +485,10 @@ fn entry_return(
         panic!("inference: the statement {stmt:?} has no range in the source map");
     };
     let span = Span::new(source.file.id(source.db), range);
+    let label = "this gives the generated `Main` its return type";
     let (Some(ty), Some(propagate)) = (ty, propagate) else {
         let what = ty.map_or_else(|| "a function".to_owned(), |ty| describe(source, ty));
-        return entry_return_error(
-            &what,
-            span,
-            "this gives the generated `Main` its return type",
-        );
+        return entry_return_error(&what, span, label);
     };
     let question = || {
         Label::new(
@@ -503,12 +500,7 @@ fn entry_return(
     // already, is the type itself; the checker does not see its name, so it
     // is named by what it is.
     if ty.as_external().is_some() {
-        return entry_return_error(
-            &describe(source, ty),
-            span,
-            "this gives the generated `Main` its return type",
-        )
-        .with_secondary(question());
+        return entry_return_error(&describe(source, ty), span, label).with_secondary(question());
     }
     let error = propagate
         .error
