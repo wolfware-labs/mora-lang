@@ -1368,7 +1368,7 @@ Done when:
 
 Spec: [§15.2](docs/design/mora.md#152-strings-and-text), [§7.14](docs/design/mora.md#714-interpolation-handlers). Crates: `std`. Blocked by: M5.2, M3.17.
 
-The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, `Unchecked`, and lint `unchecked-injection`. To settle in the spec (§15.2): whether `./`, `../`, `?` and `#` in the URL attribute rule are literal starts that allow a hole or text that must not follow the leading `/` (the sentence reads both ways), and whether literal text that starts with `/\` is refused too, since a browser reads it as `//`; a hole cannot add the `\`, because it is percent-encoded.
+The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, `Unchecked`, and lint `unchecked-injection`. To settle in the spec (§15.2): whether `./`, `../`, `?` and `#` in the URL attribute rule are literal starts that allow a hole or text that must not follow the leading `/` (the sentence reads both ways); whether literal text that starts with `/\` is refused too, since a browser reads it as `//` (a hole cannot add the `\`, because it is percent-encoded); and what happens when a hole right after the leading `/` is empty and literal `/` or `\` follows it, as in `/{a}/x`, which an empty `a` turns into `//x`.
 
 Done when:
 
