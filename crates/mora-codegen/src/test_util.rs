@@ -2,7 +2,7 @@
 
 use mora_diag::Severity;
 use mora_hir::test_support::{TestDb, app};
-use mora_rt_core::string::{BYTES_OFFSET, MoraString};
+use mora_rt_core::string::{BYTES_OFFSET, CAPACITY_OFFSET, MoraString};
 use mora_span::Project;
 use mora_target::Target;
 
@@ -98,10 +98,24 @@ pub(crate) fn object_of(text: &str, target: &Target, profile: Profile) -> Vec<u8
 /// The first `len` bytes of the object of the heap string `string`, which a
 /// test keeps alive: a literal's object lives as long as its program, and a
 /// built one until it is released, which no test does.
+///
+/// # Panics
+///
+/// When `string` is inline, or `len` goes past the header and the
+/// capacity the object's header gives.
 pub(crate) fn object_bytes(string: &MoraString, len: usize) -> Vec<u8> {
     assert!(!string.is_inline(), "an inline string has no object");
-    // SAFETY: a heap object holds its header and `capacity` bytes, and the
-    // callers read no more than the header and the string's length.
+    // SAFETY: a heap object starts with its header, `BYTES_OFFSET` bytes.
+    let header = unsafe { std::slice::from_raw_parts(string.object(), BYTES_OFFSET) };
+    let capacity = u32::from_ne_bytes(
+        header[CAPACITY_OFFSET..CAPACITY_OFFSET + 4]
+            .try_into()
+            .unwrap(),
+    );
+    let size = BYTES_OFFSET + capacity as usize;
+    assert!(len <= size, "{len} bytes go past the object's {size}");
+    // SAFETY: a heap object holds its header and then `capacity` bytes, and
+    // the assertion keeps `len` within them.
     unsafe { std::slice::from_raw_parts(string.object(), len) }.to_vec()
 }
 
@@ -150,5 +164,32 @@ mod tests {
     #[test]
     fn a_child_body_does_not_run_in_the_parent() {
         only_in_child(|| panic!("ran outside a child process"));
+    }
+
+    /// Runs `f` on a heap string of `ab` whose object has room for 4 bytes.
+    fn with_object(f: impl FnOnce(&MoraString)) {
+        let mut object = [0u32; 4];
+        let header = mora_rt_core::string::object_header(1, 0, 4, cfg!(target_endian = "big"));
+        let bytes: Vec<u8> = header.iter().copied().chain(*b"ab\0\0").collect();
+        for (word, chunk) in object.iter_mut().zip(bytes.chunks(4)) {
+            *word = u32::from_ne_bytes(chunk.try_into().unwrap());
+        }
+        f(&MoraString::heap(object.as_ptr().cast(), 2));
+    }
+
+    #[test]
+    fn object_bytes_read_up_to_the_capacity() {
+        with_object(|string| {
+            assert_eq!(string_bytes(string), b"ab");
+            assert_eq!(object_bytes(string, BYTES_OFFSET + 4).len(), 16);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "17 bytes go past the object's 16")]
+    fn object_bytes_stop_at_the_capacity() {
+        with_object(|string| {
+            object_bytes(string, BYTES_OFFSET + 5);
+        });
     }
 }
