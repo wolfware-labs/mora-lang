@@ -20,8 +20,10 @@ env:
 
 jobs:
   # Decides whether the change needs a build. A change that touches only
-  # Markdown skips it, except for the documents that hold executable
-  # examples (spec §20.5). Jobs skipped through `if:` report success.
+  # Markdown no check reads skips it (spec §20.5). The list names the inert
+  # files, so any other file builds, Markdown included: the spec, the error
+  # pages, ROADMAP.md and LICENSES/README.md all feed checks. Jobs skipped
+  # through `if:` report success.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -45,9 +47,8 @@ jobs:
           # A file, not a pipe: with pipefail, `grep -q` closing a pipe early
           # would fail `git diff` and skip a real change.
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-files"
-          executable_docs='^(docs/design/mora\.md|docs/errors/|docs/guide/)'
-          if grep -qvE '\.md$' "$RUNNER_TEMP/changed-files" \
-            || grep -qE "$executable_docs" "$RUNNER_TEMP/changed-files"; then
+          inert_docs='^((CLA|CODE_OF_CONDUCT|CONTRIBUTING|README|SECURITY)\.md|\.github/[^/]+\.md)$'
+          if grep -qvE "$inert_docs" "$RUNNER_TEMP/changed-files"; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
