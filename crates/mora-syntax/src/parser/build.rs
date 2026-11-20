@@ -271,9 +271,11 @@ impl Sink<'_> {
 
     /// Whether the lexer already reported the cause of a syntax error at
     /// `range`: the error wraps a token it rejected (`MR0017`), or it marks
-    /// something missing at the end of a string or character literal it
-    /// found unclosed (`MR0012`). An unclosed string runs to the end of the
-    /// line and takes the token that was meant to follow it.
+    /// something missing at the end of a string it found unclosed
+    /// (`MR0012`). An unclosed string runs to the end of the line and takes
+    /// the token that was meant to follow it. An unclosed character literal
+    /// ends after its first character and takes nothing, so what is missing
+    /// after it is reported.
     fn lexer_reported(
         &self,
         range: TextRange,
@@ -283,10 +285,11 @@ impl Sink<'_> {
         if wraps {
             return wrapped_kind == Some(K::Unknown);
         }
-        self.lexed
-            .errors
-            .iter()
-            .any(|error| error.code == codes::MR0012 && error.range.end() == range.start())
+        self.lexed.errors.iter().any(|error| {
+            error.code == codes::MR0012
+                && error.range.end() == range.start()
+                && !self.text[error.range].starts_with('\'')
+        })
     }
 
     /// Reports `code`: on the token that follows, when the error wraps it

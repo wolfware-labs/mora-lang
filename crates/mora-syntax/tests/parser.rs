@@ -571,39 +571,37 @@ fn the_rest_of_an_unclosed_character_literal_is_part_of_its_error() {
 }
 
 /// Unclosed character literals followed by what ends a statement, an
-/// argument or a group, with the codes each reports. The `;` that would go
-/// where the literal was cut is not asked for; a `,` or `}` that no `let`
-/// takes is reported as it is after a closed literal.
-const UNCLOSED_CHARACTERS: &[(&str, &[&str])] = &[
-    ("let a = 'a;", &["MR0012"]),
-    ("Console.WriteLine('a);", &["MR0012"]),
-    ("let a = ('a);", &["MR0012"]),
-    ("let a = ['a, 2];", &["MR0012"]),
-    ("let a = 1 + 'a, 2;", &["MR0012", "MR0110"]),
-    ("let a = 'a}", &["MR0012", "MR0110"]),
-    ("let a = 'a,", &["MR0012", "MR0110"]),
-    ("let a = ['a', 'b;", &["MR0012"]),
+/// argument or a group, each with the same text with the literal closed.
+/// The literal takes nothing after its first character, so every other
+/// error is the one the closed text reports.
+const UNCLOSED_CHARACTERS: &[(&str, &str)] = &[
+    ("let a = 'a;", "let a = 'a';"),
+    ("Console.WriteLine('a);", "Console.WriteLine('a');"),
+    ("let a = ('a);", "let a = ('a');"),
+    ("let a = ['a, 2];", "let a = ['a', 2];"),
+    ("let a = 1 + 'a, 2;", "let a = 1 + 'a', 2;"),
+    ("let a = 'a}", "let a = 'a'}"),
+    ("let a = 'a,", "let a = 'a',"),
+    ("let a = ['a', 'b;", "let a = ['a', 'b';"),
+    ("F('a;", "F('a';"),
 ];
 
 #[test]
-fn an_unclosed_character_literal_before_a_closer_reports_once() {
-    for (text, codes) in UNCLOSED_CHARACTERS {
-        let parse = parse(text);
-        assert_eq!(parse.syntax().text(), *text, "{text:?}: not lossless");
-        assert_eq!(codes_of(text), *codes, "{text:?}");
-        let closed = text.replacen("'a", "'a'", 1).replacen("'b", "'b'", 1);
-        for error in parse
-            .errors()
-            .iter()
-            .filter(|error| error.code.to_string() == "MR0110")
-        {
-            assert!(
-                parse_messages(&closed).contains(&error.message),
-                "{text:?}: {} is not reported for {closed:?}",
-                error.message
-            );
-        }
+fn an_unclosed_character_literal_reports_only_what_a_closed_one_would_more() {
+    for (text, closed) in UNCLOSED_CHARACTERS {
+        assert_eq!(parse(text).syntax().text(), *text, "{text:?}: not lossless");
+        let expected: Vec<String> = std::iter::once("MR0012".to_string())
+            .chain(codes_of(closed))
+            .collect();
+        assert_eq!(codes_of(text), expected, "{text:?}");
+        assert_eq!(
+            parse_messages(text)[1..],
+            parse_messages(closed),
+            "{text:?}"
+        );
     }
+    // As with a missing closer after any other operand.
+    assert_eq!(codes_of("[1, 2;"), ["MR0110"]);
 }
 
 fn parse_messages(text: &str) -> Vec<String> {
@@ -671,6 +669,33 @@ fn a_quoted_run_ends_at_its_closing_quote() {
     assert_eq!(
         codes_of("let a = \u{201c}x\u{201d} + * 1;\n"),
         ["MR0017", "MR0017", "MR0110"]
+    );
+    // Brackets inside the quotes are text.
+    for text in [
+        "let a = \u{201c}see (note\u{201d};\nnope();\n",
+        "F() {\n    let a = \u{201c}see (note\u{201d};\n    nope();\n}\nG() { nope2(); }\n",
+        "let a = \u{201c}[x\u{201d};\n",
+        "Console.WriteLine(\u{201c}Done :)\u{201d});\n",
+        // So are line breaks, before the statement ends.
+        "let a = \u{201c}hello\nworld\u{201d};\n",
+        "F(\u{201c}hello\nworld\u{201d});\n",
+        // Other quotes open a run too.
+        "F(\u{201d}a, b\u{201d}, c);\n",
+        "F(\u{201e}a, b\u{201c}, c);\n",
+        "F(\u{201a}a, b\u{2018}, c);\n",
+        "F(\u{2019}a, b\u{2019}, c);\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
+    }
+    // Without its closing quote before the `;`, a quoted run ends at the
+    // statement on the next line.
+    assert_eq!(
+        codes_of("let a = \u{201c}x (y\nnope(1);\n"),
+        ["MR0017", "MR0110"]
+    );
+    assert_eq!(
+        codes_of("let a = \u{201c}x\nlet b = \u{201c}y\u{201d};\n"),
+        ["MR0017", "MR0110", "MR0017", "MR0017"]
     );
     // A `,` inside the quotes is part of the run.
     assert_eq!(

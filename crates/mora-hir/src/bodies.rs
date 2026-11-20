@@ -1363,6 +1363,14 @@ mod tests {
             "let a = \u{201c}x\u{201d} + + nope;\n",
             // A `,` ends a run that is not quoted.
             "Console.WriteLine('ab, nope);\n",
+            // A quoted run ends at its closing quote, brackets and line
+            // breaks included.
+            "let a = \u{201c}see (note\u{201d};\nnope();\n",
+            "F() {\n    let a = \u{201c}x [y\u{201d};\n    nope();\n}\n",
+            "Console.WriteLine(\u{201c}Done :)\u{201d});\nnope();\n",
+            "let a = \u{201c}hello\nworld\u{201d};\nnope();\n",
+            "Console.WriteLine(\u{201e}a, b\u{201c}, nope);\n",
+            "Console.WriteLine(\u{201d}a, b\u{201d}, nope);\n",
         ] {
             assert_eq!(reported(text), ["MR0127"], "{text:?}");
         }

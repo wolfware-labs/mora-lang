@@ -61,6 +61,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
             e.complete(p, K::Error);
         }
     }
+    p.finish_stopped();
     m.complete(p, K::SourceFile);
 }
 

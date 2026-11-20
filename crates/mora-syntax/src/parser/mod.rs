@@ -67,9 +67,18 @@ impl Parse {
 
 /// Parses a source file. Every byte of `text` ends up in the tree.
 pub fn parse(text: &str) -> Parse {
+    parse_within(text, None)
+}
+
+/// [`parse`], with at most `budget` events instead of the budget the
+/// tokens give.
+fn parse_within(text: &str, budget: Option<usize>) -> Parse {
     let lexed = lex(text);
     let input = Input::new(text, &lexed);
     let mut p = Parser::new(&input);
+    if let Some(budget) = budget {
+        p.budget = budget;
+    }
     items::source_file(&mut p);
     let (green, mut errors) = build::build(text, &lexed, p.events);
     errors.extend(lexed.errors.iter().cloned());
@@ -213,6 +222,10 @@ pub(crate) const MAX_DEPTH: usize = 256;
 /// otherwise open nodes until memory runs out.
 const EVENTS_PER_TOKEN: usize = 64;
 
+/// The error reported where the parser stopped, past its budget of events.
+const STUCK: &str = "internal error: the parser stopped making progress here, \
+                     and the rest of the file is not checked";
+
 pub(crate) struct Parser<'t> {
     /// The tokens to parse.
     input: &'t Input<'t>,
@@ -224,6 +237,12 @@ pub(crate) struct Parser<'t> {
     no_lambda: bool,
     /// How many levels of [`Parser::nested`] are open.
     depth: usize,
+    /// How many events the parser may emit ([`EVENTS_PER_TOKEN`]).
+    budget: usize,
+    /// The token where the parser stopped, past its budget. From then on it
+    /// sees the end of the input and reports nothing, and
+    /// [`Parser::finish_stopped`] takes the rest.
+    stopped: Option<usize>,
 }
 
 /// A node that is open: it must be completed or abandoned.
@@ -285,6 +304,8 @@ impl<'t> Parser<'t> {
             events: Vec::new(),
             no_lambda: false,
             depth: 0,
+            budget: EVENTS_PER_TOKEN * (input.len() + 1),
+            stopped: None,
         }
     }
 
@@ -384,20 +405,15 @@ impl<'t> Parser<'t> {
         !self.no_lambda
     }
 
-    /// Opens a node.
-    ///
-    /// # Panics
-    ///
-    /// When the parser emitted more than [`EVENTS_PER_TOKEN`] events per
-    /// token: it stopped taking tokens, which is a bug in the parser, and
-    /// it fails instead of running until memory runs out.
+    /// Opens a node. Past the budget of events, the parser stopped taking
+    /// tokens, which is a bug in the parser: it stops there instead of
+    /// running until memory runs out ([`Parser::stopped`]).
     pub(crate) fn start(&mut self) -> Marker {
         let pos = self.events.len();
-        assert!(
-            pos < EVENTS_PER_TOKEN * (self.input.len() + 1),
-            "the parser stopped taking tokens at token {}",
-            self.pos
-        );
+        if pos >= self.budget && self.stopped.is_none() {
+            self.stopped = Some(self.pos);
+            self.pos = self.input.len();
+        }
         self.events.push(Event::Start {
             kind: K::Error,
             forward_parent: None,
@@ -464,9 +480,14 @@ impl<'t> Parser<'t> {
 
     /// Whether a line break comes before the next token.
     pub(crate) fn at_line_start(&self) -> bool {
+        self.nth_at_line_start(0)
+    }
+
+    /// Whether a line break comes before the `n`th token ahead.
+    pub(crate) fn nth_at_line_start(&self, n: usize) -> bool {
         self.input
             .line_start
-            .get(self.pos)
+            .get(self.pos + n)
             .copied()
             .unwrap_or(false)
     }
@@ -517,6 +538,9 @@ impl<'t> Parser<'t> {
     }
 
     pub(crate) fn error(&mut self, message: impl Into<String>) {
+        if self.stopped.is_some() {
+            return;
+        }
         self.events.push(Event::Error {
             message: message.into(),
             fix: None,
@@ -531,6 +555,9 @@ impl<'t> Parser<'t> {
         fix: impl Into<String>,
         replacement: impl Into<String>,
     ) {
+        if self.stopped.is_some() {
+            return;
+        }
         self.events.push(Event::Error {
             message: message.into(),
             fix: Some(TokenFix {
@@ -538,6 +565,25 @@ impl<'t> Parser<'t> {
                 replacement: replacement.into(),
             }),
         });
+    }
+}
+
+impl Parser<'_> {
+    /// After the parser stopped ([`Parser::stopped`]), takes the tokens it
+    /// did not reach into one `Error` node that reports [`STUCK`]. The
+    /// caller is the file, whose node is still open.
+    pub(crate) fn finish_stopped(&mut self) {
+        let Some(at) = self.stopped.take() else {
+            return;
+        };
+        self.pos = at;
+        self.budget = usize::MAX;
+        let e = self.start();
+        self.error(STUCK);
+        while !self.at_end() {
+            self.bump_any();
+        }
+        e.complete(self, K::Error);
     }
 }
 
@@ -557,33 +603,34 @@ pub(crate) const SYNTAX_ERROR: mora_diag::Code = codes::MR0110;
 
 #[cfg(test)]
 mod tests {
-    use super::{EVENTS_PER_TOKEN, Event, Input, Parser};
-    use crate::lexer::lex;
+    use super::{STUCK, parse, parse_within};
 
-    /// Opens a node in a parser of `let a = 1;` that already emitted
-    /// `events` events.
-    fn start_after(events: usize) {
-        let text = "let a = 1;";
-        let lexed = lex(text);
-        let input = Input::new(text, &lexed);
-        let mut p = Parser::new(&input);
-        p.events.resize(events, Event::Finish);
-        p.start();
-    }
-
-    fn budget() -> usize {
-        // `let`, `a`, `=`, `1`, `;`, and one for the end.
-        EVENTS_PER_TOKEN * 6
+    #[test]
+    fn a_parser_past_its_budget_takes_the_rest_into_one_error() {
+        let text = "let a = 1;\nlet b = (2 + 3) * 4;\n";
+        let full = parse(text);
+        assert!(full.errors().is_empty());
+        let stopped = parse_within(text, Some(12));
+        assert_eq!(stopped.syntax().text(), text);
+        let errors: Vec<_> = stopped
+            .errors()
+            .iter()
+            .map(|error| (error.code.to_string(), error.message.clone()))
+            .collect();
+        assert_eq!(errors, [("MR0110".to_string(), STUCK.to_string())]);
+        let tree = stopped.syntax().debug_tree();
+        let error_nodes = tree
+            .lines()
+            .filter(|line| line.trim_start().starts_with("Error@"))
+            .count();
+        assert_eq!(error_nodes, 1, "{tree}");
     }
 
     #[test]
-    fn a_parser_within_its_budget_goes_on() {
-        start_after(budget() - 1);
-    }
-
-    #[test]
-    #[should_panic(expected = "the parser stopped taking tokens at token 0")]
-    fn a_parser_past_its_budget_stops() {
-        start_after(budget());
+    fn a_parser_within_its_budget_reports_nothing_more() {
+        let text = "let a = 1;\n";
+        let events = super::Parser::new(&super::Input::new(text, &super::lex(text))).budget;
+        assert_eq!(events, super::EVENTS_PER_TOKEN * 6);
+        assert!(parse_within(text, Some(events)).errors().is_empty());
     }
 }

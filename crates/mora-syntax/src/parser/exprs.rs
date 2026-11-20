@@ -760,7 +760,7 @@ fn arg_inner(p: &mut Parser<'_>) {
 /// What ends a run of tokens that starts with one the lexer rejected, at
 /// the run's own nesting level: the `;` that ends a statement, and a
 /// keyword that starts one, which no expression holds. A `,` ends it too,
-/// unless the run is quoted ([`OPENING_QUOTES`]).
+/// unless the run opens with a quote ([`QUOTES`]).
 const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
     K::Semicolon,
     K::LetKw,
@@ -788,11 +788,17 @@ const LINE_STATEMENT_STARTS: &[SyntaxKind] = &[
     K::At,
 ];
 
-/// The curly quotes that open a run meant as a string or a character. The
-/// lexer rejects them, so only an `Unknown` token has this text.
-const OPENING_QUOTES: &[&str] = &["\u{201c}", "\u{2018}"];
-/// The curly quotes that close it.
-const CLOSING_QUOTES: &[&str] = &["\u{201d}", "\u{2019}"];
+/// Each quote that opens a run meant as a string or a character, with the
+/// quotes that close it. The lexer rejects them all, so only an `Unknown`
+/// token has one of these texts.
+const QUOTES: &[(&str, &[&str])] = &[
+    ("\u{201c}", &["\u{201d}"]),
+    ("\u{201d}", &["\u{201d}"]),
+    ("\u{201e}", &["\u{201c}", "\u{201d}"]),
+    ("\u{2018}", &["\u{2019}"]),
+    ("\u{2019}", &["\u{2019}"]),
+    ("\u{201a}", &["\u{2018}", "\u{2019}"]),
+];
 
 /// Whether a run of rejected tokens starts at the next token: one the lexer
 /// rejected, or the rest of a literal it found unclosed, as `b` in `'ab`.
@@ -809,22 +815,54 @@ fn ends_rejected_run(p: &Parser<'_>, quoted: bool) -> bool {
         || (p.at_line_start() && p.at_any(LINE_STATEMENT_STARTS))
 }
 
+/// How many tokens after the next one the quote that closes it comes, when
+/// one of `closers` comes before the statement ends: before a `;`, or a
+/// line that starts with a statement keyword or a `}`. Brackets in between
+/// are text.
+fn closing_quote(p: &Parser<'_>, closers: &[&str]) -> Option<usize> {
+    let input = p.input();
+    let mut n = 1;
+    while p.pos() + n < input.len() {
+        let kind = p.nth(n);
+        if kind == K::Semicolon
+            || (p.nth_at_line_start(n) && (REJECTED_RUN_ENDS.contains(&kind) || kind == K::RBrace))
+        {
+            return None;
+        }
+        if kind == K::Unknown && closers.contains(&p.nth_text(n)) {
+            return Some(n);
+        }
+        n += 1;
+    }
+    None
+}
+
 /// Takes a run of tokens that starts with one the lexer rejected, such as
-/// the text between two curly quotes, up to what ends it
-/// ([`ends_rejected_run`]), a closing bracket that is not its own, or, when
-/// it opens with a quote, the quote that closes it. A bracketed group
-/// inside it is taken whole. The lexer reported the token, so the caller
-/// makes the run one `Error` node and the parser reports nothing more about
-/// it. Always takes at least the first token.
+/// the text between two curly quotes. A run that opens with a quote whose
+/// closing quote follows ([`closing_quote`]) ends there, whatever it holds.
+/// Any other run ends at what ends it ([`ends_rejected_run`]) or at a
+/// closing bracket that is not its own, and takes a bracketed group inside
+/// it whole. The lexer reported the token, so the caller makes the run one
+/// `Error` node and the parser reports nothing more about it. Always takes
+/// at least the first token.
 fn skip_rejected(p: &mut Parser<'_>) {
-    let quoted = OPENING_QUOTES.contains(&p.nth_text(0));
+    let closers = QUOTES
+        .iter()
+        .find(|(opening, _)| *opening == p.nth_text(0))
+        .map(|&(_, closers)| closers);
+    if let Some(n) = closers.and_then(|closers| closing_quote(p, closers)) {
+        for _ in 0..=n {
+            p.bump_any();
+        }
+        return;
+    }
+    let quoted = closers.is_some();
     let mut open = usize::from(p.at_any(OPENERS));
     p.bump_any();
     while !p.at_end() {
         if open == 0 && ends_rejected_run(p, quoted) {
             return;
         }
-        let closes = open == 0 && quoted && CLOSING_QUOTES.contains(&p.nth_text(0));
         if p.at_any(OPENERS) {
             open += 1;
         } else if p.at_any(CLOSERS) {
@@ -834,9 +872,6 @@ fn skip_rejected(p: &mut Parser<'_>) {
             open -= 1;
         }
         p.bump_any();
-        if closes {
-            return;
-        }
     }
 }
 
