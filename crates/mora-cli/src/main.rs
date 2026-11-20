@@ -200,7 +200,7 @@ fn colored(color: Color) -> bool {
         // no-color.org: only a non-empty NO_COLOR turns color off.
         Color::Auto => {
             std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
-                && std::io::stderr().is_terminal()
+                && io::stderr().is_terminal()
         }
     }
 }

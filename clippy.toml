@@ -1,2 +1,4 @@
+# Clippy reads only the nearest clippy.toml: crates/mora-cli/clippy.toml
+# repeats these settings, so change both.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
