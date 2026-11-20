@@ -581,8 +581,9 @@ mod tests {
         }
     }
 
-    /// Defines a test, run in a child process, that divides or takes the
-    /// remainder of the minimum of a type by -1 in each profile.
+    /// Defines two tests per row, each run in a child process, that divide
+    /// or take the remainder of the minimum of a type by -1: one in the
+    /// debug profile and one in the release profile.
     macro_rules! min_by_minus_one {
         ($($debug:ident, $release:ident: $call:expr;)*) => {$(
             #[test]

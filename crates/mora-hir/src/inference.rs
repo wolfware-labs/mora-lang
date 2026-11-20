@@ -32,7 +32,7 @@ use crate::resolve::{Resolved, Scope, item_data};
 use crate::ty::{ParamMode, Primitive, Ty};
 
 pub use constant::literal_constant;
-pub(crate) use diagnostic::{ENTRY_RETURNS, Source, type_error};
+pub(crate) use diagnostic::{Source, type_error};
 
 /// The types of a body's expressions and locals, and what is wrong with
 /// them. It holds no text range, so an edit in another body leaves it

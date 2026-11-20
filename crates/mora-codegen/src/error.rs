@@ -22,7 +22,7 @@ pub enum CodegenError {
     },
     /// Cranelift reported an error.
     Cranelift(String),
-    /// A value of the type `name` would take more than 2^31 bytes (§13.3).
+    /// A value of the type `name` would take more than 2^31 bytes (§13.5).
     TypeTooLarge {
         /// The type: the innermost struct that is too large, or a tuple no
         /// struct holds.
@@ -44,7 +44,7 @@ impl CodegenError {
         Some(
             Diagnostic::error(
                 codes::MR0156,
-                format!("a value of `{name}` would take more than {MAX_SIZE} bytes"),
+                self.to_string(),
                 Label::new(*span, format!("`{name}` is too large")),
             )
             .with_note(format!(

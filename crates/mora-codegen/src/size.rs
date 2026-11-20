@@ -1,5 +1,5 @@
 //! The check that every value code generation lays out takes at most 2^31
-//! bytes (§13.3), `MR0156`. Layouts depend on the target, so the check runs
+//! bytes (§13.5), `MR0156`. Layouts depend on the target, so the check runs
 //! with them, before any code is generated.
 
 use mora_hir::{ItemId, ItemKind, Ty, is_generic_type, item_source_map, item_tree, ty_name};

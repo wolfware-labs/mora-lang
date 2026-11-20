@@ -18,7 +18,7 @@ use super::{
 };
 use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, StmtId, UnaryOp};
 use crate::items::ItemKind;
-use crate::report::{Declared, full_name, kind_name};
+use crate::report::{Declared, entry_return_error, full_name, kind_name};
 use crate::resolve::{Resolved, item_data};
 use crate::ty::{Primitive, Ty};
 
@@ -474,20 +474,12 @@ fn entry_return(source: &Source<'_>, stmt: StmtId, ty: &Ty) -> Diagnostic {
     let Some(&range) = source.map.stmts.get(&stmt) else {
         panic!("inference: the statement {stmt:?} has no range in the source map");
     };
-    Diagnostic::error(
-        codes::MR0120,
-        format!("an entry point cannot return `{}`", source.name(ty)),
-        Label::new(
-            Span::new(source.file.id(source.db), range),
-            "this gives the generated `Main` its return type",
-        ),
+    entry_return_error(
+        &source.name(ty),
+        Span::new(source.file.id(source.db), range),
+        "this gives the generated `Main` its return type",
     )
-    .with_note(ENTRY_RETURNS)
 }
-
-/// What the note of `MR0120` says an entry point may return.
-pub(crate) const ENTRY_RETURNS: &str =
-    "an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`";
 
 /// `MR0203`: a value whose type does not convert to the expected one.
 fn mismatch(

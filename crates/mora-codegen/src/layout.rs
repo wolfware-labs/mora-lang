@@ -56,13 +56,13 @@ pub enum Scalar {
 
 /// Why a type has no layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LayoutError {
+pub(crate) enum LayoutError {
     /// A value would take more than 2^31 bytes. The type is the innermost
     /// struct that does, or the tuple when no struct holds it.
     TooLarge(Ty),
     /// Lowering gives the type no layout: `Ty::Unsupported`, `Ty::Error`,
     /// or a struct that holds itself.
-    None(Ty),
+    NoLayout(Ty),
 }
 
 /// The layouts of the types of one program on one target.
@@ -117,7 +117,9 @@ impl<'db> Layouts<'db> {
     /// rejects before it lays out anything.
     pub fn of(&self, ty: &Ty) -> Layout {
         self.try_of(ty).unwrap_or_else(|error| match error {
-            LayoutError::None(ty) => panic!("internal error computing a layout: {ty:?} has none"),
+            LayoutError::NoLayout(ty) => {
+                panic!("internal error computing a layout: {ty:?} has none")
+            }
             LayoutError::TooLarge(ty) => {
                 panic!("internal error computing a layout: {ty:?} takes more than {MAX_SIZE} bytes")
             }
@@ -129,8 +131,8 @@ impl<'db> Layouts<'db> {
     /// # Errors
     ///
     /// [`LayoutError::TooLarge`] for a value larger than 2^31 bytes, and
-    /// [`LayoutError::None`] for a type lowering does not give a layout.
-    pub fn try_of(&self, ty: &Ty) -> Result<Layout, LayoutError> {
+    /// [`LayoutError::NoLayout`] for a type lowering does not give a layout.
+    pub(crate) fn try_of(&self, ty: &Ty) -> Result<Layout, LayoutError> {
         if let Some(layout) = self.cache.borrow().get(ty) {
             return Ok(layout.clone());
         }
@@ -145,7 +147,7 @@ impl<'db> Layouts<'db> {
     ///
     /// # Errors
     ///
-    /// [`LayoutError::None`] for a struct that holds itself, whose size has
+    /// [`LayoutError::NoLayout`] for a struct that holds itself, whose size has
     /// no end, or a type with no layout, and [`LayoutError::TooLarge`] for
     /// one larger than 2^31 bytes, naming the innermost struct on the way
     /// to it.
@@ -179,7 +181,7 @@ impl<'db> Layouts<'db> {
                 continue;
             }
             if !open.insert(ty.clone()) {
-                return Err(LayoutError::None(ty));
+                return Err(LayoutError::NoLayout(ty));
             }
             let fields = self.field_tys(&ty);
             stack.push((ty, true));
@@ -246,7 +248,7 @@ impl<'db> Layouts<'db> {
     ///
     /// # Errors
     ///
-    /// [`LayoutError::None`] for a type with no layout.
+    /// [`LayoutError::NoLayout`] for a type with no layout.
     fn compute(&self, ty: &Ty) -> Result<Option<Layout>, LayoutError> {
         Ok(match ty {
             Ty::Primitive(primitive) => Some(self.primitive(*primitive)),
@@ -265,7 +267,7 @@ impl<'db> Layouts<'db> {
                 drop(cache);
                 self.aggregate(fields)
             }
-            Ty::Unsupported(_) | Ty::Error => return Err(LayoutError::None(ty.clone())),
+            Ty::Unsupported(_) | Ty::Error => return Err(LayoutError::NoLayout(ty.clone())),
         })
     }
 

@@ -431,13 +431,9 @@ fn nothing_chains_after_propagation() {
     assert_eq!(errors.first().map(String::as_str), Some("expected `;`"));
     // A leading `[` is always a collection; `@` starts an attribute.
     let stmts = |text: &str| -> Vec<String> {
-        let parse = parse(text);
-        assert!(parse.errors().is_empty(), "{text}: {:?}", parse.errors());
-        parse
-            .syntax()
-            .children()
-            .map(|n| format!("{:?}", n.kind()))
-            .collect()
+        let parsed = parse(text);
+        assert!(parsed.errors().is_empty(), "{text}: {:?}", parsed.errors());
+        top_level_kinds(text)
     };
     assert_eq!(stmts("[x][0];"), ["ExprStmt"]);
     assert_eq!(stmts("[x](arg);"), ["ExprStmt"]);
@@ -713,6 +709,7 @@ fn coded_offsets(text: &str) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// The kind of each top-level node of the tree of `text`.
 fn top_level_kinds(text: &str) -> Vec<String> {
     parse(text)
         .syntax()

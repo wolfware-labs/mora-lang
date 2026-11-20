@@ -17,7 +17,7 @@ pub use abi::{FnAbi, PassMode};
 pub use cranelift::Cranelift;
 pub use error::CodegenError;
 pub use jit::JitProgram;
-pub use layout::{Layout, LayoutError, Layouts, Scalar, Shape};
+pub use layout::{Layout, Layouts, Scalar, Shape};
 pub use mangle::mangle;
 pub use program::{BodyKey, Function, FunctionId, Program};
 pub use size::check_sizes;

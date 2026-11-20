@@ -11,7 +11,7 @@ use crate::bodies::{
     body_source_map,
 };
 use crate::defs::{DefMap, FolderProblem, ItemId, def_map};
-use crate::inference::{ENTRY_RETURNS, Source, is_entry_return, ty_name, type_error, type_errors};
+use crate::inference::{Source, is_entry_return, ty_name, type_error, type_errors};
 use crate::items::{ItemKind, Visibility, item_source_map, item_tree, parse, signature_sources};
 use crate::resolve::{
     ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types, item_data,
@@ -1585,20 +1585,23 @@ fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
     let Some(range) = signature_sources(db, main.file)[arena_index(main.item)].ret else {
         return;
     };
-    out.push(
-        Diagnostic::error(
-            codes::MR0120,
-            format!(
-                "an entry point cannot return `{}`",
-                ty_name(db, &function.ret)
-            ),
-            Label::new(
-                Span::new(main.file.id(db), range),
-                "the return type of `Main`",
-            ),
-        )
-        .with_note(ENTRY_RETURNS),
-    );
+    out.push(entry_return_error(
+        &ty_name(db, &function.ret),
+        Span::new(main.file.id(db), range),
+        "the return type of `Main`",
+    ));
+}
+
+/// `MR0120` at `span`, `label`ed: an entry point returns the type `name`,
+/// which it cannot (§4.6). Both a `Main` and the top-level statements
+/// report it.
+pub(crate) fn entry_return_error(name: &str, span: Span, label: &str) -> Diagnostic {
+    Diagnostic::error(
+        codes::MR0120,
+        format!("an entry point cannot return `{name}`"),
+        Label::new(span, label),
+    )
+    .with_note("an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`")
 }
 
 #[cfg(test)]
