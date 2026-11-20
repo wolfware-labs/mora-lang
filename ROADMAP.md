@@ -411,7 +411,7 @@ Done when:
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
 - A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
 - A build of several projects reports a diagnostic once when two of them report the same one, as two sibling projects that run one library field initializer do (§14.6).
-- A cache entry is never trusted because it is there: it is accepted only by a check that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test replaces, truncates and bit-flips the files under `target/mora/cache/` and the build either rebuilds them or fails with an error, never loads them, reading a damaged entry never panics, and the bytes that pass the check are the bytes the build uses: an entry is read once, checked in memory and used from that copy, and a test that replaces the file, and one that overwrites it in place, between the check and the use changes nothing the build loads.
+- A cache entry is never trusted because it is there: it is accepted only by a check that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test replaces, truncates and bit-flips the files under `target/mora/cache/` and the build either rebuilds them or fails with an error, never loads them, reading a damaged entry never panics, and the bytes that pass the check are the bytes the build uses: an entry is read once, checked in memory and used from that copy, and a test that replaces the file, and one that overwrites it in place, between the check and the use changes nothing the build loads. The check guards against content that arrives with a project (its folder and its `target/`); a process that already runs as the user who builds is outside it, since it can replace the toolchain itself.
 - CLI tests: a `[project] name` outside lowercase letters, digits and `-`, or one that starts with `-`, and an `entry` that is absolute or leaves the project folder through `..`, are errors before any file is written; nothing is ever written outside the project's `target/`.
 - Source discovery reads only regular files below `src/`: a special file such as a FIFO named `X.mr` is never opened and is reported with a diagnostic. Tests with such a FIFO and with a link cycle end without hanging, and a symbolic link that leaves the project follows the rule the spec gives (§17.3); the 4 GiB check of `MR0003` reads the size before the content.
 - A text that is not valid UTF-8 is `MR0001` and a text of 4 GiB or more is `MR0003`, both reported before any lexing, through one checked entry point that the driver, the language server and the test kit all use; `LineIndex::new` returns an error instead of panicking on an oversized text.
@@ -1080,14 +1080,14 @@ Done when:
 
 Spec: [§9.7](docs/design/mora.md#97-running-macros), [§14.2](docs/design/mora.md#142-crates). Crates: `mora-macro`, `mora-hir`. Blocked by: M4.2.
 
-The `MacroRunner` interface in `mora-hir` and its implementation in `mora-macro`: compiling macros with the JIT, the capability sandbox (`MR0613`), the 5-second and 256 MiB limits, panics reported at the use site, and same-project cycles (`MR0614`). To settle in the spec: the state a macro invocation starts from, and how console output counts in the sandbox (§9.7, §9.8). To settle in the spec: which effect of §6.14 reading standard input and `Environment.Exit` carry (the vocabulary has none today; `stdio` is a target capability of §19.4), so that the sandbox of §9.7 rejects them.
+The `MacroRunner` interface in `mora-hir` and its implementation in `mora-macro`: compiling macros with the JIT, the capability sandbox (`MR0613`), the 5-second and 256 MiB limits, panics reported at the use site, and same-project cycles (`MR0614`). To settle in the spec: the state a macro invocation starts from, and how console output counts in the sandbox (§9.7, §9.8). To settle in the spec: which effect of §6.14 reading standard input and `Environment.Exit` carry (the vocabulary has none today; `stdio` is a target capability of §19.4), so that the sandbox of §9.7 rejects them. To settle in the spec (§9.7): what a macro that overflows its stack does to the build; §13.10 aborts the process, so the test arrives with the ruling.
 
 Done when:
 
 - A macro calling `File.ReadAllText` fails with `MR0613`.
 - An infinite loop in a macro fails after 5 seconds with the use site in the message.
 - UI tests for `MR0613`: a macro, or a function it calls at any depth, that calls an `extern` function (`ffi`), reads the clock, the environment or random numbers, opens a socket, or calls through an escaping function value or an `any I` value without a bound (`dyn`).
-- A macro that panics, recurses until the stack ends, or allocates past 256 MiB fails the build with an error at the use site that carries its message; the compiler process survives each case and goes on to report the other diagnostics (test in `mora-macro`).
+- A macro that panics or allocates past 256 MiB fails the build with an error at the use site that carries its message; the compiler process survives each case and goes on to report the other diagnostics (test in `mora-macro`).
 - The time limit stops a loop that makes no call and no allocation, and the memory a stopped macro held is returned.
 - Each invocation starts from the state the spec then gives (§9.7), so that running the macros of a build in any order or in parallel gives the same bytes (test runs a build twice with the order reversed). If the ruling resets state per invocation, `static mut` and `static lazy` values, the identity counter and hash keys do not carry over from another invocation or another macro. The reversed-order test includes a macro that increments a `static mut`, one that reads a `static lazy`, and one that prints an object's identity number and a string's hash.
 - A macro cannot end or block the build: `Environment.Exit` and a read of standard input in a macro fail at the use site (`MR0613` or another code the spec assigns).
@@ -1126,7 +1126,7 @@ Done when:
 - Editing a method body does not rerun any macro (counter in `--verbose`).
 - Editing a field reruns only the macros on that type.
 - Editing a helper function a macro calls reruns that macro.
-- A cached expansion is used only when the build can show it was written by this toolchain for this key. The check is one that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler, and the bytes that pass the check are the bytes used: an entry is read once, checked in memory and used from that copy, and a test that replaces the file, and one that overwrites it in place, between the check and the use changes nothing the expansion uses. The key is a cryptographic hash such as the BLAKE3 hash §13.6 uses, not a shorter or non-cryptographic one.
+- A cached expansion is used only when the build can show it was written by this toolchain for this key. The check is one that content the project folder or its `target/` supplies cannot pass (§14.15 then states it). A test edits, truncates and swaps entry files and the macro runs again or the build fails; a damaged entry never panics the compiler, and the bytes that pass the check are the bytes used: an entry is read once, checked in memory and used from that copy, and a test that replaces the file, and one that overwrites it in place, between the check and the use changes nothing the expansion uses. The key is a cryptographic hash such as the BLAKE3 hash §13.6 uses, not a shorter or non-cryptographic one. The check guards against content that arrives with a project (its folder and its `target/`); a process that already runs as the user who builds is outside it, since it can replace the toolchain itself.
 - The key covers every input: editing a constant or a static initializer the macro reads, an attribute argument, a helper attribute on a member (§9.9), the `@Cfg` values in force, and the text of the type as the model shows it each rerun the macro; a change to the toolchain version discards every entry.
 - The diagnostics and the console output of a cached expansion are replayed, so a warning from `Warn` is reported on every build.
 
@@ -1378,7 +1378,7 @@ Done when:
 - Attribute names are matched without regard to case: a hole in `ONCLICK`, `OnLoad`, `STYLE` and `SrcDoc` panics, and `HREF`, `Src` and `FormAction` get the URL rule.
 - A hole value holding `"`, `'`, `<`, `>`, `&` and a backtick cannot end a double-quoted or a single-quoted attribute value or start a tag in element text (the output is parsed back and holds one element and one attribute).
 - A hole inside a comment, inside `<textarea>` or `<title>` markup that the literal leaves open, and directly after `<` panics with the context.
-- In a URL attribute, a hole after the literal `JavaScript:` or `data:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2).
+- In a URL attribute, a hole after the literal `javascript:`, `JaVaScRiPt:`, `data:` or `DATA:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2).
 - UI test: lint `unchecked-injection` flags calls of `Html.Unchecked` and `Url.Unchecked`, including through a method group.
 
 ### M5.15 Logging and tracing
@@ -1398,7 +1398,7 @@ Done when:
 
 Spec: [§15.11](docs/design/mora.md#1511-secrets), [§16.3](docs/design/mora.md#163-json-stdjson), [§6.14](docs/design/mora.md#614-effects). Crates: `std`, `mora-hir`. Blocked by: M5.11, M5.15, M3.18.
 
-`Secret<T>` for `string` and `byte[]` (D-106): redacted `IDisplay`, `Use` through a span view, zeroing in the destructor, `Clone`, lint `secret-copied`, and `@Json` reading secrets and writing them only with `@JsonSecret`, leaving them out otherwise. The `secret` fact in `mora explain-effects` needs the effect analysis of §6.14 and arrives with it. To settle in the spec (§15.11): a comparison of a secret with a span or another secret whose time does not depend on where they differ.
+`Secret<T>` for `string` and `byte[]` (D-106): redacted `IDisplay`, `Use` through a span view, zeroing in the destructor, `Clone`, lint `secret-copied`, and `@Json` reading secrets and writing them only with `@JsonSecret`, leaving them out otherwise. The `secret` fact in `mora explain-effects` needs the effect analysis of §6.14 and arrives with it. To settle in the spec (§15.11): a comparison of a secret with a span or another secret whose time does not depend on where they differ; its test arrives with the ruling.
 
 Done when:
 
@@ -1540,7 +1540,7 @@ Done when:
 - With `RequestTimeout` set to 100 ms, a handler that awaits `Task.Delay` for 1 s returns 503 at about 100 ms and its future's destructors run.
 - An internal error returns 500 with a problem+json body holding only its code and trace id, and the log has the full chain under that trace id.
 - Routing table tests for the request targets `/files/..%2Fsecret`, `/files/%2e%2e/secret`, `/files//x`, `/files/a%00b` and `/files/%ff` against `/files/{name}` and `/files/{*rest}`: each gives the status or the route values the spec then states, and no `Route` value holds invalid UTF-8.
-- A handler that returns `Results.Created(location, value)` with `location` taken from the request and holding `\r\nSet-Cookie: x=1` produces no `Set-Cookie` header and no second response on the wire, and the server keeps running. The same for a header set through `Response.Headers`.
+- A handler that returns `Results.Created(location, value)` with `location` taken from the request and holding `\r\nSet-Cookie: x=1` produces no `Set-Cookie` header and no second response on the wire, and the server keeps running. The same holds for a CR, an LF and a NUL in a header name and in a header value set through `Response.Headers`: the server does not write the header, sends no second response and does not panic.
 - `Results.BadRequest`, `Conflict` and `Problem` with a message that holds a quote, a backslash, a line break and a control character produce a body that `Json.Parse` reads back to the same message.
 - A request path that holds a line break or an escape character, after decoding, appears in the request log on one line with those characters escaped (§15.10).
 
@@ -1622,7 +1622,7 @@ Done when:
 
 - Scripted session tests: open, edit, receive and clear a diagnostic.
 - Diagnostics arrive within the §20.6 budget on `users-api`.
-- Scripted session tests open a project whose macro loops forever, one whose macro allocates without bound, one whose macro recurses until the stack ends and one whose macro panics: each gives the §9.7 error at the use site within the time limit, the limits of §9.7 hold for each invocation in the server, and the server survives, goes on to report the other diagnostics and answers a hover request afterwards, and the memory a stopped macro held is returned in the server too.
+- Scripted session tests open a project whose macro loops forever, one whose macro allocates without bound and one whose macro panics: each gives the §9.7 error at the use site within the time limit, the limits of §9.7 hold for each invocation in the server, and the server survives, goes on to report the other diagnostics and answers a hover request afterwards, and the memory a stopped macro held is returned in the server too.
 - The checked entry point of M1.16 reports `MR0001` for bytes that are not valid UTF-8 (a file the server reads from disk) and `MR0003` for a text of 4 GiB or more (a file or a document the editor sends), before any lexing and without ending the server; a malformed message on the transport is rejected without ending the server.
 
 ### M7.3 Language server: navigation
@@ -1763,7 +1763,7 @@ Checks §1.5 end to end on fresh machines, revises the §20.6 budgets with measu
 Done when:
 
 - A developer who has not seen Mora installs it, opens §2.2 in VS Code and gets diagnostics, hover and go-to-definition (recorded in the issue).
-- Every channel of §19.3 serves v0.1.0, and on a fresh machine each passes the integrity and authenticity check of its row of §19.3: the scripts with and without `cosign`, `mora self update` from the last release candidate, the pinned checksums of the Homebrew formula and the winget manifest against `SHA256SUMS`, and `cosign verify-blob` on every archive (recorded in the issue).
+- Every channel of §19.3 serves v0.1.0, and on a fresh machine each passes the integrity and authenticity check of its row of §19.3: the scripts with and without `cosign`, `mora self update` from the last release candidate, the pinned checksums of the Homebrew formula and the winget manifest against `SHA256SUMS` (the formula and the manifest the install used are the ones the release workflow committed to the tap and to the winget repository), and `cosign verify-blob` on every archive (recorded in the issue).
 - The spec says what an edition may change, how an edition is chosen in `mora.toml`, and that every edition change ships with a `safe` fix.
 - The extension-store tokens are read only by the publishing job (shown by the workflow's `permissions` and its use of secrets).
 - A check after each site deploy (M7.9) downloads `https://moralang.org/install.sh` and `install.ps1` and fails unless their SHA-256 equals the scripts of the release the spec names.
