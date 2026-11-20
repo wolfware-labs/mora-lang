@@ -1743,13 +1743,15 @@ Done when:
 
 Spec: [§20.6](docs/design/mora.md#206-budgets). Crates: `benches`, `evals`, `ci`. Blocked by: M6.8, M1.20, M7.9.
 
-A `bench` workflow measuring every budget of §20.6, a Rust load generator for `users-api`, stored baselines, and the 10% regression gate. The agent eval suite of §20.6 (D-112): the tasks in `evals/`, `evals/models.toml`, and a release workflow that reports both rates per model against the previous release of the line. The job that builds and runs a pull request's code has a read-only token and no secrets; a separate job that runs no repository code posts the measurements, reading them as data. In the eval workflow the step that calls a model holds that model's key and runs no generated code, and the step that builds and tests the model's answer has no key, no token and no network.
+A `bench` workflow measuring every budget of §20.6, a Rust load generator for `users-api`, stored baselines, and the 10% regression gate. The agent eval suite of §20.6 (D-112): the tasks in `evals/`, `evals/models.toml`, and a release workflow that reports both rates per model against the previous release of the line. The job that builds and runs a pull request's code has a read-only token and no secrets; a separate job that runs no repository code posts the measurements, reading them as data. In the eval workflow the step that calls a model holds that model's key and runs no generated code, and the step that builds and tests the model's answer has no key, no token and no network. The eval workflow starts only from a release candidate tag or from `main`, never from a pull request, so the task loader and the harness that run beside the key are reviewed code. The step with the key treats a model's answer as data: it writes it to a file for the next step and does not print it to the log, evaluate it or put it in the environment.
 
 Done when:
 
 - The workflow posts the measurements on pull requests.
 - A synthetic slowdown fails the gate.
 - The eval workflow runs on a release candidate and reports both rates for every model in `evals/models.toml`.
+- A pull request, from a fork or from a branch, cannot start the eval workflow (shown by its triggers and by a pull request that changes `evals/` and gets no run with a key).
+- A model answer that holds workflow commands (`::add-mask::`, `::set-env`) and shell text changes nothing in the step that holds the key and does not appear in its log.
 - A pull request from a fork gets its measurements posted, and the job that ran its code had no write permission and no secret (shown by the workflow's `permissions` and by a run from a fork).
 - A measurement file that holds Markdown, HTML or a mention is posted as inert text.
 - An eval task whose model answer reads the environment and opens a socket finds no credential and no network.
