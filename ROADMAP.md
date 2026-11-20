@@ -1368,7 +1368,7 @@ Done when:
 
 Spec: [§15.2](docs/design/mora.md#152-strings-and-text), [§7.14](docs/design/mora.md#714-interpolation-handlers). Crates: `std`. Blocked by: M5.2, M3.17.
 
-The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, `Unchecked`, and lint `unchecked-injection`. To settle in the spec: whether a value that starts with `/\` is refused too, since a browser reads it as `//`.
+The `Literal` members, and the `Html` and `Url` handlers of §15.2 (D-105): escaping by context for element text and quoted attribute values, percent-encoding by URL component, the panics for holes in other positions, nested `Html` holes, `Unchecked`, and lint `unchecked-injection`. To settle in the spec (§15.2): whether `./`, `../`, `?` and `#` in the URL attribute rule are literal starts that allow a hole or text that must not follow the leading `/` (the sentence reads both ways), and whether literal text that starts with `/\` is refused too, since a browser reads it as `//`; a hole cannot add the `\`, because it is percent-encoded.
 
 Done when:
 
@@ -1378,7 +1378,7 @@ Done when:
 - Attribute names are matched without regard to case: a hole in `ONCLICK`, `OnLoad`, `STYLE` and `SrcDoc` panics, and `HREF`, `Src` and `FormAction` get the URL rule.
 - A hole value holding `"`, `'`, `<`, `>`, `&` and a backtick cannot end a double-quoted or a single-quoted attribute value or start a tag in element text (the output is parsed back and holds one element and one attribute).
 - A hole inside a comment, inside `<textarea>` or `<title>` markup that the literal leaves open, and directly after `<` panics with the context.
-- In a URL attribute, a hole after the literal `javascript:`, `JaVaScRiPt:`, `data:` or `DATA:` panics, and a hole after `/` cannot produce a value that starts with `//` (§15.2).
+- In a URL attribute, a hole after the literal `javascript:`, `JaVaScRiPt:`, `data:` or `DATA:` panics, a hole after the literal `//` panics, and a hole right after the literal `/` whose value starts with `/` or `\` is percent-encoded, so the attribute value cannot start with `//` or `/\` (§15.2). The cases for `./`, `../`, `?` and `#` are tested once §15.2 says which reading holds.
 - UI test: lint `unchecked-injection` flags calls of `Html.Unchecked` and `Url.Unchecked`, including through a method group.
 
 ### M5.15 Logging and tracing
