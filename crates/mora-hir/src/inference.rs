@@ -29,7 +29,7 @@ use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeI
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::ty::{Construct, ParamMode, Primitive, Ty, Unsupported};
+use crate::ty::{ParamMode, Primitive, Ty};
 
 pub use constant::literal_constant;
 pub(crate) use diagnostic::{Source, type_error};
@@ -623,21 +623,19 @@ pub fn is_known(ty: &Ty) -> bool {
 /// first of which is `()` or `int`, or one whose arguments it does not see,
 /// may be a `Result`. Every other type is not one.
 pub(crate) fn is_entry_return(ty: &Ty) -> bool {
-    let exit =
-        |ty: &Ty| matches!(ty, Ty::Error | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT);
-    match ty {
-        Ty::Never => true,
-        Ty::Unsupported(Unsupported {
-            construct: Construct::External,
-            parts,
-            ..
-        }) => match parts.as_slice() {
-            [] => true,
-            [ok, _] => exit(ok),
-            _ => false,
-        },
-        ty => exit(ty),
+    match ty.as_external() {
+        Some([]) => true,
+        Some([ok, _]) => is_exit_value(ok),
+        Some(_) => false,
+        None => matches!(ty, Ty::Never) || is_exit_value(ty),
     }
+}
+
+/// Whether an entry point may return a value of `ty`, by itself or as the
+/// value of its `Result` (§4.6): `()` or `int`, or a type with an error,
+/// reported already.
+pub(crate) fn is_exit_value(ty: &Ty) -> bool {
+    matches!(ty, Ty::Error | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT)
 }
 
 /// Whether two types are the same, the names of tuple elements aside: the

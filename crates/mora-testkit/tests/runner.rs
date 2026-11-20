@@ -1,4 +1,6 @@
 //! The `jit-runner` process and the front end that starts it.
+#![allow(clippy::unwrap_used)]
+// Helpers below unwrap too, and `allow-unwrap-in-tests` covers only test functions.
 
 use std::time::Duration;
 
@@ -6,6 +8,35 @@ use mora_testkit::{Backend, Compiler, FrontEnd};
 
 fn front_end() -> FrontEnd {
     FrontEnd::with_runner(env!("CARGO_BIN_EXE_jit-runner").into())
+}
+
+/// What the runner gives for the program `input` as `a.mr`.
+fn runner_with(input: &[u8]) -> std::process::Output {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jit-runner"))
+        .arg("a.mr")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// A program with a local tuple of two 1 GiB structs, too large, which
+/// only code generation sees.
+fn tuple_too_large() -> String {
+    let mut text = "struct S0 { public A: long; }\n".to_owned();
+    for i in 1..=28 {
+        let before = i - 1;
+        text.push_str(&format!(
+            "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
+        ));
+    }
+    text.push_str("var t: (S28, S28);\n");
+    text
 }
 
 #[test]
@@ -71,22 +102,7 @@ fn a_program_the_runner_cannot_build_fails_the_case() {
 
 #[test]
 fn input_that_is_not_text_is_an_internal_error() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_jit-runner"))
-        .arg("a.mr")
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&[0xff, 0xfe])
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = runner_with(&[0xff, 0xfe]);
     assert_eq!(output.status.code(), Some(70));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
@@ -110,25 +126,9 @@ fn a_runner_without_a_path_is_a_usage_error() {
 
 #[test]
 fn an_error_only_code_generation_finds_is_a_compile_error() {
-    // A tuple of two 1 GiB structs is too large, which only code
-    // generation sees.
-    let mut text = "struct S0 { public A: long; }\n".to_owned();
-    for i in 1..=28 {
-        let before = i - 1;
-        text.push_str(&format!(
-            "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
-        ));
-    }
-    text.push_str("var t: (S28, S28);\n");
+    let text = tuple_too_large();
     // The runner reports it as a build that fails, not as its own error.
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_jit-runner"))
-        .arg("a.mr")
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::io::Write::write_all(&mut child.stdin.take().unwrap(), text.as_bytes()).unwrap();
-    let out = child.wait_with_output().unwrap();
+    let out = runner_with(text.as_bytes());
     assert_eq!(
         out.status.code(),
         Some(mora_testkit::runner::COMPILE_ERROR_EXIT)
@@ -145,4 +145,16 @@ fn an_error_only_code_generation_finds_is_a_compile_error() {
         .map(|diagnostic| diagnostic.code.to_string())
         .collect();
     assert_eq!(codes, ["MR0156"]);
+}
+
+#[test]
+fn a_tuple_too_large_is_shown_as_its_diagnostic() {
+    let checked = front_end()
+        .run("a.mr", &tuple_too_large(), Backend::Jit)
+        .unwrap_err();
+    let shown = mora_testkit::ui::rendered(&checked);
+    assert!(
+        shown.starts_with("error[MR0156]: a value of `(S28, S28)` would take more than"),
+        "{shown}"
+    );
 }

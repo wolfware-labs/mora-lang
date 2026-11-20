@@ -21,7 +21,7 @@ use crate::resolve::{
 };
 use crate::signature::{SignatureError, SignatureErrorKind, signature, signature_errors};
 use crate::suggest::closest;
-use crate::ty::{Construct, Signature, Ty, Unsupported};
+use crate::ty::Signature;
 use crate::type_ref::{SignatureRefKind, TypeRef, type_keywords};
 
 /// The diagnostics of a project's folders (`MR0121`), the paths in its
@@ -1455,7 +1455,9 @@ fn widen(db: &dyn Db, declared: Declared, keyword: &str) -> TextEdit {
     }
 }
 
-pub(crate) fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
+/// Where the name of the declaration `item` is, as a diagnostic points at
+/// it.
+pub fn item_name_span(db: &dyn Db, item: ItemId) -> Span {
     Span::new(
         item.file.id(db),
         item_source_map(db, item.file).item(item.item).name,
@@ -1581,7 +1583,9 @@ fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
     let Signature::Function(function) = signature(db, main) else {
         return;
     };
-    if is_entry_return(&function.ret) && (!is_external(&function.ret) || names_result(db, main)) {
+    if is_entry_return(&function.ret)
+        && (function.ret.as_external().is_none() || names_result(db, main))
+    {
         return;
     }
     let Some(range) = signature_sources(db, main.file)[arena_index(main.item)].ret else {
@@ -1593,17 +1597,6 @@ fn main_return(db: &dyn Db, main: ItemId, out: &mut Vec<Diagnostic>) {
         Span::new(main.file.id(db), range),
         "the return type of `Main`",
     ));
-}
-
-/// Whether `ty` is a type of the standard library while it is not loaded.
-fn is_external(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Unsupported(Unsupported {
-            construct: Construct::External,
-            ..
-        })
-    )
 }
 
 /// Whether the return type written on the function `main` is a path named

@@ -64,7 +64,7 @@ pub use items::{
     ValueMember, ValueSource, Visibility, item_source_map, item_tree, parse,
 };
 pub use name::pascal_case;
-pub use report::diagnostics;
+pub use report::{diagnostics, item_name_span};
 pub use resolve::{
     ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types,
     is_visible, resolve_path,

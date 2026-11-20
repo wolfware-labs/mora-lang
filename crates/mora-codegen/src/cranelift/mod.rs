@@ -274,10 +274,10 @@ fn define_functions<M: Module>(
             .define_function(*id, &mut context)
             .map_err(|error| match error {
                 ModuleError::Compilation(cranelift_codegen::CodegenError::ImplLimitExceeded) => {
-                    panic!(
-                        "internal error generating code for {}: Cranelift found the frame or \
-                         the code too large after the size checks passed",
-                        function.body.name
+                    function::internal(
+                        function.body,
+                        "Cranelift found the frame or the code too large after the size \
+                         checks passed",
                     )
                 }
                 error => cranelift_error(error),

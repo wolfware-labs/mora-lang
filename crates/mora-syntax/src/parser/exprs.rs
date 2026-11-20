@@ -865,7 +865,12 @@ fn skip_rejected(p: &mut Parser<'_>) {
     open.extend(closer_of(p.current()));
     p.bump_any();
     while !p.at_end() {
-        if open.is_empty() && ends_rejected_run(p, quoted) || ends_rejected_group(p, &open) {
+        let ends = if open.is_empty() {
+            ends_rejected_run(p, quoted)
+        } else {
+            ends_rejected_group(p, &open)
+        };
+        if ends {
             return;
         }
         if let Some(closer) = closer_of(p.current()) {
@@ -882,15 +887,13 @@ fn skip_rejected(p: &mut Parser<'_>) {
 
 /// Whether the next token ends a run inside the brackets whose closers are
 /// `open`, innermost last. Inside a block, the run holds the block's
-/// statements, and only a line that starts a declaration ends it. Inside
-/// only parentheses and square brackets, which hold no statement, a `;` or
-/// a line that starts with a statement keyword ends it too, while a line
-/// that starts with a name continues an argument list. A closer of another
-/// kind ends either, which the caller checks.
+/// statements, and only a line that starts a declaration ends it; a line
+/// that starts with `@` does not, since an attribute also marks a statement
+/// in the block. Inside only parentheses and square brackets, which hold
+/// no statement, a `;` or a line that starts with a statement keyword ends
+/// it too, while a line that starts with a name continues an argument list.
+/// A closer of another kind ends either, which the caller checks.
 fn ends_rejected_group(p: &Parser<'_>, open: &[SyntaxKind]) -> bool {
-    if open.is_empty() {
-        return false;
-    }
     if open.contains(&K::RBrace) {
         return p.at_line_start() && p.at_any(ITEM_RECOVERY) && !p.at(K::At);
     }

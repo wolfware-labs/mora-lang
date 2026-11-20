@@ -6,7 +6,7 @@
 
 use cranelift_codegen::ir;
 use mora_hir::{
-    BodyOwner, ItemId, ItemKind, Ty, is_generic_type, item_source_map, item_tree, ty_name,
+    BodyOwner, ItemId, ItemKind, Ty, is_generic_type, item_name_span, item_tree, ty_name,
 };
 use mora_mir::LocalTy;
 use mora_span::{Db, Project, Span};
@@ -106,6 +106,8 @@ pub(crate) fn check_frame(
 ) -> Result<(), CodegenError> {
     let mut end: u64 = 0;
     for slot in code.sized_stack_slots.values() {
+        // Cranelift aligns every slot to at least a machine word, 8 bytes
+        // on every target.
         let align = 1u64 << slot.align_shift.max(3);
         end = end.next_multiple_of(align) + u64::from(slot.size);
     }
@@ -114,9 +116,13 @@ pub(crate) fn check_frame(
     }
     let key = function.key;
     let span = match key.owner {
-        BodyOwner::Item(item) if key.local == 0 => Span::new(
-            key.file.id(db),
-            item_source_map(db, key.file).item(item).name,
+        BodyOwner::Item(item) if key.local == 0 => item_name_span(
+            db,
+            ItemId {
+                project: key.project,
+                file: key.file,
+                item,
+            },
         ),
         _ => function.body.span,
     };
@@ -135,10 +141,7 @@ fn check(layouts: &Layouts<'_>, ty: &Ty, function: Option<Span>) -> Result<(), C
     };
     let db = layouts.db();
     let span = match &ty {
-        Ty::Struct(item) => Span::new(
-            item.file.id(db),
-            item_source_map(db, item.file).item(item.item).name,
-        ),
+        Ty::Struct(item) => item_name_span(db, *item),
         _ => function.unwrap_or_else(|| {
             panic!("internal error checking sizes: {ty:?} is held by no struct")
         }),

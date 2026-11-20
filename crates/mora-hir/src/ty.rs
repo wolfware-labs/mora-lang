@@ -32,6 +32,20 @@ impl Ty {
             _ => None,
         }
     }
+
+    /// The parts of this type when it is a type of the standard library
+    /// while that is not loaded ([`Construct::External`]); `None` for
+    /// another type.
+    pub(crate) fn as_external(&self) -> Option<&[Ty]> {
+        match self {
+            Ty::Unsupported(Unsupported {
+                construct: Construct::External,
+                parts,
+                ..
+            }) => Some(parts),
+            _ => None,
+        }
+    }
 }
 
 /// The primitive types of §5.2, by keyword.

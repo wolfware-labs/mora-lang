@@ -112,15 +112,15 @@ pub(crate) fn build(path: &str, text: &str) -> Result<JitProgram, BuildError> {
         }
         let internal = |error: mora_codegen::CodegenError| BuildError::Internal(error.to_string());
         let program = Program::collect(&analysis.db, analysis.project).map_err(internal)?;
-        let built = Cranelift.jit(&program, Profile::Debug);
-        drop(program);
-        built.map_err(|error| match error.diagnostic() {
-            Some(diagnostic) => {
-                analysis.checked.diagnostics.push(diagnostic);
-                BuildError::Program(analysis.checked)
-            }
-            None => internal(error),
-        })
+        Cranelift
+            .jit(&program, Profile::Debug)
+            .map_err(|error| match error.diagnostic() {
+                Some(diagnostic) => {
+                    analysis.checked.diagnostics.push(diagnostic);
+                    BuildError::Program(analysis.checked)
+                }
+                None => internal(error),
+            })
     })
 }
 
@@ -291,26 +291,6 @@ mod tests {
             panic!("not the program's errors");
         };
         assert_eq!(checked.diagnostics.len(), 1);
-    }
-
-    #[test]
-    fn a_tuple_too_large_is_shown_as_its_diagnostic() {
-        let mut text = "struct S0 { public A: long; }\n".to_owned();
-        for i in 1..=28 {
-            let before = i - 1;
-            text.push_str(&format!(
-                "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
-            ));
-        }
-        text.push_str("var t: (S28, S28);\n");
-        let Err(BuildError::Program(checked)) = build_and_run("a.mr", &text) else {
-            panic!("not the program's errors");
-        };
-        let shown = rendered(&checked);
-        assert!(
-            shown.starts_with("error[MR0156]: a value of `(S28, S28)` would take more than"),
-            "{shown}"
-        );
     }
 
     #[test]

@@ -485,16 +485,10 @@ fn entry_return(
         panic!("inference: the statement {stmt:?} has no range in the source map");
     };
     let span = Span::new(source.file.id(source.db), range);
-    let Some(ty) = ty else {
+    let (Some(ty), Some(propagate)) = (ty, propagate) else {
+        let what = ty.map_or_else(|| "a function".to_owned(), |ty| describe(source, ty));
         return entry_return_error(
-            "a function",
-            span,
-            "this gives the generated `Main` its return type",
-        );
-    };
-    let Some(propagate) = propagate else {
-        return entry_return_error(
-            &describe(source, ty),
+            &what,
             span,
             "this gives the generated `Main` its return type",
         );

@@ -64,7 +64,9 @@ impl CodegenError {
                      a collection"
                 ),
             ),
-            _ => return None,
+            CodegenError::NoEntryPoint
+            | CodegenError::UnsupportedTarget { .. }
+            | CodegenError::Cranelift(_) => return None,
         };
         Some(
             Diagnostic::error(codes::MR0156, self.to_string(), Label::new(*span, label))

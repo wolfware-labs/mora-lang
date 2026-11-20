@@ -16,7 +16,8 @@ use rustc_hash::FxHashMap;
 use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
-    Propagated, TypeError, constant, converts, is_entry_return, is_known, numeric, same,
+    Propagated, TypeError, constant, converts, is_entry_return, is_exit_value, is_known, numeric,
+    same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -32,7 +33,7 @@ use crate::signature::{
     struct_field, this_type,
 };
 use crate::suggest::closest;
-use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty, Unsupported};
+use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -646,39 +647,22 @@ impl Check<'_> {
         let Stmt::Return(Some(value)) = self.body.stmts[stmt] else {
             return;
         };
-        // A lambda has no type of its own here, and is a function value
-        // whichever it would get.
-        let lambda = matches!(self.body.exprs[value], Expr::Lambda(_));
-        let ty = if lambda {
-            None
-        } else {
-            let Some(ty) = self.entry_ret.clone() else {
-                return;
-            };
-            Some(ty)
-        };
-        let external = |ty: &Ty| {
-            matches!(
-                ty,
-                Ty::Unsupported(Unsupported {
-                    construct: Construct::External,
-                    ..
-                })
-            )
+        let ty = match (&self.body.exprs[value], &self.entry_ret) {
+            // A lambda has no type of its own here, and is a function value
+            // whichever it would get.
+            (Expr::Lambda(_), _) => None,
+            (_, Some(ty)) => Some(ty.clone()),
+            (_, None) => return,
         };
         let propagate = self
             .entry_propagate
             .clone()
-            .filter(|_| !ty.as_ref().is_some_and(external));
+            .filter(|_| ty.as_ref().is_none_or(|ty| ty.as_external().is_none()));
         let allowed = match (&ty, &propagate) {
             (None, _) => false,
             (Some(ty), None) => is_entry_return(ty),
             // `Result<T, E>`, whose `T` is the value's type.
-            (Some(ty), Some(_)) => is_entry_return(&Ty::Unsupported(Unsupported {
-                construct: Construct::External,
-                item: None,
-                parts: vec![ty.clone(), Ty::Error],
-            })),
+            (Some(ty), Some(_)) => is_exit_value(ty),
         };
         if !allowed {
             self.errors.push(TypeError::EntryReturn {
@@ -918,12 +902,8 @@ impl Check<'_> {
                 if self.entry && self.entry_propagate.is_none() {
                     // The error type of a `Result`, the second of the two
                     // arguments the checker sees of it.
-                    let error = match operand {
-                        Some(Ty::Unsupported(Unsupported {
-                            construct: Construct::External,
-                            parts,
-                            ..
-                        })) if parts.len() == 2 => parts.into_iter().nth(1),
+                    let error = match operand.as_ref().and_then(Ty::as_external) {
+                        Some([_, error]) => Some(error.clone()),
                         _ => None,
                     };
                     self.entry_propagate = Some(Propagated { expr, error });

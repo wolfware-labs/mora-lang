@@ -216,19 +216,21 @@ fn in_caller_memory(abi: &FnAbi, index: usize) -> bool {
 /// Panics with an internal error in `body`: `what` is not lowered until
 /// `milestone`.
 pub(super) fn fail(body: &Body, what: &str, milestone: &str) -> ! {
-    panic!(
-        "internal error generating code for {}: {what} is not lowered until {milestone}",
-        body.name
+    internal(
+        body,
+        format_args!("{what} is not lowered until {milestone}"),
     )
 }
 
 /// Panics with an internal error in `body`: the MIR breaks an invariant
 /// that `what` describes, which no MIR lowering produces.
 pub(super) fn broken(body: &Body, what: &str) -> ! {
-    panic!(
-        "internal error generating code for {}: invalid MIR: {what}",
-        body.name
-    )
+    internal(body, format_args!("invalid MIR: {what}"))
+}
+
+/// Panics with an internal error in `body`, which `what` describes.
+pub(super) fn internal(body: &Body, what: impl std::fmt::Display) -> ! {
+    panic!("internal error generating code for {}: {what}", body.name)
 }
 
 /// Where a place is.
