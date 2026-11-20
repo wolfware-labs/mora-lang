@@ -1593,7 +1593,7 @@ Done when:
 | [M7.9](#m79-documentation-site) | Documentation site | `docs` | M7.8, M5.18 |
 | [M7.10](#m710-release-workflow) | Release workflow | `release` | M0.11, M6.8 |
 | [M7.11](#m711-installers-and-self-update) | Installers and self update | `release` | M7.10 |
-| [M7.12](#m712-benchmarks-and-budgets) | Benchmarks and budgets | `ci` | M6.8, M1.20, M7.9 |
+| [M7.12](#m712-benchmarks-and-budgets) | Benchmarks and budgets | `ci` | M6.8, M1.20, M7.9, M7.10 |
 | [M7.13](#m713-v010-release) | v0.1.0 release | `release` | M7.5, M7.6, M7.7, M7.9, M7.11, M7.12 |
 | [M7.14](#m714-parallel-code-generation-in-a-fixed-output-order) | Parallel code generation in a fixed output order | `codegen` | M1.12, M3.9 |
 | [M7.15](#m715-reproducible-builds-checked-in-ci) | Reproducible builds checked in CI | `ci` | M7.14, M7.10 |
@@ -1741,21 +1741,22 @@ Done when:
 
 ### M7.12 Benchmarks and budgets
 
-Spec: [§20.6](docs/design/mora.md#206-budgets). Crates: `benches`, `evals`, `ci`. Blocked by: M6.8, M1.20, M7.9.
+Spec: [§20.6](docs/design/mora.md#206-budgets). Crates: `benches`, `evals`, `ci`. Blocked by: M6.8, M1.20, M7.9, M7.10.
 
-A `bench` workflow measuring every budget of §20.6, a Rust load generator for `users-api`, stored baselines, and the 10% regression gate. The agent eval suite of §20.6 (D-112): the tasks in `evals/`, `evals/models.toml`, and a release workflow that reports both rates per model against the previous release of the line. In the `bench` workflow, the job that builds and runs a pull request's code has a read-only token and no secrets; a separate job that runs no repository code posts the measurements, reading them as data. In the eval workflow the job that calls a model holds that model's key and runs no generated code. The eval workflow starts only from `main` or from a release candidate tag on a commit of `main`, never from a pull request or another branch, and the models' keys are secrets of an environment that only those refs can deploy to. The job that builds and tests a model's answer runs with no key, no token and no network, and shares no workspace, environment file or `PATH` with the job that holds the key; it hands back only the diagnostics and the test results. The job with the key treats a model's answer, the diagnostics and the test results as data: it stores the answer as a file, and does not print it to the log, run it as a command or script, or put it in the environment.
+A `bench` workflow measuring every budget of §20.6, a Rust load generator for `users-api`, stored baselines, and the 10% regression gate. The agent eval suite of §20.6 (D-112): the tasks in `evals/`, `evals/models.toml`, and a release workflow that reports both rates per model against the previous release of the line. In the `bench` workflow, the job that builds and runs a pull request's code has a read-only token and no secrets; a separate job that runs no repository code posts the measurements, reading them as data. In the eval workflow the job that calls a model holds that model's key and runs no generated code. The eval workflow starts only from `main` or from a release candidate tag, which the tag ruleset of M7.10 lets only maintainers create, never from a pull request or another branch; the models' keys are secrets of an environment whose deployment rules admit only `main` and release candidate tags, and are stored nowhere else. The job that builds and tests a model's answer runs it in a container with no network, as an unprivileged user, with none of the runner's files, processes or tokens visible; it shares no workspace, environment file, `PATH` or job output with the job that holds the key, and the eval workflow restores and saves no cache. The harness, outside that container, collects the diagnostics and the test outcome (the test process's exit status and report) and hands back only those. The job with the key treats a model's answer, the diagnostics and the test results as data: it stores the answer as a file, and does not print it to the log, run it as a command or script, or put it in the environment. A model reaches the toolchain only through the diagnostics of the build-and-test job.
 
 Done when:
 
 - The `bench` workflow posts the measurements on pull requests.
 - A synthetic slowdown fails the gate.
 - The eval workflow runs on a release candidate and reports both rates for every model in `evals/models.toml`.
-- A pull request or a branch, from a fork or from this repository, cannot get a model's key: shown by the environment's rules, by a pull request from a branch that adds a `pull_request` trigger to the eval workflow and whose run gets no key, and by a manual run on another branch that gets none.
+- A pull request or a branch, from a fork or from this repository, cannot get a model's key: shown by the environment's rules (recorded in the issue), by a pull request from a branch that adds a `pull_request` trigger to the eval workflow and whose run gets no key, by a manual run on another branch that gets none, and by a release candidate tag pushed by an account outside the tag ruleset, which is refused.
 - A model answer that holds workflow commands (`::stop-commands::`, `::add-mask::`, `::error::`) and shell text leaves the environment, `PATH`, outputs and annotations of the job that holds the key unchanged, and does not appear in its log.
-- An answer whose code writes `$GITHUB_ENV`, `$GITHUB_PATH` and the harness files during its tests changes nothing in the next round's job that holds the key.
+- An answer whose code writes `$GITHUB_ENV`, `$GITHUB_PATH`, `$GITHUB_OUTPUT` and the harness files during its tests changes nothing in the next round's job that holds the key.
+- An answer that writes a passing results file while its tests fail still counts as failing.
 - A pull request from a fork gets its measurements posted, and the job that ran its code had no write permission and no secret (shown by the workflow's `permissions` and by a run from a fork).
 - A measurement file that holds Markdown, HTML or a mention is posted as inert text.
-- An eval task whose model answer reads the environment and opens a socket finds no credential and no network.
+- An eval task whose model answer reads the environment, the runner's files and processes, and opens a socket finds no credential, no runner token and no network.
 
 ### M7.13 v0.1.0 release
 
