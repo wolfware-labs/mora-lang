@@ -17,6 +17,11 @@ allow = [
     "Zlib",
     "Unicode-3.0",
 ]
+# libfuzzer-sys bundles LLVM's libFuzzer under NCSA. Only the fuzz binaries
+# (fuzz/, outside the workspace) link it.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
 
 [bans]
 multiple-versions = "warn"
