@@ -379,7 +379,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_argument_that_is_not_text_is_skipped() {
+    fn the_color_option_skips_an_argument_that_is_not_text() {
         use std::os::unix::ffi::OsStringExt;
         let args = [
             OsString::from("mora"),
