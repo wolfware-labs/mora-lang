@@ -15,19 +15,24 @@
 //! A `[patch]` in `Cargo.toml` does not reach the fuzz crate, so a crate it
 //! patches is locked from another source in the two files until
 //! `fuzz/Cargo.toml` has the same patch. A patch in the repository's cargo
-//! config counts for both builds. When both builds patch a crate, the
+//! config counts for both builds, and cargo takes it over a manifest's
+//! patch of the same crate. When both builds patch a crate, the
 //! rebuild drops the fuzz lockfile's entry and cargo takes the patch, and
 //! the check fails when the two patches point at different crates.
+
+mod patches;
 
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cargo_metadata::semver::Version;
 use toml::{Table, Value};
 
-use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_LOCK, ROOT_MANIFEST};
+use self::patches::Patched;
+pub use self::patches::{Patch, Patches, patches_in};
+use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_LOCK, ROOT_MANIFEST, error_at};
 
 /// The key of a lockfile's array of package entries.
 const PACKAGE: &str = "package";
@@ -129,173 +134,13 @@ fn shown_source(source: Option<&str>) -> &str {
     }
 }
 
-/// What a `[patch]` entry puts in place of a crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    /// A crate in a folder, resolved against the folder of the file that
-    /// has the patch.
-    Path(PathBuf),
-    /// A git repository, at a branch, tag or rev when the patch names one.
-    Git {
-        url: String,
-        reference: Option<String>,
-    },
-    /// A version from a registry; `None` for crates.io.
-    Registry {
-        registry: Option<String>,
-        version: Option<String>,
-    },
-}
-
-impl Target {
-    /// Reads a patch entry; `resolve` turns its `path` into the folder it
-    /// names.
-    fn read(patch: &Value, resolve: &impl Fn(&str) -> PathBuf) -> Self {
-        let text = |key: &str| patch.get(key).and_then(Value::as_str);
-        if let Some(path) = text("path") {
-            return Self::Path(resolve(path));
-        }
-        if let Some(url) = text("git") {
-            let reference = ["branch", "tag", "rev"]
-                .into_iter()
-                .find_map(|key| text(key).map(|value| format!("{key} {value}")));
-            return Self::Git {
-                url: url.trim_end_matches('/').to_owned(),
-                reference,
-            };
-        }
-        Self::Registry {
-            registry: text("registry").map(str::to_owned),
-            version: text("version").map(str::to_owned),
-        }
-    }
-}
-
-/// One `[patch]` entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Patch {
-    /// The crate it replaces: the `package` it names, or else its key.
-    pub name: String,
-    /// The file that has it, relative to the repository root.
-    pub file: String,
-    /// The entry, keys in sorted order, for messages.
-    pub written: String,
-    /// What it puts in place of the crate.
-    pub target: Target,
-}
-
-/// The `[patch]` entries of `file`, a manifest or a cargo config whose text
-/// is `text`; `resolve` turns a patch's `path` into the folder it names.
-pub fn patches_in(
-    file: &str,
-    text: &str,
-    resolve: impl Fn(&str) -> PathBuf,
-) -> Result<Vec<Patch>, toml::de::Error> {
-    let table: Table = text.parse()?;
-    let sources = table.get("patch").and_then(Value::as_table);
-    Ok(sources
-        .into_iter()
-        .flat_map(Table::values)
-        .filter_map(Value::as_table)
-        .flat_map(Table::iter)
-        .map(|(key, patch)| Patch {
-            name: patch
-                .get("package")
-                .and_then(Value::as_str)
-                .unwrap_or(key)
-                .to_owned(),
-            file: file.to_owned(),
-            written: format!("{key} = {patch}"),
-            target: Target::read(patch, &resolve),
-        })
-        .collect())
-}
-
-/// The `[patch]` entries the workspace build and the fuzz build follow.
-#[derive(Debug, Default)]
-pub struct Patches {
-    /// The workspace's: those of `Cargo.toml` and of the repository's
-    /// cargo config.
-    pub root: Vec<Patch>,
-    /// The fuzz crate's: those of `fuzz/Cargo.toml` and of the
-    /// repository's cargo config.
-    pub fuzz: Vec<Patch>,
-}
-
-impl Patches {
-    /// How the two builds patch `name`.
-    fn of(&self, name: &str) -> Patched {
-        let find = |patches: &[Patch]| patches.iter().find(|patch| patch.name == name).cloned();
-        match (find(&self.root), find(&self.fuzz)) {
-            (Some(root), Some(fuzz)) if root.target == fuzz.target => Patched::Same,
-            (Some(root), Some(fuzz)) => Patched::Apart(Box::new((root, fuzz))),
-            (Some(_), None) => Patched::Root,
-            (None, Some(_)) => Patched::Fuzz,
-            (None, None) => Patched::Neither,
-        }
-    }
-
-    /// The crates both builds patch, each to another crate: the
-    /// workspace's patch and the fuzz crate's.
-    fn apart(&self) -> Vec<(Patch, Patch)> {
-        let mut seen: Vec<&str> = Vec::new();
-        self.root
-            .iter()
-            .filter(|patch| {
-                let first = !seen.contains(&patch.name.as_str());
-                seen.push(&patch.name);
-                first
-            })
-            .filter_map(|patch| match self.of(&patch.name) {
-                Patched::Apart(pair) => Some(*pair),
-                _ => None,
-            })
-            .collect()
-    }
-}
-
-/// How the two builds patch a crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Patched {
-    /// Both, with the same target; the rebuild drops the fuzz lockfile's
-    /// entry, so cargo takes the patch.
-    Same,
-    /// Both, each with another target: the workspace's patch and the fuzz
-    /// crate's.
-    Apart(Box<(Patch, Patch)>),
-    /// The workspace only; the fuzz crate does not see the patch.
-    Root,
-    /// The fuzz crate only.
-    Fuzz,
-    /// Neither: the workspace has a crate of that name of its own, or a
-    /// cargo config outside the repository patches it.
-    Neither,
-}
-
-impl Patched {
-    /// Whether both builds patch the crate.
-    fn in_both(&self) -> bool {
-        matches!(self, Self::Same | Self::Apart(_))
-    }
-}
-
-/// The advice for two patches of `name` to different crates.
-fn apart_advice(f: &mut fmt::Formatter<'_>, name: &str, pair: &(Patch, Patch)) -> fmt::Result {
-    let (root, fuzz) = pair;
-    write!(
-        f,
-        "{} patches {name} with `{}` and {} with `{}`, two different crates: point both \
-         `[patch]` entries at the same crate",
-        root.file, root.written, fuzz.file, fuzz.written
-    )
-}
-
 /// A crate `fuzz/Cargo.lock` locks differently from `Cargo.lock`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Drift {
     /// The same crate at another version, which rebuilding the fuzz lockfile
     /// moves to the root's unless a requirement of the fuzz crate holds it,
-    /// or the two builds patch it to different crates.
+    /// only the fuzz crate patches it, or the two builds patch it to
+    /// different crates.
     Version {
         name: String,
         fuzz: String,
@@ -506,7 +351,15 @@ impl fmt::Display for Problem {
             }
             Self::Unreadable(reason) => f.write_str(reason),
             Self::Drift(drift) => drift.fmt(f),
-            Self::PatchesApart(pair) => apart_advice(f, &pair.0.name, pair),
+            Self::PatchesApart(pair) => {
+                let (root, fuzz) = &**pair;
+                write!(
+                    f,
+                    "{} patches {} with `{}` and {} with `{}`, two different crates: point both \
+                     `[patch]` entries at the same crate",
+                    root.file, root.name, root.written, fuzz.file, fuzz.written
+                )
+            }
         }
     }
 }
@@ -618,22 +471,22 @@ pub fn write_resolved(
     text: &str,
     resolve: impl FnOnce() -> Result<(), String>,
 ) -> Result<bool, String> {
-    let shown = |err: io::Error| format!("{FUZZ_LOCK}: {err}");
+    let shown = || error_at(Path::new(FUZZ_LOCK));
     let before = match fs::read(file) {
         Ok(bytes) => Some(bytes),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) => return Err(shown(err)),
+        Err(err) => return Err(shown()(err)),
     };
-    fs::write(file, text).map_err(shown)?;
+    fs::write(file, text).map_err(shown())?;
     if let Err(error) = resolve() {
         match &before {
             Some(bytes) => fs::write(file, bytes),
             None => fs::remove_file(file),
         }
-        .map_err(shown)?;
+        .map_err(shown())?;
         return Err(resolve_failure(&error));
     }
-    let after = fs::read(file).map_err(shown)?;
+    let after = fs::read(file).map_err(shown())?;
     Ok(before.as_deref() != Some(after.as_slice()))
 }
 
@@ -641,6 +494,9 @@ pub fn write_resolved(
 mod tests {
     use std::fmt::Write;
 
+    use super::patches::tests::{
+        FUZZ_PATCH, FUZZ_PATCH_2, NO_PATCH, ROOT_PATCH, patches_of, resolved,
+    };
     use super::*;
 
     const HEADER: &str = "# This file is automatically @generated by Cargo.\nversion = 4\n";
@@ -796,34 +652,6 @@ mod tests {
         (root, fuzz)
     }
 
-    /// `path` under `base`, with `..` and `.` taken out, as canonicalizing
-    /// an existing folder does.
-    fn resolved(base: &str, path: &str) -> PathBuf {
-        let mut parts: Vec<&str> = base.split('/').collect();
-        for part in path.split('/') {
-            match part {
-                ".." => drop(parts.pop()),
-                "." | "" => {}
-                part => parts.push(part),
-            }
-        }
-        PathBuf::from(parts.join("/"))
-    }
-
-    /// The patches of `root`, the text of `Cargo.toml` in `/repo`, and of
-    /// `fuzz`, the text of `fuzz/Cargo.toml`.
-    fn patches_of(root: &str, fuzz: &str) -> Patches {
-        Patches {
-            root: patches_in("Cargo.toml", root, |path| resolved("/repo", path)).unwrap(),
-            fuzz: patches_in("fuzz/Cargo.toml", fuzz, |path| resolved("/repo/fuzz", path)).unwrap(),
-        }
-    }
-
-    const ROOT_PATCH: &str = "[patch.crates-io]\nsmallvec = { path = \"vendor/smallvec\" }\n";
-    const FUZZ_PATCH: &str = "[patch.crates-io]\nsmallvec = { path = \"../vendor/smallvec\" }\n";
-    const FUZZ_PATCH_2: &str = "[patch.crates-io]\nsmallvec = { path = \"../vendor/smallvec2\" }\n";
-    const NO_PATCH: &str = "[package]\nname = \"mora-fuzz\"\n";
-
     /// The two smallvec patches of `Cargo.toml` and `fuzz/Cargo.toml`.
     fn apart() -> Patched {
         let patches = patches_of(ROOT_PATCH, FUZZ_PATCH_2);
@@ -910,10 +738,7 @@ mod tests {
             resolved("/repo", path)
         })
         .unwrap();
-        let patches = Patches {
-            root: config.clone(),
-            fuzz: config,
-        };
+        let patches = Patches::new(Vec::new(), Vec::new(), config);
         let found = drift(&root, &fuzz, &patches);
         assert_eq!(found, [source_drift(Patched::Same)]);
         assert!(Problem::Drift(source_drift(Patched::Same)).rebuild_fixes());
@@ -1079,115 +904,6 @@ mod tests {
                 ("smallvec", "1.16.4"),
             ]
         );
-    }
-
-    #[test]
-    fn patches_come_from_every_patch_table_with_their_targets() {
-        let manifest = "[package]\nname = \"mora-fuzz\"\n\n[dependencies]\ncc = \"1\"\n\n\
-                        [patch.crates-io]\nsmallvec = { path = \"../vendor/smallvec\" }\n\
-                        cc2 = { git = \"https://example.com/cc/\", branch = \"next\", package = \
-                        \"cc\" }\n\n[patch.\"https://example.com/index\"]\n\
-                        zmij = { version = \"0.0.4\", registry = \"mirror\" }\n";
-        let found = patches_in("fuzz/Cargo.toml", manifest, |path| {
-            resolved("/repo/fuzz", path)
-        })
-        .unwrap();
-        let mut found: Vec<(&str, &str, &Target)> = found
-            .iter()
-            .map(|patch| {
-                assert_eq!(patch.file, "fuzz/Cargo.toml");
-                (patch.name.as_str(), patch.written.as_str(), &patch.target)
-            })
-            .collect();
-        found.sort_by_key(|(name, ..)| *name);
-        assert_eq!(
-            found,
-            [
-                (
-                    "cc",
-                    "cc2 = { branch = \"next\", git = \"https://example.com/cc/\", package = \
-                     \"cc\" }",
-                    &Target::Git {
-                        url: "https://example.com/cc".into(),
-                        reference: Some("branch next".into()),
-                    }
-                ),
-                (
-                    "smallvec",
-                    "smallvec = { path = \"../vendor/smallvec\" }",
-                    &Target::Path("/repo/vendor/smallvec".into())
-                ),
-                (
-                    "zmij",
-                    "zmij = { registry = \"mirror\", version = \"0.0.4\" }",
-                    &Target::Registry {
-                        registry: Some("mirror".into()),
-                        version: Some("0.0.4".into()),
-                    }
-                ),
-            ]
-        );
-        let git = |extra: &str| {
-            let text =
-                format!("[patch.crates-io]\ncc = {{ git = \"https://example.com/cc\"{extra} }}\n");
-            patches_in("Cargo.toml", &text, |path: &str| PathBuf::from(path)).unwrap()[0]
-                .target
-                .clone()
-        };
-        assert_eq!(
-            git(", tag = \"v1\""),
-            Target::Git {
-                url: "https://example.com/cc".into(),
-                reference: Some("tag v1".into()),
-            }
-        );
-        assert_ne!(git(", rev = \"abc\""), git(""));
-        assert_eq!(
-            patches_in("Cargo.toml", NO_PATCH, |path: &str| PathBuf::from(path)).unwrap(),
-            []
-        );
-        assert_eq!(
-            patches_in("Cargo.toml", "patch = 1\n", |path: &str| PathBuf::from(
-                path
-            ))
-            .unwrap(),
-            []
-        );
-        assert!(
-            patches_in("Cargo.toml", "[patch.crates-io\n", |path: &str| {
-                PathBuf::from(path)
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn patches_say_how_the_two_builds_patch_a_crate() {
-        let root = "[patch.crates-io]\na = { path = \"a\" }\nb = { path = \"b\" }\n\
-                    d = { path = \"d\" }\n";
-        let fuzz = "[patch.crates-io]\nb = { path = \"../b\" }\nc = { path = \"c\" }\n\
-                    d = { path = \"d\" }\n";
-        let patches = patches_of(root, fuzz);
-        assert_eq!(patches.of("a"), Patched::Root);
-        assert_eq!(patches.of("b"), Patched::Same);
-        assert_eq!(patches.of("c"), Patched::Fuzz);
-        assert!(matches!(patches.of("d"), Patched::Apart(_)));
-        assert_eq!(patches.of("e"), Patched::Neither);
-        let apart = patches.apart();
-        assert_eq!(apart.len(), 1);
-        assert_eq!(apart[0].0.target, Target::Path("/repo/d".into()));
-        assert_eq!(apart[0].1.target, Target::Path("/repo/fuzz/d".into()));
-        assert!(Patched::Same.in_both() && self::apart().in_both());
-        assert!(!Patched::Root.in_both() && !Patched::Fuzz.in_both());
-        assert!(!Patched::Neither.in_both());
-    }
-
-    #[test]
-    fn a_crate_patched_twice_is_reported_once() {
-        let root =
-            "[patch.crates-io]\nd = { path = \"d\" }\n\n[patch.mirror]\nd = { path = \"d\" }\n";
-        let fuzz = "[patch.crates-io]\nd = { path = \"d\" }\n";
-        assert_eq!(patches_of(root, fuzz).apart().len(), 1);
     }
 
     #[test]

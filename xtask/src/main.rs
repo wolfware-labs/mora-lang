@@ -227,13 +227,11 @@ fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
     } else {
         Vec::new()
     };
-    let mut patches = fuzz_lock::Patches {
-        root: read_patches_in(root, paths::ROOT_MANIFEST, ".")?,
-        fuzz: read_patches_in(root, paths::FUZZ_MANIFEST, "fuzz")?,
-    };
-    patches.root.extend(config.iter().cloned());
-    patches.fuzz.extend(config);
-    Ok(patches)
+    Ok(fuzz_lock::Patches::new(
+        read_patches_in(root, paths::ROOT_MANIFEST, ".")?,
+        read_patches_in(root, paths::FUZZ_MANIFEST, "fuzz")?,
+        config,
+    ))
 }
 
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
