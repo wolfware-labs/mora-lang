@@ -56,6 +56,7 @@ pub(super) fn build(
         rejected_runs,
         rejected_run_starts,
         unclosed_strings,
+        taken_in_place: FxHashSet::default(),
         raw: 0,
         open: Vec::new(),
         levels: 0,
@@ -124,6 +125,9 @@ struct Sink<'a> {
     rejected_run_starts: Vec<Option<usize>>,
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
+    /// The last token of each run of rejected text a node took in place of
+    /// something missing ([`Event::Rejected`]): the run stands for it.
+    taken_in_place: FxHashSet<usize>,
     /// The next token of `lexed` to add.
     raw: usize,
     /// Each open node and whether it counts toward the nesting limit.
@@ -210,14 +214,15 @@ impl Sink<'_> {
     }
 
     /// Adds the run of rejected text before the next token to the node just
-    /// opened, which stands for what is missing there.
+    /// opened, which stands for what is missing there: every part of it,
+    /// as only trivia comes between the parts of one run.
     fn rejected_in_place(&mut self) {
         if self.flattened.is_some() {
             return;
         }
-        let at = self.next_rejected();
-        if let Some(end) = self.rejected_run(at) {
+        while let Some(end) = self.rejected_run(self.next_rejected()) {
             self.add_tokens(end);
+            self.taken_in_place.insert(end - 1);
         }
     }
 
@@ -308,7 +313,8 @@ impl Sink<'_> {
     /// and the whitespace between them, up to a blank line or a directive.
     /// Rejected text counts as nothing, and the trivia between its tokens
     /// as it would without them: a line that holds only rejected text is a
-    /// blank line. A comment among rejected text attaches the whole run.
+    /// blank line. A comment among rejected text attaches the part of its
+    /// run it is in, as blank lines inside a run split it.
     fn attached_comments(&self, end: usize) -> usize {
         let mut from = end;
         let mut i = end;
@@ -403,6 +409,23 @@ impl Sink<'_> {
         !wraps && self.unclosed_strings.contains(&range.start())
     }
 
+    /// The last token taken, past trivia and rejected text; rejected text
+    /// taken in place of something missing counts as taken.
+    fn last_taken(&self) -> Option<usize> {
+        let mut i = self.raw;
+        loop {
+            i = i.checked_sub(1)?;
+            if self.taken_in_place.contains(&i) {
+                return Some(i);
+            }
+            if let Some(start) = self.rejected_run_ending_at(i) {
+                i = start;
+            } else if !self.lexed.tokens[i].kind.is_trivia() {
+                return Some(i);
+            }
+        }
+    }
+
     /// Reports `code`: on the token that follows, when the error wraps it
     /// in an `Error` node (`wraps` is then how many tokens of
     /// [`Lexed::tokens`] it spans, as `>\>` spans three); otherwise just
@@ -415,11 +438,9 @@ impl Sink<'_> {
         let range = if let Some(range) = wrapped {
             range
         } else {
-            let end = self.lexed.tokens[..self.raw]
-                .iter()
-                .rev()
-                .find(|token| !token.kind.is_trivia())
-                .map_or(TextSize::new(0), |token| token.range.end());
+            let end = self
+                .last_taken()
+                .map_or(TextSize::new(0), |i| self.lexed.tokens[i].range.end());
             TextRange::empty(end)
         };
         if code == SYNTAX_ERROR && self.lexer_reported(range, wrapped.is_some()) {

@@ -1403,3 +1403,237 @@ fn a_quoted_run_never_splits_an_interpolated_string() {
         assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
     }
 }
+
+/// Each comment of `text` with the kind of the node that holds it, past the
+/// `Error` nodes of rejected text around it.
+fn comment_holders(text: &str) -> Vec<(String, String)> {
+    use mora_syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
+    fn walk(node: &SyntaxNode, holder: SyntaxKind, out: &mut Vec<(String, String)>) {
+        let holder = if node.kind() == SyntaxKind::Error {
+            holder
+        } else {
+            node.kind()
+        };
+        for child in node.children_with_tokens() {
+            match child {
+                SyntaxElement::Token(token)
+                    if matches!(
+                        token.kind(),
+                        SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::BlockComment
+                    ) =>
+                {
+                    out.push((token.text().to_owned(), format!("{holder:?}")));
+                }
+                SyntaxElement::Node(child) => walk(&child, holder, out),
+                SyntaxElement::Token(_) => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let parse = parse(text);
+    let root = parse.syntax();
+    walk(&root, root.kind(), &mut out);
+    out
+}
+
+#[test]
+fn comments_in_rejected_text_attach_as_they_would_without_it() {
+    for (text, without) in [
+        // A blank line inside a run: only the comment below it attaches.
+        (
+            "\\/// Doc.\n\n/* c */\\class A { }\n",
+            "/// Doc.\n\n/* c */class A { }\n",
+        ),
+        (
+            "\\/// Doc.\n\\\n/* c */\\class A { }\n",
+            "/// Doc.\n\n/* c */class A { }\n",
+        ),
+        (
+            " \n\u{201c} \u{201d}/// Doc.// c\n\n/*\nc */\u{201c}class A { }\n",
+            " \n/// Doc.// c\n\n/*\nc */class A { }\n",
+        ),
+        // No blank line: every comment attaches, the run with them.
+        (
+            "/// Doc.\n\\ /* c */ \\\nclass A { }\n",
+            "/// Doc.\n /* c */ \nclass A { }\n",
+        ),
+        ("\\ /* c */ \\\nclass A { }\n", " /* c */ \nclass A { }\n"),
+    ] {
+        assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(without),
+            "{text:?}"
+        );
+        assert_rejected_over(text, without);
+    }
+    // The text of the class, and of each `Error` node inside it.
+    let class = |text: &str| {
+        use mora_syntax::SyntaxKind;
+        let parse = parse(text);
+        let class = parse
+            .syntax()
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::ClassDecl)
+            .unwrap();
+        let errors: Vec<String> = class
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::Error)
+            .map(|node| node.text().to_string())
+            .collect();
+        (class.text().to_string(), errors)
+    };
+    // The comment at the top of the run attaches it whole to the class.
+    let (text, errors) = class("\\ /* c */ \\\nclass A { }\n");
+    assert!(text.starts_with('\\'), "{text:?}");
+    assert_eq!(errors, ["\\ /* c */ \\"]);
+    // A comment between two line breaks makes no blank line: one run.
+    let (text, errors) = class("\\\n/* c */\n\\class A { }\n");
+    assert!(text.starts_with('\\'), "{text:?}");
+    assert_eq!(errors, ["\\\n/* c */\n\\"]);
+    // Below a blank line, the part starts at its comment, past the
+    // indentation, as the comment would without the run.
+    let (text, errors) = class("\\/// Doc.\n\n  /* c */\\class A { }\n");
+    assert!(text.starts_with("/* c */"), "{text:?}");
+    assert_eq!(errors, ["/* c */\\"]);
+}
+
+#[test]
+fn a_block_comment_on_one_line_keeps_a_quoted_run_whole() {
+    let text = "let a = 1 \u{201c}x /* k */ y\u{201d};\n";
+    assert_eq!(codes_of(text), ["MR0017", "MR0017"]);
+    assert_rejected_over(text, "let a = 1;\n");
+    // One run, in one `Error` node.
+    let parse = parse(text);
+    let errors: Vec<String> = parse
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
+        .map(|node| node.text().to_string())
+        .collect();
+    assert_eq!(errors, ["\u{201c}x /* k */ y\u{201d}"]);
+    // Standing for a missing operand, the run is all that is reported.
+    let text = "let a = \u{201c}x /* k */ y\u{201d};\n";
+    assert_eq!(codes_of(text), ["MR0017", "MR0017"]);
+}
+
+#[test]
+fn something_missing_is_reported_before_the_rejected_text() {
+    let text = "class A \\x { }\n";
+    let error = parse(text)
+        .errors()
+        .iter()
+        .find(|error| error.code.to_string() == "MR0110")
+        .cloned()
+        .unwrap();
+    assert_eq!(error.message, "expected `{`");
+    // Right after `A`, as in the text without the `\`.
+    assert_eq!(
+        (u32::from(error.range.start()), u32::from(error.range.end())),
+        (7, 7)
+    );
+    assert_rejected_over(text, "class A x { }\n");
+    assert_eq!(coded_offsets("class A x { }\n")[0].1, 7);
+}
+
+#[test]
+fn rejected_text_over_a_blank_line_stands_for_what_is_missing_whole() {
+    let text = "let a = \\\n\n\\\nlet b = 1;\n";
+    assert_eq!(
+        coded_offsets(text),
+        [
+            ("MR0017".to_owned(), 8),
+            ("MR0017".to_owned(), 11),
+            ("MR0110".to_owned(), 12)
+        ]
+    );
+    // Both parts of the run are in the node of the missing value.
+    let parse = parse(text);
+    let missing = parse
+        .syntax()
+        .descendants()
+        .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
+        .map(|node| node.text().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(missing, ["\\\n\n\\"]);
+}
+
+/// Each error as its code, its message and its range.
+fn full_errors(text: &str) -> Vec<(String, String, u32, u32)> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| {
+            (
+                error.code.to_string(),
+                error.message.clone(),
+                u32::from(error.range.start()),
+                u32::from(error.range.end()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn tokens_on_both_sides_of_rejected_text_keep_their_own_boundary() {
+    // Joined, `=` and `=>` would lex as `==` and `>`: the parser keeps the
+    // tokens it has, since a token of the tree cannot start inside one of
+    // the lexer's. This pins what that gives today.
+    let name = "PathExpr( Path( PathSegment( NameRef( Ident ) ) ) )";
+    let arrow = |op: &str, arrow: &str| {
+        format!(
+            "LocalDeclStmt( LocalDecl( LetKw VariableDeclarator( Name( Ident ) Eq {op}( {name} \
+             {} ) ) ) ) Error( {arrow} ) ExprStmt( {name} Semicolon ) ",
+            if op == "AssignExpr" { "Eq" } else { "Minus" }
+        )
+    };
+    let rejected = || {
+        (
+            "MR0017".to_owned(),
+            "`\\\\` cannot start a token".to_owned(),
+            11,
+            12,
+        )
+    };
+    let error = |message: &str, start, end| ("MR0110".to_owned(), message.to_owned(), start, end);
+    let cases = [
+        (
+            "let a = x =\\=> y;\n",
+            arrow("AssignExpr", "FatArrow"),
+            vec![
+                rejected(),
+                error("expected `;`", 12, 12),
+                error("expected a statement", 12, 14),
+            ],
+        ),
+        (
+            "let a = x -\\-> y;\n",
+            arrow("BinExpr", "ThinArrow"),
+            vec![
+                rejected(),
+                error("expected `;`", 12, 12),
+                error("expected a statement", 12, 14),
+            ],
+        ),
+        (
+            "let a = x ?\\?? y;\n",
+            format!(
+                "LocalDeclStmt( LocalDecl( LetKw VariableDeclarator( Name( Ident ) Eq BinExpr( \
+                 PropagateExpr( {name} Question ) QuestionQuestion {name} ) ) ) Semicolon ) "
+            ),
+            vec![rejected()],
+        ),
+        (
+            "let a = x .\\.. y;\n",
+            format!(
+                "LocalDeclStmt( LocalDecl( LetKw VariableDeclarator( Name( Ident ) Eq RangeExpr( \
+                 MemberExpr( {name} Dot NameRef( ) ) DotDot {name} ) ) ) Semicolon ) "
+            ),
+            vec![error("expected an identifier", 11, 11), rejected()],
+        ),
+    ];
+    for (text, shape, errors) in cases {
+        assert_eq!(shape_past_rejected(text), shape, "{text:?}");
+        assert_eq!(full_errors(text), errors, "{text:?}");
+    }
+}

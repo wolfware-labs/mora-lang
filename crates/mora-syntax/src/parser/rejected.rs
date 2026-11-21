@@ -13,9 +13,16 @@
 //! of a run counts as it would without them. The tokens on both sides of a
 //! run with no trivia in or around it stay joined, so `>\>` is still `>>`, and two
 //! punctuation tokens that lex as one become one, as `.\.` makes `..`, but
-//! never a comment, as `/\/` would ([`Input::merge`]). The tree builder puts
-//! each run back where it falls, in an `Error` node of its own or inside
-//! the token it joins, so the tree stays lossless.
+//! never a comment, as `/\/` would ([`Input::merge`]). Nor do the tokens on
+//! both sides change where they split: when their texts together lex at
+//! another boundary, as `=` and `=>` in `=\=>` make `==` and `>`, the
+//! parser keeps the two tokens it has, since a token of the tree cannot
+//! start inside a token of the lexer. The tree builder puts each run back
+//! where it falls, in an `Error` node of its own or inside the token it
+//! joins, so the tree stays lossless. A blank line inside a run splits it
+//! into parts with an `Error` node each, so a comment under the blank line
+//! attaches to the declaration below as it would without the run
+//! ([`record_run`]).
 //!
 //! Where something is missing, rejected text in its place stands for it:
 //! [`Parser::rejected_in_place`] takes the run into the node of the missing
@@ -26,6 +33,7 @@ use super::Input;
 #[cfg(doc)]
 use super::{Event, Parser};
 use crate::SyntaxKind;
+use crate::lexer::Lexed;
 
 use SyntaxKind as K;
 
@@ -107,4 +115,38 @@ pub(super) fn closing_quotes(input: &Input<'_>, lines_end: &[bool]) -> (Vec<Opti
         }
     }
     (closing, looked)
+}
+
+/// Records the run of rejected text over tokens `first..end` of `lexed` in
+/// `runs` as the tree builder takes it: for the first token of each part,
+/// the index after its last token. A blank line inside the run splits it,
+/// a line that holds only rejected text counting as blank, so a comment
+/// below the blank line attaches to the declaration under it without the
+/// text above the blank line. The trivia between two parts is not in
+/// either.
+pub(super) fn record_run(lexed: &Lexed, first: usize, end: usize, runs: &mut [Option<usize>]) {
+    let mut start = first;
+    // The last token of the part so far that is not whitespace or a line
+    // break.
+    let mut last = first;
+    let (mut newline_seen, mut blank) = (false, false);
+    for i in first..end {
+        let kind = lexed.tokens[i].kind;
+        match kind {
+            K::Newline => {
+                blank |= newline_seen;
+                newline_seen = true;
+                continue;
+            }
+            K::Whitespace => continue,
+            K::LineComment | K::DocComment | K::BlockComment => newline_seen = false,
+            _ => {}
+        }
+        if blank {
+            runs[start] = Some(last + 1);
+            (start, blank) = (i, false);
+        }
+        last = i;
+    }
+    runs[start] = Some(last + 1);
 }

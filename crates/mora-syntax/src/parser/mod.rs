@@ -124,7 +124,8 @@ pub(crate) struct Input<'t> {
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
-    /// For the first token of each run of rejected text, as an index in
+    /// For the first token of each run of rejected text, or of each part of
+    /// one a blank line splits ([`rejected::record_run`]), as an index in
     /// [`Lexed::tokens`], the index after its last token.
     rejected_runs: Vec<Option<usize>>,
     /// Tokens looked at: each once to pair parentheses, one per lookup.
@@ -198,7 +199,7 @@ impl<'t> Input<'t> {
                 at = closing_quote[at].unwrap_or(at) + 1;
             }
             let (first, last) = (all.raw[start], all.raw[at - 1]);
-            input.rejected_runs[first] = Some(last + 1);
+            rejected::record_run(lexed, first, last + 1, &mut input.rejected_runs);
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
             rejected = true;
             // The tokens around the run touch as they would without it: when
