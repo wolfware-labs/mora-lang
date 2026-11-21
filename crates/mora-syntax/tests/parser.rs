@@ -772,14 +772,14 @@ fn a_rejected_token_is_parsed_past_as_if_it_were_not_there() {
         "let x = a \\ new P {\n    A = 1,\n    B = 2\n};\n",
         "let a = 1 \\ + 2;\n",
     ] {
-        assert_rejected_over(text, &text.replace("\\ ", ""));
+        assert_parsed_past(text);
     }
     // After an operand, `(x)` is a call, as without the token.
     for text in [
         "let f = a \\ (x) => {\n    return x;\n};\n",
         "let f = a \\ (x) => {\n    @Inline\n    let y = x;\n    return y;\n};\n",
     ] {
-        assert_rejected_over(text, &text.replace("\\ ", ""));
+        assert_parsed_past(text);
     }
     // A rejected token between an extension's parameters and its body.
     assert_eq!(
@@ -1040,13 +1040,19 @@ fn assert_rejected_over(text: &str, without: &str) {
     assert_eq!(rest, parse_messages(without), "{text:?}");
 }
 
+/// [`assert_rejected_over`] with the text without each `\` and the space
+/// after it.
+fn assert_parsed_past(text: &str) {
+    assert_rejected_over(text, &text.replace("\\ ", ""));
+}
+
 #[test]
 fn rejected_text_before_the_while_of_a_do_is_parsed_past() {
     for text in [
         "do while (c); \\ while (d);\n",
         "do while (c) \\ ; \\ while (d);\n",
     ] {
-        assert_rejected_over(text, &text.replace("\\ ", ""));
+        assert_parsed_past(text);
         assert!(
             parse_messages(text)
                 .iter()

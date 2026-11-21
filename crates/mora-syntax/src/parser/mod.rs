@@ -10,6 +10,9 @@
 //! The parser never stops at an error. It reports `MR0110`, wraps what it
 //! cannot use in an `Error` node, and goes on at the next declaration or
 //! member, so every later declaration still gets its tree.
+//! Text the lexer rejected is not part of the parser's input at all: the
+//! parser reads past it as if it were not there, and [`build`] puts it
+//! back ([`rejected`]).
 //!
 //! Nesting is limited to [`MAX_DEPTH`] levels (§14.4), so that neither the
 //! parser nor a later pass that walks the tree recursively runs out of
@@ -22,6 +25,7 @@ mod build;
 mod exprs;
 mod items;
 mod patterns;
+mod rejected;
 mod stmts;
 mod types;
 
@@ -91,11 +95,9 @@ fn parse_within(text: &str, budget: Option<usize>) -> Parse {
 /// one.
 ///
 /// Rejected text is a token the lexer rejected (`MR0017`), or a quote of
-/// [`exprs::QUOTES`] with everything up to the quote that closes it
-/// ([`exprs::closing_quotes`]). The parser parses the text as if it were not
-/// there, so that it reports only what the text without it would; the
-/// lexer has reported it, and [`build`] puts each run of it back into the
-/// tree as an `Error` node.
+/// [`rejected::QUOTES`] with everything up to the quote that closes it
+/// ([`rejected::closing_quotes`]); [`build`] puts each run of it back into
+/// the tree as an `Error` node ([`rejected`]).
 pub(crate) struct Input<'t> {
     /// The whole text.
     text: &'t str,
@@ -160,7 +162,7 @@ impl<'t> Input<'t> {
             all.raw.push(i);
             all.joined.push(lexed.is_joined(i));
         }
-        let (closing_quote, looked) = exprs::closing_quotes(&all);
+        let (closing_quote, looked) = rejected::closing_quotes(&all);
         // The same tokens with the rejected text left out.
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
