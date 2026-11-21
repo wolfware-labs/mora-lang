@@ -350,7 +350,7 @@ A `Backend` trait taking optimized MIR and a target description, and its Craneli
 
 Done when:
 
-- The run harness executes every M1 run test through the JIT and through an object file linked by M1.14, and compares outputs.
+- The run harness executes every M1 run test through the JIT and compares outputs; the object file is checked by inspection.
 - Overflow in a debug build panics with the message of §11.4.
 - Run tests in both profiles, through the JIT and the object file: division and remainder by zero panic with the message of §11.4 and exit code 101; `int.MinValue / -1` and `int.MinValue % -1` panic with exit code 101 (§7.12), and their message is checked once §11.4 gives it; none of the four ends in a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
 - A function whose frame is larger than the guard page probes it on entry as §13.10 then states: a unit test on the generated code for a function with a multi-megabyte struct local shows the probes that rule requires, before any other access to the frame; the run test that shows `stack overflow` is in M1.14.
@@ -379,6 +379,7 @@ The linker driver of §14.14: `ld.lld` with musl for a fully static Linux execut
 Done when:
 
 - Hello world links and runs on every Tier 1 runner.
+- The run harness executes every M1 run test through an object file linked by this work, and compares outputs with the JIT's.
 - On Linux, `file` reports the executable as statically linked.
 - With a test hook that replaces the `/usr/bin/xcrun` path with one that does not exist, or makes it report no developer tools, the missing-tool error on macOS carries the `xcode-select --install` hint.
 - On Linux and Windows the linker, the start files and the libraries are taken from the toolchain directory by absolute path. A test puts a decoy `ld.lld` (`lld-link.exe` on Windows) first on `PATH` and in the project directory and shows it is not run; on macOS `xcrun` is started as `/usr/bin/xcrun`.
