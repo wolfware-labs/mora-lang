@@ -54,7 +54,7 @@ It checks `origin/main` out under the target directory, runs every benchmark the
 
 CI runs the same benchmarks on [CodSpeed](https://codspeed.io)'s simulated CPU, which counts instructions and cache misses instead of timing them, so a busy runner does not change the result. Each push to `main` records a baseline, and each pull request gets a CodSpeed check and comment that compare it with that baseline. The check is required, so it runs even for a Markdown-only pull request, and it fails when a benchmark gets more than 10% slower (§20.6). Those numbers are the ones a review relies on; `bench-compare` is for trying changes locally. To check that the benchmarks build and run the way CI runs them, install `cargo-codspeed` and run `cargo codspeed build --workspace`, then `cargo codspeed run`; outside CI, `cargo codspeed run` runs each benchmark once without measuring it.
 
-A pull request that changes only Markdown files skips the Rust build, except for `docs/design/mora.md`, `docs/errors/` and `docs/guide/`: they contain executable examples, so the example checks always run for them. The benchmarks run either way.
+A pull request that changes only Markdown no check reads skips the Rust build: the top-level `README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md` and `CLA.md`, and the Markdown files directly in `.github/`, such as the pull request template. Any other change builds, Markdown included, since the spec, the error pages, `ROADMAP.md` and `LICENSES/README.md` all feed checks. The benchmarks run either way.
 
 ## Spec first
 

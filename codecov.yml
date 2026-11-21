@@ -1,6 +1,7 @@
 # Codecov reports both the coverage of the whole workspace and the coverage
 # of the lines a pull request changes, and comments on every pull request
-# that runs the coverage job: Markdown-only changes skip it (ci.yml).
+# that runs the coverage job: a change to Markdown no check reads skips it
+# (ci.yml, `changes`).
 
 coverage:
   status:
