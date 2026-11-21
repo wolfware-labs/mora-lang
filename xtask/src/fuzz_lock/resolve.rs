@@ -712,20 +712,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_resolve_without_the_fuzzed_crate_is_named() {
-        let mut metadata = resolve_locked(&crate::paths::root(), ROOT_MANIFEST).unwrap();
-        assert!(closure(&metadata, ROOT_MANIFEST).is_ok());
-        metadata.resolve = None;
-        assert_eq!(
-            closure(&metadata, FUZZ_MANIFEST),
-            Err(Unresolved {
-                manifest: FUZZ_MANIFEST,
-                error: format!("it does not build {FUZZED} from a path"),
-            })
-        );
-    }
-
-    #[test]
     fn builds_of_the_same_packages_do_not_drift() {
         let root = [
             on(syntax(), &[registry("syn", "2.0.119")]),

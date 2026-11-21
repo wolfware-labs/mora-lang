@@ -4,7 +4,7 @@
 use std::process::Command;
 
 use super::resolve::tests::{CRATES_IO, built, drift_of, registry};
-use super::resolve::{FUZZED, Unit, resolve_locked};
+use super::resolve::{FUZZED, Unit, closure, resolve_locked};
 use super::*;
 use crate::paths::{Scratch, scratch};
 use crate::tools;
@@ -341,6 +341,21 @@ fn a_workspace_that_does_not_resolve_is_named() {
         "{error}"
     );
     assert!(!error.contains("fuzz/Cargo.toml"), "{error}");
+}
+
+#[test]
+fn a_resolve_without_the_fuzzed_crate_is_named() {
+    let fixture = Fixture::new("fuzz-lock-no-closure");
+    let mut metadata = resolve_locked(&fixture.0, ROOT_MANIFEST).unwrap();
+    assert!(closure(&metadata, ROOT_MANIFEST).is_ok());
+    metadata.resolve = None;
+    assert_eq!(
+        closure(&metadata, FUZZ_MANIFEST),
+        Err(Unresolved {
+            manifest: FUZZ_MANIFEST,
+            error: format!("it does not build {FUZZED} from a path"),
+        })
+    );
 }
 
 #[test]
