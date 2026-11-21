@@ -6,7 +6,8 @@
 //! that declaration, so a doc comment is part of the item it documents.
 //! Each run of rejected text, which the parser did not see ([`Input`]),
 //! goes in as trivia does, in an `Error` node of its own, unless the parser
-//! took it in place of something missing ([`Event::Rejected`]).
+//! took it in place of something missing ([`Event::Rejected`]) or it sits
+//! inside a token it joins, as in `>\>` ([`Event::Token`]).
 //!
 //! The builder also enforces the nesting limit on the finished tree
 //! (§14.4): a node that would sit deeper than [`MAX_DEPTH`] levels gets
@@ -32,7 +33,6 @@ pub(super) fn build(
     text: &str,
     lexed: &Lexed,
     rejected_runs: &[Option<usize>],
-    token_ends: &[usize],
     mut events: Vec<Event>,
 ) -> (GreenNode, Vec<SyntaxError>) {
     // Where each string the lexer found unclosed ends. A character literal
@@ -55,7 +55,6 @@ pub(super) fn build(
         lexed,
         rejected_runs,
         rejected_run_starts,
-        token_ends,
         unclosed_strings,
         raw: 0,
         open: Vec::new(),
@@ -94,7 +93,7 @@ pub(super) fn build(
                 }
             }
             Event::Finish => sink.finish(),
-            Event::Token { kind, n } => sink.token(kind, n),
+            Event::Token { kind, n_raw } => sink.token(kind, n_raw),
             // After `MR0018`, the rest of its statement reports nothing more:
             // what the parser skipped there leaves holes it would report.
             Event::Error { .. } if sink.mutes_errors() => {}
@@ -124,9 +123,6 @@ struct Sink<'a> {
     rejected_runs: &'a [Option<usize>],
     /// For the last token of each run of rejected text, its first token.
     rejected_run_starts: Vec<Option<usize>>,
-    /// For each token, the index after it, or after the token rejected text
-    /// joins it with ([`Input`]).
-    token_ends: &'a [usize],
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
     /// The next token of `lexed` to add.
@@ -359,21 +355,12 @@ impl Sink<'_> {
         self.builder.finish_node();
     }
 
-    /// Adds `n` tokens of the parser's input as one token of `kind`, with
-    /// any rejected text between them, which joins them.
-    fn token(&mut self, kind: SyntaxKind, n: usize) {
+    /// Adds `n_raw` tokens, from the next significant one, as one token of
+    /// `kind`, with any rejected text among them inside it.
+    fn token(&mut self, kind: SyntaxKind, n_raw: usize) {
         let first = self.next_significant();
         self.add_raw(first);
-        let mut last = first;
-        for piece in 0..n {
-            if piece > 0 {
-                while let Some(end) = self.rejected_run(last) {
-                    last = end;
-                }
-            }
-            last = self.token_ends.get(last).copied().unwrap_or(last);
-        }
-        let last = last.min(self.lexed.tokens.len());
+        let last = (first + n_raw).min(self.lexed.tokens.len());
         if first >= last {
             return;
         }

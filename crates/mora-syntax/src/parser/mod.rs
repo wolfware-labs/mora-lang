@@ -84,13 +84,7 @@ fn parse_within(text: &str, budget: Option<usize>) -> Parse {
         p.budget = budget;
     }
     items::source_file(&mut p);
-    let (green, mut errors) = build::build(
-        text,
-        &lexed,
-        &input.rejected_runs,
-        &input.token_ends,
-        p.events,
-    );
+    let (green, mut errors) = build::build(text, &lexed, &input.rejected_runs, p.events);
     errors.extend(lexed.errors.iter().cloned());
     errors.sort_by_key(|error| error.range.start());
     Parse { green, errors }
@@ -113,10 +107,10 @@ pub(crate) struct Input<'t> {
     ranges: Vec<TextRange>,
     /// The index of each token in [`Lexed::tokens`].
     raw: Vec<usize>,
-    /// For each token of [`Lexed::tokens`], the index after it: after the
-    /// next token too when rejected text between them joins them into one,
-    /// as `.\.` into `..` ([`Input::merge`]).
-    token_ends: Vec<usize>,
+    /// For each token, the index in [`Lexed::tokens`] after it: after the
+    /// token that rejected text joins it with too, as `.\.` makes `..`
+    /// ([`Input::merge`]).
+    raw_ends: Vec<usize>,
     /// Whether the token is directly followed by the next one, with no trivia
     /// between them: rejected text that touches both counts as nothing, so
     /// that `>\>` is still `>>` to the parser.
@@ -148,7 +142,7 @@ impl<'t> Input<'t> {
             kinds: Vec::new(),
             ranges: Vec::new(),
             raw: Vec::new(),
-            token_ends: Vec::new(),
+            raw_ends: Vec::new(),
             joined: Vec::new(),
             line_start: Vec::new(),
             rejected_before: Vec::new(),
@@ -178,7 +172,6 @@ impl<'t> Input<'t> {
         // The same tokens with the rejected text left out.
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
-        input.token_ends = (1..=lexed.tokens.len()).collect();
         let (mut rejected, mut line_break) = (false, false);
         let mut at = 0;
         while at < all.len() {
@@ -189,6 +182,7 @@ impl<'t> Input<'t> {
                 input.kinds.push(all.kinds[at]);
                 input.ranges.push(all.ranges[at]);
                 input.raw.push(all.raw[at]);
+                input.raw_ends.push(all.raw[at] + 1);
                 input.joined.push(all.joined[at]);
                 at += 1;
                 continue;
@@ -285,9 +279,18 @@ impl<'t> Input<'t> {
         }
         self.kinds[last] = token.kind;
         self.ranges[last] = TextRange::new(self.ranges[last].start(), all.ranges[at].end());
-        self.token_ends[self.raw[last]] = all.raw[at] + 1;
+        self.raw_ends[last] = all.raw[at] + 1;
         self.joined[last] = all.joined[at];
         true
+    }
+
+    /// How many tokens of [`Lexed::tokens`] the `n` tokens from token `i`
+    /// span, rejected text between them included; 0 past the end.
+    fn raw_len(&self, i: usize, n: usize) -> usize {
+        let (Some(&first), Some(&end)) = (self.raw.get(i), self.raw_ends.get(i + n - 1)) else {
+            return 0;
+        };
+        end - first
     }
 
     /// Whether rejected text comes right before token `i`, or before the end
@@ -308,9 +311,11 @@ pub(crate) enum Event {
     },
     /// Close the innermost open node.
     Finish,
-    /// Take `n` tokens of the [`Input`] as one token of `kind`: `>>` from two
-    /// `>`, with any rejected text between them.
-    Token { kind: SyntaxKind, n: usize },
+    /// Take `n_raw` tokens of [`Lexed::tokens`], from the next one that is
+    /// neither trivia nor rejected text, as one token of `kind`: `>>` from
+    /// two `>`, or from `>\>` with the rejected text inside it
+    /// ([`Input::raw_len`]).
+    Token { kind: SyntaxKind, n_raw: usize },
     /// Report `MR0110` at the next token. With `fix`, the error offers to
     /// replace the token it wraps.
     Error {
@@ -636,7 +641,8 @@ impl<'t> Parser<'t> {
     /// Takes the next token as `kind`, which must be there.
     pub(crate) fn bump(&mut self, kind: SyntaxKind) {
         let n = self.pieces(self.pos, kind).unwrap_or(1);
-        self.events.push(Event::Token { kind, n });
+        let n_raw = self.input.raw_len(self.pos, n);
+        self.events.push(Event::Token { kind, n_raw });
         self.pos += n;
     }
 
@@ -650,7 +656,7 @@ impl<'t> Parser<'t> {
 
     /// Takes an identifier as the contextual keyword `kind`.
     pub(crate) fn bump_remap(&mut self, kind: SyntaxKind) {
-        self.events.push(Event::Token { kind, n: 1 });
+        self.events.push(Event::Token { kind, n_raw: 1 });
         self.pos += 1;
     }
 

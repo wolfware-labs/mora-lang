@@ -3,13 +3,17 @@
 //! The lexer reports each token it rejects (`MR0017`). A quote meant to
 //! open a string or a character (one of [`QUOTES`]) is rejected too, and
 //! the text up to the quote that closes it goes with it, when that quote
-//! comes on the same line before the statement ends ([`closing_quotes`]).
-//! A quote that none closes is rejected text on its own, so a stray quote
+//! comes on the same line before a `;`, and before any piece of an
+//! interpolated string, which a run never splits ([`closing_quotes`]). A
+//! quote that none closes is rejected text on its own, so a stray quote
 //! takes nothing from the declarations after it. Each such run of
 //! rejected text is left out of the parser's [`Input`], so the parser
 //! parses the text as if the run were not there and reports only what the
-//! text without it would. The tree builder puts each run back where it
-//! falls, in an `Error` node of its own, so the tree stays lossless.
+//! text without it would. The tokens on both sides of a run that touches
+//! them stay joined, so `>\>` is still `>>`, and two punctuation tokens
+//! that lex as one become one, as `.\.` makes `..` ([`Input::merge`]). The
+//! tree builder puts each run back where it falls, in an `Error` node of
+//! its own or inside the token it joins, so the tree stays lossless.
 //!
 //! Where something is missing, rejected text in its place stands for it:
 //! [`Parser::rejected_in_place`] takes the run into the node of the missing

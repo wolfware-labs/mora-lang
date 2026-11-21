@@ -90,16 +90,18 @@ fn class_members(text: &str) -> Vec<String> {
         .member_list()
         .unwrap()
         .members()
-        .map(|member| {
-            let syntax = member.syntax();
-            let name = syntax
-                .descendants()
-                .find(|n| n.kind() == mora_syntax::SyntaxKind::Name)
-                .map(|n| n.text())
-                .unwrap_or_default();
-            format!("{:?} {name}", syntax.kind())
-        })
+        .map(|member| kind_and_name(member.syntax()))
         .collect()
+}
+
+/// The kind of `node` and the first name in it.
+fn kind_and_name(node: &mora_syntax::SyntaxNode) -> String {
+    let name = node
+        .descendants()
+        .find(|n| n.kind() == mora_syntax::SyntaxKind::Name)
+        .map(|n| n.text())
+        .unwrap_or_default();
+    format!("{:?} {name}", node.kind())
 }
 
 #[test]
@@ -515,7 +517,7 @@ fn a_quoted_run_takes_its_brackets_whole() {
 }
 
 #[test]
-fn a_rejected_run_stops_before_a_statement_keyword() {
+fn a_quoted_run_stops_at_the_end_of_its_line() {
     // The call is not closed, which is a mistake of its own, and the next
     // statement is parsed.
     assert_eq!(
@@ -1172,14 +1174,7 @@ fn declarations(text: &str) -> Vec<String> {
         .syntax()
         .descendants()
         .filter(|node| format!("{:?}", node.kind()).ends_with("Decl"))
-        .map(|node| {
-            let name = node
-                .children()
-                .find(|child| child.kind() == mora_syntax::SyntaxKind::Name)
-                .map(|name| name.text())
-                .unwrap_or_default();
-            format!("{:?} {name}", node.kind())
-        })
+        .map(|node| kind_and_name(&node))
         .collect()
 }
 
@@ -1203,6 +1198,12 @@ fn an_unpaired_quote_keeps_the_declarations_after_it() {
 
 #[test]
 fn rejected_text_inside_a_joined_operator_is_parsed_past() {
+    let kinds = |text: &str| -> Vec<String> {
+        let tree = parse(text).syntax().debug_tree();
+        tree.lines()
+            .map(|line| line.split('@').next().unwrap_or_default().to_owned())
+            .collect()
+    };
     for text in [
         "let a = items?\\[0];\n",
         "let a = items?\\.Name;\n",
@@ -1212,12 +1213,6 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
     ] {
         assert_only_rejected(text);
         // The same nodes and tokens, the joined one with the run inside it.
-        let kinds = |text: &str| -> Vec<String> {
-            let tree = parse(text).syntax().debug_tree();
-            tree.lines()
-                .map(|line| line.split('@').next().unwrap_or_default().to_owned())
-                .collect()
-        };
         assert_eq!(kinds(text), kinds(&text.replace('\\', "")), "{text:?}");
     }
 }
