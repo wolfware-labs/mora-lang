@@ -376,4 +376,16 @@ mod tests {
         let args = [OsString::from("--color=always")];
         assert_eq!(color_option(&args), Color::Auto);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_argument_that_is_not_text_is_skipped() {
+        use std::os::unix::ffi::OsStringExt;
+        let args = [
+            OsString::from("mora"),
+            OsString::from("--color=never"),
+            OsString::from_vec(vec![0xff, 0xfe]),
+        ];
+        assert_eq!(color_option(&args), Color::Never);
+    }
 }
