@@ -3,7 +3,7 @@
 
 use std::process::Command;
 
-use super::resolve::tests::{built, drift_of, registry};
+use super::resolve::tests::{CRATES_IO, built, drift_of, registry};
 use super::resolve::{FUZZED, Unit, resolve_locked};
 use super::*;
 use crate::paths::{Scratch, scratch};
@@ -395,21 +395,22 @@ fn a_dependency_on_a_copy_another_workspace_crate_uses_fails() {
     assert!(shown.contains("leaf 1.0.0 from registry+"), "{shown}");
 }
 
-#[test]
-fn an_optional_dependency_a_feature_turns_on_is_a_warning() {
-    // leaf's `extra` feature turns on its optional dependency twig, and
-    // only the workspace asks for it.
-    let fixture = Fixture::new("fuzz-lock-optional");
+/// The check of a fixture whose registry `leaf` 1.0.0 has `manifest` after
+/// its `[package]` table and can use the registry's twig 1.0.0, and whose
+/// `tool` turns on leaf's `feature`: its only warning, shown, with no
+/// problem.
+fn optional_warning(name: &str, manifest: &str, feature: &str) -> String {
+    let fixture = Fixture::new(name);
     fixture.publish("twig", "1.0.0");
     fixture.write(
         "registry/leaf-1.0.0/Cargo.toml",
-        "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n\
-         [dependencies]\ntwig = { version = \"1\", optional = true }\n\n\
-         [features]\nextra = [\"dep:twig\"]\n",
+        &format!(
+            "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n{manifest}"
+        ),
     );
     fixture.append(
         "tool/Cargo.toml",
-        "leaf = { version = \"1\", features = [\"extra\"] }\n",
+        &format!("leaf = {{ version = \"1\", features = [\"{feature}\"] }}\n"),
     );
     fixture.lock(".");
     fixture.lock("fuzz");
@@ -418,9 +419,51 @@ fn an_optional_dependency_a_feature_turns_on_is_a_warning() {
     let [warning] = checked.warnings.as_slice() else {
         panic!("{checked:?}");
     };
-    let shown = warning.to_string();
+    warning.to_string()
+}
+
+#[test]
+fn an_optional_dependency_a_feature_turns_on_is_a_warning() {
+    // leaf's `extra` feature turns on its optional dependency twig, and
+    // only the workspace asks for it.
+    let shown = optional_warning(
+        "fuzz-lock-optional",
+        "[dependencies]\ntwig = { version = \"1\", optional = true }\n\n\
+         [features]\nextra = [\"dep:twig\"]\n",
+        "extra",
+    );
     assert!(shown.contains("`extra`"), "{shown}");
     assert!(shown.contains("twig 1.0.0"), "{shown}");
+}
+
+#[test]
+fn the_feature_cargo_makes_for_an_optional_dependency_turns_it_on() {
+    let shown = optional_warning(
+        "fuzz-lock-implicit",
+        "[dependencies]\ntwig = { version = \"1\", optional = true }\n",
+        "twig",
+    );
+    assert!(
+        shown.contains(&format!("twig 1.0.0 from {CRATES_IO} (by `twig`)")),
+        "{shown}"
+    );
+}
+
+#[test]
+fn an_optional_dependency_the_other_build_takes_as_a_build_dependency_is_named() {
+    // Both builds build twig for leaf's build script; only the workspace
+    // turns on `extra`, which builds it as a normal dependency too.
+    let shown = optional_warning(
+        "fuzz-lock-optional-build",
+        "[dependencies]\ntwig = { version = \"1\", optional = true }\n\n\
+         [build-dependencies]\ntwig = \"1\"\n\n\
+         [features]\nextra = [\"dep:twig\"]\n",
+        "extra",
+    );
+    assert!(
+        shown.contains(&format!("twig 1.0.0 from {CRATES_IO} (by `extra`)")),
+        "{shown}"
+    );
 }
 
 #[test]

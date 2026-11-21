@@ -7,9 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use cargo_metadata::semver::Version;
-use cargo_metadata::{
-    DependencyKind, Metadata, MetadataCommand, Node, NodeDep, Package, PackageId,
-};
+use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Node, Package, PackageId};
 
 use super::Compatible;
 use crate::paths::{FUZZ_MANIFEST, ROOT_MANIFEST};
@@ -70,46 +68,84 @@ impl fmt::Display for Built {
     }
 }
 
+/// How a package depends on another, of the kinds the closure follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    /// A normal dependency, built for the platform the package is built for.
+    Normal,
+    /// A build dependency, built for the host to run the build script.
+    Build,
+}
+
+impl Kind {
+    /// The kind of a dependency of `kind`; `None` for a dev dependency,
+    /// which is not code the fuzzer runs.
+    fn of(kind: DependencyKind) -> Option<Self> {
+        match kind {
+            DependencyKind::Normal => Some(Self::Normal),
+            DependencyKind::Build => Some(Self::Build),
+            _ => None,
+        }
+    }
+}
+
+/// A package another is built on, and how.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Dep {
+    /// The package depended on.
+    pub built: Built,
+    /// Whether it is a normal or a build dependency.
+    pub kind: Kind,
+}
+
+impl fmt::Display for Dep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            Kind::Normal => write!(f, "{}", self.built),
+            Kind::Build => write!(f, "{} as a build dependency", self.built),
+        }
+    }
+}
+
 /// One package of [`FUZZED`]'s dependency closure as one build makes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
     /// The package.
     pub built: Built,
-    /// What it is built on: its normal and build dependencies, sorted.
-    pub deps: Vec<Built>,
+    /// What it is built on: its normal and build dependencies, a package it
+    /// depends on both ways listed once for each, sorted.
+    pub deps: Vec<Dep>,
     /// The features cargo turns on for it, sorted.
     pub features: Vec<String>,
-    /// The crates its manifest declares as optional dependencies, each with
-    /// the features that turn it on.
-    pub optional: BTreeMap<String, Vec<String>>,
+    /// The crates its manifest declares as optional dependencies, by name
+    /// and kind, each with the features that turn it on.
+    pub optional: BTreeMap<(String, Kind), Vec<String>>,
 }
 
-/// Whether a resolved dependency is of one of `kinds`, on any platform.
-fn of_kind(dep: &NodeDep, kinds: &[DependencyKind]) -> bool {
-    dep.dep_kinds.iter().any(|info| kinds.contains(&info.kind))
-}
-
-/// The dependencies a package is built on, which the closure follows.
-const BUILT_ON: [DependencyKind; 2] = [DependencyKind::Normal, DependencyKind::Build];
-
-/// The optional dependencies `package` declares, by crate name, each with
-/// the features that turn it on: one named after it, or one that lists
-/// `name`, `dep:name` or `name/feature`, `name` being the name the manifest
-/// gives it.
-fn optional(package: &Package) -> BTreeMap<String, Vec<String>> {
-    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for dep in package.dependencies.iter().filter(|dep| dep.optional) {
+/// The optional dependencies `package` declares, by crate name and kind,
+/// each with the features that turn it on: those that list `name`,
+/// `dep:name` or `name/feature`, `name` being the name the manifest gives
+/// it. Cargo lists the feature it makes for an optional dependency no
+/// feature names with `dep:` as `name = ["dep:name"]`.
+fn optional(package: &Package) -> BTreeMap<(String, Kind), Vec<String>> {
+    let mut found: BTreeMap<(String, Kind), Vec<String>> = BTreeMap::new();
+    let declared = package
+        .dependencies
+        .iter()
+        .filter(|dep| dep.optional)
+        .filter_map(|dep| Some((dep, Kind::of(dep.kind)?)));
+    for (dep, kind) in declared {
         let name = dep.rename.as_deref().unwrap_or(&dep.name);
         let turns_on = |value: &String| {
             let value = value.strip_prefix("dep:").unwrap_or(value);
             value.split_once('/').map_or(value, |(dep, _)| dep) == name
         };
-        let features = found.entry(dep.name.clone()).or_default();
+        let features = found.entry((dep.name.clone(), kind)).or_default();
         features.extend(
             package
                 .features
                 .iter()
-                .filter(|(feature, values)| *feature == name || values.iter().any(turns_on))
+                .filter(|(_, values)| values.iter().any(turns_on))
                 .map(|(feature, _)| feature.clone()),
         );
         features.sort();
@@ -150,14 +186,25 @@ impl Unit {
                 continue;
             }
             let node = nodes.get(id)?;
-            let on: Vec<&PackageId> = node
+            let on: Vec<(&PackageId, Kind)> = node
                 .deps
                 .iter()
-                .filter(|dep| of_kind(dep, &BUILT_ON))
-                .map(|dep| &dep.pkg)
+                .flat_map(|dep| {
+                    dep.dep_kinds
+                        .iter()
+                        .filter_map(|info| Some((&dep.pkg, Kind::of(info.kind)?)))
+                })
                 .collect();
-            next.extend(&on);
-            let mut deps: Vec<Built> = on.iter().filter_map(|id| built.get(id).cloned()).collect();
+            next.extend(on.iter().map(|(id, _)| *id));
+            let mut deps: Vec<Dep> = on
+                .iter()
+                .filter_map(|(id, kind)| {
+                    Some(Dep {
+                        built: built.get(id)?.clone(),
+                        kind: *kind,
+                    })
+                })
+                .collect();
             deps.sort();
             deps.dedup();
             let mut features: Vec<String> = node.features.iter().map(ToString::to_string).collect();
@@ -226,7 +273,7 @@ impl fmt::Display for Update {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Optional {
     /// The dependency.
-    pub dep: Built,
+    pub dep: Dep,
     /// The features that turn it on.
     pub features: Vec<String>,
 }
@@ -255,13 +302,13 @@ pub enum Drift {
         update: Option<Update>,
     },
     /// The same package, built on other dependencies: those only the
-    /// workspace builds it on, those only the fuzz crate does, and the
-    /// updates that move the workspace to the fuzz crate's versions.
+    /// workspace builds it on, and those only the fuzz crate does. A
+    /// dependency at another version, or from another source, shows here
+    /// only when its own difference is not reported.
     Deps {
         package: Built,
-        root: Vec<Built>,
-        fuzz: Vec<Built>,
-        updates: Vec<Update>,
+        root: Vec<Dep>,
+        fuzz: Vec<Dep>,
     },
     /// The same package with other features: those only the workspace
     /// turns on, and those only the fuzz crate does, with the optional
@@ -296,20 +343,12 @@ fn features_and_deps(features: &[String], deps: &[Optional]) -> String {
     )
 }
 
-/// Advice to run `updates`, to follow a difference they settle; empty when
-/// there are none.
-fn advice(updates: &[Update]) -> String {
-    if updates.is_empty() {
-        return String::new();
-    }
-    format!(
-        "; to move the workspace to the fuzz crate's version instead, run {}",
-        updates
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(" and ")
-    )
+/// Advice to run `update`, to follow a difference it settles; empty when
+/// there is none.
+fn advice(update: Option<&Update>) -> String {
+    update.map_or_else(String::new, |update| {
+        format!("; to move the workspace to the fuzz crate's version instead, run {update}")
+    })
 }
 
 impl fmt::Display for Drift {
@@ -323,20 +362,18 @@ impl fmt::Display for Drift {
                 root.from,
                 fuzz.version,
                 fuzz.from,
-                advice(update.as_slice())
+                advice(update.as_ref())
             ),
             Self::Deps {
                 package,
                 root,
                 fuzz,
-                updates,
             } => write!(
                 f,
                 "{package}: dependencies only {ROOT_MANIFEST} builds it on: {}; only \
-                 {FUZZ_MANIFEST}: {}{}",
+                 {FUZZ_MANIFEST}: {}",
                 listed(root, ToString::to_string),
                 listed(fuzz, ToString::to_string),
-                advice(updates)
             ),
             Self::Features {
                 package,
@@ -377,11 +414,9 @@ fn counterpart<'a>(
 /// The dependencies only one build builds a package on.
 struct Apart {
     /// The dependencies only the workspace builds it on.
-    root: Vec<Built>,
+    root: Vec<Dep>,
     /// The dependencies only the fuzz crate builds it on.
-    fuzz: Vec<Built>,
-    /// The updates that move the workspace to the fuzz crate's versions.
-    updates: Vec<Update>,
+    fuzz: Vec<Dep>,
     /// The optional dependencies only the workspace builds it on, through
     /// features only the workspace turns on.
     root_optional: Vec<Optional>,
@@ -391,12 +426,12 @@ struct Apart {
 
 /// The optional dependencies of `deps` that `extra`, features only one
 /// build turns on for `unit`, turn on; they leave `deps`.
-fn take_optional(deps: &mut Vec<Built>, unit: &Unit, extra: &[String]) -> Vec<Optional> {
+fn take_optional(deps: &mut Vec<Dep>, unit: &Unit, extra: &[String]) -> Vec<Optional> {
     let mut taken = Vec::new();
     deps.retain(|dep| {
         let features: Vec<String> = unit
             .optional
-            .get(&dep.name)
+            .get(&(dep.built.name.clone(), dep.kind))
             .into_iter()
             .flatten()
             .filter(|feature| extra.contains(feature))
@@ -415,22 +450,30 @@ fn take_optional(deps: &mut Vec<Built>, unit: &Unit, extra: &[String]) -> Vec<Op
 }
 
 /// How `fuzz` builds a package on other dependencies than `root`, the same
-/// package in the workspace. A pair of one crate at two versions or sources
-/// is left out when `reported`, the pairs of packages whose own difference
-/// is reported, holds it. A dependency only one build has is an optional
-/// one that build's own features turn on, or a difference of its own.
-fn apart(root: &Unit, fuzz: &Unit, workspace: &[Built], reported: &[(&Built, &Built)]) -> Apart {
+/// package in the workspace. A pair of one crate at two versions or sources,
+/// of one kind, is left out when `reported`, the pairs of packages whose own
+/// difference is reported, holds it. A dependency only one build has is an
+/// optional one that build's own features turn on, or a difference of its
+/// own.
+fn apart(root: &Unit, fuzz: &Unit, reported: &[(&Built, &Built)]) -> Apart {
     let mut root_alone = missing(&root.deps, &fuzz.deps);
     let mut fuzz_alone = Vec::new();
-    let (mut root_paired, mut fuzz_paired, mut updates) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut root_paired, mut fuzz_paired) = (Vec::new(), Vec::new());
     for dep in missing(&fuzz.deps, &root.deps) {
-        let Some(other) = counterpart(root_alone.iter(), &dep).cloned() else {
+        let same_kind = root_alone
+            .iter()
+            .filter(|other| other.kind == dep.kind)
+            .map(|other| &other.built);
+        let Some(other) = counterpart(same_kind, &dep.built).cloned() else {
             fuzz_alone.push(dep);
             continue;
         };
+        let other = Dep {
+            built: other,
+            kind: dep.kind,
+        };
         root_alone.retain(|item| *item != other);
-        if !reported.contains(&(&other, &dep)) {
-            updates.extend(Update::of(&other, &dep, workspace));
+        if !reported.contains(&(&other.built, &dep.built)) {
             root_paired.push(other);
             fuzz_paired.push(dep);
         }
@@ -452,7 +495,6 @@ fn apart(root: &Unit, fuzz: &Unit, workspace: &[Built], reported: &[(&Built, &Bu
     Apart {
         root: root_paired,
         fuzz: fuzz_paired,
-        updates,
         root_optional,
         fuzz_optional,
     }
@@ -484,13 +526,12 @@ pub fn drift(root: &[Unit], fuzz: &[Unit], workspace: &[Built]) -> Vec<Drift> {
             }
             continue;
         };
-        let deps = apart(same, unit, workspace, &counterparts);
+        let deps = apart(same, unit, &counterparts);
         if !deps.root.is_empty() || !deps.fuzz.is_empty() {
             found.push(Drift::Deps {
                 package: unit.built.clone(),
                 root: deps.root,
                 fuzz: deps.fuzz,
-                updates: deps.updates,
             });
         }
         if same.features != unit.features {
@@ -592,10 +633,18 @@ pub(super) mod tests {
         }
     }
 
-    /// `unit` built on `deps`.
+    /// A normal dependency on `built`.
+    fn normal(built: Built) -> Dep {
+        Dep {
+            built,
+            kind: Kind::Normal,
+        }
+    }
+
+    /// `unit` built on `deps`, normal dependencies.
     fn on(built: Built, deps: &[Built]) -> Unit {
         Unit {
-            deps: deps.to_vec(),
+            deps: deps.iter().cloned().map(normal).collect(),
             ..unit(built)
         }
     }
@@ -666,20 +715,6 @@ pub(super) mod tests {
                 error: format!("it does not build {FUZZED} from a path"),
             })
         );
-    }
-
-    #[test]
-    fn two_updates_are_named_together() {
-        let updates =
-            [("cc", "1.2.0", "1.2.1"), ("syn", "2.0.1", "2.0.2")].map(|(name, from, to)| {
-                Update::of(&registry(name, from), &registry(name, to), &[]).unwrap()
-            });
-        assert_eq!(
-            advice(&updates),
-            "; to move the workspace to the fuzz crate's version instead, run `cargo update -p \
-             cc@1.2.0 --precise 1.2.1` and `cargo update -p syn@2.0.1 --precise 2.0.2`"
-        );
-        assert_eq!(advice(&[]), "");
     }
 
     #[test]
@@ -807,13 +842,19 @@ pub(super) mod tests {
                 vendored.clone()
             )]
         );
-        // A dependency at another version that the closure does not report
-        // on its own shows in the package built on it, with the update; so
-        // does a dependency only one build has.
-        let cc = |version| registry("cc", version);
-        let root = [on(macro2.clone(), &[cc("1.2.0")])];
+        // A dependency only one build has shows in the package built on it,
+        // and so does one the other build takes as another kind.
+        let cc = registry("cc", "1.2.0");
+        let for_host = Dep {
+            built: cc.clone(),
+            kind: Kind::Build,
+        };
+        let root = [on(macro2.clone(), std::slice::from_ref(&cc))];
         let fuzz = [
-            on(macro2.clone(), &[cc("1.2.1"), vendored.clone()]),
+            Unit {
+                deps: vec![for_host.clone(), normal(vendored.clone())],
+                ..unit(macro2.clone())
+            },
             unit(vendored.clone()),
         ];
         let found = compare(&root, &fuzz);
@@ -821,21 +862,16 @@ pub(super) mod tests {
             found,
             [Drift::Deps {
                 package: macro2,
-                root: vec![cc("1.2.0")],
-                fuzz: vec![cc("1.2.1"), vendored],
-                updates: vec![Update {
-                    spec: "cc@1.2.0".into(),
-                    precise: Version::parse("1.2.1").unwrap(),
-                }],
+                root: vec![normal(cc)],
+                fuzz: vec![for_host, normal(vendored)],
             }]
         );
         assert_eq!(
             found[0].to_string(),
             format!(
                 "proc-macro2 1.0.106 from {CRATES_IO}: dependencies only Cargo.toml builds it on: \
-                 cc 1.2.0 from {CRATES_IO}; only fuzz/Cargo.toml: cc 1.2.1 from {CRATES_IO}, \
-                 unicode-ident 1.0.28 from /repo/vendor/unicode-ident; to move the workspace to \
-                 the fuzz crate's version instead, run `cargo update -p cc@1.2.0 --precise 1.2.1`"
+                 cc 1.2.0 from {CRATES_IO}; only fuzz/Cargo.toml: cc 1.2.0 from {CRATES_IO} as a \
+                 build dependency, unicode-ident 1.0.28 from /repo/vendor/unicode-ident"
             )
         );
     }
@@ -914,10 +950,11 @@ pub(super) mod tests {
 
     /// `unit` with `features`, declaring `optional`, turned on by `extra`.
     fn optional_on(built: Built, deps: &[Built], features: &[&str]) -> Unit {
+        let indexmap = ("indexmap".to_owned(), Kind::Normal);
         Unit {
-            deps: deps.to_vec(),
-            optional: [("indexmap".to_owned(), vec!["preserve_order".to_owned()])].into(),
-            ..with(built, features)
+            optional: [(indexmap, vec!["preserve_order".to_owned()])].into(),
+            features: with(built.clone(), features).features,
+            ..on(built, deps)
         }
     }
 
@@ -933,7 +970,7 @@ pub(super) mod tests {
             &[optional_on(json.clone(), &both, &["std"])],
         );
         let turned_on = Optional {
-            dep: indexmap.clone(),
+            dep: normal(indexmap.clone()),
             features: vec!["preserve_order".into()],
         };
         assert_eq!(
@@ -972,7 +1009,7 @@ pub(super) mod tests {
         );
         assert!(
             matches!(&found[..], [Drift::Deps { root, .. }, Drift::Features { root_deps, .. }]
-                if *root == [indexmap.clone()] && root_deps.is_empty()),
+                if *root == [normal(indexmap.clone())] && root_deps.is_empty()),
             "{found:?}"
         );
         // Nor does a feature that does not turn it on.
@@ -987,6 +1024,69 @@ pub(super) mod tests {
         assert!(
             matches!(&found[..], [Drift::Deps { .. }, Drift::Features { .. }]),
             "{found:?}"
+        );
+    }
+
+    /// A package as `cargo metadata` reports it, with `dependencies`, each
+    /// `(name, rename, kind, optional)` and `kind` as cargo writes it, and
+    /// `features` as cargo lists them, the implicit ones included.
+    fn declaring(
+        dependencies: &[(&str, Option<&str>, Option<&str>, bool)],
+        features: serde_json::Value,
+    ) -> Package {
+        let dependencies: Vec<serde_json::Value> = dependencies
+            .iter()
+            .map(|(name, rename, kind, optional)| {
+                serde_json::json!({
+                    "name": name, "source": CRATES_IO, "req": "^1", "kind": kind,
+                    "optional": optional, "uses_default_features": true, "features": [],
+                    "target": null, "rename": rename, "registry": null, "path": null,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "name": "leaf", "version": "1.0.0", "id": "leaf 1.0.0", "source": null,
+            "dependencies": dependencies, "targets": [], "features": features,
+            "manifest_path": "/repo/leaf/Cargo.toml",
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_optional_dependency_is_turned_on_by_name_by_dep_or_by_a_feature_of_it() {
+        let twig = |rename| [("twig", rename, None, true)];
+        let found = |deps: &[_], features| optional(&declaring(deps, features));
+        let turned_on = |features: &[&str]| {
+            BTreeMap::from([(
+                ("twig".to_owned(), Kind::Normal),
+                features.iter().map(|name| (*name).to_owned()).collect(),
+            )])
+        };
+        // Cargo lists the feature named after an optional dependency that no
+        // feature names with `dep:`.
+        let implicit = serde_json::json!({ "twig": ["dep:twig"] });
+        assert_eq!(found(&twig(None), implicit), turned_on(&["twig"]));
+        // A renamed dependency goes by the name the manifest gives it.
+        let renamed = serde_json::json!({ "f": ["dep:t"] });
+        assert_eq!(found(&twig(Some("t")), renamed), turned_on(&["f"]));
+        let renamed = serde_json::json!({ "t": ["dep:t"] });
+        assert_eq!(found(&twig(Some("t")), renamed), turned_on(&["t"]));
+        // `twig/extra` turns twig on; `twig?/extra` only asks for `extra` when
+        // something else does.
+        let feature = serde_json::json!({ "f": ["twig/extra"], "twig": ["dep:twig"] });
+        assert_eq!(found(&twig(None), feature), turned_on(&["f", "twig"]));
+        let weak = serde_json::json!({ "g": ["dep:twig"], "w": ["twig?/extra"] });
+        assert_eq!(found(&twig(None), weak), turned_on(&["g"]));
+        // Once `dep:twig` names it, a feature called `twig` is one like any
+        // other.
+        let named = serde_json::json!({ "g": ["dep:twig"], "other": [], "twig": ["other"] });
+        assert_eq!(found(&twig(None), named), turned_on(&["g"]));
+        // An optional build dependency is told from a normal one.
+        let build = [("twig", None, Some("build"), true)];
+        let feature = serde_json::json!({ "g": ["dep:twig"] });
+        assert_eq!(
+            found(&build, feature),
+            BTreeMap::from([(("twig".to_owned(), Kind::Build), vec!["g".to_owned()])])
         );
     }
 
