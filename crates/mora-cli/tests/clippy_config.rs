@@ -5,7 +5,8 @@ use std::path::Path;
 
 #[test]
 fn the_crate_clippy_toml_repeats_the_workspace_settings() {
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crate_dir = std::env::var_os("CARGO_MANIFEST_DIR").unwrap();
+    let crate_dir = Path::new(&crate_dir);
     let [workspace, local]: [toml::Table; 2] = [
         crate_dir.join("../../clippy.toml"),
         crate_dir.join("clippy.toml"),

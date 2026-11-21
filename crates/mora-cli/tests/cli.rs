@@ -249,3 +249,61 @@ fn a_usage_error_prints_nothing_on_stdout() {
         stderr(&output)
     );
 }
+
+#[test]
+fn help_and_usage_errors_follow_the_color_option() {
+    const ESC: char = '\u{1b}';
+    for color in ["--color=always", "--color always"] {
+        let mut args: Vec<&str> = color.split(' ').collect();
+        args.push("--help");
+        let help = stdout(&mora(&args));
+        assert!(help.contains(ESC), "{args:?}: {help:?}");
+        args.pop();
+        args.push("frobnicate");
+        let error = stderr(&mora(&args));
+        assert!(error.contains(ESC), "{args:?}: {error:?}");
+    }
+    for args in [
+        &["--color", "never", "--help"][..],
+        &["--help"],
+        &["--color", "always", "--color", "never", "--help"],
+    ] {
+        let help = stdout(&mora(args));
+        assert!(!help.contains(ESC), "{args:?}: {help:?}");
+    }
+    for args in [
+        &["--color", "never", "frobnicate"][..],
+        &["frobnicate"],
+        // After `--` the words are arguments, not options.
+        &["frobnicate", "--", "--color", "always"],
+    ] {
+        let error = stderr(&mora(args));
+        assert!(error.starts_with("error:"), "{args:?}: {error:?}");
+        assert!(!error.contains(ESC), "{args:?}: {error:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_error_report_follows_the_color_option() {
+    let colored = stderr(&mora_into(
+        &["--color", "always", "--help"],
+        std::fs::File::create("/dev/full").unwrap(),
+    ));
+    assert!(
+        colored.starts_with("\u{1b}[1;31merror\u{1b}[0m:"),
+        "{colored:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_usage_error_into_a_full_stderr_still_exits_2() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+        .arg("nosuch")
+        .stderr(std::fs::File::create("/dev/full").unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+}

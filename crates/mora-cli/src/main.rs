@@ -1,9 +1,10 @@
 //! The `mora` executable (§17.1).
 
+use std::ffi::{OsStr, OsString};
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 /// The exit codes of §17.1.
@@ -152,9 +153,15 @@ impl Command {
 }
 
 fn main() -> ExitCode {
-    let cli = match Cli::try_parse() {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let color = color_option(&args);
+    let mut command = Cli::command().color(color.into());
+    let cli = match command
+        .try_get_matches_from_mut(&args)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
-        Err(error) => return clap_exit(&error),
+        Err(error) => return clap_exit(&error.format(&mut command), color),
     };
     match &cli.command {
         Command::Version => version(cli.message_format, cli.color),
@@ -166,22 +173,51 @@ fn main() -> ExitCode {
     }
 }
 
-/// Prints what clap stopped on, in clap's own colors: help or the version on
-/// stdout, a usage error on stderr. `Error::exit` would drop a failed write
-/// to stdout and exit 0.
-fn clap_exit(error: &clap::Error) -> ExitCode {
+/// The `--color` value on the command line, read before clap parses it, so
+/// that clap's help and usage errors follow it too. The last one before `--`
+/// counts; `auto` when there is none or its value is not valid, which clap
+/// then reports.
+fn color_option(args: &[OsString]) -> Color {
+    let mut color = Color::Auto;
+    let mut args = args.iter().skip(1);
+    while let Some(arg) = args.next() {
+        let value = match arg.to_str() {
+            Some("--") => break,
+            Some("--color") => args.next().map(OsString::as_os_str),
+            Some(arg) => arg.strip_prefix("--color=").map(OsStr::new),
+            None => None,
+        };
+        if let Some(value) = value {
+            color = value
+                .to_str()
+                .and_then(|value| Color::from_str(value, false).ok())
+                .unwrap_or(Color::Auto);
+        }
+    }
+    color
+}
+
+impl From<Color> for clap::ColorChoice {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Auto => Self::Auto,
+            Color::Always => Self::Always,
+            Color::Never => Self::Never,
+        }
+    }
+}
+
+/// Prints what clap stopped on, in clap's colors as `--color` sets them: help
+/// or the version on stdout, a usage error on stderr. `Error::exit` would
+/// drop a failed write to stdout and exit 0.
+fn clap_exit(error: &clap::Error, color: Color) -> ExitCode {
     let code = ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(exit::USAGE));
     let written = error.print();
     if error.use_stderr() {
         // As in `report_error`, a failed write to stderr cannot be reported.
         code
     } else {
-        // `--color` is not parsed yet when clap stops, so `auto` applies.
-        finish(
-            written.and_then(|()| io::stdout().flush()),
-            code,
-            Color::Auto,
-        )
+        finish(written.and_then(|()| io::stdout().flush()), code, color)
     }
 }
 
@@ -319,7 +355,29 @@ mod tests {
 
     #[test]
     fn the_command_line_is_well_formed() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn the_color_option_is_found_before_parsing() {
+        let color = |args: &[&str]| {
+            let args: Vec<OsString> = ["mora"].iter().chain(args).map(OsString::from).collect();
+            match color_option(&args) {
+                Color::Auto => "auto",
+                Color::Always => "always",
+                Color::Never => "never",
+            }
+        };
+        assert_eq!(color(&[]), "auto");
+        assert_eq!(color(&["--color", "never", "--help"]), "never");
+        assert_eq!(color(&["--color=always", "check"]), "always");
+        assert_eq!(color(&["check", "--color", "never"]), "never");
+        assert_eq!(color(&["--color", "always", "--color=never"]), "never");
+        assert_eq!(color(&["--color", "purple"]), "auto");
+        assert_eq!(color(&["--color"]), "auto");
+        assert_eq!(color(&["run", "--", "--color", "always"]), "auto");
+        // The program's own name is not an option.
+        let args = [OsString::from("--color=always")];
+        assert!(matches!(color_option(&args), Color::Auto));
     }
 }
