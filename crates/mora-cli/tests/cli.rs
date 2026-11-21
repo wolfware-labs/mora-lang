@@ -3,12 +3,18 @@
 
 //! Runs the `mora` executable as a user would (§20.1, CLI layer).
 
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn mora(args: &[&str]) -> Output {
+    mora_into(args, Stdio::piped())
+}
+
+/// Runs `mora` with its stdout sent to `stdout`.
+fn mora_into(args: &[&str], stdout: impl Into<Stdio>) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mora"))
         .args(args)
         .env_remove("NO_COLOR")
+        .stdout(stdout)
         .output()
         .unwrap()
 }
@@ -20,6 +26,12 @@ fn stdout(output: &Output) -> String {
 fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
+
+/// The escape that starts every color sequence.
+const ESC: char = '\u{1b}';
+
+/// How an error report starts when it is colored.
+const COLORED_ERROR: &str = "\u{1b}[1;31merror\u{1b}[0m:";
 
 /// The MVP commands of §17.1.
 const COMMANDS: &[&str] = &[
@@ -64,7 +76,7 @@ fn version_in_json_is_one_object() {
     assert!(!line.contains('\n'), "{text}");
     assert!(
         line.starts_with(&format!(
-            "{{\"version\":\"{}\",\"commit\":\"",
+            "{{\"schema\":\"mora.version/1\",\"version\":\"{}\",\"commit\":\"",
             env!("CARGO_PKG_VERSION")
         )),
         "{text}"
@@ -137,15 +149,12 @@ fn commands_not_built_yet_say_so_and_exit_2() {
 #[test]
 fn color_follows_the_option() {
     let colored = stderr(&mora(&["--color", "always", "check"]));
-    assert!(
-        colored.starts_with("\u{1b}[1;31merror\u{1b}[0m:"),
-        "{colored:?}"
-    );
+    assert!(colored.starts_with(COLORED_ERROR), "{colored:?}");
     let plain = stderr(&mora(&["--color", "never", "check"]));
-    assert!(!plain.contains('\u{1b}'), "{plain:?}");
+    assert!(!plain.contains(ESC), "{plain:?}");
     // Not a terminal: auto means no color.
     let auto = stderr(&mora(&["check"]));
-    assert!(!auto.contains('\u{1b}'), "{auto:?}");
+    assert!(!auto.contains(ESC), "{auto:?}");
 }
 
 #[test]
@@ -183,4 +192,117 @@ fn version_lists_the_runtimes_installed_beside_the_executable() {
             .ends_with(",\"runtime_targets\":[\"alpha-os\",\"beta-os\"]}"),
         "{json}"
     );
+}
+
+/// Command lines that write to stdout: `mora version` in both formats, and
+/// the `--version` and `--help` options clap answers itself.
+const WRITERS: &[&[&str]] = &[
+    &["--message-format", "human", "version"],
+    &["--message-format", "json", "version"],
+    &["--version"],
+    &["--help"],
+];
+
+#[test]
+fn output_into_a_closed_pipe_exits_0_quietly() {
+    for args in WRITERS {
+        let (reader, writer) = std::io::pipe().unwrap();
+        // Closed before the process starts, so its first write fails.
+        drop(reader);
+        let output = mora_into(args, writer);
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        assert_eq!(stderr(&output), "", "{args:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn output_into_a_full_disk_is_a_failure() {
+    for args in WRITERS {
+        let full = std::fs::File::create("/dev/full").unwrap();
+        let output = mora_into(args, full);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let text = stderr(&output);
+        assert!(
+            text.starts_with("error: cannot write to stdout: "),
+            "{args:?}: {text}"
+        );
+        assert!(!text.contains("panicked"), "{args:?}: {text}");
+    }
+}
+
+#[test]
+fn the_version_option_prints_the_first_line_only() {
+    let output = mora(&["--version"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout(&output),
+        format!("mora {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn a_usage_error_prints_nothing_on_stdout() {
+    let output = mora(&["--color"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output).starts_with("error: "),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn help_and_usage_errors_follow_the_color_option() {
+    for color in ["--color=always", "--color always"] {
+        let mut args: Vec<&str> = color.split(' ').collect();
+        args.push("--help");
+        let help = stdout(&mora(&args));
+        assert!(help.contains(ESC), "{args:?}: {help:?}");
+        args.pop();
+        args.push("frobnicate");
+        let error = stderr(&mora(&args));
+        assert!(error.contains(ESC), "{args:?}: {error:?}");
+    }
+    for args in [
+        &["--color", "never", "--help"][..],
+        &["--help"],
+        &["--color", "always", "--color", "never", "--help"],
+    ] {
+        let help = stdout(&mora(args));
+        assert!(!help.contains(ESC), "{args:?}: {help:?}");
+    }
+    for args in [
+        &["--color", "never", "frobnicate"][..],
+        &["frobnicate"],
+        // After `--` the words are arguments, not options.
+        &["frobnicate", "--", "--color", "always"],
+    ] {
+        let error = stderr(&mora(args));
+        assert!(error.starts_with("error:"), "{args:?}: {error:?}");
+        assert!(!error.contains(ESC), "{args:?}: {error:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_error_report_follows_the_color_option() {
+    let colored = stderr(&mora_into(
+        &["--color", "always", "--help"],
+        std::fs::File::create("/dev/full").unwrap(),
+    ));
+    assert!(colored.starts_with(COLORED_ERROR), "{colored:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_usage_error_into_a_full_stderr_still_exits_2() {
+    let output = Command::new(env!("CARGO_BIN_EXE_mora"))
+        .arg("nosuch")
+        .stderr(std::fs::File::create("/dev/full").unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
 }
