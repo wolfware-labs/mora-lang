@@ -707,26 +707,6 @@ mod tests {
     }
 
     #[test]
-    fn each_syntax_error_looks_up_the_lexer_errors_once() {
-        // Each line has a lexer error and a missing `;`, which the parser
-        // reports after the token the lexer rejected or the string it found
-        // unclosed.
-        let texts = [
-            "x = \\a\n".repeat(10_000),
-            "x = \u{201c}a\n".repeat(10_000),
-            "x = \"a\n".repeat(10_000),
-            format!("F() {{\n{}}}\n", "    { \u{201c}x }\n".repeat(10_000)),
-        ];
-        for text in &texts {
-            super::build::COMPARED.set(0);
-            let errors = parse(text).errors().len();
-            let compared = super::build::COMPARED.get();
-            assert!(errors >= 10_000, "{errors}");
-            assert!(compared <= 20 * errors, "{compared} for {errors}");
-        }
-    }
-
-    #[test]
     fn a_quote_with_other_closers_is_still_scanned() {
         // `\u{2018}` finds no closing quote; the `\u{201c}` after it closes
         // at the `\u{201d}`, so the quoted text is one `Error` node, as is

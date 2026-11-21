@@ -70,7 +70,12 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # cargo passes when the name matches no test, so the step checks that
+      # the test ran.
       - name: test
-        run: >-
-          cargo test --locked -p mora-codegen --lib -- --ignored --exact
-          cranelift::tests::a_frame_too_large_for_the_code_generator_is_reported_at_its_function
+        shell: bash
+        run: |
+          cargo test --locked -p mora-codegen --lib -- --ignored --exact \
+            cranelift::tests::a_frame_too_large_for_the_code_generator_is_reported_at_its_function \
+            | tee test.log
+          grep -q ' 1 passed;' test.log

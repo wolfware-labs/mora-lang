@@ -290,29 +290,25 @@ fn at_write_scope(p: &Parser<'_>) -> bool {
         return false;
     }
     // Rejected tokens around the word are errors of their own.
-    let mut words = 0;
-    let mut n = 1;
-    loop {
-        match p.nth(n) {
-            K::Unknown => {}
-            K::RParen => return words == 1,
-            _ if words == 0 => words = 1,
-            _ => return false,
-        }
-        n += 1;
-    }
+    let input = p.input();
+    let mut tokens = (p.pos() + 1..)
+        .map(|at| input.kind(at))
+        .filter(|&kind| kind != K::Unknown);
+    tokens.next().is_some_and(|word| word != K::RParen) && tokens.next() == Some(K::RParen)
 }
 
 /// `(private)`, `(ns)` or `(internal)`; any other word is reported.
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
-    // The word, and each rejected token around it as an error of its own:
-    // [`at_write_scope`] found the `)`.
+    // The word, and each run of rejected tokens around it as an error of its
+    // own: [`at_write_scope`] found the `)`.
     while !p.at(K::RParen) {
         if p.at(K::Unknown) {
             let e = p.start();
-            p.bump_any();
+            while p.at(K::Unknown) {
+                p.bump_any();
+            }
             e.complete(p, K::Error);
         } else if p.at_any(&[K::PrivateKw, K::InternalKw]) {
             p.bump_any();

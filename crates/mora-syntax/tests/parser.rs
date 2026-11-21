@@ -943,4 +943,9 @@ fn a_write_scope_is_one_word_with_rejected_tokens_around_it() {
     assert!(!scope(
         "struct S {\n    public mut(private internal) X: int;\n}\n"
     ));
+    // A run of rejected tokens in the scope is one error.
+    let tree = parse("struct S {\n    public mut(\\\\private) X: int;\n}\n")
+        .syntax()
+        .debug_tree();
+    assert_eq!(tree.matches("Error@").count(), 1, "{tree}");
 }

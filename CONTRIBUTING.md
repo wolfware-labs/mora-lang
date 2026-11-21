@@ -33,6 +33,7 @@ These are the checks CI runs on every pull request (§20.5 of the spec). They ar
 | Test coverage (§20.5) | `cargo llvm-cov --workspace --open` after `cargo install cargo-llvm-cov` and `rustup component add llvm-tools`; CI uploads it to Codecov |
 | Mutation testing (§20.5) | `git diff origin/main... > pr.diff && cargo mutants --in-diff pr.diff`, after `cargo install cargo-mutants`; the mutation check on every pull request runs it, and a surviving mutant fails it |
 | Parser fuzzing (§20.1) | `cargo +nightly fuzz run parse` in `fuzz/`, after `cargo install cargo-fuzz`; the nightly workflow runs it for 10 minutes from the parser test files |
+| Cranelift's frame limit (§13.5) | `cargo test -p mora-codegen --lib -- --ignored --exact cranelift::tests::a_frame_too_large_for_the_code_generator_is_reported_at_its_function`, which takes minutes; the nightly workflow runs it |
 | Error-code registry | `cargo xtask error-codes` |
 | Runtime libraries (§13.2) | `cargo xtask runtime --test` for the host; CI builds and tests every hosted target. Set `CC` to a C compiler for the target, such as `musl-gcc` for `x86_64-unknown-linux-musl`, and `CFLAGS` to any flags it needs, such as `-arch x86_64` for `x86_64-apple-darwin` on an arm64 Mac |
 | Linker and sysroots (§14.14) | `cargo xtask sysroot` installs the pinned `lld`, musl and MinGW-w64 pieces into `target/sysroot`; CI installs them on every host |
