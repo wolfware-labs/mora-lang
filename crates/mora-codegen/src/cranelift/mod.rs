@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "compiling a call with 9,000 arguments takes over a minute in the test profile"]
+    #[ignore = "compiling a call with 9,000 arguments takes minutes; the nightly workflow runs it"]
     fn a_frame_too_large_for_the_code_generator_is_reported_at_its_function() {
         // The call to `G` keeps each of its 9,000 arguments in a stack slot
         // of 8 bytes, and passes each on the stack too. The locals and the
