@@ -1,7 +1,7 @@
 //! What each build resolves for `mora-syntax` and the crates it depends on,
 //! asked of `cargo metadata`, and how the two builds compare.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -79,6 +79,9 @@ pub struct Unit {
     pub deps: Vec<Built>,
     /// The features cargo turns on for it, sorted.
     pub features: Vec<String>,
+    /// The crates its manifest declares as optional dependencies, each with
+    /// the features that turn it on.
+    pub optional: BTreeMap<String, Vec<String>>,
 }
 
 /// Whether a resolved dependency is of one of `kinds`, on any platform.
@@ -86,12 +89,48 @@ fn of_kind(dep: &NodeDep, kinds: &[DependencyKind]) -> bool {
     dep.dep_kinds.iter().any(|info| kinds.contains(&info.kind))
 }
 
+/// The dependencies a package is built on, which the closure follows.
+const BUILT_ON: [DependencyKind; 2] = [DependencyKind::Normal, DependencyKind::Build];
+
+/// The optional dependencies `package` declares, by crate name, each with
+/// the features that turn it on: one named after it, or one that lists
+/// `name`, `dep:name` or `name/feature`, `name` being the name the manifest
+/// gives it.
+fn optional(package: &Package) -> BTreeMap<String, Vec<String>> {
+    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for dep in package.dependencies.iter().filter(|dep| dep.optional) {
+        let name = dep.rename.as_deref().unwrap_or(&dep.name);
+        let turns_on = |value: &String| {
+            let value = value.strip_prefix("dep:").unwrap_or(value);
+            value.split_once('/').map_or(value, |(dep, _)| dep) == name
+        };
+        let features = found.entry(dep.name.clone()).or_default();
+        features.extend(
+            package
+                .features
+                .iter()
+                .filter(|(feature, values)| *feature == name || values.iter().any(turns_on))
+                .map(|(feature, _)| feature.clone()),
+        );
+        features.sort();
+        features.dedup();
+    }
+    found
+}
+
 impl Unit {
-    /// [`FUZZED`], from a path, and every package it reaches through normal
-    /// dependencies on any platform, as `metadata` resolves them, sorted;
-    /// `None` when the resolve has no such crate.
+    /// [`FUZZED`], from a path, and every package it is built on through
+    /// normal and build dependencies, recursively and on any platform, as
+    /// `metadata` resolves them, sorted; `None` when the resolve has no such
+    /// crate. A build dependency and what it is built on are built for the
+    /// host, to run the build script.
     pub fn closure(metadata: &Metadata) -> Option<Vec<Unit>> {
         let resolve = metadata.resolve.as_ref()?;
+        let packages: HashMap<&PackageId, &Package> = metadata
+            .packages
+            .iter()
+            .map(|package| (&package.id, package))
+            .collect();
         let built: HashMap<&PackageId, Built> = metadata
             .packages
             .iter()
@@ -111,18 +150,14 @@ impl Unit {
                 continue;
             }
             let node = nodes.get(id)?;
-            next.extend(
-                node.deps
-                    .iter()
-                    .filter(|dep| of_kind(dep, &[DependencyKind::Normal]))
-                    .map(|dep| &dep.pkg),
-            );
-            let mut deps: Vec<Built> = node
+            let on: Vec<&PackageId> = node
                 .deps
                 .iter()
-                .filter(|dep| of_kind(dep, &[DependencyKind::Normal, DependencyKind::Build]))
-                .filter_map(|dep| built.get(&dep.pkg).cloned())
+                .filter(|dep| of_kind(dep, &BUILT_ON))
+                .map(|dep| &dep.pkg)
                 .collect();
+            next.extend(&on);
+            let mut deps: Vec<Built> = on.iter().filter_map(|id| built.get(id).cloned()).collect();
             deps.sort();
             deps.dedup();
             let mut features: Vec<String> = node.features.iter().map(ToString::to_string).collect();
@@ -131,10 +166,79 @@ impl Unit {
                 built: built.get(id)?.clone(),
                 deps,
                 features,
+                optional: optional(packages.get(id)?),
             });
         }
         units.sort_by(|a, b| a.built.cmp(&b.built));
         Some(units)
+    }
+}
+
+/// The `cargo update` that moves the workspace from one registry version of
+/// a crate to the fuzz crate's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Update {
+    /// The workspace's package, as `cargo update -p` takes it: `name@version`,
+    /// or with its source in front when that names more than one package of
+    /// the workspace.
+    pub spec: String,
+    /// The fuzz crate's version.
+    pub precise: Version,
+}
+
+impl Update {
+    /// The update from `root` to `fuzz`, two versions of one crate, when
+    /// both come from the same registry; `workspace` is every package of the
+    /// workspace's resolve, which tells whether `name@version` is enough.
+    fn of(root: &Built, fuzz: &Built, workspace: &[Built]) -> Option<Self> {
+        if root.from != fuzz.from || !root.is_registry() {
+            return None;
+        }
+        let named = workspace
+            .iter()
+            .filter(|package| package.name == root.name && package.version == root.version)
+            .count();
+        let short = format!("{}@{}", root.name, root.version);
+        let spec = if named > 1 {
+            format!("{}#{short}", root.from)
+        } else {
+            short
+        };
+        Some(Self {
+            spec,
+            precise: fuzz.version.clone(),
+        })
+    }
+}
+
+impl fmt::Display for Update {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`cargo update -p {} --precise {}`",
+            self.spec, self.precise
+        )
+    }
+}
+
+/// An optional dependency only one build turns on, through features only
+/// that build turns on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Optional {
+    /// The dependency.
+    pub dep: Built,
+    /// The features that turn it on.
+    pub features: Vec<String>,
+}
+
+impl fmt::Display for Optional {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (by {})",
+            self.dep,
+            listed(&self.features, |name| format!("`{name}`"))
+        )
     }
 }
 
@@ -143,21 +247,31 @@ impl Unit {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Drift {
     /// At another version, or from another source: the workspace's and the
-    /// fuzz crate's.
-    Built { root: Built, fuzz: Built },
+    /// fuzz crate's, and the update that moves the workspace to the fuzz
+    /// crate's version, when one does.
+    Built {
+        root: Built,
+        fuzz: Built,
+        update: Option<Update>,
+    },
     /// The same package, built on other dependencies: those only the
-    /// workspace builds it on, and those only the fuzz crate does.
+    /// workspace builds it on, those only the fuzz crate does, and the
+    /// updates that move the workspace to the fuzz crate's versions.
     Deps {
         package: Built,
         root: Vec<Built>,
         fuzz: Vec<Built>,
+        updates: Vec<Update>,
     },
     /// The same package with other features: those only the workspace
-    /// turns on, and those only the fuzz crate does.
+    /// turns on, and those only the fuzz crate does, with the optional
+    /// dependencies those features turn on.
     Features {
         package: Built,
         root: Vec<String>,
         fuzz: Vec<String>,
+        root_deps: Vec<Optional>,
+        fuzz_deps: Vec<Optional>,
     },
 }
 
@@ -169,48 +283,75 @@ fn listed<T>(items: &[T], show: impl Fn(&T) -> String) -> String {
     items.iter().map(show).collect::<Vec<_>>().join(", ")
 }
 
+/// The features a build turns on, and the optional dependencies they turn
+/// on, if any.
+fn features_and_deps(features: &[String], deps: &[Optional]) -> String {
+    let mut shown = listed(features, |name| format!("`{name}`"));
+    if !deps.is_empty() {
+        shown += &format!(
+            ", which turn on the optional dependencies {}",
+            listed(deps, ToString::to_string)
+        );
+    }
+    shown
+}
+
+/// Advice to run `updates`, to follow a difference they settle; empty when
+/// there are none.
+fn advice(updates: &[Update]) -> String {
+    if updates.is_empty() {
+        return String::new();
+    }
+    format!(
+        "; to move the workspace to the fuzz crate's version instead, run {}",
+        updates
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" and ")
+    )
+}
+
 impl fmt::Display for Drift {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Built { root, fuzz } => {
-                write!(
-                    f,
-                    "{}: {ROOT_MANIFEST} builds {} from {}, {FUZZ_MANIFEST} builds {} from {}",
-                    fuzz.name, root.version, root.from, fuzz.version, fuzz.from
-                )?;
-                if root.from == fuzz.from && root.is_registry() {
-                    write!(
-                        f,
-                        "; to move the workspace to the fuzz crate's version instead, run \
-                         `cargo update -p {}@{} --precise {}`",
-                        root.name, root.version, fuzz.version
-                    )?;
-                }
-                Ok(())
-            }
+            Self::Built { root, fuzz, update } => write!(
+                f,
+                "{}: {ROOT_MANIFEST} builds {} from {}, {FUZZ_MANIFEST} builds {} from {}{}",
+                fuzz.name,
+                root.version,
+                root.from,
+                fuzz.version,
+                fuzz.from,
+                advice(update.as_slice())
+            ),
             Self::Deps {
                 package,
                 root,
                 fuzz,
+                updates,
             } => write!(
                 f,
                 "{package}: dependencies only {ROOT_MANIFEST} builds it on: {}; only \
-                 {FUZZ_MANIFEST}: {}",
+                 {FUZZ_MANIFEST}: {}{}",
                 listed(root, ToString::to_string),
-                listed(fuzz, ToString::to_string)
+                listed(fuzz, ToString::to_string),
+                advice(updates)
             ),
             Self::Features {
                 package,
                 root,
                 fuzz,
+                root_deps,
+                fuzz_deps,
             } => write!(
                 f,
                 "{package}: features only {ROOT_MANIFEST} turns on: {}; only {FUZZ_MANIFEST}: {}; \
                  cargo turns a feature on for every crate of a build when one crate asks for it, \
                  so it can come from a crate {FUZZED} does not depend on, such as another \
                  workspace member: turn it on in {FUZZ_MANIFEST}, or off in the workspace",
-                listed(root, |name| format!("`{name}`")),
-                listed(fuzz, |name| format!("`{name}`"))
+                features_and_deps(root, root_deps),
+                features_and_deps(fuzz, fuzz_deps)
             ),
         }
     }
@@ -221,51 +362,132 @@ fn missing<T: PartialEq + Clone>(a: &[T], b: &[T]) -> Vec<T> {
     a.iter().filter(|item| !b.contains(item)).cloned().collect()
 }
 
-/// The dependencies only `root` and only `fuzz` build a package on, without
-/// the pairs of one crate at two versions or sources whose fuzz side is a
-/// package of `closure`: that package's own difference reports them.
-fn apart_deps(root: &[Built], fuzz: &[Built], closure: &[Unit]) -> (Vec<Built>, Vec<Built>) {
-    let (mut root, mut fuzz) = (missing(root, fuzz), missing(fuzz, root));
-    fuzz.retain(|dep| {
-        let reported = closure.iter().any(|unit| &unit.built == dep);
-        let pair = root.iter().position(|other| other.same_crate(dep));
-        match pair {
-            Some(index) if reported => {
-                root.remove(index);
-                false
-            }
-            _ => true,
+/// The package of `candidates` cargo would not let into one resolve with
+/// `built`, preferring one from the same source; `None` when there is none.
+fn counterpart<'a>(
+    candidates: impl Iterator<Item = &'a Built> + Clone,
+    built: &Built,
+) -> Option<&'a Built> {
+    let mut same = candidates.filter(|other| other.same_crate(built));
+    same.clone()
+        .find(|other| other.from == built.from)
+        .or_else(|| same.next())
+}
+
+/// The dependencies only one build builds a package on.
+struct Apart {
+    root: Vec<Built>,
+    fuzz: Vec<Built>,
+    updates: Vec<Update>,
+    /// The optional dependencies only the workspace builds it on, through
+    /// features only the workspace turns on.
+    root_optional: Vec<Optional>,
+    /// The same for the fuzz crate.
+    fuzz_optional: Vec<Optional>,
+}
+
+/// The optional dependencies of `deps` that `extra`, features only one
+/// build turns on for `unit`, turn on; they leave `deps`.
+fn take_optional(deps: &mut Vec<Built>, unit: &Unit, extra: &[String]) -> Vec<Optional> {
+    let mut taken = Vec::new();
+    deps.retain(|dep| {
+        let features: Vec<String> = unit
+            .optional
+            .get(&dep.name)
+            .into_iter()
+            .flatten()
+            .filter(|feature| extra.contains(feature))
+            .cloned()
+            .collect();
+        if features.is_empty() {
+            return true;
         }
+        taken.push(Optional {
+            dep: dep.clone(),
+            features,
+        });
+        false
     });
-    (root, fuzz)
+    taken
+}
+
+/// How `fuzz` builds a package on other dependencies than `root`, the same
+/// package in the workspace. A pair of one crate at two versions or sources
+/// is left out when `reported`, the pairs of packages whose own difference
+/// is reported, holds it. A dependency only one build has is an optional
+/// one that build's own features turn on, or a difference of its own.
+fn apart(root: &Unit, fuzz: &Unit, workspace: &[Built], reported: &[(&Built, &Built)]) -> Apart {
+    let mut root_alone = missing(&root.deps, &fuzz.deps);
+    let mut fuzz_alone = Vec::new();
+    let (mut root_paired, mut fuzz_paired, mut updates) = (Vec::new(), Vec::new(), Vec::new());
+    for dep in missing(&fuzz.deps, &root.deps) {
+        let Some(other) = counterpart(root_alone.iter(), &dep).cloned() else {
+            fuzz_alone.push(dep);
+            continue;
+        };
+        root_alone.retain(|item| *item != other);
+        if !reported.contains(&(&other, &dep)) {
+            updates.extend(Update::of(&other, &dep, workspace));
+            root_paired.push(other);
+            fuzz_paired.push(dep);
+        }
+    }
+    let root_optional = take_optional(
+        &mut root_alone,
+        root,
+        &missing(&root.features, &fuzz.features),
+    );
+    let fuzz_optional = take_optional(
+        &mut fuzz_alone,
+        fuzz,
+        &missing(&fuzz.features, &root.features),
+    );
+    root_paired.extend(root_alone);
+    fuzz_paired.extend(fuzz_alone);
+    root_paired.sort();
+    fuzz_paired.sort();
+    Apart {
+        root: root_paired,
+        fuzz: fuzz_paired,
+        updates,
+        root_optional,
+        fuzz_optional,
+    }
 }
 
 /// How `fuzz` builds [`FUZZED`]'s closure differently from `root`, each the
-/// closure of one build. A package both build alike is compared on its
-/// dependencies and features; one `root` builds at another compatible
-/// version or from another source is a difference of its own. A package
-/// only one build has shows in the dependencies of the package above it.
-pub fn drift(root: &[Unit], fuzz: &[Unit]) -> Vec<Drift> {
+/// closure of one build; `workspace` is every package of the workspace's
+/// resolve. A package both build alike is compared on its dependencies and
+/// features; one `root` builds at another compatible version or from
+/// another source is a difference of its own. A package only one build has
+/// shows in the dependencies of the package above it, or, when features
+/// only that build turns on turn it on, with those features.
+pub fn drift(root: &[Unit], fuzz: &[Unit], workspace: &[Built]) -> Vec<Drift> {
+    let roots = root.iter().map(|unit| &unit.built);
+    let counterparts: Vec<(&Built, &Built)> = fuzz
+        .iter()
+        .filter(|unit| !root.iter().any(|other| other.built == unit.built))
+        .filter_map(|unit| Some((counterpart(roots.clone(), &unit.built)?, &unit.built)))
+        .collect();
     let mut found = Vec::new();
     for unit in fuzz {
         let Some(same) = root.iter().find(|other| other.built == unit.built) else {
-            if let Some(other) = root
-                .iter()
-                .find(|other| other.built.same_crate(&unit.built))
-            {
+            if let Some((other, _)) = counterparts.iter().find(|(_, built)| **built == unit.built) {
                 found.push(Drift::Built {
-                    root: other.built.clone(),
+                    root: (*other).clone(),
                     fuzz: unit.built.clone(),
+                    update: Update::of(other, &unit.built, workspace),
                 });
             }
             continue;
         };
-        let (root_deps, fuzz_deps) = apart_deps(&same.deps, &unit.deps, fuzz);
-        if !root_deps.is_empty() || !fuzz_deps.is_empty() {
+        let deps = apart(same, unit, workspace, &counterparts);
+        if !deps.root.is_empty() || !deps.fuzz.is_empty() {
             found.push(Drift::Deps {
                 package: unit.built.clone(),
-                root: root_deps,
-                fuzz: fuzz_deps,
+                root: deps.root,
+                fuzz: deps.fuzz,
+                updates: deps.updates,
             });
         }
         if same.features != unit.features {
@@ -273,6 +495,8 @@ pub fn drift(root: &[Unit], fuzz: &[Unit]) -> Vec<Drift> {
                 package: unit.built.clone(),
                 root: missing(&same.features, &unit.features),
                 fuzz: missing(&unit.features, &same.features),
+                root_deps: deps.root_optional,
+                fuzz_deps: deps.fuzz_optional,
             });
         }
     }
@@ -361,6 +585,7 @@ pub(super) mod tests {
             built,
             deps: Vec::new(),
             features: Vec::new(),
+            optional: BTreeMap::new(),
         }
     }
 
@@ -382,7 +607,17 @@ pub(super) mod tests {
 
     /// The fuzz crate building `fuzz` where the workspace builds `root`.
     pub(in crate::fuzz_lock) fn drift_of(root: Built, fuzz: Built) -> Drift {
-        Drift::Built { root, fuzz }
+        Drift::Built {
+            update: Update::of(&root, &fuzz, &[]),
+            root,
+            fuzz,
+        }
+    }
+
+    /// [`drift`], for a workspace whose packages are those of its closure.
+    fn compare(root: &[Unit], fuzz: &[Unit]) -> Vec<Drift> {
+        let workspace: Vec<Built> = root.iter().map(|unit| unit.built.clone()).collect();
+        drift(root, fuzz, &workspace)
     }
 
     fn syntax() -> Built {
@@ -417,6 +652,34 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_resolve_without_the_fuzzed_crate_is_named() {
+        let mut metadata = resolve_locked(&crate::paths::root(), ROOT_MANIFEST).unwrap();
+        assert!(closure(&metadata, ROOT_MANIFEST).is_ok());
+        metadata.resolve = None;
+        assert_eq!(
+            closure(&metadata, FUZZ_MANIFEST),
+            Err(Unresolved {
+                manifest: FUZZ_MANIFEST,
+                error: format!("it does not build {FUZZED} from a path"),
+            })
+        );
+    }
+
+    #[test]
+    fn two_updates_are_named_together() {
+        let updates =
+            [("cc", "1.2.0", "1.2.1"), ("syn", "2.0.1", "2.0.2")].map(|(name, from, to)| {
+                Update::of(&registry(name, from), &registry(name, to), &[]).unwrap()
+            });
+        assert_eq!(
+            advice(&updates),
+            "; to move the workspace to the fuzz crate's version instead, run `cargo update -p \
+             cc@1.2.0 --precise 1.2.1` and `cargo update -p syn@2.0.1 --precise 2.0.2`"
+        );
+        assert_eq!(advice(&[]), "");
+    }
+
+    #[test]
     fn builds_of_the_same_packages_do_not_drift() {
         let root = [
             on(syntax(), &[registry("syn", "2.0.119")]),
@@ -427,9 +690,9 @@ pub(super) mod tests {
             on(syntax(), &[registry("syn", "2.0.119")]),
             with(registry("syn", "2.0.119"), &["full"]),
         ];
-        assert_eq!(drift(&root, &fuzz), []);
-        assert_eq!(drift(&root, &[]), []);
-        assert_eq!(drift(&[], &fuzz), []);
+        assert_eq!(compare(&root, &fuzz), []);
+        assert_eq!(compare(&root, &[]), []);
+        assert_eq!(compare(&[], &fuzz), []);
     }
 
     #[test]
@@ -444,7 +707,7 @@ pub(super) mod tests {
             unit(registry("syn", "2.0.119")),
             unit(registry("zmij", "0.0.4")),
         ];
-        let found = drift(&root, &fuzz);
+        let found = compare(&root, &fuzz);
         assert_eq!(
             found,
             [drift_of(
@@ -466,12 +729,12 @@ pub(super) mod tests {
     fn another_major_version_is_another_crate() {
         let root = [unit(registry("getrandom", "0.4.3"))];
         let fuzz = [unit(registry("getrandom", "0.3.4"))];
-        assert_eq!(drift(&root, &fuzz), []);
+        assert_eq!(compare(&root, &fuzz), []);
     }
 
     #[test]
     fn a_shared_crate_from_another_source_drifts() {
-        let found = drift(
+        let found = compare(
             &[unit(built("smallvec", "1.16.9", VENDOR))],
             &[unit(registry("smallvec", "1.16.4"))],
         );
@@ -507,7 +770,7 @@ pub(super) mod tests {
     #[test]
     fn two_folders_at_one_version_drift() {
         let other = "/repo/vendor/smallvec2";
-        let found = drift(
+        let found = compare(
             &[unit(built("smallvec", "1.16.4", VENDOR))],
             &[unit(built("smallvec", "1.16.4", other))],
         );
@@ -535,28 +798,32 @@ pub(super) mod tests {
             unit(vendored.clone()),
         ];
         assert_eq!(
-            drift(&root, &fuzz),
+            compare(&root, &fuzz),
             [drift_of(
                 registry("unicode-ident", "1.0.27"),
                 vendored.clone()
             )]
         );
-        // A build dependency at another version is not in the closure, so
-        // the package built on it reports it; so does a dependency only one
-        // build has.
+        // A dependency at another version that the closure does not report
+        // on its own shows in the package built on it, with the update; so
+        // does a dependency only one build has.
         let cc = |version| registry("cc", version);
         let root = [on(macro2.clone(), &[cc("1.2.0")])];
         let fuzz = [
             on(macro2.clone(), &[cc("1.2.1"), vendored.clone()]),
             unit(vendored.clone()),
         ];
-        let found = drift(&root, &fuzz);
+        let found = compare(&root, &fuzz);
         assert_eq!(
             found,
             [Drift::Deps {
                 package: macro2,
                 root: vec![cc("1.2.0")],
                 fuzz: vec![cc("1.2.1"), vendored],
+                updates: vec![Update {
+                    spec: "cc@1.2.0".into(),
+                    precise: Version::parse("1.2.1").unwrap(),
+                }],
             }]
         );
         assert_eq!(
@@ -564,7 +831,8 @@ pub(super) mod tests {
             format!(
                 "proc-macro2 1.0.106 from {CRATES_IO}: dependencies only Cargo.toml builds it on: \
                  cc 1.2.0 from {CRATES_IO}; only fuzz/Cargo.toml: cc 1.2.1 from {CRATES_IO}, \
-                 unicode-ident 1.0.28 from /repo/vendor/unicode-ident"
+                 unicode-ident 1.0.28 from /repo/vendor/unicode-ident; to move the workspace to \
+                 the fuzz crate's version instead, run `cargo update -p cc@1.2.0 --precise 1.2.1`"
             )
         );
     }
@@ -572,7 +840,7 @@ pub(super) mod tests {
     #[test]
     fn a_package_with_other_features_drifts() {
         let smallvec = registry("smallvec", "1.16.4");
-        let found = drift(
+        let found = compare(
             &[with(smallvec.clone(), &["const_new", "union"])],
             &[with(smallvec.clone(), &["const_new"])],
         );
@@ -582,6 +850,8 @@ pub(super) mod tests {
                 package: smallvec,
                 root: vec!["union".into()],
                 fuzz: Vec::new(),
+                root_deps: Vec::new(),
+                fuzz_deps: Vec::new(),
             }]
         );
         assert_eq!(
@@ -597,8 +867,145 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_dependency_on_a_copy_the_workspace_also_builds_drifts() {
+        // Another workspace crate takes the vendored unicode-ident, so the
+        // workspace builds that copy too; only proc-macro2's dependencies
+        // tell the two builds apart.
+        let vendored = built("unicode-ident", "1.0.99", "/repo/vendor/unicode-ident");
+        let registered = registry("unicode-ident", "1.0.27");
+        let macro2 = registry("proc-macro2", "1.0.106");
+        let root = [
+            on(macro2.clone(), std::slice::from_ref(&registered)),
+            unit(registered.clone()),
+            unit(vendored.clone()),
+        ];
+        let fuzz = [
+            on(macro2.clone(), std::slice::from_ref(&vendored)),
+            unit(vendored.clone()),
+        ];
+        let found = compare(&root, &fuzz);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let shown = found[0].to_string();
+        assert!(shown.starts_with("proc-macro2 1.0.106"), "{shown}");
+        assert!(
+            shown.contains("unicode-ident 1.0.99 from /repo/vendor"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_counterpart_from_the_same_source_is_preferred() {
+        let root = [
+            unit(built("smallvec", "1.16.5", VENDOR)),
+            unit(registry("smallvec", "1.16.6")),
+        ];
+        let fuzz = [unit(registry("smallvec", "1.16.4"))];
+        let found = compare(&root, &fuzz);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let shown = found[0].to_string();
+        assert!(
+            shown.contains("cargo update -p smallvec@1.16.6 --precise 1.16.4"),
+            "{shown}"
+        );
+    }
+
+    /// `unit` with `features`, declaring `optional`, turned on by `extra`.
+    fn optional_on(built: Built, deps: &[Built], features: &[&str]) -> Unit {
+        Unit {
+            deps: deps.to_vec(),
+            optional: [("indexmap".to_owned(), vec!["preserve_order".to_owned()])].into(),
+            ..with(built, features)
+        }
+    }
+
+    #[test]
+    fn an_optional_dependency_only_one_build_turns_on_is_a_feature_difference() {
+        let json = registry("serde_json", "1.0.154");
+        let indexmap = registry("indexmap", "2.12.0");
+        let memchr = registry("memchr", "2.8.0");
+        let both = [memchr.clone()];
+        let more = [memchr.clone(), indexmap.clone()];
+        let found = compare(
+            &[optional_on(json.clone(), &more, &["preserve_order", "std"])],
+            &[optional_on(json.clone(), &both, &["std"])],
+        );
+        let turned_on = Optional {
+            dep: indexmap.clone(),
+            features: vec!["preserve_order".into()],
+        };
+        assert_eq!(
+            found,
+            [Drift::Features {
+                package: json.clone(),
+                root: vec!["preserve_order".into()],
+                fuzz: Vec::new(),
+                root_deps: vec![turned_on],
+                fuzz_deps: Vec::new(),
+            }]
+        );
+        let shown = found[0].to_string();
+        assert!(
+            shown.starts_with(&format!(
+                "serde_json 1.0.154 from {CRATES_IO}: features only Cargo.toml turns on: \
+                 `preserve_order`, which turn on the optional dependencies indexmap 2.12.0 from \
+                 {CRATES_IO} (by `preserve_order`); only fuzz/Cargo.toml: none; "
+            )),
+            "{shown}"
+        );
+        // The same the other way round.
+        let found = compare(
+            &[optional_on(json.clone(), &both, &["std"])],
+            &[optional_on(json.clone(), &more, &["preserve_order", "std"])],
+        );
+        assert!(
+            matches!(&found[..], [Drift::Features { fuzz_deps, .. }] if fuzz_deps.len() == 1),
+            "{found:?}"
+        );
+        // A feature both builds turn on does not account for it: the
+        // dependency is a difference of its own.
+        let found = compare(
+            &[optional_on(json.clone(), &more, &["preserve_order", "std"])],
+            &[optional_on(json.clone(), &both, &["preserve_order"])],
+        );
+        assert!(
+            matches!(&found[..], [Drift::Deps { root, .. }, Drift::Features { root_deps, .. }]
+                if *root == [indexmap.clone()] && root_deps.is_empty()),
+            "{found:?}"
+        );
+        // Nor does a feature that does not turn it on.
+        let found = compare(
+            &[optional_on(
+                json.clone(),
+                &[memchr.clone(), registry("ryu", "1.0.20")],
+                &["std"],
+            )],
+            &[optional_on(json.clone(), &both, &[])],
+        );
+        assert!(
+            matches!(&found[..], [Drift::Deps { .. }, Drift::Features { .. }]),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn the_update_names_the_source_when_the_version_names_two_packages() {
+        let root = [
+            unit(registry("smallvec", "1.16.6")),
+            unit(built("smallvec", "1.16.6", VENDOR)),
+        ];
+        let found = compare(&root, &[unit(registry("smallvec", "1.16.7"))]);
+        let shown = found[0].to_string();
+        assert!(
+            shown.ends_with(&format!(
+                "run `cargo update -p {CRATES_IO}#smallvec@1.16.6 --precise 1.16.7`"
+            )),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn a_workspace_crate_from_another_folder_drifts() {
-        let found = drift(
+        let found = compare(
             &[unit(syntax())],
             &[unit(built(FUZZED, "0.0.0", "/elsewhere/mora-syntax"))],
         );

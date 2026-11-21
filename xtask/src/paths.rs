@@ -84,14 +84,42 @@ fn is_build_dir(dir: &Path) -> bool {
     dir.join("CACHEDIR.TAG").is_file()
 }
 
-/// An empty directory for one test, named for it and this process, under
-/// the system's temporary directory.
+/// An empty directory for one test, under the system's temporary
+/// directory, removed with what it holds when the value is dropped, so
+/// also when the test panics.
 #[cfg(test)]
-pub fn scratch(name: &str) -> PathBuf {
+pub struct Scratch(PathBuf);
+
+#[cfg(test)]
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A [`Scratch`] directory named for the test `name` and this process.
+#[cfg(test)]
+pub fn scratch(name: &str) -> Scratch {
     let dir = env::temp_dir().join(format!("mora-xtask-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
 #[cfg(test)]
@@ -114,6 +142,19 @@ mod tests {
         let root = Path::new("repo");
         let dir = env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| "target".into());
         assert_eq!(target_dir(root), root.join(dir));
+    }
+
+    #[test]
+    fn a_scratch_directory_is_removed_when_its_test_ends_or_panics() {
+        let kept = std::panic::catch_unwind(|| {
+            let dir = scratch("removed-on-panic");
+            fs::write(dir.join("file"), "").unwrap();
+            let path = dir.to_path_buf();
+            std::panic::panic_any(path);
+        })
+        .unwrap_err();
+        let path = kept.downcast::<PathBuf>().unwrap();
+        assert!(!path.exists(), "{}", path.display());
     }
 
     #[test]

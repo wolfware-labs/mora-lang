@@ -3,18 +3,23 @@
 //!
 //! The fuzz crate sits outside the workspace and has a lockfile of its own.
 //! The fuzz targets test `mora-syntax`, so both builds must build it and
-//! every crate it reaches through normal dependencies, on any platform, the
-//! same way: the same version from the same source, on the same
-//! dependencies. `--check` asks `cargo metadata` what each build resolves
-//! and fails when one of those crates differs; crates outside that set, such
-//! as those only the fuzzing runtime or the workspace's tools use, are not
-//! compared. The command itself rebuilds `fuzz/Cargo.lock` from
+//! every crate it is built on the same way: the same version from the same
+//! source, on the same dependencies. Those crates are the ones it reaches
+//! through normal and build dependencies, recursively and on any platform,
+//! so a build dependency and what it is built on, which build scripts run
+//! on the host, count too. `--check` asks `cargo metadata` what each build
+//! resolves and fails when one of those crates differs; crates outside that
+//! set, such as those only the fuzzing runtime or the workspace's tools use,
+//! are not compared. The command itself rebuilds `fuzz/Cargo.lock` from
 //! `Cargo.lock`.
 //!
 //! Features are compared too, but a difference is a warning, not a failure:
 //! cargo turns a feature on for every crate of a workspace build when one
 //! member asks for it, so tools and benchmarks turn on features of
-//! `mora-syntax`'s dependencies that the fuzz build has no need for.
+//! `mora-syntax`'s dependencies that the fuzz build has no need for. An
+//! optional dependency that such a feature turns on is part of the warning,
+//! not a dependency difference: the warning names the feature and the
+//! dependency. A dependency only one build has for any other reason fails.
 //!
 //! Two packages are the same crate when cargo would let only one of them in
 //! a resolve: the same name and versions that are semver compatible.
@@ -31,8 +36,8 @@ use std::path::Path;
 use cargo_metadata::semver::Version;
 use toml::{Table, Value};
 
+use self::resolve::{Built, FUZZED, closure, drift, resolve_locked};
 pub use self::resolve::{Drift, Unresolved};
-use self::resolve::{FUZZED, closure, drift, resolve_locked};
 use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_LOCK, ROOT_MANIFEST, error_at};
 
 /// The key of a lockfile's array of package entries.
@@ -199,7 +204,7 @@ pub enum Problem {
     Unlocked(String),
     /// A crate the fuzz crate builds at another version, from another
     /// source or on other dependencies than the workspace does.
-    Drift(Drift),
+    Drift(Box<Drift>),
 }
 
 impl Problem {
@@ -271,9 +276,10 @@ pub fn rebuild_summary(problems: &[Problem]) -> Option<String> {
         .any(|problem| matches!(problem, Problem::Drift(_)))
     {
         summary += &format!(
-            "; {ROOT_MANIFEST} and {FUZZ_MANIFEST}, with the cargo config each build reads \
-             (`.cargo/config.toml` above the folder it runs in), resolve each crate named above \
-             differently: make them resolve it the same way"
+            "; the versions above are those cargo resolves from the rebuilt {FUZZ_LOCK}, which \
+             is not kept; {ROOT_MANIFEST} and {FUZZ_MANIFEST}, with the cargo config each build \
+             reads (`.cargo/config.toml` above the folder it runs in), resolve each crate named \
+             above differently: make them resolve it the same way"
         );
     }
     summary += &format!("; {FUZZ_LOCK} is left as it was");
@@ -298,7 +304,7 @@ pub fn warning(features: &Drift) -> String {
 /// printed `warnings` feature warnings.
 pub fn ok_summary(packages: usize, warnings: usize) -> String {
     format!(
-        "fuzz-lock: {FUZZED} and its normal dependencies, {packages} packages, built alike by \
+        "fuzz-lock: {FUZZED} and the crates it is built on, {packages} packages, built alike by \
          both builds (version, source and dependencies; {warnings} feature warning(s)), ok"
     )
 }
@@ -321,7 +327,9 @@ pub fn resolve_failure(failed: &Unresolved) -> String {
 /// crate failing to resolve is a problem of the fuzz lockfile; the
 /// workspace failing is an error.
 pub fn check(root: &Path) -> Result<Checked, Unresolved> {
-    let workspace = closure(&resolve_locked(root, ROOT_MANIFEST)?, ROOT_MANIFEST)?;
+    let metadata = resolve_locked(root, ROOT_MANIFEST)?;
+    let workspace = closure(&metadata, ROOT_MANIFEST)?;
+    let packages: Vec<Built> = metadata.packages.iter().map(Built::of).collect();
     let fuzz = match resolve_locked(root, FUZZ_MANIFEST) {
         Ok(fuzz) => closure(&fuzz, FUZZ_MANIFEST)?,
         Err(unresolved) => {
@@ -332,11 +340,14 @@ pub fn check(root: &Path) -> Result<Checked, Unresolved> {
             });
         }
     };
-    let (warnings, apart): (Vec<Drift>, Vec<Drift>) = drift(&workspace, &fuzz)
+    let (warnings, apart): (Vec<Drift>, Vec<Drift>) = drift(&workspace, &fuzz, &packages)
         .into_iter()
         .partition(|drift| matches!(drift, Drift::Features { .. }));
     Ok(Checked {
-        problems: apart.into_iter().map(Problem::Drift).collect(),
+        problems: apart
+            .into_iter()
+            .map(|drift| Problem::Drift(Box::new(drift)))
+            .collect(),
         warnings,
         packages: fuzz.len(),
     })
@@ -483,7 +494,6 @@ mod tests {
         fs::write(dir.join("Cargo.lock"), "[[package]\n").unwrap();
         let err = Lock::read(&dir, "Cargo.lock").err().unwrap();
         assert!(err.starts_with("Cargo.lock: "), "{err}");
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -592,10 +602,10 @@ mod tests {
     /// A check that still finds smallvec built from two sources.
     fn apart() -> Checked {
         Checked {
-            problems: vec![Problem::Drift(drift_of(
+            problems: vec![Problem::Drift(Box::new(drift_of(
                 built("smallvec", "1.16.4", VENDOR),
                 registry("smallvec", "1.16.6"),
-            ))],
+            )))],
             warnings: Vec::new(),
             packages: 71,
         }
@@ -620,7 +630,6 @@ mod tests {
         };
         assert_eq!(write_resolved(&file, "b", rewrite), Ok((false, clean())));
         assert_eq!(fs::read_to_string(&file).unwrap(), "a");
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -643,7 +652,6 @@ mod tests {
             );
             assert_eq!(fs::read(&file).unwrap(), before);
         }
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -670,7 +678,6 @@ mod tests {
             Ok((false, apart()))
         );
         assert!(!file.exists());
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -680,7 +687,6 @@ mod tests {
         let failed = write_resolved(&file, "rebuilt", || Err(fuzz_failed(UNSATISFIED)));
         assert_eq!(failed, Err(resolve_failure(&fuzz_failed(UNSATISFIED))));
         assert!(!file.exists());
-        let _ = fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
@@ -696,7 +702,6 @@ mod tests {
         let err = failed.unwrap_err();
         assert!(err.starts_with("fuzz/Cargo.lock: "), "{err}");
         assert_eq!(fs::read_to_string(&file).unwrap(), "version = 4\n");
-        let _ = fs::remove_dir_all(dir);
     }
 
     const STALE: &str = "error: cannot update the lock file fuzz/Cargo.lock because --locked \
@@ -761,7 +766,7 @@ mod tests {
         );
         let found = drift_of(registry("cc", "1.11.3"), registry("cc", "1.10.0"));
         let shown = found.to_string();
-        let drift = Problem::Drift(found);
+        let drift = Problem::Drift(Box::new(found));
         assert!(drift.rebuild_may_fix());
         assert_eq!(drift.to_string(), shown);
     }
@@ -774,7 +779,10 @@ mod tests {
             check_summary(&[unsatisfied]).unwrap(),
             "fuzz-lock: 1 problem(s)"
         );
-        let drift = Problem::Drift(drift_of(registry("cc", "1.11.3"), registry("cc", "1.10.0")));
+        let drift = Problem::Drift(Box::new(drift_of(
+            registry("cc", "1.11.3"),
+            registry("cc", "1.10.0"),
+        )));
         assert_eq!(
             check_summary(&[Problem::Unlocked(UNSATISFIED.into()), drift]).unwrap(),
             "fuzz-lock: 2 problem(s); run `cargo xtask fuzz-lock`, which says what it cannot fix"
@@ -792,16 +800,17 @@ mod tests {
             rebuild_summary(&[Problem::Unlocked(STALE.into())]).unwrap(),
             "fuzz-lock: 1 problem(s) the rebuild cannot fix; fuzz/Cargo.lock is left as it was"
         );
-        let drift = Problem::Drift(drift_of(
+        let drift = Problem::Drift(Box::new(drift_of(
             built("smallvec", "1.16.9", VENDOR),
             registry("smallvec", "1.16.4"),
-        ));
+        )));
         assert_eq!(
             rebuild_summary(&[drift]).unwrap(),
-            "fuzz-lock: 1 problem(s) the rebuild cannot fix; Cargo.toml and fuzz/Cargo.toml, \
-             with the cargo config each build reads (`.cargo/config.toml` above the folder it \
-             runs in), resolve each crate named above differently: make them resolve it the same \
-             way; fuzz/Cargo.lock is left as it was"
+            "fuzz-lock: 1 problem(s) the rebuild cannot fix; the versions above are those cargo \
+             resolves from the rebuilt fuzz/Cargo.lock, which is not kept; Cargo.toml and \
+             fuzz/Cargo.toml, with the cargo config each build reads (`.cargo/config.toml` above \
+             the folder it runs in), resolve each crate named above differently: make them \
+             resolve it the same way; fuzz/Cargo.lock is left as it was"
         );
     }
 
@@ -811,13 +820,15 @@ mod tests {
         assert_eq!(rebuilt(true), "fuzz-lock: wrote fuzz/Cargo.lock");
         assert_eq!(
             ok_summary(71, 6),
-            "fuzz-lock: mora-syntax and its normal dependencies, 71 packages, built alike by both \
-             builds (version, source and dependencies; 6 feature warning(s)), ok"
+            "fuzz-lock: mora-syntax and the crates it is built on, 71 packages, built alike by \
+             both builds (version, source and dependencies; 6 feature warning(s)), ok"
         );
         let features = Drift::Features {
             package: registry("smallvec", "1.16.4"),
             root: vec!["union".into()],
             fuzz: Vec::new(),
+            root_deps: Vec::new(),
+            fuzz_deps: Vec::new(),
         };
         assert_eq!(
             warning(&features),

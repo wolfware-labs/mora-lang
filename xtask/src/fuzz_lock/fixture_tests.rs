@@ -1,25 +1,23 @@
 //! Small path-only repositories laid out as this one, which `cargo metadata`
 //! resolves offline, for [`check`] and [`rebuild`] end to end.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use super::resolve::tests::{built, drift_of, registry};
 use super::resolve::{FUZZED, Unit, resolve_locked};
 use super::*;
-use crate::paths::scratch;
+use crate::paths::{Scratch, scratch};
 use crate::tools;
 
 /// A repository laid out as this one: a workspace with `mora-syntax`
 /// and `tool`, and an excluded `fuzz` crate on `mora-syntax`. Crates.io
 /// is replaced by a folder that holds `leaf` 1.0.0, which `mora-syntax`
-/// depends on.
-struct Fixture(PathBuf);
+/// depends on. The folder goes when the fixture does.
+struct Fixture(Scratch);
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let root = scratch(name);
-        let fixture = Self(root);
+        let fixture = Self(scratch(name));
         fixture.write(
             "Cargo.toml",
             "[workspace]\nmembers = [\"syntax\", \"tool\"]\nexclude = [\"fuzz\"]\n\
@@ -116,19 +114,13 @@ impl Fixture {
     }
 }
 
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 /// The drifts a check found.
 fn drifts(checked: &Checked) -> Vec<&Drift> {
     checked
         .problems
         .iter()
         .filter_map(|problem| match problem {
-            Problem::Drift(drift) => Some(drift),
+            Problem::Drift(drift) => Some(drift.as_ref()),
             Problem::Unlocked(_) => None,
         })
         .collect()
@@ -306,32 +298,9 @@ fn extra_on_leaf() -> Drift {
         package: registry("leaf", "1.0.0"),
         root: vec!["extra".into()],
         fuzz: Vec::new(),
+        root_deps: Vec::new(),
+        fuzz_deps: Vec::new(),
     }
-}
-
-#[test]
-fn the_closure_follows_normal_dependencies_only() {
-    // mora-syntax's build and dev dependencies are not code the fuzzer
-    // runs; a build dependency still shows in its dependencies.
-    let fixture = Fixture::new("fuzz-lock-closure");
-    fixture.package("syntax/builder", "builder", "");
-    fixture.package("syntax/tester", "tester", "");
-    fixture.append(
-        "syntax/Cargo.toml",
-        "\n[build-dependencies]\nbuilder = { path = \"builder\" }\n\n\
-         [dev-dependencies]\ntester = { path = \"tester\" }\n",
-    );
-    fixture.lock(".");
-    let metadata = resolve_locked(&fixture.0, ROOT_MANIFEST).unwrap();
-    let closure = Unit::closure(&metadata).unwrap();
-    let names: Vec<_> = closure
-        .iter()
-        .map(|unit| (unit.built.name.as_str(), unit.built.version.to_string()))
-        .collect();
-    assert_eq!(names, [("leaf", "1.0.0".into()), (FUZZED, "0.0.0".into())]);
-    let syntax = &closure[1];
-    let deps: Vec<_> = syntax.deps.iter().map(|dep| dep.name.as_str()).collect();
-    assert_eq!(deps, ["builder", "leaf"]);
 }
 
 #[test]
@@ -396,4 +365,129 @@ fn an_offline_failure_is_not_taken_for_a_requirement() {
         error: "error: offline".into(),
     };
     assert!(resolve_failure(&unresolved).ends_with("fuzz/Cargo.lock is left as it was"));
+}
+
+#[test]
+fn a_dependency_on_a_copy_another_workspace_crate_uses_fails() {
+    // `diag`, which mora-syntax depends on, takes the vendored leaf 1.0.1;
+    // mora-syntax takes the registry's leaf 1.0.0, which the fuzz crate
+    // patches to the vendored copy. The workspace builds both copies.
+    let fixture = Fixture::new("fuzz-lock-diag");
+    fixture.leaf("vendor/leaf", "1.0.1");
+    fixture.package(
+        "syntax/diag",
+        "diag",
+        "leaf = { path = \"../../vendor/leaf\" }\n",
+    );
+    fixture.append("syntax/Cargo.toml", "diag = { path = \"diag\" }\n");
+    fixture.append(
+        "fuzz/Cargo.toml",
+        "\n[patch.crates-io]\nleaf = { path = \"../vendor/leaf\" }\n",
+    );
+    fixture.lock(".");
+    fixture.lock("fuzz");
+    let checked = fixture.check().unwrap();
+    let [Problem::Drift(drift)] = checked.problems.as_slice() else {
+        panic!("{checked:?}");
+    };
+    let shown = drift.to_string();
+    assert!(shown.starts_with("mora-syntax 0.0.0"), "{shown}");
+    assert!(shown.contains("leaf 1.0.0 from registry+"), "{shown}");
+}
+
+#[test]
+fn an_optional_dependency_a_feature_turns_on_is_a_warning() {
+    // leaf's `extra` feature turns on its optional dependency twig, and
+    // only the workspace asks for it.
+    let fixture = Fixture::new("fuzz-lock-optional");
+    fixture.publish("twig", "1.0.0");
+    fixture.write(
+        "registry/leaf-1.0.0/Cargo.toml",
+        "[package]\nname = \"leaf\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n\
+         [dependencies]\ntwig = { version = \"1\", optional = true }\n\n\
+         [features]\nextra = [\"dep:twig\"]\n",
+    );
+    fixture.append(
+        "tool/Cargo.toml",
+        "leaf = { version = \"1\", features = [\"extra\"] }\n",
+    );
+    fixture.lock(".");
+    fixture.lock("fuzz");
+    let checked = fixture.check().unwrap();
+    assert_eq!(checked.problems, []);
+    let [warning] = checked.warnings.as_slice() else {
+        panic!("{checked:?}");
+    };
+    let shown = warning.to_string();
+    assert!(shown.contains("`extra`"), "{shown}");
+    assert!(shown.contains("twig 1.0.0"), "{shown}");
+}
+
+#[test]
+fn the_printed_update_works_when_two_packages_share_a_version() {
+    // `tool` takes a vendored leaf 1.0.0 beside the registry's, so
+    // `leaf@1.0.0` names two packages of the workspace.
+    let fixture = Fixture::new("fuzz-lock-spec");
+    fixture.leaf("vendor/leaf", "1.0.0");
+    fixture.append(
+        "tool/Cargo.toml",
+        "vendored = { path = \"../vendor/leaf\", package = \"leaf\" }\n",
+    );
+    fixture.lock(".");
+    fixture.publish("leaf", "1.0.1");
+    fixture.lock("fuzz");
+    let checked = fixture.check().unwrap();
+    let [Problem::Drift(drift)] = checked.problems.as_slice() else {
+        panic!("{checked:?}");
+    };
+    let shown = drift.to_string();
+    let command = shown
+        .split('`')
+        .find(|part| part.starts_with("cargo update"))
+        .unwrap_or_else(|| panic!("{shown}"));
+    let args: Vec<&str> = command.split(' ').skip(1).collect();
+    let output = Command::new(tools::cargo())
+        .args(&args)
+        .arg("--offline")
+        .current_dir(&fixture.0)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{command}: {stderr}");
+    assert_eq!(fixture.check().unwrap().problems, []);
+}
+
+#[test]
+fn the_closure_takes_build_dependencies_and_what_they_build_on() {
+    // A build dependency of mora-syntax, and its own dependency, are
+    // built for the host; dev dependencies are not code the fuzzer runs.
+    let fixture = Fixture::new("fuzz-lock-build");
+    fixture.publish("twig", "1.0.0");
+    fixture.package("syntax/builder", "builder", "twig = \"1\"\n");
+    fixture.package("syntax/tester", "tester", "");
+    fixture.append(
+        "syntax/Cargo.toml",
+        "\n[build-dependencies]\nbuilder = { path = \"builder\" }\n\n\
+         [dev-dependencies]\ntester = { path = \"tester\" }\n",
+    );
+    fixture.lock(".");
+    fixture.lock("fuzz");
+    let metadata = resolve_locked(&fixture.0, ROOT_MANIFEST).unwrap();
+    let names: Vec<_> = Unit::closure(&metadata)
+        .unwrap()
+        .iter()
+        .map(|unit| unit.built.name.clone())
+        .collect();
+    assert_eq!(names, ["builder", "leaf", FUZZED, "twig"]);
+    // The fuzz crate builds twig 1.0.1 for the build script.
+    fixture.publish("twig", "1.0.1");
+    fixture.lock("fuzz");
+    let checked = fixture.check().unwrap();
+    assert_eq!(
+        drifts(&checked),
+        [&drift_of(
+            registry("twig", "1.0.0"),
+            registry("twig", "1.0.1")
+        )]
+    );
 }
