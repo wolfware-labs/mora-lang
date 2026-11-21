@@ -352,7 +352,7 @@ Done when:
 
 - The run harness executes every M1 run test through the JIT and compares outputs; the object file is checked by inspection.
 - Overflow in a debug build panics with the message of §11.4.
-- Run tests in both profiles, through the JIT and the object file: division and remainder by zero panic with the message of §11.4 and exit code 101; `int.MinValue / -1` and `int.MinValue % -1` panic with exit code 101 (§7.12), and their message is checked once §11.4 gives it; none of the four ends in a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
+- Run tests in both profiles through the JIT: division and remainder by zero panic with the message of §11.4 and exit code 101; `int.MinValue / -1` and `int.MinValue % -1` panic with exit code 101 (§7.12), and their message is checked once §11.4 gives it; none of the four ends in a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
 - A function whose frame is larger than the guard page probes it on entry as §13.10 then states: a unit test on the generated code for a function with a multi-megabyte struct local shows the probes that rule requires, before any other access to the frame; the run test that shows `stack overflow` is in M1.14.
 - Layout arithmetic is checked: a struct or tuple whose size does not fit the target's address space is reported as an error, never wrapped (unit test against the 32-bit test description).
 
