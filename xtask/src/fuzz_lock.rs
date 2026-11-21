@@ -7,17 +7,46 @@
 //! fuzzing runs the code the tests run. `--check` fails when a shared crate
 //! drifts; the command itself rebuilds the fuzz lockfile from `Cargo.lock`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-/// The workspace lockfile, relative to the repository root.
-pub const ROOT_LOCK: &str = "Cargo.lock";
-/// The fuzz crate's manifest, relative to the repository root.
-pub const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
-/// The fuzz crate's lockfile, relative to the repository root.
-pub const FUZZ_LOCK: &str = "fuzz/Cargo.lock";
+use toml::{Table, Value};
 
-/// What starts each package entry in a lockfile.
-const PACKAGE: &str = "\n[[package]]\n";
+use crate::paths::{FUZZ_LOCK, ROOT_LOCK};
+
+/// The key of a lockfile's array of package entries.
+const PACKAGE: &str = "package";
+
+/// A parsed lockfile.
+pub struct Lock(Table);
+
+impl Lock {
+    /// Parses the text of a lockfile.
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        text.parse().map(Self)
+    }
+
+    /// The package entries, in the order of the file.
+    fn entries(&self) -> &[Value] {
+        self.0
+            .get(PACKAGE)
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The name and version of each package the lockfile locks.
+    pub fn packages(&self) -> Vec<(&str, &str)> {
+        self.entries().iter().filter_map(name_and_version).collect()
+    }
+}
+
+/// The `name` and `version` of a package entry.
+fn name_and_version(entry: &Value) -> Option<(&str, &str)> {
+    Some((
+        entry.get("name")?.as_str()?,
+        entry.get("version")?.as_str()?,
+    ))
+}
 
 /// A crate that `fuzz/Cargo.lock` locks at a version `Cargo.lock` does not.
 #[derive(Debug, PartialEq, Eq)]
@@ -42,44 +71,21 @@ impl fmt::Display for Drift {
     }
 }
 
-/// The package entries of a lockfile, each without its `[[package]]` line.
-fn entries(lock: &str) -> impl Iterator<Item = &str> {
-    lock.split(PACKAGE).skip(1)
-}
-
-/// The value of a `key = "value"` line of an entry.
-fn field<'a>(entry: &'a str, key: &str) -> Option<&'a str> {
-    entry.lines().find_map(|line| {
-        line.strip_prefix(key)?
-            .strip_prefix(" = \"")?
-            .strip_suffix('"')
-    })
-}
-
-/// The name and version of each package a lockfile locks.
-pub fn packages(lock: &str) -> Vec<(&str, &str)> {
-    entries(lock)
-        .filter_map(|entry| Some((field(entry, "name")?, field(entry, "version")?)))
-        .collect()
-}
-
 /// The crates both lockfiles lock, at a version in `fuzz` that `root` does
 /// not have.
-pub fn drift(root: &str, fuzz: &str) -> Vec<Drift> {
-    let root = packages(root);
-    packages(fuzz)
+pub fn drift(root: &Lock, fuzz: &Lock) -> Vec<Drift> {
+    let mut versions: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (name, version) in root.packages() {
+        versions.entry(name).or_default().push(version);
+    }
+    fuzz.packages()
         .into_iter()
         .filter_map(|(name, version)| {
-            let versions: Vec<String> = root
-                .iter()
-                .filter(|(other, _)| *other == name)
-                .map(|(_, version)| (*version).to_owned())
-                .collect();
-            let shared = !versions.is_empty();
-            (shared && !versions.iter().any(|other| other == version)).then(|| Drift {
+            let root = versions.get(name)?;
+            (!root.contains(&version)).then(|| Drift {
                 name: name.to_owned(),
                 fuzz: version.to_owned(),
-                root: versions,
+                root: root.iter().map(|version| (*version).to_owned()).collect(),
             })
         })
         .collect()
@@ -88,55 +94,66 @@ pub fn drift(root: &str, fuzz: &str) -> Vec<Drift> {
 /// `root`, with the entries of `fuzz` whose crates `root` does not lock.
 ///
 /// Cargo then drops what the fuzz crate does not use and adds what it lacks,
-/// and keeps every shared crate at the version `root` locks.
-pub fn merged(root: &str, fuzz: &str) -> String {
-    let names: Vec<&str> = packages(root).into_iter().map(|(name, _)| name).collect();
-    let mut text = root.trim_end().to_owned();
-    for entry in entries(fuzz) {
-        if field(entry, "name").is_some_and(|name| !names.contains(&name)) {
-            text.push('\n');
-            text.push_str(PACKAGE);
-            text.push_str(entry.trim_end());
-        }
-    }
-    text.push('\n');
-    text
+/// keeps every shared crate at the version `root` locks, and writes the file
+/// in its own layout.
+pub fn merged(root: &Lock, fuzz: &Lock) -> String {
+    let names: BTreeSet<&str> = root.packages().into_iter().map(|(name, _)| name).collect();
+    let only_fuzz = fuzz
+        .entries()
+        .iter()
+        .filter(|entry| name_and_version(entry).is_some_and(|(name, _)| !names.contains(name)));
+    let mut packages = root.entries().to_vec();
+    packages.extend(only_fuzz.cloned());
+    let mut table = root.0.clone();
+    table.insert(PACKAGE.to_owned(), Value::Array(packages));
+    table.to_string()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
     use super::*;
 
     const HEADER: &str = "# This file is automatically @generated by Cargo.\nversion = 4\n";
 
+    const SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
     /// A lockfile with one entry per `(name, version)`.
-    fn lock(packages: &[(&str, &str)]) -> String {
+    fn lock(packages: &[(&str, &str)]) -> Lock {
         let mut text = HEADER.to_owned();
         for (name, version) in packages {
-            text.push_str(&format!(
-                "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n\
-                 source = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
-            ));
+            // Writing to a String cannot fail.
+            let _ = write!(
+                text,
+                "\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = \"{SOURCE}\"\n"
+            );
         }
-        text
+        Lock::parse(&text).unwrap()
     }
 
     #[test]
     fn packages_read_each_entry() {
-        let text = lock(&[("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]);
+        let lock = lock(&[("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]);
         assert_eq!(
-            packages(&text),
+            lock.packages(),
             [("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]
         );
-        assert_eq!(packages(HEADER), []);
+        assert_eq!(Lock::parse(HEADER).unwrap().packages(), []);
     }
 
     #[test]
-    fn fields_need_the_whole_key_and_quotes() {
-        let entry = "names = \"no\"\nname = \"cc\"\nversion = 1\n";
-        assert_eq!(field(entry, "name"), Some("cc"));
-        assert_eq!(field(entry, "version"), None);
-        assert_eq!(field(entry, "source"), None);
+    fn entries_without_a_string_name_and_version_are_skipped() {
+        let text = format!(
+            "{HEADER}\n[[package]]\nname = \"cc\"\n\n[[package]]\nname = \"syn\"\nversion = 2\n\n\
+             [[package]]\nversion = \"1.0.0\"\n\n[[package]]\nname = \"zip\"\nversion = \"7.2.0\"\n"
+        );
+        assert_eq!(Lock::parse(&text).unwrap().packages(), [("zip", "7.2.0")]);
+    }
+
+    #[test]
+    fn a_lockfile_that_is_not_toml_is_an_error() {
+        assert!(Lock::parse("[[package]\nname = \"cc\"\n").is_err());
     }
 
     #[test]
@@ -188,9 +205,9 @@ mod tests {
             ("cc", "1.10.0"),
             ("mora-fuzz", "0.0.0"),
         ]);
-        let text = merged(&root, &fuzz);
+        let merged_lock = Lock::parse(&merged(&root, &fuzz)).unwrap();
         assert_eq!(
-            packages(&text),
+            merged_lock.packages(),
             [
                 ("cc", "1.11.3"),
                 ("xtask", "0.0.0"),
@@ -198,9 +215,13 @@ mod tests {
                 ("mora-fuzz", "0.0.0"),
             ]
         );
-        assert!(text.starts_with(HEADER));
-        assert!(text.ends_with("crates.io-index\"\n"));
-        assert!(!text.contains("\n\n\n"));
-        assert_eq!(merged(&root, HEADER), root);
+        assert_eq!(merged_lock.0.get("version"), Some(&Value::Integer(4)));
+        let sources = merged_lock
+            .entries()
+            .iter()
+            .filter(|entry| entry.get("source").and_then(Value::as_str) == Some(SOURCE));
+        assert_eq!(sources.count(), 4, "every entry keeps its source");
+        let alone = Lock::parse(&merged(&root, &Lock::parse(HEADER).unwrap())).unwrap();
+        assert_eq!(alone.packages(), root.packages());
     }
 }

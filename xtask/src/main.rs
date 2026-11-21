@@ -189,30 +189,40 @@ fn run_codegen_check() -> CommandResult {
 /// `fuzz/Cargo.lock`.
 fn fuzz_metadata(root: &Path) -> MetadataCommand {
     let mut command = MetadataCommand::new();
-    command.manifest_path(root.join(fuzz_lock::FUZZ_MANIFEST));
+    command.manifest_path(root.join(paths::FUZZ_MANIFEST));
     command
 }
 
-/// Reads a lockfile under the repository root.
-fn read_lock(root: &Path, lock: &str) -> Result<String, String> {
-    let path = root.join(lock);
+/// The text of a file under the repository root.
+fn read_text(root: &Path, file: &str) -> Result<String, String> {
+    let path = root.join(file);
     std::fs::read_to_string(&path).map_err(paths::error_at(&path))
+}
+
+/// Reads and parses a lockfile under the repository root.
+fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
+    fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(&root.join(lock)))
 }
 
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
 /// crates only the fuzz crate uses, and lets cargo drop the rest.
 fn run_fuzz_lock() -> CommandResult {
     let root = root();
+    let before = read_text(&root, paths::FUZZ_LOCK)?;
     let text = fuzz_lock::merged(
-        &read_lock(&root, fuzz_lock::ROOT_LOCK)?,
-        &read_lock(&root, fuzz_lock::FUZZ_LOCK)?,
+        &read_lock(&root, paths::ROOT_LOCK)?,
+        &read_lock(&root, paths::FUZZ_LOCK)?,
     );
-    let path = root.join(fuzz_lock::FUZZ_LOCK);
+    let path = root.join(paths::FUZZ_LOCK);
     std::fs::write(&path, text).map_err(paths::error_at(&path))?;
     fuzz_metadata(&root)
         .exec()
         .map_err(|err| format!("cargo metadata failed: {err}"))?;
-    println!("fuzz-lock: wrote {}", fuzz_lock::FUZZ_LOCK);
+    if read_text(&root, paths::FUZZ_LOCK)? == before {
+        println!("fuzz-lock: {} is up to date", paths::FUZZ_LOCK);
+    } else {
+        println!("fuzz-lock: wrote {}", paths::FUZZ_LOCK);
+    }
     run_fuzz_lock_check()
 }
 
@@ -227,12 +237,12 @@ fn run_fuzz_lock_check() -> CommandResult {
     {
         problems.push(format!(
             "{} does not match {}: {err}",
-            fuzz_lock::FUZZ_LOCK,
-            fuzz_lock::FUZZ_MANIFEST
+            paths::FUZZ_LOCK,
+            paths::FUZZ_MANIFEST
         ));
     }
-    let root_lock = read_lock(&root, fuzz_lock::ROOT_LOCK)?;
-    let fuzz = read_lock(&root, fuzz_lock::FUZZ_LOCK)?;
+    let root_lock = read_lock(&root, paths::ROOT_LOCK)?;
+    let fuzz = read_lock(&root, paths::FUZZ_LOCK)?;
     problems.extend(
         fuzz_lock::drift(&root_lock, &fuzz)
             .iter()
@@ -244,8 +254,8 @@ fn run_fuzz_lock_check() -> CommandResult {
     if problems.is_empty() {
         println!(
             "fuzz-lock: {} packages, shared crates on the versions of {}, ok",
-            fuzz_lock::packages(&fuzz).len(),
-            fuzz_lock::ROOT_LOCK
+            fuzz.packages().len(),
+            paths::ROOT_LOCK
         );
         Ok(ExitCode::SUCCESS)
     } else {

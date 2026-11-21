@@ -16,6 +16,7 @@ mora-target.workspace = true
 mora-testkit.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+toml.workspace = true
 ungrammar.workspace = true
 
 [dev-dependencies]

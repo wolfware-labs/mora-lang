@@ -15,6 +15,15 @@ pub const PAGES: &str = "docs/errors";
 /// The file in [`PAGES`] that holds the page template, not a page.
 pub const PAGE_TEMPLATE: &str = "README.md";
 
+/// The workspace lockfile, relative to the repository root.
+pub const ROOT_LOCK: &str = "Cargo.lock";
+
+/// The fuzz crate's manifest, relative to the repository root.
+pub const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
+
+/// The fuzz crate's lockfile, relative to the repository root.
+pub const FUZZ_LOCK: &str = "fuzz/Cargo.lock";
+
 /// The repository root: the parent of this crate.
 pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")

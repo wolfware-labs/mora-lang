@@ -1,6 +1,8 @@
 //! Tests of constant evaluation, each from source text through the front
 //! end.
 
+use std::fmt::Write;
+
 use mora_hir::test_support::{TestDb, app, codes, file_named, item_named};
 use mora_hir::{
     BodyOwner, Expr, ExprId, ItemId, Primitive, Ty, body, body_resolution, body_source_map,
@@ -1432,12 +1434,13 @@ fn the_unit_value_is_one_scalar() {
 #[test]
 fn copies_of_a_string_constant_share_its_text() {
     let mut text = String::from("const A0: string = \"a\";\n");
+    // Writing to a String cannot fail.
     for n in 1..=20 {
         let m = n - 1;
-        text.push_str(&format!("const A{n}: string = A{m} + A{m};\n"));
+        let _ = writeln!(text, "const A{n}: string = A{m} + A{m};");
     }
     for n in 0..200 {
-        text.push_str(&format!("const B{n}: string = A20;\n"));
+        let _ = writeln!(text, "const B{n}: string = A20;");
     }
     let source = checked(&text);
     let data = |name: &str| match source.evaluated(source.constant(name)) {
