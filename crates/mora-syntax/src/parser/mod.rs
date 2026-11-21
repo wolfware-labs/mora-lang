@@ -112,8 +112,8 @@ pub(crate) struct Input<'t> {
     /// ([`Input::merge`]).
     raw_ends: Vec<usize>,
     /// Whether the token is directly followed by the next one, with no trivia
-    /// between them: rejected text that touches both counts as nothing, so
-    /// that `>\>` is still `>>` to the parser.
+    /// between them: rejected text with no trivia in or around it counts as
+    /// nothing, so that `>\>` is still `>>` to the parser.
     joined: Vec<bool>,
     /// Whether a line break comes between the token and the one before it,
     /// with only rejected text after the line break.
@@ -193,22 +193,23 @@ impl<'t> Input<'t> {
                 continue;
             }
             // A run: each rejected token, a quote up to its closing quote.
-            // Trivia between them is not rejected text: it stays.
             let start = at;
-            let mut spaced = !input.joined.last().copied().unwrap_or(false);
             while all.kind(at) == K::Unknown {
-                let end = closing_quote[at].unwrap_or(at);
-                spaced |= !lexed.is_joined(all.raw[end]);
-                at = end + 1;
+                at = closing_quote[at].unwrap_or(at) + 1;
             }
-            input.rejected_runs[all.raw[start]] = Some(all.raw[at - 1] + 1);
+            let (first, last) = (all.raw[start], all.raw[at - 1]);
+            input.rejected_runs[first] = Some(last + 1);
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
             rejected = true;
             // The tokens around the run touch as they would without it: when
-            // no trivia comes between them and the run or inside the run,
-            // they are joined, or one token when they lex as one, as `.` and
-            // `.` make `..`.
-            let touches = !spaced && at < all.len();
+            // no trivia comes between them and the run, nor inside the run
+            // (it spans no more tokens of `lexed` than it holds), they are
+            // joined, or one token when they lex as one, as `.` and `.` make
+            // `..`.
+            let touches = input.joined.last().copied().unwrap_or(false)
+                && last - first == at - 1 - start
+                && lexed.is_joined(last)
+                && at < all.len();
             if touches && input.merge(&all, at) {
                 (rejected, line_break) = (false, false);
                 at += 1;
@@ -268,8 +269,8 @@ impl<'t> Input<'t> {
 
     /// Makes the last token one with token `at` of `all`, which rejected text
     /// between them separates, when both are punctuation and their texts
-    /// together lex as one token that is not trivia, as `/` and `/` make a
-    /// comment. Returns whether it did.
+    /// together lex as one token other than trivia (`/` and `/` make a
+    /// comment). Returns whether it did.
     fn merge(&mut self, all: &Input<'_>, at: usize) -> bool {
         let last = self.len() - 1;
         let punctuation = |kind: SyntaxKind| kind.text().filter(|_| !kind.is_keyword());

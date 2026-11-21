@@ -1025,18 +1025,7 @@ fn rejected_text_in_a_lambda_parameter_is_parsed_past() {
 /// Asserts that `text` reports its rejected tokens and then what `without`,
 /// the same text without its rejected text, reports.
 fn assert_rejected_over(text: &str, without: &str) {
-    let errors = parse(text).errors().to_vec();
-    let rejected = errors
-        .iter()
-        .filter(|error| error.code.to_string() == "MR0017")
-        .count();
-    assert!(rejected > 0, "{text:?}");
-    let rest: Vec<String> = errors
-        .iter()
-        .filter(|error| error.code.to_string() != "MR0017")
-        .map(|error| error.message.clone())
-        .collect();
-    assert_eq!(rest, parse_messages(without), "{text:?}");
+    assert_eq!(rest_of_errors(text), parse_messages(without), "{text:?}");
 }
 
 /// [`assert_rejected_over`] with the text without each `\` and the space
@@ -1215,10 +1204,10 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
         // The same nodes and tokens, the joined one with the run inside it.
         assert_eq!(kinds(text), kinds(&text.replace('\\', "")), "{text:?}");
     }
-    // Whitespace, a line break or a comment inside the run keeps the tokens
-    // around it apart, as it does without the rejected characters. Where
-    // the operand after `>` is missing, the run stands for it, so only the
-    // rejected characters are reported there.
+    // Whitespace, a line break or a comment inside the run, a quoted one
+    // too, keeps the tokens around it apart, as it does without the
+    // rejected characters. Where the operand after `>` is missing, the run
+    // stands for it, so only the rejected characters are reported there.
     for (text, rest) in [
         ("let r = a.\\ \\.b;\n", &["expected an identifier"][..]),
         ("let r = a.\\\n\\.b;\n", &["expected an identifier"]),
@@ -1226,8 +1215,13 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
         ("x >\\ \\= 2;\n", &[]),
         ("let a = x >\\ \\> 2;\n", &[]),
         ("let a = x >\\\n\\> 2;\n", &[]),
+        // A quoted run with a space inside it.
+        (
+            "let r = a.\u{201c} \u{201d}.b;\n",
+            &["expected an identifier"],
+        ),
     ] {
-        let without = text.replace('\\', "");
+        let without = text.replace(['\\', '\u{201c}', '\u{201d}'], "");
         assert_eq!(
             shape_past_rejected(text),
             shape_past_rejected(&without),
@@ -1237,7 +1231,8 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
     }
 }
 
-/// The messages of the errors of `text` besides `MR0017`.
+/// The messages of the errors of `text` besides `MR0017`, which it must
+/// report.
 fn rest_of_errors(text: &str) -> Vec<String> {
     let errors = parse(text).errors().to_vec();
     assert!(

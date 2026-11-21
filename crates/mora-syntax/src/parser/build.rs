@@ -375,16 +375,22 @@ impl Sink<'_> {
     fn token(&mut self, kind: SyntaxKind, n_raw: usize) {
         let first = self.next_significant();
         self.add_raw(first);
-        let last = (first + n_raw).min(self.lexed.tokens.len());
-        if first >= last {
+        let Some(range) = self.raw_range(first, n_raw) else {
             return;
-        }
-        let range = TextRange::new(
-            self.lexed.tokens[first].range.start(),
-            self.lexed.tokens[last - 1].range.end(),
-        );
+        };
         self.builder.token(kind, &self.text[range]);
-        self.raw = last;
+        self.raw = (first + n_raw).min(self.lexed.tokens.len());
+    }
+
+    /// The text of the `n_raw` tokens of [`Lexed::tokens`] from `first`, up
+    /// to the end; `None` when that is no token.
+    fn raw_range(&self, first: usize, n_raw: usize) -> Option<TextRange> {
+        let tokens = self
+            .lexed
+            .tokens
+            .get(first..(first + n_raw).min(self.lexed.tokens.len()))?;
+        let (start, end) = (tokens.first()?, tokens.last()?);
+        Some(TextRange::new(start.range.start(), end.range.end()))
     }
 
     /// Whether the lexer already reported the cause of a syntax error at
@@ -405,15 +411,7 @@ impl Sink<'_> {
     /// included; without one, it is dropped.
     fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps: Option<usize>) {
         let next = self.next_significant();
-        let wrapped = wraps.and_then(|n_raw| {
-            let first = self.lexed.tokens.get(next)?;
-            let last = self
-                .lexed
-                .tokens
-                .get(next + n_raw.max(1) - 1)
-                .unwrap_or(first);
-            Some(TextRange::new(first.range.start(), last.range.end()))
-        });
+        let wrapped = wraps.and_then(|n_raw| self.raw_range(next, n_raw.max(1)));
         let range = if let Some(range) = wrapped {
             range
         } else {
