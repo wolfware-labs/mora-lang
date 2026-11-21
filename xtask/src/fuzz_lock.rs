@@ -1,26 +1,17 @@
-//! `cargo xtask fuzz-lock`: keeps `fuzz/Cargo.lock` on the versions
-//! `Cargo.lock` locks (spec §20.1).
+//! `cargo xtask fuzz-lock`: keeps the fuzz crate on the code the workspace
+//! builds (spec §20.1).
 //!
 //! The fuzz crate sits outside the workspace and has a lockfile of its own.
-//! Every crate it shares with the workspace, `mora-syntax` and what that
-//! depends on, must be locked at the same version in both files, so that
-//! fuzzing runs the code the tests run. `--check` fails when a shared crate
-//! drifts; the command itself rebuilds the fuzz lockfile from `Cargo.lock`.
+//! The workspace and the fuzz crate must build the same version from the
+//! same source of every crate they share, `mora-syntax` and what that
+//! depends on, so that fuzzing runs the code the tests run. `--check` asks
+//! cargo what each build resolves and fails when a shared crate differs; the
+//! command itself rebuilds `fuzz/Cargo.lock` from `Cargo.lock`.
 //!
-//! Two entries are the same crate when cargo would let only one of them in a
-//! resolve: the same name, the same source, and versions that are semver
-//! compatible. A crate only the fuzz crate uses can then take another major
-//! version of a crate the workspace locks without counting as drift.
-//!
-//! A `[patch]` in `Cargo.toml` does not reach the fuzz crate, so a crate it
-//! patches is locked from another source in the two files until
-//! `fuzz/Cargo.toml` has the same patch. A patch in the repository's cargo
-//! config counts for both builds, and cargo takes it over a manifest's
-//! patch of the same crate. When both builds patch a crate, the
-//! rebuild drops the fuzz lockfile's entry and cargo takes the patch, and
-//! the check fails when the two patches point at different crates.
-
-mod patches;
+//! Two packages are the same crate when cargo would let only one of them in
+//! a resolve: the same name and versions that are semver compatible. A crate
+//! only the fuzz crate uses can then take another major version of a crate
+//! the workspace builds without counting as a difference.
 
 use std::fmt;
 use std::fs;
@@ -30,15 +21,10 @@ use std::path::Path;
 use cargo_metadata::semver::Version;
 use toml::{Table, Value};
 
-use self::patches::Patched;
-pub use self::patches::{Patch, Patches, patches_in};
-use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_LOCK, ROOT_MANIFEST, error_at};
+use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_MANIFEST, error_at};
 
 /// The key of a lockfile's array of package entries.
 const PACKAGE: &str = "package";
-
-/// The source cargo writes for crates.io.
-const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 /// A parsed lockfile; the default one has no packages.
 #[derive(Default)]
@@ -56,13 +42,6 @@ impl Lock {
             .get(PACKAGE)
             .and_then(Value::as_array)
             .map_or(&[], Vec::as_slice)
-    }
-
-    /// The name and version of each package the lockfile locks.
-    pub fn packages(&self) -> Vec<(&str, &str)> {
-        self.locked()
-            .map(|package| (package.name, package.version))
-            .collect()
     }
 
     /// The entries with a name and a valid version.
@@ -95,11 +74,7 @@ impl Compatible {
 struct Locked<'a> {
     /// The crate's name.
     name: &'a str,
-    /// The version, as the lockfile writes it.
-    version: &'a str,
-    /// Where the crate comes from; `None` for a path dependency.
-    source: Option<&'a str>,
-    /// The versions `version` is compatible with.
+    /// The versions its version is compatible with.
     compatible: Compatible,
 }
 
@@ -108,160 +83,66 @@ impl<'a> Locked<'a> {
         let version = entry.get("version")?.as_str()?;
         Some(Self {
             name: entry.get("name")?.as_str()?,
-            version,
-            source: entry.get("source").and_then(Value::as_str),
             compatible: Compatible::of(&Version::parse(version).ok()?),
         })
     }
 
-    /// Whether cargo would keep only one of the two in a resolve.
-    fn same_crate(&self, other: &Locked<'_>) -> bool {
-        self.compatible_with(other) && self.source == other.source
-    }
-
     /// The same name and semver-compatible versions, from any source.
-    fn compatible_with(&self, other: &Locked<'_>) -> bool {
+    fn same_crate(&self, other: &Locked<'_>) -> bool {
         self.name == other.name && self.compatible == other.compatible
     }
 }
 
-/// Where a package comes from, as messages show it.
-fn shown_source(source: Option<&str>) -> &str {
-    match source {
-        None => "a path",
-        Some(CRATES_IO) => "crates.io",
-        Some(other) => other,
+/// A package one build resolves, as `cargo metadata` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Built {
+    /// The crate's name.
+    pub name: String,
+    /// The version cargo builds.
+    pub version: Version,
+    /// Where cargo builds it from: the source cargo reports for a registry
+    /// or git package, or the folder of the manifest of a path package.
+    pub from: String,
+}
+
+impl Built {
+    /// Whether cargo would keep only one of the two in a resolve.
+    fn same_crate(&self, other: &Built) -> bool {
+        self.name == other.name && Compatible::of(&self.version) == Compatible::of(&other.version)
     }
 }
 
-/// A crate `fuzz/Cargo.lock` locks differently from `Cargo.lock`.
+/// A crate the fuzz crate builds differently from the workspace: what the
+/// workspace builds and what the fuzz crate builds.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Drift {
-    /// The same crate at another version, which rebuilding the fuzz lockfile
-    /// moves to the root's unless a requirement of the fuzz crate holds it,
-    /// only the fuzz crate patches it, or the two builds patch it to
-    /// different crates.
-    Version {
-        name: String,
-        fuzz: String,
-        root: String,
-        patched: Patched,
-    },
-    /// A compatible version from another source than the one `Cargo.lock`
-    /// takes it from.
-    Source {
-        name: String,
-        fuzz: String,
-        fuzz_source: String,
-        root: String,
-        root_source: String,
-        patched: Patched,
-    },
-}
-
-impl Drift {
-    /// Whether rebuilding the fuzz lockfile from `Cargo.lock` can remove it.
-    pub fn rebuild_fixes(&self) -> bool {
-        match self {
-            Self::Version { patched, .. } => !matches!(patched, Patched::Apart(_) | Patched::Fuzz),
-            // Cargo keeps the version the rebuild takes from `Cargo.lock`
-            // over a patch only the fuzz crate has.
-            Self::Source { patched, .. } => matches!(patched, Patched::Same | Patched::Fuzz),
-        }
-    }
-
-    /// Whether it is a version the rebuild moves to the root's unless a
-    /// requirement of the fuzz crate holds it apart.
-    fn may_be_held(&self) -> bool {
-        matches!(self, Self::Version { .. }) && self.rebuild_fixes()
-    }
+pub struct Drift {
+    pub root: Built,
+    pub fuzz: Built,
 }
 
 impl fmt::Display for Drift {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (name, patched) = match self {
-            Self::Version {
-                name,
-                fuzz,
-                root,
-                patched,
-            } => {
-                write!(f, "{FUZZ_LOCK}: {name} {fuzz}, {ROOT_LOCK} has {root}")?;
-                (name, patched)
-            }
-            Self::Source {
-                name,
-                fuzz,
-                fuzz_source,
-                root,
-                root_source,
-                patched,
-            } => {
-                write!(
-                    f,
-                    "{FUZZ_LOCK}: {name} {fuzz} from {fuzz_source}, {ROOT_LOCK} takes {name} \
-                     {root} from {root_source}"
-                )?;
-                (name, patched)
-            }
-        };
-        let source = matches!(self, Self::Source { .. });
-        match patched {
-            // The problem for the two patches says what they are.
-            Patched::Apart(_) => write!(f, "; the two builds patch {name} to different crates"),
-            Patched::Fuzz if source => write!(
-                f,
-                "; {FUZZ_MANIFEST} patches {name} and {ROOT_MANIFEST} does not: remove the patch \
-                 from {FUZZ_MANIFEST}, or add it to {ROOT_MANIFEST}; until then `cargo xtask \
-                 fuzz-lock` takes the version {ROOT_LOCK} has and leaves the patch unused"
-            ),
-            Patched::Fuzz => write!(
-                f,
-                "; {FUZZ_MANIFEST} patches {name} and {ROOT_MANIFEST} does not: remove the patch \
-                 from {FUZZ_MANIFEST}, or add it to {ROOT_MANIFEST}"
-            ),
-            Patched::Same if source => write!(
-                f,
-                "; both builds patch {name} the same way: run `cargo xtask fuzz-lock`"
-            ),
-            Patched::Root if source => write!(
-                f,
-                "; {ROOT_MANIFEST} patches {name}: give {FUZZ_MANIFEST} the same `[patch]`, \
-                 then run `cargo xtask fuzz-lock`"
-            ),
-            Patched::Neither if source => write!(
-                f,
-                "; neither build patches {name} from the repository: check whether the \
-                 workspace has a crate of that name, which is another crate than the fuzz \
-                 crate's, or a cargo config outside the repository patches it"
-            ),
-            Patched::Same | Patched::Root | Patched::Neither => Ok(()),
-        }
+        let Self { root, fuzz } = self;
+        write!(
+            f,
+            "{}: {ROOT_MANIFEST} builds {} from {}, {FUZZ_MANIFEST} builds {} from {}",
+            fuzz.name, root.version, root.from, fuzz.version, fuzz.from
+        )
     }
 }
 
-/// The crates `fuzz` locks differently from `root`: at another version of the
-/// same crate, or from another source than a compatible version in `root`.
-pub fn drift(root: &Lock, fuzz: &Lock, patches: &Patches) -> Vec<Drift> {
-    let root: Vec<Locked<'_>> = root.locked().collect();
-    fuzz.locked()
+/// The crates `fuzz` builds differently from `root`, each the resolve of
+/// one build: a package of `fuzz` whose crate `root` builds at another
+/// version or from another source. Crates only one build resolves are left
+/// out.
+pub fn drift(root: &[Built], fuzz: &[Built]) -> Vec<Drift> {
+    fuzz.iter()
+        .filter(|package| !root.contains(package))
         .filter_map(|package| {
-            if let Some(same) = root.iter().find(|other| package.same_crate(other)) {
-                return (same.version != package.version).then(|| Drift::Version {
-                    name: package.name.to_owned(),
-                    fuzz: package.version.to_owned(),
-                    root: same.version.to_owned(),
-                    patched: patches.of(package.name),
-                });
-            }
-            let other = root.iter().find(|other| package.compatible_with(other))?;
-            Some(Drift::Source {
-                name: package.name.to_owned(),
-                fuzz: package.version.to_owned(),
-                fuzz_source: shown_source(package.source).to_owned(),
-                root: other.version.to_owned(),
-                root_source: shown_source(other.source).to_owned(),
-                patched: patches.of(package.name),
+            let other = root.iter().find(|other| package.same_crate(other))?;
+            Some(Drift {
+                root: other.clone(),
+                fuzz: package.clone(),
             })
         })
         .collect()
@@ -271,20 +152,14 @@ pub fn drift(root: &Lock, fuzz: &Lock, patches: &Patches) -> Vec<Drift> {
 ///
 /// Cargo then drops what the fuzz crate does not use and adds what it lacks,
 /// keeps every shared crate at the version `root` locks, and writes the file
-/// in its own layout. `root` replaces an entry of the same crate, and one of
-/// a compatible version from another source when both builds patch that
-/// crate, so that cargo takes the fuzz crate's patch instead of the version
-/// locked before it. An entry `root` does not replace (another major
-/// version, another source no patch of both builds explains, or a version
-/// that does not parse) is kept as the fuzz lockfile has it.
-pub fn merged(root: &Lock, fuzz: &Lock, patches: &Patches) -> String {
+/// in its own layout. `root` replaces each entry of the same crate, whatever
+/// its source, so that cargo takes a crate the way the fuzz crate's
+/// manifest and config resolve it, as for the workspace. An entry `root`
+/// does not replace (another major version, or a version that does not
+/// parse) is kept as the fuzz lockfile has it.
+pub fn merged(root: &Lock, fuzz: &Lock) -> String {
     let shared: Vec<Locked<'_>> = root.locked().collect();
-    let replaced = |package: Locked<'_>| {
-        shared.iter().any(|other| {
-            package.same_crate(other)
-                || (package.compatible_with(other) && patches.of(package.name).in_both())
-        })
-    };
+    let replaced = |package: Locked<'_>| shared.iter().any(|other| package.same_crate(other));
     let kept = fuzz
         .entries()
         .iter()
@@ -315,30 +190,19 @@ pub enum Problem {
     /// lockfile needs a change, or a requirement no version satisfies; its
     /// error.
     Unlocked(String),
-    /// The fuzz lockfile cannot be read; the reason.
-    Unreadable(String),
-    /// A crate the fuzz lockfile locks differently from `Cargo.lock`.
+    /// A crate the fuzz crate builds differently from the workspace.
     Drift(Drift),
-    /// A crate both builds patch, each to another crate: the workspace's
-    /// patch and the fuzz crate's.
-    PatchesApart(Box<(Patch, Patch)>),
 }
 
 impl Problem {
-    /// Whether `cargo xtask fuzz-lock` can remove it.
-    pub fn rebuild_fixes(&self) -> bool {
+    /// Whether `cargo xtask fuzz-lock` may remove it. A crate built
+    /// differently is fixed by the rebuild when only the fuzz lockfile holds
+    /// it apart, which shows once the rebuild has run.
+    fn rebuild_may_fix(&self) -> bool {
         match self {
             Self::Unlocked(error) => !names_requirement(error),
-            Self::Unreadable(_) => true,
-            Self::Drift(drift) => drift.rebuild_fixes(),
-            Self::PatchesApart(_) => false,
+            Self::Drift(_) => true,
         }
-    }
-
-    /// Whether it is a shared crate at another version, which a requirement
-    /// of the fuzz crate can hold apart from `Cargo.lock`.
-    fn may_be_held(&self) -> bool {
-        matches!(self, Self::Drift(drift) if drift.may_be_held())
     }
 }
 
@@ -349,46 +213,28 @@ impl fmt::Display for Problem {
             Self::Unlocked(error) => {
                 write!(f, "{FUZZ_LOCK} does not match {FUZZ_MANIFEST}: {error}")
             }
-            Self::Unreadable(reason) => f.write_str(reason),
             Self::Drift(drift) => drift.fmt(f),
-            Self::PatchesApart(pair) => {
-                let (root, fuzz) = &**pair;
-                write!(
-                    f,
-                    "{} patches {} with `{}` and {} with `{}`, two different crates: point both \
-                     `[patch]` entries at the same crate",
-                    root.file, root.name, root.written, fuzz.file, fuzz.written
-                )
-            }
         }
     }
 }
 
-/// Each problem with the fuzz lockfile: `locked` is what cargo said when it
-/// resolved the fuzz crate with `--locked`, and `fuzz` the fuzz lockfile or
-/// why it cannot be read.
-pub fn problems(
-    locked: Result<(), String>,
-    root: &Lock,
-    fuzz: Result<Lock, String>,
-    patches: &Patches,
-) -> Vec<Problem> {
-    let mut problems: Vec<Problem> = locked
-        .err()
-        .map(|error| Problem::Unlocked(error.trim_end().to_owned()))
-        .into_iter()
-        .collect();
+/// What cargo resolves for the fuzz crate, checked against the workspace.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Checked {
+    /// Each problem with the fuzz lockfile.
+    pub problems: Vec<Problem>,
+    /// The number of packages the fuzz crate resolves.
+    pub packages: usize,
+}
+
+/// Each problem with the fuzz lockfile: `root` is what the workspace
+/// resolves, and `fuzz` what the fuzz crate resolves with `--locked`, or
+/// cargo's error when it cannot.
+pub fn problems(root: &[Built], fuzz: Result<&[Built], String>) -> Vec<Problem> {
     match fuzz {
-        Ok(fuzz) => problems.extend(drift(root, &fuzz, patches).into_iter().map(Problem::Drift)),
-        Err(reason) => problems.push(Problem::Unreadable(reason)),
+        Ok(fuzz) => drift(root, fuzz).into_iter().map(Problem::Drift).collect(),
+        Err(error) => vec![Problem::Unlocked(error.trim_end().to_owned())],
     }
-    problems.extend(
-        patches
-            .apart()
-            .into_iter()
-            .map(|pair| Problem::PatchesApart(Box::new(pair))),
-    );
-    problems
 }
 
 /// The line `--check` ends with when it finds problems; `None` when there
@@ -397,18 +243,9 @@ pub fn check_summary(problems: &[Problem]) -> Option<String> {
     if problems.is_empty() {
         return None;
     }
-    let fixable = problems
-        .iter()
-        .filter(|problem| problem.rebuild_fixes())
-        .count();
     let mut summary = format!("fuzz-lock: {} problem(s)", problems.len());
-    if fixable > 0 {
-        summary += &format!("; run `cargo xtask fuzz-lock` for {fixable} of them");
-    }
-    // Whether a requirement holds a version apart only shows once the
-    // rebuild has run; the rebuild says so then.
-    if problems.iter().any(Problem::may_be_held) {
-        summary += "; it says what to change when a requirement holds a version apart";
+    if problems.iter().any(Problem::rebuild_may_fix) {
+        summary += "; run `cargo xtask fuzz-lock`, which says what it cannot fix";
     }
     Some(summary)
 }
@@ -423,16 +260,19 @@ pub fn rebuild_summary(problems: &[Problem]) -> Option<String> {
         "fuzz-lock: {} problem(s) the rebuild cannot fix",
         problems.len()
     );
-    // A version the rebuild leaves apart is held there by a requirement of
-    // the fuzz crate itself; running it again changes nothing. The other
-    // problems say what to do in their own lines.
-    if problems.iter().any(Problem::may_be_held) {
+    // Cargo resolves the crate this way from the rebuilt lockfile, so what
+    // holds it apart is in what each build reads besides it.
+    if problems
+        .iter()
+        .any(|problem| matches!(problem, Problem::Drift(_)))
+    {
         summary += &format!(
-            "; a version apart from {ROOT_LOCK} is held by a requirement in {FUZZ_MANIFEST} or \
-             in a crate only it uses: change that requirement, or move {ROOT_LOCK} to a version \
-             it accepts"
+            "; {ROOT_MANIFEST} and {FUZZ_MANIFEST}, with the cargo config each build reads \
+             (`.cargo/config.toml` above the folder it runs in), resolve each crate named above \
+             differently: make them resolve it the same way"
         );
     }
+    summary += &format!("; {FUZZ_LOCK} is left as it was");
     Some(summary)
 }
 
@@ -445,9 +285,10 @@ pub fn rebuilt(changed: bool) -> String {
     }
 }
 
-/// What a passing run prints, for a fuzz lockfile of `packages` entries.
+/// What a passing run prints, for a fuzz crate that resolves `packages`
+/// packages.
 pub fn ok_summary(packages: usize) -> String {
-    format!("fuzz-lock: {packages} packages, shared crates on the versions of {ROOT_LOCK}, ok")
+    format!("fuzz-lock: {packages} packages, shared crates built as the workspace builds them, ok")
 }
 
 /// Why the rebuild failed, from cargo's error when it resolved the rebuilt
@@ -463,43 +304,57 @@ pub fn resolve_failure(error: &str) -> String {
 }
 
 /// Writes `text`, the rebuilt fuzz lockfile, to `file` and has cargo
-/// `resolve` it, which may rewrite it; returns whether the file changed.
-/// When cargo fails, the file is put back byte for byte, or removed when
-/// there was none.
+/// `resolve` and check it, which may rewrite it; returns whether the file
+/// changed, and the check. When cargo fails, or the check finds problems,
+/// the file is put back byte for byte, or removed when there was none, so
+/// that a rebuild that cannot settle every crate moves none.
 pub fn write_resolved(
     file: &Path,
     text: &str,
-    resolve: impl FnOnce() -> Result<(), String>,
-) -> Result<bool, String> {
+    resolve: impl FnOnce() -> Result<Checked, String>,
+) -> Result<(bool, Checked), String> {
     let shown = || error_at(Path::new(FUZZ_LOCK));
     let before = match fs::read(file) {
         Ok(bytes) => Some(bytes),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(shown()(err)),
     };
-    fs::write(file, text).map_err(shown())?;
-    if let Err(error) = resolve() {
+    let restore = || {
         match &before {
             Some(bytes) => fs::write(file, bytes),
             None => fs::remove_file(file),
         }
-        .map_err(shown())?;
-        return Err(resolve_failure(&error));
+        .map_err(shown())
+    };
+    fs::write(file, text).map_err(shown())?;
+    let checked = match resolve() {
+        Ok(checked) => checked,
+        Err(error) => {
+            restore()?;
+            return Err(resolve_failure(&error));
+        }
+    };
+    if !checked.problems.is_empty() {
+        restore()?;
+        return Ok((false, checked));
     }
     let after = fs::read(file).map_err(shown())?;
-    Ok(before.as_deref() != Some(after.as_slice()))
+    Ok((before.as_deref() != Some(after.as_slice()), checked))
 }
 
 #[cfg(test)]
 mod tests {
     use std::fmt::Write;
 
-    use super::patches::tests::{
-        FUZZ_PATCH, FUZZ_PATCH_2, NO_PATCH, ROOT_PATCH, patches_of, resolved,
-    };
     use super::*;
 
     const HEADER: &str = "# This file is automatically @generated by Cargo.\nversion = 4\n";
+
+    /// The source cargo writes for crates.io.
+    const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+    /// A vendored smallvec folder.
+    const VENDOR: &str = "/repo/vendor/smallvec";
 
     /// A lockfile with one crates.io entry per `(name, version)`.
     fn lock(packages: &[(&str, &str)]) -> Lock {
@@ -526,39 +381,40 @@ mod tests {
         Lock::parse(&text).unwrap()
     }
 
-    /// The lockfile [`merged`] writes, parsed.
-    fn parse_merged(root: &Lock, fuzz: &Lock, patches: &Patches) -> Lock {
-        Lock::parse(&merged(root, fuzz, patches)).unwrap()
+    /// The name and version of each entry of a lockfile, in its order.
+    fn packages(lock: &Lock) -> Vec<(&str, &str)> {
+        lock.entries()
+            .iter()
+            .filter_map(|entry| {
+                Some((
+                    entry.get("name")?.as_str()?,
+                    entry.get("version")?.as_str()?,
+                ))
+            })
+            .collect()
     }
 
-    fn version(name: &str, fuzz: &str, root: &str) -> Drift {
-        Drift::Version {
+    /// The lockfile [`merged`] writes, parsed.
+    fn parse_merged(root: &Lock, fuzz: &Lock) -> Lock {
+        Lock::parse(&merged(root, fuzz)).unwrap()
+    }
+
+    /// A package built from `from`.
+    fn built(name: &str, version: &str, from: &str) -> Built {
+        Built {
             name: name.into(),
-            fuzz: fuzz.into(),
-            root: root.into(),
-            patched: Patched::Neither,
+            version: Version::parse(version).unwrap(),
+            from: from.into(),
         }
     }
 
-    #[test]
-    fn packages_read_each_entry() {
-        let lock = lock(&[("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]);
-        assert_eq!(
-            lock.packages(),
-            [("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]
-        );
-        assert_eq!(Lock::parse(HEADER).unwrap().packages(), []);
-        assert_eq!(Lock::default().packages(), []);
+    /// A package built from crates.io.
+    fn registry(name: &str, version: &str) -> Built {
+        built(name, version, CRATES_IO)
     }
 
-    #[test]
-    fn entries_without_a_name_and_a_valid_version_are_skipped() {
-        let text = format!(
-            "{HEADER}\n[[package]]\nname = \"cc\"\n\n[[package]]\nname = \"syn\"\nversion = 2\n\n\
-             [[package]]\nversion = \"1.0.0\"\n\n[[package]]\nname = \"odd\"\nversion = \"1.x\"\n\n\
-             [[package]]\nname = \"zip\"\nversion = \"7.2.0\"\n"
-        );
-        assert_eq!(Lock::parse(&text).unwrap().packages(), [("zip", "7.2.0")]);
+    fn drift_of(root: Built, fuzz: Built) -> Drift {
+        Drift { root, fuzz }
     }
 
     #[test]
@@ -582,56 +438,195 @@ mod tests {
     }
 
     #[test]
-    fn locks_on_the_same_versions_do_not_drift() {
-        let root = lock(&[("cc", "1.10.0"), ("syn", "2.0.119"), ("syn", "3.0.9")]);
-        let fuzz = lock(&[("arbitrary", "1.5.0"), ("cc", "1.10.0"), ("syn", "3.0.9")]);
-        assert_eq!(drift(&root, &fuzz, &Patches::default()), []);
+    fn builds_of_the_same_packages_do_not_drift() {
+        let syntax = built("mora-syntax", "0.0.0", "/repo/crates/mora-syntax");
+        let root = [
+            registry("cc", "1.10.0"),
+            syntax.clone(),
+            registry("syn", "2.0.119"),
+            registry("syn", "3.0.9"),
+            built("xtask", "0.0.0", "/repo/xtask"),
+        ];
+        let fuzz = [
+            registry("arbitrary", "1.5.0"),
+            registry("cc", "1.10.0"),
+            built("mora-fuzz", "0.0.0", "/repo/fuzz"),
+            syntax,
+            registry("syn", "3.0.9"),
+        ];
+        assert_eq!(drift(&root, &fuzz), []);
+        assert_eq!(drift(&root, &[]), []);
+        assert_eq!(drift(&[], &fuzz), []);
     }
 
     #[test]
-    fn a_shared_crate_on_another_version_drifts() {
-        let root = lock(&[
-            ("smallvec", "1.16.6"),
-            ("syn", "2.0.119"),
-            ("syn", "3.0.10"),
-            ("zmij", "0.0.4"),
-        ]);
-        let fuzz = lock(&[
-            ("arbitrary", "1.5.0"),
-            ("smallvec", "1.16.4"),
-            ("syn", "3.0.9"),
-            ("zmij", "0.0.4"),
-        ]);
-        let found = drift(&root, &fuzz, &Patches::default());
+    fn a_shared_crate_at_another_version_drifts() {
+        let root = [
+            registry("smallvec", "1.16.6"),
+            registry("syn", "2.0.119"),
+            registry("syn", "3.0.10"),
+            registry("zmij", "0.0.4"),
+        ];
+        let fuzz = [
+            registry("arbitrary", "1.5.0"),
+            registry("smallvec", "1.16.4"),
+            registry("syn", "3.0.9"),
+            registry("zmij", "0.0.4"),
+        ];
+        let found = drift(&root, &fuzz);
         assert_eq!(
             found,
             [
-                version("smallvec", "1.16.4", "1.16.6"),
-                version("syn", "3.0.9", "3.0.10"),
+                drift_of(
+                    registry("smallvec", "1.16.6"),
+                    registry("smallvec", "1.16.4")
+                ),
+                drift_of(registry("syn", "3.0.10"), registry("syn", "3.0.9")),
             ]
         );
-        assert!(found.iter().all(Drift::rebuild_fixes));
         assert_eq!(
             found[1].to_string(),
-            "fuzz/Cargo.lock: syn 3.0.9, Cargo.lock has 3.0.10"
+            format!(
+                "syn: Cargo.toml builds 3.0.10 from {CRATES_IO}, fuzz/Cargo.toml builds 3.0.9 \
+                 from {CRATES_IO}"
+            )
         );
     }
 
     #[test]
     fn another_major_version_of_a_shared_crate_is_not_drift() {
         // A crate only the fuzz crate uses can need getrandom 0.3 while the
-        // workspace locks 0.4: cargo keeps both.
+        // workspace builds 0.4: cargo keeps both.
+        let root = [registry("getrandom", "0.4.3"), registry("cc", "1.10.0")];
+        let fuzz = [
+            registry("cc", "1.10.0"),
+            registry("getrandom", "0.3.4"),
+            registry("getrandom", "0.4.3"),
+            registry("jobserver", "0.1.34"),
+        ];
+        assert_eq!(drift(&root, &fuzz), []);
+    }
+
+    #[test]
+    fn a_shared_crate_from_another_source_drifts() {
+        // The workspace patches smallvec to a folder, the fuzz crate takes
+        // it from crates.io.
+        let root = [
+            built("smallvec", "1.16.9", VENDOR),
+            registry("cc", "1.10.0"),
+        ];
+        let fuzz = [registry("cc", "1.10.0"), registry("smallvec", "1.16.4")];
+        let found = drift(&root, &fuzz);
+        assert_eq!(
+            found,
+            [drift_of(
+                built("smallvec", "1.16.9", VENDOR),
+                registry("smallvec", "1.16.4")
+            )]
+        );
+        assert_eq!(
+            found[0].to_string(),
+            format!(
+                "smallvec: Cargo.toml builds 1.16.9 from {VENDOR}, fuzz/Cargo.toml builds 1.16.4 \
+                 from {CRATES_IO}"
+            )
+        );
+        // The other way round, and a git source.
+        let git = "git+https://example.com/smallvec?branch=main#0123abc";
+        let found = drift(
+            &[registry("smallvec", "1.16.4")],
+            &[built("smallvec", "1.16.4", git)],
+        );
+        assert_eq!(
+            found,
+            [drift_of(
+                registry("smallvec", "1.16.4"),
+                built("smallvec", "1.16.4", git)
+            )]
+        );
+    }
+
+    #[test]
+    fn the_same_folder_on_both_sides_does_not_drift() {
+        let root = [built("smallvec", "1.16.9", VENDOR)];
+        assert_eq!(drift(&root, &[built("smallvec", "1.16.9", VENDOR)]), []);
+    }
+
+    #[test]
+    fn two_folders_at_one_version_drift() {
+        // Both vendored copies are smallvec 1.16.4, but they are two crates.
+        let other = "/repo/vendor/smallvec2";
+        let found = drift(
+            &[built("smallvec", "1.16.4", VENDOR)],
+            &[built("smallvec", "1.16.4", other)],
+        );
+        assert_eq!(
+            found,
+            [drift_of(
+                built("smallvec", "1.16.4", VENDOR),
+                built("smallvec", "1.16.4", other)
+            )]
+        );
+    }
+
+    #[test]
+    fn a_workspace_crate_from_another_folder_drifts() {
+        let found = drift(
+            &[built("mora-syntax", "0.0.0", "/repo/crates/mora-syntax")],
+            &[built("mora-syntax", "0.0.0", "/elsewhere/mora-syntax")],
+        );
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn problems_are_cargo_s_error_or_each_drift() {
+        let root = [registry("cc", "1.11.3"), registry("syn", "2.0.119")];
+        let fuzz = [registry("cc", "1.10.0"), registry("syn", "2.0.119")];
+        assert_eq!(problems(&root, Ok(&[registry("cc", "1.11.3")])), []);
+        assert_eq!(
+            problems(&root, Ok(&fuzz)),
+            [Problem::Drift(drift_of(
+                registry("cc", "1.11.3"),
+                registry("cc", "1.10.0")
+            ))]
+        );
+        assert_eq!(
+            problems(&root, Err(format!("{STALE}\n\n"))),
+            [Problem::Unlocked(STALE.into())]
+        );
+    }
+
+    #[test]
+    fn merging_replaces_every_entry_of_a_crate_the_root_locks() {
+        // The fuzz crate takes smallvec from crates.io and the workspace from
+        // a path, or the other way round: the root's entry goes in, and
+        // cargo takes smallvec the way the fuzz manifest resolves it.
+        let root = lock_from(&[
+            ("smallvec", "1.16.9", None),
+            ("cc", "1.10.0", Some(CRATES_IO)),
+        ]);
+        let fuzz = lock(&[("smallvec", "1.16.4"), ("cc", "1.10.0")]);
+        assert_eq!(
+            packages(&parse_merged(&root, &fuzz)),
+            [("smallvec", "1.16.9"), ("cc", "1.10.0")]
+        );
+        assert_eq!(
+            packages(&parse_merged(&fuzz, &root)),
+            [("smallvec", "1.16.4"), ("cc", "1.10.0")]
+        );
+    }
+
+    #[test]
+    fn merging_keeps_another_major_version() {
         let root = lock(&[("getrandom", "0.4.3"), ("cc", "1.10.0")]);
         let fuzz = lock(&[
             ("getrandom", "0.3.4"),
-            ("getrandom", "0.4.3"),
+            ("getrandom", "0.4.2"),
             ("jobserver", "0.1.34"),
             ("cc", "1.10.0"),
         ]);
-        assert_eq!(drift(&root, &fuzz, &Patches::default()), []);
-        let merged_lock = parse_merged(&root, &fuzz, &Patches::default());
         assert_eq!(
-            merged_lock.packages(),
+            packages(&parse_merged(&root, &fuzz)),
             [
                 ("getrandom", "0.4.3"),
                 ("cc", "1.10.0"),
@@ -641,280 +636,83 @@ mod tests {
         );
     }
 
-    /// The workspace takes smallvec from a path, the fuzz crate from
-    /// crates.io.
-    fn path_smallvec() -> (Lock, Lock) {
-        let root = lock_from(&[
-            ("smallvec", "1.16.9", None),
-            ("cc", "1.10.0", Some(CRATES_IO)),
+    #[test]
+    fn merging_keeps_the_root_and_adds_crates_only_the_fuzz_lock_has() {
+        let root = lock(&[("cc", "1.11.3"), ("xtask", "0.0.0")]);
+        let fuzz = lock(&[
+            ("arbitrary", "1.5.0"),
+            ("cc", "1.10.0"),
+            ("mora-fuzz", "0.0.0"),
         ]);
-        let fuzz = lock(&[("smallvec", "1.16.4"), ("cc", "1.10.0")]);
-        (root, fuzz)
+        let merged_lock = parse_merged(&root, &fuzz);
+        assert_eq!(
+            packages(&merged_lock),
+            [
+                ("cc", "1.11.3"),
+                ("xtask", "0.0.0"),
+                ("arbitrary", "1.5.0"),
+                ("mora-fuzz", "0.0.0"),
+            ]
+        );
+        assert_eq!(merged_lock.0.get("version"), Some(&Value::Integer(4)));
+        let sources = merged_lock
+            .entries()
+            .iter()
+            .filter(|entry| entry.get("source").and_then(Value::as_str) == Some(CRATES_IO));
+        assert_eq!(sources.count(), 4, "every entry keeps its source");
+        let alone = parse_merged(&root, &Lock::default());
+        assert_eq!(packages(&alone), packages(&root));
     }
 
-    /// The two smallvec patches of `Cargo.toml` and `fuzz/Cargo.toml`.
-    fn apart() -> Patched {
-        let patches = patches_of(ROOT_PATCH, FUZZ_PATCH_2);
-        Patched::Apart(Box::new((patches.root[0].clone(), patches.fuzz[0].clone())))
+    #[test]
+    fn merging_keeps_fuzz_entries_it_cannot_read() {
+        let root = lock(&[("cc", "1.11.3")]);
+        let text = format!(
+            "{HEADER}\n[[package]]\nname = \"cc\"\n\n[[package]]\nname = \"odd\"\n\
+             version = \"1.x\"\n\n[[package]]\nversion = \"1.0.0\"\n"
+        );
+        let merged_lock = parse_merged(&root, &Lock::parse(&text).unwrap());
+        assert_eq!(merged_lock.entries().len(), 4);
+        assert_eq!(packages(&merged_lock), [("cc", "1.11.3"), ("odd", "1.x")]);
     }
 
-    fn source_drift(patched: Patched) -> Drift {
-        Drift::Source {
-            name: "smallvec".into(),
-            fuzz: "1.16.4".into(),
-            fuzz_source: "crates.io".into(),
-            root: "1.16.9".into(),
-            root_source: "a path".into(),
-            patched,
+    /// A check that finds no problem.
+    fn clean() -> Checked {
+        Checked {
+            problems: Vec::new(),
+            packages: 81,
         }
     }
 
-    const APART_ADVICE: &str = "Cargo.toml patches smallvec with `smallvec = { path = \
-                                \"vendor/smallvec\" }` and fuzz/Cargo.toml with `smallvec = { \
-                                path = \"../vendor/smallvec2\" }`, two different crates: point \
-                                both `[patch]` entries at the same crate";
-
-    #[test]
-    fn a_crate_only_the_root_patches_drifts_by_source() {
-        let (root, fuzz) = path_smallvec();
-        let patches = patches_of(ROOT_PATCH, NO_PATCH);
-        let found = drift(&root, &fuzz, &patches);
-        assert_eq!(found, [source_drift(Patched::Root)]);
-        assert!(!found[0].rebuild_fixes());
-        assert_eq!(
-            found[0].to_string(),
-            "fuzz/Cargo.lock: smallvec 1.16.4 from crates.io, Cargo.lock takes smallvec 1.16.9 \
-             from a path; Cargo.toml patches smallvec: give fuzz/Cargo.toml the same `[patch]`, \
-             then run `cargo xtask fuzz-lock`"
-        );
-        // The rebuild keeps the fuzz crate's own smallvec, not a newer one.
-        let merged_lock = parse_merged(&root, &fuzz, &patches);
-        assert_eq!(
-            merged_lock.packages(),
-            [
-                ("smallvec", "1.16.9"),
-                ("cc", "1.10.0"),
-                ("smallvec", "1.16.4"),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_crate_both_builds_patch_the_same_way_is_left_to_the_patch() {
-        // The rebuild drops the crates.io smallvec, which cargo would
-        // otherwise keep, leaving the patch unused.
-        let (root, fuzz) = path_smallvec();
-        let patches = patches_of(ROOT_PATCH, FUZZ_PATCH);
-        let found = drift(&root, &fuzz, &patches);
-        assert_eq!(found, [source_drift(Patched::Same)]);
-        assert!(found[0].rebuild_fixes());
-        assert_eq!(
-            found[0].to_string(),
-            "fuzz/Cargo.lock: smallvec 1.16.4 from crates.io, Cargo.lock takes smallvec 1.16.9 \
-             from a path; both builds patch smallvec the same way: run `cargo xtask fuzz-lock`"
-        );
-        assert_eq!(
-            parse_merged(&root, &fuzz, &patches).packages(),
-            [("smallvec", "1.16.9"), ("cc", "1.10.0")]
-        );
-        assert_eq!(problems(Ok(()), &root, Ok(lock(&[])), &patches), []);
-        // Another major version is another crate, patch or not.
-        let fuzz = lock(&[("smallvec", "2.0.1"), ("cc", "1.10.0")]);
-        assert_eq!(
-            parse_merged(&root, &fuzz, &patches).packages(),
-            [
-                ("smallvec", "1.16.9"),
-                ("cc", "1.10.0"),
-                ("smallvec", "2.0.1")
-            ]
-        );
-    }
-
-    #[test]
-    fn a_patch_in_the_cargo_config_counts_for_both_builds() {
-        // `.cargo/config.toml` patches the workspace and the fuzz crate.
-        let (root, fuzz) = path_smallvec();
-        let config = patches_in(".cargo/config.toml", ROOT_PATCH, |path| {
-            resolved("/repo", path)
-        })
-        .unwrap();
-        let patches = Patches::new(Vec::new(), Vec::new(), config);
-        let found = drift(&root, &fuzz, &patches);
-        assert_eq!(found, [source_drift(Patched::Same)]);
-        assert!(Problem::Drift(source_drift(Patched::Same)).rebuild_fixes());
-        assert_eq!(
-            check_summary(&[Problem::Drift(source_drift(Patched::Same))]).unwrap(),
-            "fuzz-lock: 1 problem(s); run `cargo xtask fuzz-lock` for 1 of them"
-        );
-        assert_eq!(
-            parse_merged(&root, &fuzz, &patches).packages(),
-            [("smallvec", "1.16.9"), ("cc", "1.10.0")]
-        );
-    }
-
-    #[test]
-    fn patches_to_different_crates_at_one_version_are_a_problem() {
-        // Both vendored copies are smallvec 1.16.4: once rebuilt, the two
-        // lockfiles have the same entry, but the fuzz crate builds the
-        // other copy.
-        let root = lock_from(&[("smallvec", "1.16.4", None)]);
-        let fuzz = lock_from(&[("smallvec", "1.16.4", None)]);
-        let patches = patches_of(ROOT_PATCH, FUZZ_PATCH_2);
-        assert_eq!(drift(&root, &fuzz, &patches), []);
-        let Patched::Apart(pair) = apart() else {
-            unreachable!()
-        };
-        let found = problems(Ok(()), &root, Ok(fuzz), &patches);
-        assert_eq!(found, [Problem::PatchesApart(pair)]);
-        assert!(!found[0].rebuild_fixes());
-        assert_eq!(found[0].to_string(), APART_ADVICE);
-        assert_eq!(check_summary(&found).unwrap(), "fuzz-lock: 1 problem(s)");
-        assert_eq!(
-            rebuild_summary(&found).unwrap(),
-            "fuzz-lock: 1 problem(s) the rebuild cannot fix"
-        );
-        // Before the rebuild the fuzz lockfile still has the crates.io one;
-        // the rebuild drops it, so cargo takes the fuzz crate's patch.
-        let stale = lock(&[("smallvec", "1.16.4")]);
-        assert_eq!(
-            parse_merged(&root, &stale, &patches).packages(),
-            [("smallvec", "1.16.4")]
-        );
-    }
-
-    #[test]
-    fn patches_to_different_crates_at_two_versions_say_so() {
-        // vendor/smallvec2 is smallvec 1.16.9: no requirement holds it.
-        let root = lock_from(&[("smallvec", "1.16.4", None)]);
-        let fuzz = lock_from(&[("smallvec", "1.16.9", None)]);
-        let patches = patches_of(ROOT_PATCH, FUZZ_PATCH_2);
-        let found = drift(&root, &fuzz, &patches);
-        let expected = Drift::Version {
-            name: "smallvec".into(),
-            fuzz: "1.16.9".into(),
-            root: "1.16.4".into(),
-            patched: apart(),
-        };
-        assert_eq!(found, [expected]);
-        assert!(!found[0].rebuild_fixes());
-        assert_eq!(
-            found[0].to_string(),
-            "fuzz/Cargo.lock: smallvec 1.16.9, Cargo.lock has 1.16.4; the two builds patch \
-             smallvec to different crates"
-        );
-        let all = problems(Ok(()), &root, Ok(fuzz), &patches);
-        assert_eq!(all.len(), 2);
-        assert_eq!(
-            rebuild_summary(&all).unwrap(),
-            "fuzz-lock: 2 problem(s) the rebuild cannot fix"
-        );
-        assert_eq!(check_summary(&all).unwrap(), "fuzz-lock: 2 problem(s)");
-        let source = Drift::Source {
-            name: "smallvec".into(),
-            fuzz: "1.16.4".into(),
-            fuzz_source: "a path".into(),
-            root: "1.16.9".into(),
-            root_source: "a path".into(),
-            patched: apart(),
-        };
-        assert!(!source.rebuild_fixes());
-        assert!(
-            source
-                .to_string()
-                .ends_with("; the two builds patch smallvec to different crates"),
-            "{source}"
-        );
-    }
-
-    #[test]
-    fn a_patch_only_the_fuzz_manifest_has_says_to_move_it() {
-        // The workspace locks smallvec from crates.io.
-        let root = lock(&[("smallvec", "1.16.4"), ("cc", "1.10.0")]);
-        let fuzz = lock_from(&[
-            ("smallvec", "1.16.9", None),
-            ("cc", "1.10.0", Some(CRATES_IO)),
-        ]);
-        let patches = patches_of(NO_PATCH, FUZZ_PATCH);
-        let found = drift(&root, &fuzz, &patches);
-        assert_eq!(
-            found,
-            [Drift::Source {
-                name: "smallvec".into(),
-                fuzz: "1.16.9".into(),
-                fuzz_source: "a path".into(),
-                root: "1.16.4".into(),
-                root_source: "crates.io".into(),
-                patched: Patched::Fuzz,
-            }]
-        );
-        // The rebuild puts Cargo.lock's smallvec in, which cargo keeps over
-        // the patch.
-        assert!(found[0].rebuild_fixes());
-        assert_eq!(
-            found[0].to_string(),
-            "fuzz/Cargo.lock: smallvec 1.16.9 from a path, Cargo.lock takes smallvec 1.16.4 from \
-             crates.io; fuzz/Cargo.toml patches smallvec and Cargo.toml does not: remove the \
-             patch from fuzz/Cargo.toml, or add it to Cargo.toml; until then `cargo xtask \
-             fuzz-lock` takes the version Cargo.lock has and leaves the patch unused"
-        );
-        assert_eq!(
-            parse_merged(&root, &fuzz, &patches).packages(),
-            [
-                ("smallvec", "1.16.4"),
-                ("cc", "1.10.0"),
-                ("smallvec", "1.16.9"),
-            ]
-        );
-        let held = Drift::Version {
-            name: "smallvec".into(),
-            fuzz: "1.16.9".into(),
-            root: "1.16.4".into(),
-            patched: Patched::Fuzz,
-        };
-        assert!(!held.rebuild_fixes());
-        assert!(
-            held.to_string().ends_with("or add it to Cargo.toml"),
-            "{held}"
-        );
-        assert_eq!(
-            rebuild_summary(&[Problem::Drift(held)]).unwrap(),
-            "fuzz-lock: 1 problem(s) the rebuild cannot fix"
-        );
-    }
-
-    #[test]
-    fn a_source_no_patch_explains_says_what_to_check() {
-        // A workspace crate named smallvec, not a patch.
-        let (root, fuzz) = path_smallvec();
-        let found = drift(&root, &fuzz, &Patches::default());
-        assert_eq!(found, [source_drift(Patched::Neither)]);
-        assert!(!found[0].rebuild_fixes());
-        assert_eq!(
-            found[0].to_string(),
-            "fuzz/Cargo.lock: smallvec 1.16.4 from crates.io, Cargo.lock takes smallvec 1.16.9 \
-             from a path; neither build patches smallvec from the repository: check whether the \
-             workspace has a crate of that name, which is another crate than the fuzz crate's, \
-             or a cargo config outside the repository patches it"
-        );
-        assert_eq!(
-            parse_merged(&root, &fuzz, &Patches::default()).packages(),
-            [
-                ("smallvec", "1.16.9"),
-                ("cc", "1.10.0"),
-                ("smallvec", "1.16.4"),
-            ]
-        );
+    /// A check that still finds smallvec built from two sources.
+    fn apart() -> Checked {
+        Checked {
+            problems: vec![Problem::Drift(drift_of(
+                built("smallvec", "1.16.4", VENDOR),
+                registry("smallvec", "1.16.6"),
+            ))],
+            packages: 81,
+        }
     }
 
     #[test]
     fn a_resolved_rebuild_reports_whether_it_changed_the_file() {
         let dir = crate::paths::scratch("fuzz-lock-resolved");
         let file = dir.join("Cargo.lock");
-        assert_eq!(write_resolved(&file, "a", || Ok(())), Ok(true));
-        assert_eq!(write_resolved(&file, "a", || Ok(())), Ok(false));
+        assert_eq!(
+            write_resolved(&file, "a", || Ok(clean())),
+            Ok((true, clean()))
+        );
+        assert_eq!(
+            write_resolved(&file, "a", || Ok(clean())),
+            Ok((false, clean()))
+        );
         // Cargo rewriting the file to what it was counts as no change.
-        let rewrite = || fs::write(&file, "a").map_err(|err| err.to_string());
-        assert_eq!(write_resolved(&file, "b", rewrite), Ok(false));
+        let rewrite = || {
+            fs::write(&file, "a").map_err(|err| err.to_string())?;
+            Ok(clean())
+        };
+        assert_eq!(write_resolved(&file, "b", rewrite), Ok((false, clean())));
         assert_eq!(fs::read_to_string(&file).unwrap(), "a");
         let _ = fs::remove_dir_all(dir);
     }
@@ -935,6 +733,33 @@ mod tests {
             );
             assert_eq!(fs::read(&file).unwrap(), before);
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rebuild_that_leaves_a_crate_apart_restores_the_previous_bytes() {
+        let dir = crate::paths::scratch("fuzz-lock-apart");
+        let file = dir.join("Cargo.lock");
+        let before = b"version = 4\n# as it was\n";
+        fs::write(&file, before).unwrap();
+        // Cargo resolves the rebuilt file and moves a version, but the
+        // check still finds smallvec built from two sources.
+        let resolve = || {
+            fs::write(&file, "rebuilt by cargo").map_err(|err| err.to_string())?;
+            Ok(apart())
+        };
+        assert_eq!(
+            write_resolved(&file, "rebuilt", resolve),
+            Ok((false, apart()))
+        );
+        assert_eq!(fs::read(&file).unwrap(), before);
+        // With no file before, none is left.
+        fs::remove_file(&file).unwrap();
+        assert_eq!(
+            write_resolved(&file, "rebuilt", || Ok(apart())),
+            Ok((false, apart()))
+        );
+        assert!(!file.exists());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -970,37 +795,15 @@ mod tests {
                                `memchr = \"^9\"`\ncandidate versions found which didn't match";
 
     #[test]
-    fn problems_list_cargo_first_then_each_drift() {
-        let root = lock(&[("cc", "1.11.3"), ("syn", "2.0.119")]);
-        let fuzz = lock(&[("cc", "1.10.0"), ("syn", "2.0.119")]);
-        let none = &Patches::default();
-        assert_eq!(
-            problems(Ok(()), &root, Ok(lock(&[("cc", "1.11.3")])), none),
-            []
-        );
-        assert_eq!(
-            problems(Err(format!("{STALE}\n\n")), &root, Ok(fuzz), none),
-            [
-                Problem::Unlocked(STALE.into()),
-                Problem::Drift(version("cc", "1.10.0", "1.11.3")),
-            ]
-        );
-        assert_eq!(
-            problems(Ok(()), &root, Err("fuzz/Cargo.lock: bad".into()), none),
-            [Problem::Unreadable("fuzz/Cargo.lock: bad".into())]
-        );
-    }
-
-    #[test]
-    fn problems_say_whether_the_rebuild_fixes_them() {
+    fn problems_say_what_cargo_said() {
         let stale = Problem::Unlocked(STALE.into());
-        assert!(stale.rebuild_fixes());
+        assert!(stale.rebuild_may_fix());
         assert_eq!(
             stale.to_string(),
             format!("fuzz/Cargo.lock does not match fuzz/Cargo.toml: {STALE}")
         );
         let unsatisfied = Problem::Unlocked(UNSATISFIED.into());
-        assert!(!unsatisfied.rebuild_fixes());
+        assert!(!unsatisfied.rebuild_may_fix());
         assert_eq!(
             unsatisfied.to_string(),
             format!(
@@ -1008,54 +811,50 @@ mod tests {
             )
         );
         let missing = Problem::Unlocked("error: no matching package named `nope` found".into());
-        assert!(!missing.rebuild_fixes());
-        let unreadable = Problem::Unreadable("fuzz/Cargo.lock: bad".into());
-        assert!(unreadable.rebuild_fixes());
-        assert_eq!(unreadable.to_string(), "fuzz/Cargo.lock: bad");
-        let drift = Problem::Drift(source_drift(Patched::Root));
-        assert!(!drift.rebuild_fixes());
-        assert_eq!(drift.to_string(), source_drift(Patched::Root).to_string());
-        assert!(Problem::Drift(source_drift(Patched::Same)).rebuild_fixes());
-        assert!(Problem::Drift(version("cc", "1.10.0", "1.11.3")).rebuild_fixes());
+        assert!(!missing.rebuild_may_fix());
+        let found = drift_of(registry("cc", "1.11.3"), registry("cc", "1.10.0"));
+        let shown = found.to_string();
+        let drift = Problem::Drift(found);
+        assert!(drift.rebuild_may_fix());
+        assert_eq!(drift.to_string(), shown);
     }
 
     #[test]
-    fn the_check_says_how_many_problems_the_rebuild_fixes() {
+    fn the_check_says_when_the_rebuild_may_help() {
         assert_eq!(check_summary(&[]), None);
-        let held = Problem::Drift(version("memchr", "2.8.0", "2.8.3"));
-        let patch = Problem::Drift(source_drift(Patched::Root));
-        assert_eq!(check_summary(&[patch]).unwrap(), "fuzz-lock: 1 problem(s)");
+        let unsatisfied = Problem::Unlocked(UNSATISFIED.into());
         assert_eq!(
-            check_summary(&[
-                Problem::Unlocked(STALE.into()),
-                Problem::Unlocked(UNSATISFIED.into())
-            ])
-            .unwrap(),
-            "fuzz-lock: 2 problem(s); run `cargo xtask fuzz-lock` for 1 of them"
+            check_summary(&[unsatisfied]).unwrap(),
+            "fuzz-lock: 1 problem(s)"
+        );
+        let drift = Problem::Drift(drift_of(registry("cc", "1.11.3"), registry("cc", "1.10.0")));
+        assert_eq!(
+            check_summary(&[Problem::Unlocked(UNSATISFIED.into()), drift]).unwrap(),
+            "fuzz-lock: 2 problem(s); run `cargo xtask fuzz-lock`, which says what it cannot fix"
         );
         assert_eq!(
-            check_summary(&[held, Problem::Drift(source_drift(Patched::Root))]).unwrap(),
-            "fuzz-lock: 2 problem(s); run `cargo xtask fuzz-lock` for 1 of them; it says what to \
-             change when a requirement holds a version apart"
+            check_summary(&[Problem::Unlocked(STALE.into())]).unwrap(),
+            "fuzz-lock: 1 problem(s); run `cargo xtask fuzz-lock`, which says what it cannot fix"
         );
     }
 
     #[test]
-    fn the_rebuild_names_a_held_version_only_when_one_is_left() {
+    fn the_rebuild_points_at_the_manifests_for_a_crate_left_apart() {
         assert_eq!(rebuild_summary(&[]), None);
         assert_eq!(
-            rebuild_summary(&[Problem::Drift(source_drift(Patched::Same))]).unwrap(),
-            "fuzz-lock: 1 problem(s) the rebuild cannot fix"
+            rebuild_summary(&[Problem::Unlocked(STALE.into())]).unwrap(),
+            "fuzz-lock: 1 problem(s) the rebuild cannot fix; fuzz/Cargo.lock is left as it was"
         );
+        let drift = Problem::Drift(drift_of(
+            built("smallvec", "1.16.9", VENDOR),
+            registry("smallvec", "1.16.4"),
+        ));
         assert_eq!(
-            rebuild_summary(&[
-                Problem::Drift(source_drift(Patched::Root)),
-                Problem::Drift(version("memchr", "2.8.0", "2.8.3")),
-            ])
-            .unwrap(),
-            "fuzz-lock: 2 problem(s) the rebuild cannot fix; a version apart from Cargo.lock is \
-             held by a requirement in fuzz/Cargo.toml or in a crate only it uses: change that \
-             requirement, or move Cargo.lock to a version it accepts"
+            rebuild_summary(&[drift]).unwrap(),
+            "fuzz-lock: 1 problem(s) the rebuild cannot fix; Cargo.toml and fuzz/Cargo.toml, \
+             with the cargo config each build reads (`.cargo/config.toml` above the folder it \
+             runs in), resolve each crate named above differently: make them resolve it the same \
+             way; fuzz/Cargo.lock is left as it was"
         );
     }
 
@@ -1065,7 +864,7 @@ mod tests {
         assert_eq!(rebuilt(true), "fuzz-lock: wrote fuzz/Cargo.lock");
         assert_eq!(
             ok_summary(81),
-            "fuzz-lock: 81 packages, shared crates on the versions of Cargo.lock, ok"
+            "fuzz-lock: 81 packages, shared crates built as the workspace builds them, ok"
         );
     }
 
@@ -1084,49 +883,5 @@ mod tests {
             resolve_failure(&format!("{offline}\n")),
             format!("{offline}; fuzz/Cargo.lock is left as it was")
         );
-    }
-
-    #[test]
-    fn sources_show_crates_io_paths_and_others() {
-        assert_eq!(shown_source(None), "a path");
-        assert_eq!(shown_source(Some(CRATES_IO)), "crates.io");
-        let git = "git+https://example.com/smallvec#0123abc";
-        assert_eq!(shown_source(Some(git)), git);
-    }
-
-    #[test]
-    fn merging_keeps_the_root_and_adds_crates_only_the_fuzz_lock_has() {
-        let root = lock(&[("cc", "1.11.3"), ("xtask", "0.0.0")]);
-        let fuzz = lock(&[
-            ("arbitrary", "1.5.0"),
-            ("cc", "1.10.0"),
-            ("mora-fuzz", "0.0.0"),
-        ]);
-        let merged_lock = parse_merged(&root, &fuzz, &Patches::default());
-        assert_eq!(
-            merged_lock.packages(),
-            [
-                ("cc", "1.11.3"),
-                ("xtask", "0.0.0"),
-                ("arbitrary", "1.5.0"),
-                ("mora-fuzz", "0.0.0"),
-            ]
-        );
-        assert_eq!(merged_lock.0.get("version"), Some(&Value::Integer(4)));
-        let sources = merged_lock
-            .entries()
-            .iter()
-            .filter(|entry| entry.get("source").and_then(Value::as_str) == Some(CRATES_IO));
-        assert_eq!(sources.count(), 4, "every entry keeps its source");
-        let alone = parse_merged(&root, &Lock::default(), &Patches::default());
-        assert_eq!(alone.packages(), root.packages());
-    }
-
-    #[test]
-    fn merging_keeps_fuzz_entries_it_cannot_read() {
-        let root = lock(&[("cc", "1.11.3")]);
-        let text = format!("{HEADER}\n[[package]]\nname = \"odd\"\nversion = \"1.x\"\n");
-        let merged_text = merged(&root, &Lock::parse(&text).unwrap(), &Patches::default());
-        assert!(merged_text.contains("name = \"odd\""), "{merged_text}");
     }
 }

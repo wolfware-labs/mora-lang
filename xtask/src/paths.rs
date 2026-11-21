@@ -18,10 +18,6 @@ pub const PAGE_TEMPLATE: &str = "README.md";
 /// The workspace manifest, relative to the repository root.
 pub const ROOT_MANIFEST: &str = "Cargo.toml";
 
-/// The repository's cargo config, which every build under the root reads,
-/// relative to the repository root.
-pub const CARGO_CONFIG: &str = ".cargo/config.toml";
-
 /// The workspace lockfile, relative to the repository root.
 pub const ROOT_LOCK: &str = "Cargo.lock";
 

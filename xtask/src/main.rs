@@ -21,7 +21,7 @@ mod tools;
 use std::path::Path;
 use std::process::ExitCode;
 
-use cargo_metadata::MetadataCommand;
+use cargo_metadata::{Metadata, MetadataCommand, Package};
 use mora_diag::registry;
 
 use crate::paths::root;
@@ -187,12 +187,49 @@ fn run_codegen_check() -> CommandResult {
     }
 }
 
-/// `cargo metadata` for the fuzz crate, which cargo resolves against
-/// `fuzz/Cargo.lock`.
-fn fuzz_metadata(root: &Path) -> MetadataCommand {
+/// `cargo metadata` for `manifest` under the repository root, run from the
+/// manifest's folder, so that cargo reads the config it would read there.
+fn resolve_command(root: &Path, manifest: &str) -> MetadataCommand {
+    let manifest = root.join(manifest);
     let mut command = MetadataCommand::new();
-    command.manifest_path(root.join(paths::FUZZ_MANIFEST));
+    if let Some(dir) = manifest.parent() {
+        command.current_dir(dir);
+    }
+    command.manifest_path(manifest);
     command
+}
+
+/// What cargo resolves for `manifest` with `--locked`, or its error.
+fn resolve_locked(root: &Path, manifest: &str) -> Result<Metadata, String> {
+    resolve_command(root, manifest)
+        .other_options(["--locked".to_owned()])
+        .exec()
+        .map_err(|err| err.to_string())
+}
+
+/// Each package of a resolve and where cargo builds it from: its source,
+/// or for a path package the folder of its manifest, with symbolic links
+/// resolved.
+fn built(metadata: &Metadata) -> Vec<fuzz_lock::Built> {
+    let folder = |package: &Package| {
+        let dir = package
+            .manifest_path
+            .parent()
+            .unwrap_or(&package.manifest_path);
+        std::fs::canonicalize(dir).map_or_else(|_| dir.to_string(), |dir| dir.display().to_string())
+    };
+    metadata
+        .packages
+        .iter()
+        .map(|package| fuzz_lock::Built {
+            name: package.name.to_string(),
+            version: package.version.clone(),
+            from: package
+                .source
+                .as_ref()
+                .map_or_else(|| folder(package), |source| source.repr.clone()),
+        })
+        .collect()
 }
 
 /// The text of a file under the repository root; errors name `file` as
@@ -206,39 +243,12 @@ fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
     fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(Path::new(lock)))
 }
 
-/// The `[patch]` entries of `file` under the repository root, with each
-/// `path` resolved against `dir`, the folder cargo reads it from.
-fn read_patches_in(root: &Path, file: &str, dir: &str) -> Result<Vec<fuzz_lock::Patch>, String> {
-    let dir = root.join(dir);
-    let resolve = |path: &str| {
-        let joined = dir.join(path);
-        std::fs::canonicalize(&joined).unwrap_or(joined)
-    };
-    fuzz_lock::patches_in(file, &read_text(root, file)?, resolve)
-        .map_err(paths::error_at(Path::new(file)))
-}
-
-/// The `[patch]` entries the workspace build and the fuzz build follow: the
-/// two manifests', and the repository cargo config's, which both builds
-/// read.
-fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
-    let config = if root.join(paths::CARGO_CONFIG).is_file() {
-        read_patches_in(root, paths::CARGO_CONFIG, ".")?
-    } else {
-        Vec::new()
-    };
-    Ok(fuzz_lock::Patches::new(
-        read_patches_in(root, paths::ROOT_MANIFEST, ".")?,
-        read_patches_in(root, paths::FUZZ_MANIFEST, "fuzz")?,
-        config,
-    ))
-}
-
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
 /// crates only the fuzz crate uses, and lets cargo drop the rest. A missing
 /// or broken fuzz lockfile, such as one left with merge conflicts, is
 /// rebuilt from `Cargo.lock` alone, and cargo resolves the rest. When cargo
-/// cannot resolve the result, the fuzz lockfile is left as it was.
+/// cannot resolve the result, or a shared crate is still built differently,
+/// the fuzz lockfile is left as it was.
 fn run_fuzz_lock() -> CommandResult {
     let root = root();
     let fuzz = read_lock(&root, paths::FUZZ_LOCK).unwrap_or_else(|err| {
@@ -249,60 +259,56 @@ fn run_fuzz_lock() -> CommandResult {
         );
         fuzz_lock::Lock::default()
     });
-    let patches = read_patches(&root)?;
-    let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz, &patches);
-    let changed = fuzz_lock::write_resolved(&root.join(paths::FUZZ_LOCK), &text, || {
-        fuzz_metadata(&root)
-            .exec()
-            .map(drop)
-            .map_err(|err| err.to_string())
+    let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz);
+    let (changed, checked) =
+        fuzz_lock::write_resolved(&root.join(paths::FUZZ_LOCK), &text, || {
+            resolve_command(&root, paths::FUZZ_MANIFEST)
+                .exec()
+                .map_err(|err| err.to_string())?;
+            fuzz_lock_problems(&root)
+        })?;
+    if checked.problems.is_empty() {
+        println!("{}", fuzz_lock::rebuilt(changed));
+    }
+    report_fuzz_lock(&checked, fuzz_lock::rebuild_summary(&checked.problems))
+}
+
+/// Each problem with `fuzz/Cargo.lock`, from what cargo resolves for the
+/// workspace and the fuzz crate with `--locked`, and the number of packages
+/// the fuzz crate resolves.
+fn fuzz_lock_problems(root: &Path) -> Result<fuzz_lock::Checked, String> {
+    let workspace = resolve_locked(root, paths::ROOT_MANIFEST).map_err(|err| {
+        format!(
+            "cargo cannot resolve {} with --locked: {err}",
+            paths::ROOT_MANIFEST
+        )
     })?;
-    println!("{}", fuzz_lock::rebuilt(changed));
-    let problems = fuzz_lock_problems(&root)?;
-    report_fuzz_lock(&root, &problems, fuzz_lock::rebuild_summary(&problems))
+    let fuzz = resolve_locked(root, paths::FUZZ_MANIFEST).map(|fuzz| built(&fuzz));
+    let packages = fuzz.as_ref().map_or(0, Vec::len);
+    let problems = fuzz_lock::problems(&built(&workspace), fuzz.as_deref().map_err(Clone::clone));
+    Ok(fuzz_lock::Checked { problems, packages })
 }
 
-/// Each problem with `fuzz/Cargo.lock`.
-fn fuzz_lock_problems(root: &Path) -> Result<Vec<fuzz_lock::Problem>, String> {
-    let locked = fuzz_metadata(root)
-        .other_options(["--locked".to_owned()])
-        .exec()
-        .map(drop)
-        .map_err(|err| err.to_string());
-    Ok(fuzz_lock::problems(
-        locked,
-        &read_lock(root, paths::ROOT_LOCK)?,
-        read_lock(root, paths::FUZZ_LOCK),
-        &read_patches(root)?,
-    ))
-}
-
-/// Prints the problems and the summary and fails, or, with no summary,
-/// prints that the fuzz lockfile is ok.
-fn report_fuzz_lock(
-    root: &Path,
-    problems: &[fuzz_lock::Problem],
-    summary: Option<String>,
-) -> CommandResult {
+/// Prints the problems the check found and the summary and fails, or,
+/// with no summary, prints that the fuzz crate is ok.
+fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> CommandResult {
     let Some(summary) = summary else {
-        let packages = read_lock(root, paths::FUZZ_LOCK)?.packages().len();
-        println!("{}", fuzz_lock::ok_summary(packages));
+        println!("{}", fuzz_lock::ok_summary(checked.packages));
         return Ok(ExitCode::SUCCESS);
     };
-    for problem in problems {
+    for problem in &checked.problems {
         eprintln!("{problem}");
     }
     eprintln!("{summary}");
     Ok(ExitCode::FAILURE)
 }
 
-/// Fails when `fuzz/Cargo.lock` cannot be read, does not match the fuzz
-/// manifest, or locks a crate it shares with the workspace differently from
-/// `Cargo.lock`.
+/// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or the
+/// fuzz crate builds a crate it shares with the workspace differently.
 fn run_fuzz_lock_check() -> CommandResult {
     let root = root();
-    let problems = fuzz_lock_problems(&root)?;
-    report_fuzz_lock(&root, &problems, fuzz_lock::check_summary(&problems))
+    let checked = fuzz_lock_problems(&root)?;
+    report_fuzz_lock(&checked, fuzz_lock::check_summary(&checked.problems))
 }
 
 /// Benchmarks a base revision and the working tree, and fails when a
