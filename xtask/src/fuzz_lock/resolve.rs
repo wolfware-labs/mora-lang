@@ -123,10 +123,12 @@ pub struct Unit {
 }
 
 /// The optional dependencies `package` declares, by crate name and kind,
-/// each with the features that turn it on: those that list `name`,
-/// `dep:name` or `name/feature`, `name` being the name the manifest gives
-/// it. Cargo lists the feature it makes for an optional dependency no
-/// feature names with `dep:` as `name = ["dep:name"]`.
+/// each with the features that turn it on: those that list `dep:name` or
+/// `name/feature`, and those that list `name` when that is the feature
+/// cargo makes for the dependency, `name` being the name the manifest gives
+/// it. Cargo makes that feature, listed as `name = ["dep:name"]`, for an
+/// optional dependency no feature names with `dep:`; otherwise a feature
+/// called `name` is one like any other.
 fn optional(package: &Package) -> BTreeMap<(String, Kind), Vec<String>> {
     let mut found: BTreeMap<(String, Kind), Vec<String>> = BTreeMap::new();
     let declared = package
@@ -136,9 +138,14 @@ fn optional(package: &Package) -> BTreeMap<(String, Kind), Vec<String>> {
         .filter_map(|dep| Some((dep, Kind::of(dep.kind)?)));
     for (dep, kind) in declared {
         let name = dep.rename.as_deref().unwrap_or(&dep.name);
-        let turns_on = |value: &String| {
-            let value = value.strip_prefix("dep:").unwrap_or(value);
-            value.split_once('/').map_or(value, |(dep, _)| dep) == name
+        let listed = format!("dep:{name}");
+        let implicit = package
+            .features
+            .get(name)
+            .is_some_and(|values| values.contains(&listed));
+        let turns_on = |value: &String| match value.split_once('/') {
+            Some((dep, _)) => dep == name,
+            None => *value == listed || (implicit && value == name),
         };
         let features = found.entry((dep.name.clone(), kind)).or_default();
         features.extend(
@@ -303,8 +310,8 @@ pub enum Drift {
     },
     /// The same package, built on other dependencies: those only the
     /// workspace builds it on, and those only the fuzz crate does. A
-    /// dependency at another version, or from another source, shows here
-    /// only when its own difference is not reported.
+    /// dependency of the same kind at another version, or from another
+    /// source, shows here only when its own difference is not reported.
     Deps {
         package: Built,
         root: Vec<Dep>,
@@ -1083,6 +1090,12 @@ pub(super) mod tests {
         // other.
         let named = serde_json::json!({ "g": ["dep:twig"], "other": [], "twig": ["other"] });
         assert_eq!(found(&twig(None), named), turned_on(&["g"]));
+        // A bare `twig` is the feature called `twig`: it turns twig on when
+        // that is the feature cargo makes for it, and not otherwise.
+        let bare = serde_json::json!({ "f": ["twig"], "twig": ["dep:twig"] });
+        assert_eq!(found(&twig(None), bare), turned_on(&["f", "twig"]));
+        let bare = serde_json::json!({ "g": ["dep:twig"], "h": ["twig"], "twig": [] });
+        assert_eq!(found(&twig(None), bare), turned_on(&["g"]));
         // An optional build dependency is told from a normal one.
         let build = [("twig", None, Some("build"), true)];
         let feature = serde_json::json!({ "g": ["dep:twig"] });
