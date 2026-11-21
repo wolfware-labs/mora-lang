@@ -669,9 +669,6 @@ fn a_quoted_run_ends_at_its_closing_quote() {
         "F() {\n    let a = \u{201c}see (note\u{201d};\n    nope();\n}\nG() { nope2(); }\n",
         "let a = \u{201c}[x\u{201d};\n",
         "Console.WriteLine(\u{201c}Done :)\u{201d});\n",
-        // So are line breaks, before the statement ends.
-        "let a = \u{201c}hello\nworld\u{201d};\n",
-        "F(\u{201c}hello\nworld\u{201d});\n",
         // Other quotes open a run too.
         "F(\u{201d}a, b\u{201d}, c);\n",
         "F(\u{201e}a, b\u{201c}, c);\n",
@@ -1165,5 +1162,113 @@ fn a_rejected_token_anywhere_in_valid_code_reports_only_itself() {
             let text = format!("{}\\{}", &example[..at], &example[at..]);
             assert_eq!(codes_of(&text), ["MR0017"], "{text:?}");
         }
+    }
+}
+
+/// Each declaration in the tree of `text`, members and local functions
+/// included, as its kind and name.
+fn declarations(text: &str) -> Vec<String> {
+    parse(text)
+        .syntax()
+        .descendants()
+        .filter(|node| format!("{:?}", node.kind()).ends_with("Decl"))
+        .map(|node| {
+            let name = node
+                .children()
+                .find(|child| child.kind() == mora_syntax::SyntaxKind::Name)
+                .map(|name| name.text())
+                .unwrap_or_default();
+            format!("{:?} {name}", node.kind())
+        })
+        .collect()
+}
+
+#[test]
+fn an_unpaired_quote_keeps_the_declarations_after_it() {
+    for text in [
+        "class A {\n    F() { \u{201c} }\n    G() { \u{201d} }\n}\n",
+        "enum E { A\u{201c}, B }\nclass C { X: int\u{201d}; }\n",
+        "@A \u{201d}@B\npublic class C {\n    \u{201d}P: int;\n}\n",
+        "class A {\n    F(\u{201c} a: int) { }\n    G(\u{201d}) { }\n}\n",
+        // The matching quote one or more declarations later.
+        "@A(\u{201c}x)\nclass C { }\nclass D { X: int\u{201d}; }\n",
+        "F(\u{201c}a: int) { }\nG(b: int) { }\nH(c: int\u{201d}) { }\n",
+        "enum E { A\u{201c}, B }\nenum F { C }\nenum G { D\u{201d}, E }\n",
+    ] {
+        let without = text.replace(['\u{201c}', '\u{201d}'], "");
+        assert_eq!(declarations(text), declarations(&without), "{text:?}");
+        assert_rejected_over(text, &without);
+    }
+}
+
+#[test]
+fn rejected_text_inside_a_joined_operator_is_parsed_past() {
+    for text in [
+        "let a = items?\\[0];\n",
+        "let a = items?\\.Name;\n",
+        "let a = x >\\> 2;\n",
+        "x >\\>= 2;\n",
+        "let r = a.\\.b;\n",
+    ] {
+        assert_only_rejected(text);
+        // The same nodes and tokens, the joined one with the run inside it.
+        let kinds = |text: &str| -> Vec<String> {
+            let tree = parse(text).syntax().debug_tree();
+            tree.lines()
+                .map(|line| line.split('@').next().unwrap_or_default().to_owned())
+                .collect()
+        };
+        assert_eq!(kinds(text), kinds(&text.replace('\\', "")), "{text:?}");
+    }
+}
+
+#[test]
+fn rejected_text_after_a_doc_comment_leaves_it_attached() {
+    for (text, kind) in [
+        ("/// Doc.\n\\\nclass A { }\n", "ClassDecl"),
+        ("/// Doc.\n\\class A { }\n", "ClassDecl"),
+        (
+            "class A {\n    /// Doc.\n    \\\n    F() { }\n}\n",
+            "FunctionDecl",
+        ),
+        (
+            "class A {\n    /// Doc.\n    \\F() { }\n}\n",
+            "FunctionDecl",
+        ),
+    ] {
+        let parse = parse(text);
+        let node = parse
+            .syntax()
+            .descendants()
+            .find(|node| format!("{:?}", node.kind()) == kind)
+            .unwrap();
+        assert!(node.text().starts_with("/// Doc."), "{text:?}");
+    }
+}
+
+#[test]
+fn a_quote_that_starts_a_line_looks_for_its_closing_quote_on_that_line() {
+    // The first quote's scan stops at the line break, where the second
+    // quote starts its own scan and finds its closing quote.
+    let text = "F(\u{201c}a,\n\u{201c}b\u{201d});\n";
+    assert_rejected_over(text, "F(a,\n);\n");
+    // `b` is in the quoted run, not an argument.
+    let names = |text: &str| {
+        parse(text)
+            .syntax()
+            .debug_tree()
+            .matches("NameRef@")
+            .count()
+    };
+    assert_eq!(names(text), names("F(a,\n);\n"));
+}
+
+#[test]
+fn a_quoted_run_never_splits_an_interpolated_string() {
+    for text in [
+        "Console.WriteLine\u{2018}($\"{name\u{2019}}!\");\n",
+        "let s = $\"{a\u{201c}} and {b\u{201d}}\";\n",
+    ] {
+        assert_eq!(codes_of(text), ["MR0017", "MR0017"], "{text:?}");
     }
 }

@@ -32,6 +32,7 @@ pub(super) fn build(
     text: &str,
     lexed: &Lexed,
     rejected_runs: &[Option<usize>],
+    token_ends: &[usize],
     mut events: Vec<Event>,
 ) -> (GreenNode, Vec<SyntaxError>) {
     // Where each string the lexer found unclosed ends. A character literal
@@ -43,10 +44,18 @@ pub(super) fn build(
         .filter(|error| error.code == codes::MR0012 && !text[error.range].starts_with('\''))
         .map(|error| error.range.end())
         .collect();
+    let mut rejected_run_starts = vec![None; lexed.tokens.len()];
+    for (start, end) in rejected_runs.iter().enumerate() {
+        if let Some(end) = *end {
+            rejected_run_starts[end - 1] = Some(start);
+        }
+    }
     let mut sink = Sink {
         text,
         lexed,
         rejected_runs,
+        rejected_run_starts,
+        token_ends,
         unclosed_strings,
         raw: 0,
         open: Vec::new(),
@@ -85,7 +94,7 @@ pub(super) fn build(
                 }
             }
             Event::Finish => sink.finish(),
-            Event::Token { kind, n_raw } => sink.token(kind, n_raw),
+            Event::Token { kind, n } => sink.token(kind, n),
             // After `MR0018`, the rest of its statement reports nothing more:
             // what the parser skipped there leaves holes it would report.
             Event::Error { .. } if sink.mutes_errors() => {}
@@ -113,6 +122,11 @@ struct Sink<'a> {
     /// For the first token of each run of rejected text, the index after its
     /// last token ([`Input`]).
     rejected_runs: &'a [Option<usize>],
+    /// For the last token of each run of rejected text, its first token.
+    rejected_run_starts: Vec<Option<usize>>,
+    /// For each token, the index after it, or after the token rejected text
+    /// joins it with ([`Input`]).
+    token_ends: &'a [usize],
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
     /// The next token of `lexed` to add.
@@ -141,6 +155,11 @@ struct Sink<'a> {
 impl Sink<'_> {
     fn kind(&self, i: usize) -> Option<SyntaxKind> {
         self.lexed.tokens.get(i).map(|token| token.kind)
+    }
+
+    /// The first token of the run of rejected text whose last token is `i`.
+    fn rejected_run_ending_at(&self, i: usize) -> Option<usize> {
+        self.rejected_run_starts.get(i).copied().flatten()
     }
 
     /// The index after the run of rejected text that starts at token `i`.
@@ -285,12 +304,19 @@ impl Sink<'_> {
 
     /// Where the comments directly above the token at `end` start: comments
     /// and the whitespace between them, up to a blank line or a directive.
+    /// Rejected text between them counts as nothing, and so does a line
+    /// that holds only rejected text.
     fn attached_comments(&self, end: usize) -> usize {
         let mut from = end;
         let mut i = end;
         let mut newline_seen = false;
         while i > self.raw {
             i -= 1;
+            if let Some(start) = self.rejected_run_ending_at(i) {
+                i = start;
+                newline_seen = false;
+                continue;
+            }
             match self.kind(i) {
                 Some(K::LineComment | K::DocComment | K::BlockComment) => {
                     from = i;
@@ -333,10 +359,21 @@ impl Sink<'_> {
         self.builder.finish_node();
     }
 
-    fn token(&mut self, kind: SyntaxKind, n_raw: usize) {
+    /// Adds `n` tokens of the parser's input as one token of `kind`, with
+    /// any rejected text between them, which joins them.
+    fn token(&mut self, kind: SyntaxKind, n: usize) {
         let first = self.next_significant();
         self.add_raw(first);
-        let last = (first + n_raw).min(self.lexed.tokens.len());
+        let mut last = first;
+        for piece in 0..n {
+            if piece > 0 {
+                while let Some(end) = self.rejected_run(last) {
+                    last = end;
+                }
+            }
+            last = self.token_ends.get(last).copied().unwrap_or(last);
+        }
+        let last = last.min(self.lexed.tokens.len());
         if first >= last {
             return;
         }

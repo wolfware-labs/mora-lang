@@ -3,7 +3,9 @@
 //! The lexer reports each token it rejects (`MR0017`). A quote meant to
 //! open a string or a character (one of [`QUOTES`]) is rejected too, and
 //! the text up to the quote that closes it goes with it, when that quote
-//! comes before the statement ends ([`closing_quotes`]). Each such run of
+//! comes on the same line before the statement ends ([`closing_quotes`]).
+//! A quote that none closes is rejected text on its own, so a stray quote
+//! takes nothing from the declarations after it. Each such run of
 //! rejected text is left out of the parser's [`Input`], so the parser
 //! parses the text as if the run were not there and reports only what the
 //! text without it would. The tree builder puts each run back where it
@@ -21,20 +23,14 @@ use crate::SyntaxKind;
 
 use SyntaxKind as K;
 
-/// The keywords that start a statement, which no expression holds: a line
-/// that starts with one ends the scan for a closing quote
-/// ([`closing_quotes`]).
-const STATEMENT_KEYWORDS: &[SyntaxKind] = &[
-    K::LetKw,
-    K::VarKw,
-    K::IfKw,
-    K::WhileKw,
-    K::DoKw,
-    K::ForKw,
-    K::ForeachKw,
-    K::ReturnKw,
-    K::BreakKw,
-    K::ContinueKw,
+/// The tokens that make up an interpolated string around its holes.
+const INTERPOLATION: &[SyntaxKind] = &[
+    K::InterpStart,
+    K::InterpText,
+    K::HoleOpen,
+    K::HoleFormat,
+    K::HoleClose,
+    K::InterpEnd,
 ];
 
 /// Each quote meant to open a string or a character, with the quotes that
@@ -50,8 +46,8 @@ pub(super) const QUOTES: &[(&str, &[&str])] = &[
 ];
 
 /// For each quote of [`QUOTES`] in `input`, the index of the quote that
-/// closes it, when one of its closers comes before the statement ends:
-/// before a `;`, or a line that starts with a statement keyword or a `}`.
+/// closes it, when one of its closers comes before a `;`, the end of the
+/// line or a piece of an interpolated string, which a run never splits.
 /// Brackets in between are text. Also returns how many tokens the scans
 /// looked at.
 ///
@@ -85,8 +81,8 @@ pub(super) fn closing_quotes(input: &Input<'_>) -> (Vec<Option<usize>>, usize) {
             let kind = input.kind(i);
             if i >= input.len()
                 || kind == K::Semicolon
-                || (input.line_start[i]
-                    && (STATEMENT_KEYWORDS.contains(&kind) || kind == K::RBrace))
+                || input.line_start[i]
+                || INTERPOLATION.contains(&kind)
             {
                 break None;
             }

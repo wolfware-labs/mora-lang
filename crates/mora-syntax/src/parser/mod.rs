@@ -84,7 +84,13 @@ fn parse_within(text: &str, budget: Option<usize>) -> Parse {
         p.budget = budget;
     }
     items::source_file(&mut p);
-    let (green, mut errors) = build::build(text, &lexed, &input.rejected_runs, p.events);
+    let (green, mut errors) = build::build(
+        text,
+        &lexed,
+        &input.rejected_runs,
+        &input.token_ends,
+        p.events,
+    );
     errors.extend(lexed.errors.iter().cloned());
     errors.sort_by_key(|error| error.range.start());
     Parse { green, errors }
@@ -107,8 +113,13 @@ pub(crate) struct Input<'t> {
     ranges: Vec<TextRange>,
     /// The index of each token in [`Lexed::tokens`].
     raw: Vec<usize>,
+    /// For each token of [`Lexed::tokens`], the index after it: after the
+    /// next token too when rejected text between them joins them into one,
+    /// as `.\.` into `..` ([`Input::merge`]).
+    token_ends: Vec<usize>,
     /// Whether the token is directly followed by the next one, with no trivia
-    /// or rejected text between them.
+    /// between them: rejected text that touches both counts as nothing, so
+    /// that `>\>` is still `>>` to the parser.
     joined: Vec<bool>,
     /// Whether a line break comes between the token and the one before it,
     /// with only rejected text after the line break.
@@ -137,6 +148,7 @@ impl<'t> Input<'t> {
             kinds: Vec::new(),
             ranges: Vec::new(),
             raw: Vec::new(),
+            token_ends: Vec::new(),
             joined: Vec::new(),
             line_start: Vec::new(),
             rejected_before: Vec::new(),
@@ -166,6 +178,7 @@ impl<'t> Input<'t> {
         // The same tokens with the rejected text left out.
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
+        input.token_ends = (1..=lexed.tokens.len()).collect();
         let (mut rejected, mut line_break) = (false, false);
         let mut at = 0;
         while at < all.len() {
@@ -188,9 +201,17 @@ impl<'t> Input<'t> {
             input.rejected_runs[all.raw[start]] = Some(all.raw[at - 1] + 1);
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
             rejected = true;
-            // Rejected text separates the tokens around it, as a space does.
-            if let Some(joined) = input.joined.last_mut() {
-                *joined = false;
+            // The tokens around the run touch as they would without it: when
+            // it touches both, they are joined, or one token when they lex as
+            // one, as `.` and `.` make `..`.
+            let touches = input.joined.last().copied().unwrap_or(false)
+                && at < all.len()
+                && lexed.is_joined(all.raw[at - 1]);
+            if touches && input.merge(&all, at) {
+                (rejected, line_break) = (false, false);
+                at += 1;
+            } else if let Some(joined) = input.joined.last_mut() {
+                *joined = touches;
             }
         }
         input.rejected_before.push(rejected);
@@ -243,6 +264,32 @@ impl<'t> Input<'t> {
         self.after_parens.get(open).copied().flatten()
     }
 
+    /// Makes the last token one with token `at` of `all`, which rejected text
+    /// between them separates, when both are punctuation and their texts
+    /// together lex as one token. Returns whether it did.
+    fn merge(&mut self, all: &Input<'_>, at: usize) -> bool {
+        let last = self.len() - 1;
+        let punctuation = |kind: SyntaxKind| kind.text().filter(|_| !kind.is_keyword());
+        let (Some(first), Some(second)) =
+            (punctuation(self.kinds[last]), punctuation(all.kinds[at]))
+        else {
+            return false;
+        };
+        let joined = format!("{first}{second}");
+        let lexed = lex(&joined);
+        let [token] = lexed.tokens.as_slice() else {
+            return false;
+        };
+        if !lexed.errors.is_empty() {
+            return false;
+        }
+        self.kinds[last] = token.kind;
+        self.ranges[last] = TextRange::new(self.ranges[last].start(), all.ranges[at].end());
+        self.token_ends[self.raw[last]] = all.raw[at] + 1;
+        self.joined[last] = all.joined[at];
+        true
+    }
+
     /// Whether rejected text comes right before token `i`, or before the end
     /// of the text at `len`.
     fn rejected_before(&self, i: usize) -> bool {
@@ -261,8 +308,9 @@ pub(crate) enum Event {
     },
     /// Close the innermost open node.
     Finish,
-    /// Take `n_raw` adjacent tokens as one token of `kind`: `>>` from two `>`.
-    Token { kind: SyntaxKind, n_raw: usize },
+    /// Take `n` tokens of the [`Input`] as one token of `kind`: `>>` from two
+    /// `>`, with any rejected text between them.
+    Token { kind: SyntaxKind, n: usize },
     /// Report `MR0110` at the next token. With `fix`, the error offers to
     /// replace the token it wraps.
     Error {
@@ -587,9 +635,9 @@ impl<'t> Parser<'t> {
 
     /// Takes the next token as `kind`, which must be there.
     pub(crate) fn bump(&mut self, kind: SyntaxKind) {
-        let n_raw = self.pieces(self.pos, kind).unwrap_or(1);
-        self.events.push(Event::Token { kind, n_raw });
-        self.pos += n_raw;
+        let n = self.pieces(self.pos, kind).unwrap_or(1);
+        self.events.push(Event::Token { kind, n });
+        self.pos += n;
     }
 
     /// Takes the next token as it was lexed.
@@ -602,7 +650,7 @@ impl<'t> Parser<'t> {
 
     /// Takes an identifier as the contextual keyword `kind`.
     pub(crate) fn bump_remap(&mut self, kind: SyntaxKind) {
-        self.events.push(Event::Token { kind, n_raw: 1 });
+        self.events.push(Event::Token { kind, n: 1 });
         self.pos += 1;
     }
 

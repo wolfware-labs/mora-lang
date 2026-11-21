@@ -817,7 +817,9 @@ fn misplaced_member(
 /// Whether one of `syntax_errors` lies in the head of `node`, the part
 /// before its body (its block, expression body, accessors or members), or
 /// is an empty one, a missing token, at the head's end. A non-empty error
-/// that starts at the end is about the text after the node.
+/// that starts at the end is about the text after the node. A token the
+/// lexer rejected (`MR0017`) does not count: the parser reads the head as if
+/// it were not there.
 fn head_has_syntax_error(node: SyntaxNode<'_>, syntax_errors: &[SyntaxError]) -> bool {
     use SyntaxKind as K;
     let start = node.text_range().start();
@@ -837,7 +839,9 @@ fn head_has_syntax_error(node: SyntaxNode<'_>, syntax_errors: &[SyntaxError]) ->
         .map_or(node.text_range().end(), |body| body.text_range().start());
     syntax_errors.iter().any(|error| {
         let range = error.range;
-        if range.is_empty() {
+        if error.code == codes::MR0017 {
+            false
+        } else if range.is_empty() {
             start <= range.start() && range.start() <= end
         } else {
             range.start() < end && start < range.end()
@@ -2976,6 +2980,18 @@ mod tests {
         let text = "struct S {\n    )const K: int;\n}\n";
         assert!(!mora_syntax::parse(text).errors().is_empty(), "{text}");
         assert_eq!(codes(&diagnostics_of(text)), ["MR0114"]);
+    }
+
+    #[test]
+    fn a_rejected_token_in_a_head_still_gets_its_own_diagnostics() {
+        // The parser reads the head as if the token were not there, so the
+        // constant still has no value.
+        for text in [
+            "public class P {\n    const K: int\\;\n}\n",
+            "public class P {\n    const \\K: int;\n}\n",
+        ] {
+            assert_eq!(codes(&diagnostics_of(text)), ["MR0114"], "{text}");
+        }
     }
 
     #[test]
