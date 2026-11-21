@@ -91,8 +91,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo deny check
       # The fuzz crate sits outside the workspace with a lockfile of its own
-      # (§20.1). It must match its manifest and keep every crate it shares
-      # with the workspace on the version Cargo.lock locks.
+      # (§20.1). It must match its manifest and build every crate it shares
+      # with the workspace at the same version and from the same source.
       - name: xtask fuzz-lock
         if: ${{ !cancelled() }}
         run: cargo xtask fuzz-lock --check

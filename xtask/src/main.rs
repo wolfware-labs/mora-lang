@@ -21,7 +21,7 @@ mod tools;
 use std::path::Path;
 use std::process::ExitCode;
 
-use cargo_metadata::{Metadata, MetadataCommand, Package};
+use cargo_metadata::{Metadata, MetadataCommand};
 use mora_diag::registry;
 
 use crate::paths::root;
@@ -207,31 +207,6 @@ fn resolve_locked(root: &Path, manifest: &str) -> Result<Metadata, String> {
         .map_err(|err| err.to_string())
 }
 
-/// Each package of a resolve and where cargo builds it from: its source,
-/// or for a path package the folder of its manifest, with symbolic links
-/// resolved.
-fn built(metadata: &Metadata) -> Vec<fuzz_lock::Built> {
-    let folder = |package: &Package| {
-        let dir = package
-            .manifest_path
-            .parent()
-            .unwrap_or(&package.manifest_path);
-        std::fs::canonicalize(dir).map_or_else(|_| dir.to_string(), |dir| dir.display().to_string())
-    };
-    metadata
-        .packages
-        .iter()
-        .map(|package| fuzz_lock::Built {
-            name: package.name.to_string(),
-            version: package.version.clone(),
-            from: package
-                .source
-                .as_ref()
-                .map_or_else(|| folder(package), |source| source.repr.clone()),
-        })
-        .collect()
-}
-
 /// The text of a file under the repository root; errors name `file` as
 /// given, relative to the root.
 fn read_text(root: &Path, file: &str) -> Result<String, String> {
@@ -265,7 +240,7 @@ fn run_fuzz_lock() -> CommandResult {
             resolve_command(&root, paths::FUZZ_MANIFEST)
                 .exec()
                 .map_err(|err| err.to_string())?;
-            fuzz_lock_problems(&root)
+            check_fuzz_lock(&root)
         })?;
     if checked.problems.is_empty() {
         println!("{}", fuzz_lock::rebuilt(changed));
@@ -276,16 +251,19 @@ fn run_fuzz_lock() -> CommandResult {
 /// Each problem with `fuzz/Cargo.lock`, from what cargo resolves for the
 /// workspace and the fuzz crate with `--locked`, and the number of packages
 /// the fuzz crate resolves.
-fn fuzz_lock_problems(root: &Path) -> Result<fuzz_lock::Checked, String> {
+fn check_fuzz_lock(root: &Path) -> Result<fuzz_lock::Checked, String> {
     let workspace = resolve_locked(root, paths::ROOT_MANIFEST).map_err(|err| {
         format!(
             "cargo cannot resolve {} with --locked: {err}",
             paths::ROOT_MANIFEST
         )
     })?;
-    let fuzz = resolve_locked(root, paths::FUZZ_MANIFEST).map(|fuzz| built(&fuzz));
+    let fuzz = resolve_locked(root, paths::FUZZ_MANIFEST).map(|fuzz| fuzz_lock::Built::all(&fuzz));
     let packages = fuzz.as_ref().map_or(0, Vec::len);
-    let problems = fuzz_lock::problems(&built(&workspace), fuzz.as_deref().map_err(Clone::clone));
+    let problems = fuzz_lock::problems(
+        &fuzz_lock::Built::all(&workspace),
+        fuzz.as_deref().map_err(Clone::clone),
+    );
     Ok(fuzz_lock::Checked { problems, packages })
 }
 
@@ -307,7 +285,7 @@ fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> Co
 /// fuzz crate builds a crate it shares with the workspace differently.
 fn run_fuzz_lock_check() -> CommandResult {
     let root = root();
-    let checked = fuzz_lock_problems(&root)?;
+    let checked = check_fuzz_lock(&root)?;
     report_fuzz_lock(&checked, fuzz_lock::check_summary(&checked.problems))
 }
 

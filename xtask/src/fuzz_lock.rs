@@ -19,6 +19,7 @@ use std::io;
 use std::path::Path;
 
 use cargo_metadata::semver::Version;
+use cargo_metadata::{Metadata, Package};
 use toml::{Table, Value};
 
 use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_MANIFEST, error_at};
@@ -106,6 +107,33 @@ pub struct Built {
 }
 
 impl Built {
+    /// A package of a resolve and where cargo builds it from: its source,
+    /// or for a path package the folder of its manifest, with symbolic links
+    /// resolved, so that one folder reached two ways reads the same.
+    pub fn of(package: &Package) -> Self {
+        let from = package.source.as_ref().map_or_else(
+            || {
+                let dir = package
+                    .manifest_path
+                    .parent()
+                    .unwrap_or(&package.manifest_path);
+                fs::canonicalize(dir)
+                    .map_or_else(|_| dir.to_string(), |dir| dir.display().to_string())
+            },
+            |source| source.repr.clone(),
+        );
+        Self {
+            name: package.name.to_string(),
+            version: package.version.clone(),
+            from,
+        }
+    }
+
+    /// Each package of a resolve, as [`Built::of`] reads it.
+    pub fn all(metadata: &Metadata) -> Vec<Self> {
+        metadata.packages.iter().map(Self::of).collect()
+    }
+
     /// Whether cargo would keep only one of the two in a resolve.
     fn same_crate(&self, other: &Built) -> bool {
         self.name == other.name && Compatible::of(&self.version) == Compatible::of(&other.version)
@@ -415,6 +443,36 @@ mod tests {
 
     fn drift_of(root: Built, fuzz: Built) -> Drift {
         Drift { root, fuzz }
+    }
+
+    #[test]
+    fn a_package_is_built_from_its_source_or_its_folder() {
+        let root = crate::paths::root();
+        let metadata = crate::metadata_command(&root).exec().unwrap();
+        let built = Built::all(&metadata);
+        assert_eq!(built.len(), metadata.packages.len());
+        let mut syntax = metadata
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == "mora-syntax")
+            .unwrap()
+            .clone();
+        // `root` is `xtask/..`: the folder is read with the link resolved.
+        let folder = fs::canonicalize(root.join("crates/mora-syntax")).unwrap();
+        let path = Built::of(&syntax);
+        assert_eq!(path.from, folder.display().to_string());
+        assert_eq!(
+            (path.name.as_str(), &path.version),
+            ("mora-syntax", &syntax.version)
+        );
+        assert!(built.contains(&path));
+        // A folder that is not there is kept as cargo reports it.
+        syntax.manifest_path = "/no/such/mora-syntax/Cargo.toml".into();
+        assert_eq!(Built::of(&syntax).from, "/no/such/mora-syntax");
+        syntax.source = Some(cargo_metadata::Source {
+            repr: CRATES_IO.into(),
+        });
+        assert_eq!(Built::of(&syntax).from, CRATES_IO);
     }
 
     #[test]
