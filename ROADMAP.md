@@ -73,7 +73,7 @@ Done when:
 
 Spec: [§20.5](docs/design/mora.md#205-continuous-integration), [§19.1](docs/design/mora.md#191-targets). Crates: repository. Blocked by: M0.2.
 
-`ci.yml` running fmt, clippy, tests, docs and `cargo deny` on `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`, `windows-2025` and `windows-11-arm`, with a change filter that skips the Rust build for Markdown-only changes but never for `docs/design/mora.md`, `docs/errors/` or `docs/guide/`, whose executable examples must run, `!cancelled()` so one run reports every failing check, `RUSTFLAGS=-D warnings`, and every third-party action pinned by commit SHA.
+`ci.yml` running fmt, clippy, tests, docs and `cargo deny` on `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`, `windows-2025` and `windows-11-arm`, with a change filter that skips the Rust build only for changes to Markdown no check reads (§20.5), so the executable examples of `docs/design/mora.md`, `docs/errors/` and `docs/guide/` always run, `!cancelled()` so one run reports every failing check, `RUSTFLAGS=-D warnings`, and every third-party action pinned by commit SHA.
 
 Done when:
 
