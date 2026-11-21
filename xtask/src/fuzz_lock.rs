@@ -78,10 +78,13 @@ impl Compatible {
 /// One package entry of a lockfile.
 #[derive(Debug, Clone, Copy)]
 struct Locked<'a> {
+    /// The crate's name.
     name: &'a str,
+    /// The version, as the lockfile writes it.
     version: &'a str,
-    /// `None` for a path dependency.
+    /// Where the crate comes from; `None` for a path dependency.
     source: Option<&'a str>,
+    /// The versions `version` is compatible with.
     compatible: Compatible,
 }
 
@@ -120,7 +123,7 @@ fn shown_source(source: Option<&str>) -> &str {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Drift {
     /// The same crate at another version, which rebuilding the fuzz lockfile
-    /// moves to the root's.
+    /// moves to the root's unless a requirement of the fuzz crate holds it.
     Version {
         name: String,
         fuzz: String,

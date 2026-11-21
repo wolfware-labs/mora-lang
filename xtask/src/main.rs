@@ -193,15 +193,32 @@ fn fuzz_metadata(root: &Path) -> MetadataCommand {
     command
 }
 
-/// The text of a file under the repository root.
+/// The text of a file under the repository root; errors name `file` as
+/// given, relative to the root.
 fn read_text(root: &Path, file: &str) -> Result<String, String> {
-    let path = root.join(file);
-    std::fs::read_to_string(&path).map_err(paths::error_at(&path))
+    std::fs::read_to_string(root.join(file)).map_err(paths::error_at(Path::new(file)))
 }
 
 /// Reads and parses a lockfile under the repository root.
 fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
-    fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(&root.join(lock)))
+    fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(Path::new(lock)))
+}
+
+/// A problem with `fuzz/Cargo.lock`.
+struct LockProblem {
+    /// What is wrong, as the command prints it.
+    message: String,
+    /// Whether `cargo xtask fuzz-lock` fixes it.
+    rebuild_fixes: bool,
+}
+
+impl From<&fuzz_lock::Drift> for LockProblem {
+    fn from(drift: &fuzz_lock::Drift) -> Self {
+        Self {
+            message: drift.to_string(),
+            rebuild_fixes: drift.rebuild_fixes(),
+        }
+    }
 }
 
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
@@ -213,14 +230,15 @@ fn run_fuzz_lock() -> CommandResult {
     let before = read_text(&root, paths::FUZZ_LOCK).ok();
     let fuzz = read_lock(&root, paths::FUZZ_LOCK).unwrap_or_else(|err| {
         eprintln!(
-            "fuzz-lock: {err}; rebuilding it from {} alone",
+            "fuzz-lock: rebuilding {} from {} alone: {err}",
+            paths::FUZZ_LOCK,
             paths::ROOT_LOCK
         );
         fuzz_lock::Lock::default()
     });
     let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz);
-    let path = root.join(paths::FUZZ_LOCK);
-    std::fs::write(&path, text).map_err(paths::error_at(&path))?;
+    std::fs::write(root.join(paths::FUZZ_LOCK), text)
+        .map_err(paths::error_at(Path::new(paths::FUZZ_LOCK)))?;
     fuzz_metadata(&root).exec().map_err(|err| {
         format!(
             "cargo cannot resolve {} with {}: {err}; fix the requirement it names",
@@ -237,13 +255,13 @@ fn run_fuzz_lock() -> CommandResult {
     if problems.is_empty() {
         return fuzz_lock_ok(&root);
     }
-    for (problem, _) in &problems {
-        eprintln!("{problem}");
+    for problem in &problems {
+        eprintln!("{}", problem.message);
     }
     // A version the rebuild leaves apart is held there by a requirement of
     // the fuzz crate itself; running it again changes nothing. The other
     // problems say what to do in their own lines.
-    let held = problems.iter().any(|(_, fixes)| *fixes);
+    let held = problems.iter().any(|problem| problem.rebuild_fixes);
     let advice = if held {
         format!(
             "; a version apart from {} is held by a requirement in {} or in a crate only it \
@@ -262,31 +280,33 @@ fn run_fuzz_lock() -> CommandResult {
     Ok(ExitCode::FAILURE)
 }
 
-/// Each problem with `fuzz/Cargo.lock`, and whether `cargo xtask fuzz-lock`
-/// fixes it.
-fn fuzz_lock_problems(root: &Path) -> Result<Vec<(String, bool)>, String> {
+/// Each problem with `fuzz/Cargo.lock`.
+fn fuzz_lock_problems(root: &Path) -> Result<Vec<LockProblem>, String> {
     let mut problems = Vec::new();
     if let Err(err) = fuzz_metadata(root)
         .other_options(["--locked".to_owned()])
         .exec()
     {
-        problems.push((
-            format!(
+        problems.push(LockProblem {
+            message: format!(
                 "{} does not match {}: {err}",
                 paths::FUZZ_LOCK,
                 paths::FUZZ_MANIFEST
             ),
-            true,
-        ));
+            rebuild_fixes: true,
+        });
     }
     let root_lock = read_lock(root, paths::ROOT_LOCK)?;
     match read_lock(root, paths::FUZZ_LOCK) {
         Ok(fuzz) => problems.extend(
             fuzz_lock::drift(&root_lock, &fuzz)
                 .iter()
-                .map(|drift| (drift.to_string(), drift.rebuild_fixes())),
+                .map(LockProblem::from),
         ),
-        Err(err) => problems.push((err, true)),
+        Err(message) => problems.push(LockProblem {
+            message,
+            rebuild_fixes: true,
+        }),
     }
     Ok(problems)
 }
@@ -309,10 +329,13 @@ fn run_fuzz_lock_check() -> CommandResult {
     if problems.is_empty() {
         return fuzz_lock_ok(&root);
     }
-    for (problem, _) in &problems {
-        eprintln!("{problem}");
+    for problem in &problems {
+        eprintln!("{}", problem.message);
     }
-    let fixable = problems.iter().filter(|(_, fixes)| *fixes).count();
+    let fixable = problems
+        .iter()
+        .filter(|problem| problem.rebuild_fixes)
+        .count();
     let advice = if fixable == 0 {
         String::new()
     } else {
