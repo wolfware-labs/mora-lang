@@ -206,26 +206,34 @@ fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
     fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(Path::new(lock)))
 }
 
-/// The crates `Cargo.toml` and `fuzz/Cargo.toml` patch.
-fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
-    let patched = |manifest: &str| {
-        fuzz_lock::patched_crates(&read_text(root, manifest)?)
-            .map_err(paths::error_at(Path::new(manifest)))
+/// The `[patch]` entries of `file` under the repository root, with each
+/// `path` resolved against `dir`, the folder cargo reads it from.
+fn read_patches_in(root: &Path, file: &str, dir: &str) -> Result<Vec<fuzz_lock::Patch>, String> {
+    let dir = root.join(dir);
+    let resolve = |path: &str| {
+        let joined = dir.join(path);
+        std::fs::canonicalize(&joined).unwrap_or(joined)
     };
-    Ok(fuzz_lock::Patches {
-        root: patched(paths::ROOT_MANIFEST)?,
-        fuzz: patched(paths::FUZZ_MANIFEST)?,
-    })
+    fuzz_lock::patches_in(file, &read_text(root, file)?, resolve)
+        .map_err(paths::error_at(Path::new(file)))
 }
 
-/// Puts `fuzz/Cargo.lock` back as it was: `before`, or no file.
-fn restore_fuzz_lock(root: &Path, before: Option<&str>) -> Result<(), String> {
-    let file = root.join(paths::FUZZ_LOCK);
-    match before {
-        Some(text) => std::fs::write(file, text),
-        None => std::fs::remove_file(file),
-    }
-    .map_err(paths::error_at(Path::new(paths::FUZZ_LOCK)))
+/// The `[patch]` entries the workspace build and the fuzz build follow: the
+/// two manifests', and the repository cargo config's, which both builds
+/// read.
+fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
+    let config = if root.join(paths::CARGO_CONFIG).is_file() {
+        read_patches_in(root, paths::CARGO_CONFIG, ".")?
+    } else {
+        Vec::new()
+    };
+    let mut patches = fuzz_lock::Patches {
+        root: read_patches_in(root, paths::ROOT_MANIFEST, ".")?,
+        fuzz: read_patches_in(root, paths::FUZZ_MANIFEST, "fuzz")?,
+    };
+    patches.root.extend(config.iter().cloned());
+    patches.fuzz.extend(config);
+    Ok(patches)
 }
 
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
@@ -235,7 +243,6 @@ fn restore_fuzz_lock(root: &Path, before: Option<&str>) -> Result<(), String> {
 /// cannot resolve the result, the fuzz lockfile is left as it was.
 fn run_fuzz_lock() -> CommandResult {
     let root = root();
-    let before = read_text(&root, paths::FUZZ_LOCK).ok();
     let fuzz = read_lock(&root, paths::FUZZ_LOCK).unwrap_or_else(|err| {
         eprintln!(
             "fuzz-lock: rebuilding {} from {} alone: {err}",
@@ -246,17 +253,13 @@ fn run_fuzz_lock() -> CommandResult {
     });
     let patches = read_patches(&root)?;
     let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz, &patches);
-    std::fs::write(root.join(paths::FUZZ_LOCK), text)
-        .map_err(paths::error_at(Path::new(paths::FUZZ_LOCK)))?;
-    if let Err(err) = fuzz_metadata(&root).exec() {
-        restore_fuzz_lock(&root, before.as_deref())?;
-        return Err(fuzz_lock::resolve_failure(&err.to_string()));
-    }
-    let after = read_text(&root, paths::FUZZ_LOCK).ok();
-    println!(
-        "{}",
-        fuzz_lock::rebuilt(before.as_deref(), after.as_deref())
-    );
+    let changed = fuzz_lock::write_resolved(&root.join(paths::FUZZ_LOCK), &text, || {
+        fuzz_metadata(&root)
+            .exec()
+            .map(drop)
+            .map_err(|err| err.to_string())
+    })?;
+    println!("{}", fuzz_lock::rebuilt(changed));
     let problems = fuzz_lock_problems(&root)?;
     report_fuzz_lock(&root, &problems, fuzz_lock::rebuild_summary(&problems))
 }
