@@ -1344,12 +1344,13 @@ mod tests {
 
     #[test]
     fn a_rejected_run_anywhere_in_an_expression_reports_no_unknown_name() {
-        for text in [
-            "let a = \"x\" + \u{201c}y\u{201d};\n",
-            "Console.WriteLine('ab);\n",
-        ] {
-            assert_eq!(reported(text), Vec::<String>::new(), "{text:?}");
-        }
+        assert_eq!(
+            reported("let a = \"x\" + \u{201c}y\u{201d};\n"),
+            Vec::<String>::new()
+        );
+        // An unclosed character literal takes only its first character: the
+        // rest is code, so `b` is a name.
+        assert_eq!(reported("Console.WriteLine('ab);\n"), ["MR0127"]);
     }
 
     #[test]
@@ -1360,8 +1361,6 @@ mod tests {
             "let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n",
             // What follows the closing quote is checked.
             "let a = \u{201c}x\u{201d} + + nope;\n",
-            // A `,` ends a run that is not quoted.
-            "Console.WriteLine('ab, nope);\n",
             // A quoted run ends at its closing quote, brackets and line
             // breaks included.
             "let a = \u{201c}see (note\u{201d};\nnope();\n",

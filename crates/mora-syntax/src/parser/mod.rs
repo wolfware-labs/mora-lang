@@ -28,8 +28,7 @@ mod types;
 pub use types::PREDEFINED_TYPES;
 
 use mora_diag::codes;
-use mora_span::{TextRange, TextSize};
-use rustc_hash::FxHashSet;
+use mora_span::TextRange;
 
 use crate::ast::{self, AstNode};
 use crate::lexer::{Lexed, lex};
@@ -100,12 +99,14 @@ pub(crate) struct Input<'t> {
     raw: Vec<usize>,
     /// Whether the token is directly followed by the next one, with no trivia.
     joined: Vec<bool>,
-    /// Whether the token starts where the lexer ended a character or string
-    /// literal it found unclosed (`MR0012`), so that it is the rest of what
-    /// was meant as the literal.
-    cut: Vec<bool>,
     /// Whether a line break comes between the token and the one before it.
     line_start: Vec<bool>,
+    /// For each `(`, the index after the `)` that closes it, counting only
+    /// parentheses; `None` for an unclosed `(` and for any other token.
+    after_parens: Vec<Option<usize>>,
+    /// How many tokens the lookups for a closing `)` looked at.
+    #[cfg(test)]
+    scanned: std::cell::Cell<usize>,
 }
 
 impl<'t> Input<'t> {
@@ -116,16 +117,11 @@ impl<'t> Input<'t> {
             ranges: Vec::new(),
             raw: Vec::new(),
             joined: Vec::new(),
-            cut: Vec::new(),
             line_start: Vec::new(),
+            after_parens: Vec::new(),
+            #[cfg(test)]
+            scanned: std::cell::Cell::new(0),
         };
-        // Where the lexer ended each literal it found unclosed.
-        let cut_at: FxHashSet<TextSize> = lexed
-            .errors
-            .iter()
-            .filter(|error| error.code == codes::MR0012)
-            .map(|error| error.range.end())
-            .collect();
         let mut line_break = false;
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
@@ -138,8 +134,22 @@ impl<'t> Input<'t> {
             input.ranges.push(token.range);
             input.raw.push(i);
             input.joined.push(lexed.is_joined(i));
-            input.cut.push(cut_at.contains(&token.range.start()));
         }
+        input.after_parens = vec![None; input.kinds.len()];
+        let mut open = Vec::new();
+        for (i, &kind) in input.kinds.iter().enumerate() {
+            match kind {
+                K::LParen => open.push(i),
+                K::RParen => {
+                    if let Some(at) = open.pop() {
+                        input.after_parens[at] = Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        #[cfg(test)]
+        input.scanned.set(input.kinds.len());
         input
     }
 
@@ -164,23 +174,9 @@ impl<'t> Input<'t> {
     /// The index after the `)` that closes the `(` at `open`, counting only
     /// parentheses, or `None` when no `(` is there or the text ends first.
     fn after_parens(&self, open: usize) -> Option<usize> {
-        if self.kind(open) != K::LParen {
-            return None;
-        }
-        let mut depth = 0usize;
-        for (i, &kind) in self.kinds.iter().enumerate().skip(open) {
-            match kind {
-                K::LParen => depth += 1,
-                K::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
+        #[cfg(test)]
+        self.scanned.set(self.scanned.get() + 1);
+        self.after_parens.get(open).copied().flatten()
     }
 }
 
@@ -487,12 +483,6 @@ impl<'t> Parser<'t> {
         kinds.iter().any(|&kind| self.at(kind))
     }
 
-    /// Whether the next token starts where the lexer ended a literal it
-    /// found unclosed, as `b` in `'ab`.
-    pub(crate) fn at_cut(&self) -> bool {
-        self.input.cut.get(self.pos).copied().unwrap_or(false)
-    }
-
     /// Whether a line break comes before the next token.
     pub(crate) fn at_line_start(&self) -> bool {
         self.nth_at_line_start(0)
@@ -704,6 +694,25 @@ mod tests {
                 .iter()
                 .all(|error| error.code.to_string() == "MR0017")
         );
+    }
+
+    #[test]
+    fn each_closing_parenthesis_is_looked_for_once() {
+        // Each `(` is never closed, and `do`, `x = (` and `match (` look
+        // past it for its `)`.
+        let lines = |line: &str| line.repeat(10_000);
+        for text in [
+            format!("F() {{\n{}}}\n", lines("    { do while (c }\n")),
+            lines("{ x = (c }\n"),
+            lines("{ x = match (c }\n"),
+        ] {
+            let lexed = lex(&text);
+            let input = Input::new(&text, &lexed);
+            let mut p = Parser::new(&input);
+            items::source_file(&mut p);
+            let (tokens, scanned) = (input.len(), input.scanned.get());
+            assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");
+        }
     }
 
     #[test]

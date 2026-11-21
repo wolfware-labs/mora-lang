@@ -365,6 +365,7 @@ fn do_while_stmt(p: &mut Parser<'_>) {
     // Without its body, the `while` is not looked for either: the `}` that
     // follows closes the block around the statement.
     let has_end = if at_do_end(p) {
+        exprs::rejected(p);
         p.error("expected a statement");
         true
     } else {
@@ -381,11 +382,20 @@ fn do_while_stmt(p: &mut Parser<'_>) {
 /// Whether `while (c);` follows `do` and no `while` comes after it: then
 /// it ends the `do`, whose body is missing. As the body, a `while` loop
 /// with an empty body would leave the `do` without its own `while`.
+/// Rejected tokens after the `do` and before the `;` are skipped.
 fn at_do_end(p: &Parser<'_>) -> bool {
     let input = p.input();
-    p.at(K::WhileKw)
-        && input.after_parens(p.pos() + 1).is_some_and(|after| {
-            input.kind(after) == K::Semicolon && input.kind(after + 1) != K::WhileKw
+    let after_rejected = |mut at: usize| {
+        while input.kind(at) == K::Unknown {
+            at += 1;
+        }
+        at
+    };
+    let at = after_rejected(p.pos());
+    input.kind(at) == K::WhileKw
+        && input.after_parens(at + 1).is_some_and(|after| {
+            let end = after_rejected(after);
+            input.kind(end) == K::Semicolon && input.kind(end + 1) != K::WhileKw
         })
 }
 

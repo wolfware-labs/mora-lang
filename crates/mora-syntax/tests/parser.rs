@@ -564,17 +564,10 @@ fn a_rejected_token_after_an_operand_is_parsed_past() {
     assert_eq!(codes_of("let a = 1 \\\nlet b = 2;\n"), ["MR0017", "MR0110"]);
 }
 
-#[test]
-fn the_rest_of_an_unclosed_character_literal_is_part_of_its_error() {
-    assert_eq!(codes_of("F('ab);\n"), ["MR0012"]);
-    // The line has no `;`.
-    assert_eq!(codes_of("let c = 'ab\nlet d = 1;\n"), ["MR0012", "MR0110"]);
-}
-
-/// Unclosed character literals followed by what ends a statement, an
-/// argument or a group, each with the same text with the literal closed.
-/// The literal takes nothing after its first character, so every other
-/// error is the one the closed text reports.
+/// Unclosed character literals, each with the same text with the literal
+/// closed. The literal takes nothing after its first character, so every
+/// other error is the one the closed text reports, and what follows the
+/// literal is parsed as code.
 const UNCLOSED_CHARACTERS: &[(&str, &str)] = &[
     ("let a = 'a;", "let a = 'a';"),
     ("Console.WriteLine('a);", "Console.WriteLine('a');"),
@@ -585,17 +578,10 @@ const UNCLOSED_CHARACTERS: &[(&str, &str)] = &[
     ("let a = 'a,", "let a = 'a',"),
     ("let a = ['a', 'b;", "let a = ['a', 'b';"),
     ("F('a;", "F('a';"),
+    ("F('ab);", "F('a'b);"),
+    ("let c = 'ab\nlet d = 1;\n", "let c = 'a'b\nlet d = 1;\n"),
+    ("F('a$`, b);\n", "F('a'$`, b);\n"),
 ];
-
-#[test]
-fn the_rest_of_an_unclosed_literal_is_one_error() {
-    // `$` and a backtick open an interpolated raw string, which the lexer
-    // also finds unclosed; its text is the rest of that literal in turn.
-    let text = "F('a$`, b);\n";
-    let tree = parse(text).syntax().debug_tree();
-    assert_eq!(tree.matches("Error@").count(), 1, "{tree}");
-    assert!(tree.contains("Error@4..12"), "{tree}");
-}
 
 #[test]
 fn an_unclosed_character_literal_reports_only_what_a_closed_one_would_more() {
@@ -903,13 +889,18 @@ fn a_rejected_token_where_a_type_a_value_or_a_semicolon_starts_is_parsed_past() 
         "Max<T>(a: T): T where \\T : IComparable<T> => a;\n",
         "Max<T>(a: T): T where T \\: IComparable<T> => a;\n",
     ] {
-        assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
-        // A run of rejected tokens is one error, wherever one token is.
-        for run in ["\\\\", "\\\\\\", "\u{a0}\u{a0}"] {
-            let longer = text.replacen('\\', run, 1);
-            let rejected = run.chars().count();
-            assert_eq!(codes_of(&longer), vec!["MR0017"; rejected], "{longer:?}");
-        }
+        assert_only_rejected(text);
+    }
+}
+
+/// Asserts that `text`, with its one `\`, reports only that token, and
+/// that a run of rejected tokens in its place reports only them.
+fn assert_only_rejected(text: &str) {
+    assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
+    for run in ["\\\\", "\\\\\\", "\u{a0}\u{a0}"] {
+        let longer = text.replacen('\\', run, 1);
+        let rejected = run.chars().count();
+        assert_eq!(codes_of(&longer), vec!["MR0017"; rejected], "{longer:?}");
     }
 }
 
@@ -948,4 +939,96 @@ fn a_write_scope_is_one_word_with_rejected_tokens_around_it() {
         .syntax()
         .debug_tree();
     assert_eq!(tree.matches("Error@").count(), 1, "{tree}");
+}
+
+#[test]
+fn a_write_scope_without_its_word_reports_once() {
+    // Rejected text stands for the word.
+    assert_only_rejected("struct S {\n    public mut(\\) X: int;\n}\n");
+    assert_eq!(
+        parse_messages("struct S {\n    public mut() X: int;\n}\n"),
+        ["expected `private`, `ns` or `internal`"]
+    );
+}
+
+#[test]
+fn a_using_without_its_name_leaves_the_declaration_on_the_next_line() {
+    for text in [
+        "using\nF() {}\n",
+        "using \\\nF() {}\n",
+        "using static\npublic struct S {}\n",
+    ] {
+        assert_eq!(top_level_kinds(text).len(), 2, "{text:?}");
+        let messages = parse_messages(text);
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("expected an identifier"),
+            "{text:?}"
+        );
+        assert_eq!(messages.len(), 1 + text.matches('\\').count(), "{text:?}");
+    }
+    // A name on the next line that starts no declaration is the name.
+    assert!(codes_of("using\n    Std.Text;\nF() {}\n").is_empty());
+}
+
+#[test]
+fn rejected_text_around_a_do_without_a_body_reports_only_what_it_adds() {
+    // Each reports the token and the missing body, as `do while (c);`
+    // reports the body.
+    for text in ["do \\ while (c);\n", "do while (c) \\;\n"] {
+        let mut codes = codes_of(text);
+        codes.sort();
+        assert_eq!(codes, ["MR0017", "MR0110"], "{text:?}");
+        assert!(
+            parse_messages(text).contains(&"expected a statement".to_owned()),
+            "{text:?}"
+        );
+        assert_eq!(top_level_kinds(text), ["DoWhileStmt"], "{text:?}");
+    }
+}
+
+#[test]
+fn rejected_text_in_an_enum_is_parsed_past() {
+    for text in [
+        "enum E { A, \\ }\n",
+        "enum E { \\ }\n",
+        "enum E { A \\, B }\n",
+        "enum E { \\ @X A }\n",
+        "enum E { A, B \\ }\n",
+        "enum E { A = 1 \\, B }\n",
+    ] {
+        assert_only_rejected(text);
+        assert_eq!(top_level_kinds(text), ["EnumDecl"], "{text:?}");
+    }
+}
+
+#[test]
+fn the_rest_of_an_unclosed_character_literal_is_parsed_as_code() {
+    // The literal ends after `'"`, so the string after it runs to the end
+    // of the line and takes the `}`; the function after it is still one.
+    let text = "F(): Token {\n    return new Token { Text = '\"\" };\n}\n\n\
+                file Check(token: Token): bool {\n    return true;\n}\n";
+    assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
+    // `Pair` is not part of the literal: the `;` is missing after it.
+    assert_eq!(
+        codes_of("x + 'Pair<int, string,>.Default;\n"),
+        ["MR0012", "MR0110"]
+    );
+}
+
+#[test]
+fn a_cast_after_rejected_text_is_a_cast() {
+    assert_only_rejected("let s = new int[n] + \\(any IShape)shape;\n");
+    assert_only_rejected("let s = \\(int)x;\n");
+}
+
+#[test]
+fn rejected_text_in_a_lambda_parameter_is_parsed_past() {
+    for text in [
+        "let f = (\\x: int) => x;\n",
+        "let f = (a: int, \\b: int) => a;\n",
+        "let f = (ref \\x: int) => x;\n",
+    ] {
+        assert_only_rejected(text);
+    }
 }

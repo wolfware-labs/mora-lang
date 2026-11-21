@@ -90,6 +90,12 @@ fn using_directive(p: &mut Parser<'_>) {
     p.bump(K::UsingKw);
     p.eat(K::StaticKw);
     exprs::rejected(p);
+    // A declaration on the next line is not the name: the name is missing.
+    if p.at_line_start() && at_declaration_start(p) {
+        p.error("expected an identifier");
+        m.complete(p, K::UsingDirective);
+        return;
+    }
     if p.at(K::Ident) && p.nth(1) == K::Eq {
         let alias = p.start();
         name(p);
@@ -284,7 +290,7 @@ fn modifiers(p: &mut Parser<'_>) -> Vec<SyntaxKind> {
     }
 }
 
-/// One word in parentheses after `mut`: a write scope (§6.9).
+/// One word in parentheses after `mut`, or none: a write scope (§6.9).
 fn at_write_scope(p: &Parser<'_>) -> bool {
     if !p.at(K::LParen) {
         return false;
@@ -294,13 +300,21 @@ fn at_write_scope(p: &Parser<'_>) -> bool {
     let mut tokens = (p.pos() + 1..)
         .map(|at| input.kind(at))
         .filter(|&kind| kind != K::Unknown);
-    tokens.next().is_some_and(|word| word != K::RParen) && tokens.next() == Some(K::RParen)
+    match tokens.next() {
+        Some(K::RParen) => true,
+        Some(_) => tokens.next() == Some(K::RParen),
+        None => false,
+    }
 }
 
-/// `(private)`, `(ns)` or `(internal)`; any other word is reported.
+/// `(private)`, `(ns)` or `(internal)`; any other word is reported, and so
+/// is a missing one, unless rejected text stands for it.
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
+    if p.at(K::RParen) {
+        p.error("expected `private`, `ns` or `internal`");
+    }
     // The word, and each run of rejected tokens around it as an error of its
     // own: [`at_write_scope`] found the `)`.
     while !p.at(K::RParen) {
@@ -455,14 +469,23 @@ fn enum_decl(p: &mut Parser<'_>, m: Marker) {
     if p.expect(K::LBrace) {
         while !p.at(K::RBrace) && !p.at_end() {
             let member = p.start();
+            // Rejected text before the attributes, the name or the `,` is an
+            // error of its own; before the `}`, it is no member.
+            exprs::rejected(p);
+            let attributes = p.at(K::At);
             while p.at(K::At) {
                 attribute(p);
             }
             exprs::rejected(p);
+            if p.at(K::RBrace) && !attributes {
+                member.abandon(p);
+                break;
+            }
             name(p);
             if p.eat(K::Eq) {
                 exprs::expr(p);
             }
+            exprs::rejected(p);
             member.complete(p, K::EnumMember);
             if !p.eat(K::Comma) {
                 break;
