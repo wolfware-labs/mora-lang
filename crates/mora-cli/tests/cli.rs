@@ -27,6 +27,12 @@ fn stderr(output: &Output) -> String {
     String::from_utf8(output.stderr.clone()).unwrap()
 }
 
+/// The escape that starts every color sequence.
+const ESC: char = '\u{1b}';
+
+/// How an error report starts when it is colored.
+const COLORED_ERROR: &str = "\u{1b}[1;31merror\u{1b}[0m:";
+
 /// The MVP commands of §17.1.
 const COMMANDS: &[&str] = &[
     "new", "build", "run", "check", "test", "fmt", "repl", "explain", "lsp", "demangle", "version",
@@ -143,15 +149,12 @@ fn commands_not_built_yet_say_so_and_exit_2() {
 #[test]
 fn color_follows_the_option() {
     let colored = stderr(&mora(&["--color", "always", "check"]));
-    assert!(
-        colored.starts_with("\u{1b}[1;31merror\u{1b}[0m:"),
-        "{colored:?}"
-    );
+    assert!(colored.starts_with(COLORED_ERROR), "{colored:?}");
     let plain = stderr(&mora(&["--color", "never", "check"]));
-    assert!(!plain.contains('\u{1b}'), "{plain:?}");
+    assert!(!plain.contains(ESC), "{plain:?}");
     // Not a terminal: auto means no color.
     let auto = stderr(&mora(&["check"]));
-    assert!(!auto.contains('\u{1b}'), "{auto:?}");
+    assert!(!auto.contains(ESC), "{auto:?}");
 }
 
 #[test]
@@ -252,7 +255,6 @@ fn a_usage_error_prints_nothing_on_stdout() {
 
 #[test]
 fn help_and_usage_errors_follow_the_color_option() {
-    const ESC: char = '\u{1b}';
     for color in ["--color=always", "--color always"] {
         let mut args: Vec<&str> = color.split(' ').collect();
         args.push("--help");
@@ -290,10 +292,7 @@ fn a_write_error_report_follows_the_color_option() {
         &["--color", "always", "--help"],
         std::fs::File::create("/dev/full").unwrap(),
     ));
-    assert!(
-        colored.starts_with("\u{1b}[1;31merror\u{1b}[0m:"),
-        "{colored:?}"
-    );
+    assert!(colored.starts_with(COLORED_ERROR), "{colored:?}");
 }
 
 #[cfg(target_os = "linux")]

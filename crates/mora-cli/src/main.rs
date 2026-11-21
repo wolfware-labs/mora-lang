@@ -31,7 +31,7 @@ struct Cli {
 }
 
 /// When diagnostics and messages are colored.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Color {
     /// Color when the output is a terminal and NO_COLOR is unset or empty.
     Auto,
@@ -39,6 +39,16 @@ enum Color {
     Always,
     /// Never color.
     Never,
+}
+
+impl From<Color> for clap::ColorChoice {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Auto => Self::Auto,
+            Color::Always => Self::Always,
+            Color::Never => Self::Never,
+        }
+    }
 }
 
 /// How diagnostics and command results are printed.
@@ -197,16 +207,6 @@ fn color_option(args: &[OsString]) -> Color {
     color
 }
 
-impl From<Color> for clap::ColorChoice {
-    fn from(color: Color) -> Self {
-        match color {
-            Color::Auto => Self::Auto,
-            Color::Always => Self::Always,
-            Color::Never => Self::Never,
-        }
-    }
-}
-
 /// Prints what clap stopped on, in clap's colors as `--color` sets them: help
 /// or the version on stdout, a usage error on stderr. `Error::exit` would
 /// drop a failed write to stdout and exit 0.
@@ -362,22 +362,18 @@ mod tests {
     fn the_color_option_is_found_before_parsing() {
         let color = |args: &[&str]| {
             let args: Vec<OsString> = ["mora"].iter().chain(args).map(OsString::from).collect();
-            match color_option(&args) {
-                Color::Auto => "auto",
-                Color::Always => "always",
-                Color::Never => "never",
-            }
+            color_option(&args)
         };
-        assert_eq!(color(&[]), "auto");
-        assert_eq!(color(&["--color", "never", "--help"]), "never");
-        assert_eq!(color(&["--color=always", "check"]), "always");
-        assert_eq!(color(&["check", "--color", "never"]), "never");
-        assert_eq!(color(&["--color", "always", "--color=never"]), "never");
-        assert_eq!(color(&["--color", "purple"]), "auto");
-        assert_eq!(color(&["--color"]), "auto");
-        assert_eq!(color(&["run", "--", "--color", "always"]), "auto");
+        assert_eq!(color(&[]), Color::Auto);
+        assert_eq!(color(&["--color", "never", "--help"]), Color::Never);
+        assert_eq!(color(&["--color=always", "check"]), Color::Always);
+        assert_eq!(color(&["check", "--color", "never"]), Color::Never);
+        assert_eq!(color(&["--color", "always", "--color=never"]), Color::Never);
+        assert_eq!(color(&["--color", "purple"]), Color::Auto);
+        assert_eq!(color(&["--color"]), Color::Auto);
+        assert_eq!(color(&["run", "--", "--color", "always"]), Color::Auto);
         // The program's own name is not an option.
         let args = [OsString::from("--color=always")];
-        assert!(matches!(color_option(&args), Color::Auto));
+        assert_eq!(color_option(&args), Color::Auto);
     }
 }
