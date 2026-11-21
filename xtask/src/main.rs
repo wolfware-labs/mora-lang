@@ -21,7 +21,7 @@ mod tools;
 use std::path::Path;
 use std::process::ExitCode;
 
-use cargo_metadata::{Metadata, MetadataCommand};
+use cargo_metadata::MetadataCommand;
 use mora_diag::registry;
 
 use crate::paths::root;
@@ -187,91 +187,31 @@ fn run_codegen_check() -> CommandResult {
     }
 }
 
-/// `cargo metadata` for `manifest` under the repository root, run from the
-/// manifest's folder, so that cargo reads the config it would read there.
-fn resolve_command(root: &Path, manifest: &str) -> MetadataCommand {
-    let manifest = root.join(manifest);
-    let mut command = MetadataCommand::new();
-    if let Some(dir) = manifest.parent() {
-        command.current_dir(dir);
-    }
-    command.manifest_path(manifest);
-    command
-}
-
-/// What cargo resolves for `manifest` with `--locked`, or its error.
-fn resolve_locked(root: &Path, manifest: &str) -> Result<Metadata, String> {
-    resolve_command(root, manifest)
-        .other_options(["--locked".to_owned()])
-        .exec()
-        .map_err(|err| err.to_string())
-}
-
-/// The text of a file under the repository root; errors name `file` as
-/// given, relative to the root.
-fn read_text(root: &Path, file: &str) -> Result<String, String> {
-    std::fs::read_to_string(root.join(file)).map_err(paths::error_at(Path::new(file)))
-}
-
-/// Reads and parses a lockfile under the repository root.
-fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
-    fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(Path::new(lock)))
-}
-
-/// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
-/// crates only the fuzz crate uses, and lets cargo drop the rest. A missing
-/// or broken fuzz lockfile, such as one left with merge conflicts, is
-/// rebuilt from `Cargo.lock` alone, and cargo resolves the rest. When cargo
-/// cannot resolve the result, or a shared crate is still built differently,
-/// the fuzz lockfile is left as it was.
+/// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock` and checks it; see
+/// [`fuzz_lock::rebuild`].
 fn run_fuzz_lock() -> CommandResult {
-    let root = root();
-    let fuzz = read_lock(&root, paths::FUZZ_LOCK).unwrap_or_else(|err| {
-        eprintln!(
-            "fuzz-lock: rebuilding {} from {} alone: {err}",
-            paths::FUZZ_LOCK,
-            paths::ROOT_LOCK
-        );
-        fuzz_lock::Lock::default()
-    });
-    let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz);
-    let (changed, checked) =
-        fuzz_lock::write_resolved(&root.join(paths::FUZZ_LOCK), &text, || {
-            resolve_command(&root, paths::FUZZ_MANIFEST)
-                .exec()
-                .map_err(|err| err.to_string())?;
-            check_fuzz_lock(&root)
-        })?;
+    let (changed, checked) = fuzz_lock::rebuild(&root())?;
     if checked.problems.is_empty() {
         println!("{}", fuzz_lock::rebuilt(changed));
     }
     report_fuzz_lock(&checked, fuzz_lock::rebuild_summary(&checked.problems))
 }
 
-/// Each problem with `fuzz/Cargo.lock`, from what cargo resolves for the
-/// workspace and the fuzz crate with `--locked`, and the number of packages
-/// the fuzz crate resolves.
-fn check_fuzz_lock(root: &Path) -> Result<fuzz_lock::Checked, String> {
-    let workspace = resolve_locked(root, paths::ROOT_MANIFEST).map_err(|err| {
-        format!(
-            "cargo cannot resolve {} with --locked: {err}",
-            paths::ROOT_MANIFEST
-        )
-    })?;
-    let fuzz = resolve_locked(root, paths::FUZZ_MANIFEST).map(|fuzz| fuzz_lock::Built::all(&fuzz));
-    let packages = fuzz.as_ref().map_or(0, Vec::len);
-    let problems = fuzz_lock::problems(
-        &fuzz_lock::Built::all(&workspace),
-        fuzz.as_deref().map_err(Clone::clone),
-    );
-    Ok(fuzz_lock::Checked { problems, packages })
+/// What [`fuzz_lock::check`] finds for this repository, or why cargo
+/// cannot resolve the workspace.
+fn check_fuzz_lock() -> Result<fuzz_lock::Checked, String> {
+    fuzz_lock::check(&root()).map_err(|failed| failed.to_string())
 }
 
-/// Prints the problems the check found and the summary and fails, or,
-/// with no summary, prints that the fuzz crate is ok.
+/// Prints the feature warnings, then the problems the check found and the
+/// summary and fails, or, with no summary, prints that the fuzz crate is ok.
 fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> CommandResult {
+    for features in &checked.warnings {
+        eprintln!("{}", fuzz_lock::warning(features));
+    }
     let Some(summary) = summary else {
-        println!("{}", fuzz_lock::ok_summary(checked.packages));
+        let warnings = checked.warnings.len();
+        println!("{}", fuzz_lock::ok_summary(checked.packages, warnings));
         return Ok(ExitCode::SUCCESS);
     };
     for problem in &checked.problems {
@@ -284,8 +224,7 @@ fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> Co
 /// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or the
 /// fuzz crate builds a crate it shares with the workspace differently.
 fn run_fuzz_lock_check() -> CommandResult {
-    let root = root();
-    let checked = check_fuzz_lock(&root)?;
+    let checked = check_fuzz_lock()?;
     report_fuzz_lock(&checked, fuzz_lock::check_summary(&checked.problems))
 }
 

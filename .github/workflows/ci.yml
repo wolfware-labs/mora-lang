@@ -91,8 +91,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo deny check
       # The fuzz crate sits outside the workspace with a lockfile of its own
-      # (§20.1). It must match its manifest and build every crate it shares
-      # with the workspace at the same version and from the same source.
+      # (§20.1). It must match its manifest and build mora-syntax and every
+      # crate it depends on as the workspace does: version, source and
+      # dependencies. Other features only warn: cargo turns a feature on
+      # for the whole workspace when one member asks for it, so tools and
+      # benchmarks turn on features the fuzz build does not need.
       - name: xtask fuzz-lock
         if: ${{ !cancelled() }}
         run: cargo xtask fuzz-lock --check
