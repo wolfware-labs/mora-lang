@@ -960,6 +960,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
