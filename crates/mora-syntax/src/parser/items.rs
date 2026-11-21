@@ -92,7 +92,7 @@ fn using_directive(p: &mut Parser<'_>) {
     exprs::rejected(p);
     // A declaration on the next line is not the name: the name is missing.
     if p.at_line_start() && at_declaration_start(p) {
-        p.error("expected an identifier");
+        p.error(format!("expected {}", super::describe(K::Ident)));
         m.complete(p, K::UsingDirective);
         return;
     }
@@ -307,13 +307,16 @@ fn at_write_scope(p: &Parser<'_>) -> bool {
     }
 }
 
+/// What a write scope reports when its word is missing or another one.
+const EXPECTED_WRITE_SCOPE: &str = "expected `private`, `ns` or `internal`";
+
 /// `(private)`, `(ns)` or `(internal)`; any other word is reported, and so
 /// is a missing one, unless rejected text stands for it.
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
     if p.at(K::RParen) {
-        p.error("expected `private`, `ns` or `internal`");
+        p.error(EXPECTED_WRITE_SCOPE);
     }
     // The word, and each run of rejected tokens around it as an error of its
     // own: [`at_write_scope`] found the `)`.
@@ -330,7 +333,7 @@ fn write_scope(p: &mut Parser<'_>) {
             p.bump_remap(K::NsKw);
         } else {
             let e = p.start();
-            p.error("expected `private`, `ns` or `internal`");
+            p.error(EXPECTED_WRITE_SCOPE);
             p.bump_any();
             e.complete(p, K::Error);
         }

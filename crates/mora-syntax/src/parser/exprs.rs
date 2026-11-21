@@ -290,9 +290,7 @@ fn unary(p: &mut Parser<'_>) -> Option<CompletedMarker> {
 /// postfix `?` is taken at any depth of it, so `await -f()?` is
 /// `(await -f())?`.
 fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
-    if p.at(K::Unknown)
-        && let Some(error) = rejected(p)
-    {
+    if let Some(error) = rejected(p) {
         // The operand is what follows, as if the rejected text were not
         // there. When no operand follows, or an operator does that the
         // caller parses after an operand, a prefix one or `..`, the
@@ -764,11 +762,10 @@ fn arg_inner(p: &mut Parser<'_>) {
     m.complete(p, K::Arg);
 }
 
-/// What a quote's closing quote must come before ([`closing_quote`]): the
-/// `;` that ends a statement, and a keyword that starts one, which no
-/// expression holds.
-const REJECTED_RUN_ENDS: &[SyntaxKind] = &[
-    K::Semicolon,
+/// The keywords that start a statement, which no expression holds: a line
+/// that starts with one ends the scan for a closing quote
+/// ([`closing_quote`]).
+const STATEMENT_KEYWORDS: &[SyntaxKind] = &[
     K::LetKw,
     K::VarKw,
     K::IfKw,
@@ -828,7 +825,7 @@ fn closing_quote(p: &mut Parser<'_>, closers: &'static [&'static str]) -> Option
         }
         let kind = p.nth(n);
         if kind == K::Semicolon
-            || (p.nth_at_line_start(n) && (REJECTED_RUN_ENDS.contains(&kind) || kind == K::RBrace))
+            || (p.nth_at_line_start(n) && (STATEMENT_KEYWORDS.contains(&kind) || kind == K::RBrace))
         {
             break None;
         }

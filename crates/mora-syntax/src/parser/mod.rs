@@ -104,7 +104,7 @@ pub(crate) struct Input<'t> {
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
-    /// How many tokens the lookups for a closing `)` looked at.
+    /// Tokens looked at: each once to pair parentheses, one per lookup.
     #[cfg(test)]
     scanned: std::cell::Cell<usize>,
 }
@@ -661,14 +661,14 @@ mod tests {
         assert!(parse_within(text, Some(events)).errors().is_empty());
     }
 
-    /// How many tokens `text` has and how many of them the scans for a
-    /// closing quote looked at.
-    fn scanned(text: &str) -> (usize, usize) {
+    /// How many tokens `text` has, and what `count` reads off the input and
+    /// the parser once `text` is parsed.
+    fn counted(text: &str, count: impl Fn(&Input<'_>, &Parser<'_>) -> usize) -> (usize, usize) {
         let lexed = lex(text);
         let input = Input::new(text, &lexed);
         let mut p = Parser::new(&input);
         items::source_file(&mut p);
-        (input.len(), p.scanned)
+        (input.len(), count(&input, &p))
     }
 
     #[test]
@@ -682,7 +682,7 @@ mod tests {
         let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(40_000));
         let operands = format!("let a = 1{};\n", " + \u{201c}x".repeat(40_000));
         for text in [&names, &arguments, &operands] {
-            let (tokens, scanned) = scanned(text);
+            let (tokens, scanned) = counted(text, |_, p| p.scanned);
             // The first quote scans the statement, and no quote rescans it.
             assert!(scanned >= tokens / 2, "{scanned} of {tokens}");
             assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");
@@ -706,11 +706,7 @@ mod tests {
             lines("{ x = (c }\n"),
             lines("{ x = match (c }\n"),
         ] {
-            let lexed = lex(&text);
-            let input = Input::new(&text, &lexed);
-            let mut p = Parser::new(&input);
-            items::source_file(&mut p);
-            let (tokens, scanned) = (input.len(), input.scanned.get());
+            let (tokens, scanned) = counted(&text, |input, _| input.scanned.get());
             assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");
         }
     }
