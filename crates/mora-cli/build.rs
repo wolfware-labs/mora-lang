@@ -1,6 +1,10 @@
 //! Records the commit `mora version` prints: `MORA_COMMIT` when set and not
 //! empty, as a release build sets it, or else the checkout's `HEAD`.
 
+// Cargo reads the script's stdout, and a build that cannot reach Cargo
+// should fail, so a panic on a write error is right here.
+#![allow(clippy::disallowed_macros)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
