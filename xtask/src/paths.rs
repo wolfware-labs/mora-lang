@@ -15,6 +15,9 @@ pub const PAGES: &str = "docs/errors";
 /// The file in [`PAGES`] that holds the page template, not a page.
 pub const PAGE_TEMPLATE: &str = "README.md";
 
+/// The workspace manifest, relative to the repository root.
+pub const ROOT_MANIFEST: &str = "Cargo.toml";
+
 /// The workspace lockfile, relative to the repository root.
 pub const ROOT_LOCK: &str = "Cargo.lock";
 

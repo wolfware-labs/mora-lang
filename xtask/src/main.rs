@@ -35,7 +35,9 @@ type CommandResult = Result<ExitCode, String>;
 /// `cargo metadata --no-deps` for the workspace at `root`.
 fn metadata_command(root: &Path) -> MetadataCommand {
     let mut command = MetadataCommand::new();
-    command.manifest_path(root.join("Cargo.toml")).no_deps();
+    command
+        .manifest_path(root.join(paths::ROOT_MANIFEST))
+        .no_deps();
     command
 }
 
@@ -204,27 +206,33 @@ fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
     fuzz_lock::Lock::parse(&read_text(root, lock)?).map_err(paths::error_at(Path::new(lock)))
 }
 
-/// A problem with `fuzz/Cargo.lock`.
-struct LockProblem {
-    /// What is wrong, as the command prints it.
-    message: String,
-    /// Whether `cargo xtask fuzz-lock` fixes it.
-    rebuild_fixes: bool,
+/// The crates `Cargo.toml` and `fuzz/Cargo.toml` patch.
+fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
+    let patched = |manifest: &str| {
+        fuzz_lock::patched(&read_text(root, manifest)?)
+            .map_err(paths::error_at(Path::new(manifest)))
+    };
+    Ok(fuzz_lock::Patches {
+        root: patched(paths::ROOT_MANIFEST)?,
+        fuzz: patched(paths::FUZZ_MANIFEST)?,
+    })
 }
 
-impl From<&fuzz_lock::Drift> for LockProblem {
-    fn from(drift: &fuzz_lock::Drift) -> Self {
-        Self {
-            message: drift.to_string(),
-            rebuild_fixes: drift.rebuild_fixes(),
-        }
+/// Puts `fuzz/Cargo.lock` back as it was: `before`, or no file.
+fn restore_fuzz_lock(root: &Path, before: Option<&str>) -> Result<(), String> {
+    let file = root.join(paths::FUZZ_LOCK);
+    match before {
+        Some(text) => std::fs::write(file, text),
+        None => std::fs::remove_file(file),
     }
+    .map_err(paths::error_at(Path::new(paths::FUZZ_LOCK)))
 }
 
 /// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock`, keeping the entries of the
 /// crates only the fuzz crate uses, and lets cargo drop the rest. A missing
 /// or broken fuzz lockfile, such as one left with merge conflicts, is
-/// rebuilt from `Cargo.lock` alone, and cargo resolves the rest.
+/// rebuilt from `Cargo.lock` alone, and cargo resolves the rest. When cargo
+/// cannot resolve the result, the fuzz lockfile is left as it was.
 fn run_fuzz_lock() -> CommandResult {
     let root = root();
     let before = read_text(&root, paths::FUZZ_LOCK).ok();
@@ -236,88 +244,55 @@ fn run_fuzz_lock() -> CommandResult {
         );
         fuzz_lock::Lock::default()
     });
-    let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz);
+    let patches = read_patches(&root)?;
+    let text = fuzz_lock::merged(&read_lock(&root, paths::ROOT_LOCK)?, &fuzz, &patches);
     std::fs::write(root.join(paths::FUZZ_LOCK), text)
         .map_err(paths::error_at(Path::new(paths::FUZZ_LOCK)))?;
-    fuzz_metadata(&root).exec().map_err(|err| {
-        format!(
-            "cargo cannot resolve {} with {}: {err}; fix the requirement it names",
-            paths::FUZZ_MANIFEST,
-            paths::FUZZ_LOCK
-        )
-    })?;
-    if read_text(&root, paths::FUZZ_LOCK).ok() == before {
-        println!("fuzz-lock: {} is up to date", paths::FUZZ_LOCK);
-    } else {
-        println!("fuzz-lock: wrote {}", paths::FUZZ_LOCK);
+    if let Err(err) = fuzz_metadata(&root).exec() {
+        restore_fuzz_lock(&root, before.as_deref())?;
+        return Err(fuzz_lock::resolve_failure(&err.to_string()));
     }
-    let problems = fuzz_lock_problems(&root)?;
-    if problems.is_empty() {
-        return fuzz_lock_ok(&root);
-    }
-    for problem in &problems {
-        eprintln!("{}", problem.message);
-    }
-    // A version the rebuild leaves apart is held there by a requirement of
-    // the fuzz crate itself; running it again changes nothing. The other
-    // problems say what to do in their own lines.
-    let held = problems.iter().any(|problem| problem.rebuild_fixes);
-    let advice = if held {
-        format!(
-            "; a version apart from {} is held by a requirement in {} or in a crate only it \
-             uses: change that requirement, or move {} to a version it accepts",
-            paths::ROOT_LOCK,
-            paths::FUZZ_MANIFEST,
-            paths::ROOT_LOCK
-        )
-    } else {
-        String::new()
-    };
-    eprintln!(
-        "fuzz-lock: {} problem(s) the rebuild cannot fix{advice}",
-        problems.len()
+    let after = read_text(&root, paths::FUZZ_LOCK).ok();
+    println!(
+        "{}",
+        fuzz_lock::rebuilt(before.as_deref(), after.as_deref())
     );
-    Ok(ExitCode::FAILURE)
+    let problems = fuzz_lock_problems(&root)?;
+    report_fuzz_lock(&root, &problems, fuzz_lock::rebuild_summary(&problems))
 }
 
 /// Each problem with `fuzz/Cargo.lock`.
-fn fuzz_lock_problems(root: &Path) -> Result<Vec<LockProblem>, String> {
-    let mut problems = Vec::new();
-    if let Err(err) = fuzz_metadata(root)
+fn fuzz_lock_problems(root: &Path) -> Result<Vec<fuzz_lock::Problem>, String> {
+    let locked = fuzz_metadata(root)
         .other_options(["--locked".to_owned()])
         .exec()
-    {
-        problems.push(LockProblem {
-            message: format!(
-                "{} does not match {}: {err}",
-                paths::FUZZ_LOCK,
-                paths::FUZZ_MANIFEST
-            ),
-            rebuild_fixes: true,
-        });
-    }
-    let root_lock = read_lock(root, paths::ROOT_LOCK)?;
-    match read_lock(root, paths::FUZZ_LOCK) {
-        Ok(fuzz) => problems.extend(
-            fuzz_lock::drift(&root_lock, &fuzz)
-                .iter()
-                .map(LockProblem::from),
-        ),
-        Err(message) => problems.push(LockProblem {
-            message,
-            rebuild_fixes: true,
-        }),
-    }
-    Ok(problems)
+        .map(drop)
+        .map_err(|err| err.to_string());
+    Ok(fuzz_lock::problems(
+        locked,
+        &read_lock(root, paths::ROOT_LOCK)?,
+        read_lock(root, paths::FUZZ_LOCK),
+        &read_patches(root)?,
+    ))
 }
 
-fn fuzz_lock_ok(root: &Path) -> CommandResult {
-    println!(
-        "fuzz-lock: {} packages, shared crates on the versions of {}, ok",
-        read_lock(root, paths::FUZZ_LOCK)?.packages().len(),
-        paths::ROOT_LOCK
-    );
-    Ok(ExitCode::SUCCESS)
+/// Prints the problems and the summary and fails, or, with no summary,
+/// prints that the fuzz lockfile is ok.
+fn report_fuzz_lock(
+    root: &Path,
+    problems: &[fuzz_lock::Problem],
+    summary: Option<String>,
+) -> CommandResult {
+    let Some(summary) = summary else {
+        let packages = read_lock(root, paths::FUZZ_LOCK)?.packages().len();
+        println!("{}", fuzz_lock::ok_summary(packages));
+        return Ok(ExitCode::SUCCESS);
+    };
+    for problem in problems {
+        eprintln!("{problem}");
+    }
+    eprintln!("{summary}");
+    Ok(ExitCode::FAILURE)
 }
 
 /// Fails when `fuzz/Cargo.lock` cannot be read, does not match the fuzz
@@ -326,23 +301,7 @@ fn fuzz_lock_ok(root: &Path) -> CommandResult {
 fn run_fuzz_lock_check() -> CommandResult {
     let root = root();
     let problems = fuzz_lock_problems(&root)?;
-    if problems.is_empty() {
-        return fuzz_lock_ok(&root);
-    }
-    for problem in &problems {
-        eprintln!("{}", problem.message);
-    }
-    let fixable = problems
-        .iter()
-        .filter(|problem| problem.rebuild_fixes)
-        .count();
-    let advice = if fixable == 0 {
-        String::new()
-    } else {
-        format!("; run `cargo xtask fuzz-lock` for {fixable} of them")
-    };
-    eprintln!("fuzz-lock: {} problem(s){advice}", problems.len());
-    Ok(ExitCode::FAILURE)
+    report_fuzz_lock(&root, &problems, fuzz_lock::check_summary(&problems))
 }
 
 /// Benchmarks a base revision and the working tree, and fails when a
