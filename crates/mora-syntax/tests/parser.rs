@@ -1320,19 +1320,7 @@ fn an_error_on_a_joined_token_covers_the_rejected_text_inside_it() {
 
 #[test]
 fn a_blank_line_inside_rejected_text_detaches_a_doc_comment() {
-    use mora_syntax::{SyntaxElement, SyntaxKind};
-    // The kind of the node that holds the doc comment.
-    let holder = |text: &str| {
-        let parse = parse(text);
-        let node = parse.syntax().descendants().find(|node| {
-            node.children_with_tokens().any(|child| {
-                matches!(child, SyntaxElement::Token(token)
-                    if token.kind() == SyntaxKind::DocComment)
-            })
-        });
-        node.map(|node| format!("{:?}", node.kind()))
-            .unwrap_or_default()
-    };
+    use mora_syntax::SyntaxKind;
     for (text, kind) in [
         ("/// Doc.\n\\\n\n\\\nclass A { }\n", "SourceFile"),
         ("/// Doc.\n\\\n\\\nclass A { }\n", "SourceFile"),
@@ -1351,8 +1339,12 @@ fn a_blank_line_inside_rejected_text_detaches_a_doc_comment() {
         ),
     ] {
         let without = text.replace('\\', "");
-        assert_eq!(holder(text), holder(&without), "{text:?}");
-        assert_eq!(holder(text), kind, "{text:?}");
+        assert_eq!(comment_holders(text), comment_holders(&without), "{text:?}");
+        assert_eq!(
+            comment_holders(text),
+            [("/// Doc.".to_owned(), kind.to_owned())],
+            "{text:?}"
+        );
     }
     // A block comment with rejected text after it on its line.
     let text = "/* Doc. */ \\\nclass A { }\n";
@@ -1416,12 +1408,7 @@ fn comment_holders(text: &str) -> Vec<(String, String)> {
         };
         for child in node.children_with_tokens() {
             match child {
-                SyntaxElement::Token(token)
-                    if matches!(
-                        token.kind(),
-                        SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::BlockComment
-                    ) =>
-                {
+                SyntaxElement::Token(token) if token.kind().is_comment() => {
                     out.push((token.text().to_owned(), format!("{holder:?}")));
                 }
                 SyntaxElement::Node(child) => walk(&child, holder, out),
@@ -1434,6 +1421,14 @@ fn comment_holders(text: &str) -> Vec<(String, String)> {
     let root = parse.syntax();
     walk(&root, root.kind(), &mut out);
     out
+}
+
+/// The text of each `Error` node in `node`.
+fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
+    node.descendants()
+        .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
+        .map(|node| node.text().to_string())
+        .collect()
 }
 
 #[test]
@@ -1476,12 +1471,7 @@ fn comments_in_rejected_text_attach_as_they_would_without_it() {
             .descendants()
             .find(|node| node.kind() == SyntaxKind::ClassDecl)
             .unwrap();
-        let errors: Vec<String> = class
-            .descendants()
-            .filter(|node| node.kind() == SyntaxKind::Error)
-            .map(|node| node.text().to_string())
-            .collect();
-        (class.text().to_string(), errors)
+        (class.text().to_string(), error_texts(&class))
     };
     // The comment at the top of the run attaches it whole to the class.
     let (text, errors) = class("\\ /* c */ \\\nclass A { }\n");
@@ -1504,58 +1494,13 @@ fn a_block_comment_on_one_line_keeps_a_quoted_run_whole() {
     assert_eq!(codes_of(text), ["MR0017", "MR0017"]);
     assert_rejected_over(text, "let a = 1;\n");
     // One run, in one `Error` node.
-    let parse = parse(text);
-    let errors: Vec<String> = parse
-        .syntax()
-        .descendants()
-        .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
-        .map(|node| node.text().to_string())
-        .collect();
-    assert_eq!(errors, ["\u{201c}x /* k */ y\u{201d}"]);
+    assert_eq!(
+        error_texts(&parse(text).syntax()),
+        ["\u{201c}x /* k */ y\u{201d}"]
+    );
     // Standing for a missing operand, the run is all that is reported.
     let text = "let a = \u{201c}x /* k */ y\u{201d};\n";
     assert_eq!(codes_of(text), ["MR0017", "MR0017"]);
-}
-
-#[test]
-fn something_missing_is_reported_before_the_rejected_text() {
-    let text = "class A \\x { }\n";
-    let error = parse(text)
-        .errors()
-        .iter()
-        .find(|error| error.code.to_string() == "MR0110")
-        .cloned()
-        .unwrap();
-    assert_eq!(error.message, "expected `{`");
-    // Right after `A`, as in the text without the `\`.
-    assert_eq!(
-        (u32::from(error.range.start()), u32::from(error.range.end())),
-        (7, 7)
-    );
-    assert_rejected_over(text, "class A x { }\n");
-    assert_eq!(coded_offsets("class A x { }\n")[0].1, 7);
-}
-
-#[test]
-fn rejected_text_over_a_blank_line_stands_for_what_is_missing_whole() {
-    let text = "let a = \\\n\n\\\nlet b = 1;\n";
-    assert_eq!(
-        coded_offsets(text),
-        [
-            ("MR0017".to_owned(), 8),
-            ("MR0017".to_owned(), 11),
-            ("MR0110".to_owned(), 12)
-        ]
-    );
-    // Both parts of the run are in the node of the missing value.
-    let parse = parse(text);
-    let missing = parse
-        .syntax()
-        .descendants()
-        .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
-        .map(|node| node.text().to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(missing, ["\\\n\n\\"]);
 }
 
 /// Each error as its code, its message and its range.
@@ -1575,16 +1520,44 @@ fn full_errors(text: &str) -> Vec<(String, String, u32, u32)> {
 }
 
 #[test]
+fn something_missing_is_reported_before_the_rejected_text() {
+    let text = "class A \\x { }\n";
+    // Right after `A`, as in the text without the `\`.
+    assert_eq!(
+        full_errors(text)
+            .into_iter()
+            .find(|(code, ..)| code == "MR0110"),
+        Some(("MR0110".to_owned(), "expected `{`".to_owned(), 7, 7))
+    );
+    assert_rejected_over(text, "class A x { }\n");
+    assert_eq!(coded_offsets("class A x { }\n")[0].1, 7);
+}
+
+#[test]
+fn rejected_text_over_a_blank_line_stands_for_what_is_missing_whole() {
+    let text = "let a = \\\n\n\\\nlet b = 1;\n";
+    assert_eq!(
+        coded_offsets(text),
+        [
+            ("MR0017".to_owned(), 8),
+            ("MR0017".to_owned(), 11),
+            ("MR0110".to_owned(), 12)
+        ]
+    );
+    // Both parts of the run are in the node of the missing value.
+    assert_eq!(error_texts(&parse(text).syntax()), ["\\\n\n\\"]);
+}
+
+#[test]
 fn tokens_on_both_sides_of_rejected_text_keep_their_own_boundary() {
     // Joined, `=` and `=>` would lex as `==` and `>`: the parser keeps the
     // tokens it has, since a token of the tree cannot start inside one of
-    // the lexer's. This pins what that gives today.
+    // the lexer's. The cases pin the tree and the errors that follow.
     let name = "PathExpr( Path( PathSegment( NameRef( Ident ) ) ) )";
-    let arrow = |op: &str, arrow: &str| {
+    let arrow = |expr: &str, op: &str, arrow: &str| {
         format!(
-            "LocalDeclStmt( LocalDecl( LetKw VariableDeclarator( Name( Ident ) Eq {op}( {name} \
-             {} ) ) ) ) Error( {arrow} ) ExprStmt( {name} Semicolon ) ",
-            if op == "AssignExpr" { "Eq" } else { "Minus" }
+            "LocalDeclStmt( LocalDecl( LetKw VariableDeclarator( Name( Ident ) Eq {expr}( {name} \
+             {op} ) ) ) ) Error( {arrow} ) ExprStmt( {name} Semicolon ) "
         )
     };
     let rejected = || {
@@ -1599,7 +1572,7 @@ fn tokens_on_both_sides_of_rejected_text_keep_their_own_boundary() {
     let cases = [
         (
             "let a = x =\\=> y;\n",
-            arrow("AssignExpr", "FatArrow"),
+            arrow("AssignExpr", "Eq", "FatArrow"),
             vec![
                 rejected(),
                 error("expected `;`", 12, 12),
@@ -1608,7 +1581,7 @@ fn tokens_on_both_sides_of_rejected_text_keep_their_own_boundary() {
         ),
         (
             "let a = x -\\-> y;\n",
-            arrow("BinExpr", "ThinArrow"),
+            arrow("BinExpr", "Minus", "ThinArrow"),
             vec![
                 rejected(),
                 error("expected `;`", 12, 12),

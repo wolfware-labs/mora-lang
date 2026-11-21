@@ -118,10 +118,11 @@ struct Sink<'a> {
     text: &'a str,
     /// Every token of the text, trivia included.
     lexed: &'a Lexed,
-    /// For the first token of each run of rejected text, the index after its
-    /// last token ([`Input`]).
+    /// For the first token of each run of rejected text, or of each part of
+    /// one a blank line splits, the index after its last token ([`Input`]).
     rejected_runs: &'a [Option<usize>],
-    /// For the last token of each run of rejected text, its first token.
+    /// For the last token of each run of rejected text, or of each part of
+    /// one, its first token.
     rejected_run_starts: Vec<Option<usize>>,
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
@@ -328,12 +329,8 @@ impl Sink<'_> {
             }
             let kind = self.kind(i);
             match (run, kind) {
-                (Some(start), Some(K::LineComment | K::DocComment | K::BlockComment)) => {
-                    from = start;
-                    newline_seen = false;
-                }
-                (None, Some(K::LineComment | K::DocComment | K::BlockComment)) => {
-                    from = i;
+                (_, Some(kind)) if kind.is_comment() => {
+                    from = run.unwrap_or(i);
                     newline_seen = false;
                 }
                 (_, Some(K::Newline)) if newline_seen => break,

@@ -139,7 +139,7 @@ pub(super) fn record_run(lexed: &Lexed, first: usize, end: usize, runs: &mut [Op
                 continue;
             }
             K::Whitespace => continue,
-            K::LineComment | K::DocComment | K::BlockComment => newline_seen = false,
+            _ if kind.is_comment() => newline_seen = false,
             _ => {}
         }
         if blank {

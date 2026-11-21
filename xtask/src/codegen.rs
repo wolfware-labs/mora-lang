@@ -31,8 +31,17 @@ struct OtherToken {
     spelling: &'static str,
     /// The variant's doc comment.
     doc: &'static str,
-    /// Whether the parser skips it.
-    trivia: bool,
+    /// Whether the parser skips it, and as what.
+    trivia: Option<Trivia>,
+}
+
+/// What kind of trivia a token is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trivia {
+    /// Whitespace or a line break.
+    Space,
+    /// A comment of any form.
+    Comment,
 }
 
 /// Tokens without fixed text.
@@ -41,109 +50,109 @@ const OTHER_TOKENS: &[OtherToken] = &[
         name: "Whitespace",
         spelling: "whitespace",
         doc: "Spaces, tabs, a lone carriage return, a form feed, or a byte order mark at the start of the file.",
-        trivia: true,
+        trivia: Some(Trivia::Space),
     },
     OtherToken {
         name: "Newline",
         spelling: "newline",
         doc: "`\\n` or `\\r\\n`.",
-        trivia: true,
+        trivia: Some(Trivia::Space),
     },
     OtherToken {
         name: "LineComment",
         spelling: "line_comment",
         doc: "`//` to the end of the line.",
-        trivia: true,
+        trivia: Some(Trivia::Comment),
     },
     OtherToken {
         name: "DocComment",
         spelling: "doc_comment",
         doc: "`///` to the end of the line.",
-        trivia: true,
+        trivia: Some(Trivia::Comment),
     },
     OtherToken {
         name: "BlockComment",
         spelling: "block_comment",
         doc: "`/* ... */`.",
-        trivia: true,
+        trivia: Some(Trivia::Comment),
     },
     OtherToken {
         name: "Ident",
         spelling: "ident",
         doc: "A name, possibly with an `@` prefix.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "IntNumber",
         spelling: "int_number",
         doc: "An integer literal, such as `0x4D2` or `10ul`.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "RealNumber",
         spelling: "real_number",
         doc: "A real literal, such as `1.5e-3f`.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "Char",
         spelling: "char_literal",
         doc: "A character literal, such as `'a'`.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "String",
         spelling: "string_literal",
         doc: "A regular string literal, such as `\"a\\tb\"` or `\"abc\"u8`.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "RawString",
         spelling: "raw_string",
         doc: "A raw string literal, delimited by backticks.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "InterpStart",
         spelling: "interp_start",
         doc: "The start of an interpolated string, such as `$\"`, `` $` `` or `` $$` ``.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "InterpText",
         spelling: "interp_text",
         doc: "Literal text inside an interpolated string.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "HoleOpen",
         spelling: "hole_open",
         doc: "The `{` (or `{{` after `$$`) that opens a hole.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "HoleFormat",
         spelling: "hole_format",
         doc: "The `:format` part of a hole, from the colon to the closing brace.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "HoleClose",
         spelling: "hole_close",
         doc: "The `}` (or `}}` after `$$`) that closes a hole.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "InterpEnd",
         spelling: "interp_end",
         doc: "The quotes that end an interpolated string.",
-        trivia: false,
+        trivia: None,
     },
     OtherToken {
         name: "Unknown",
         spelling: "unknown",
         doc: "A character that cannot start a token.",
-        trivia: false,
+        trivia: None,
     },
 ];
 
@@ -844,15 +853,23 @@ fn render_kinds(tokens: &Tokens, defs: &[AstDef]) -> String {
         "\n    pub fn is_keyword(self) -> bool {\n        Self::KEYWORDS.contains(&self)\n    }\n",
     );
     out.push_str("\n    pub fn is_contextual_keyword(self) -> bool {\n        Self::CONTEXTUAL_KEYWORDS.contains(&self)\n    }\n");
-    let trivia: Vec<_> = OTHER_TOKENS
-        .iter()
-        .filter(|token| token.trivia)
-        .map(|token| token.name)
-        .collect();
+    let trivia = |wanted: &[Trivia]| {
+        OTHER_TOKENS
+            .iter()
+            .filter(|token| token.trivia.is_some_and(|kind| wanted.contains(&kind)))
+            .map(|token| token.name)
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
     let _ = writeln!(
         out,
         "\n    /// Whether the parser skips tokens of this kind: whitespace, newlines,\n    /// comments and directives.\n    pub fn is_trivia(self) -> bool {{\n        matches!(self, {})\n    }}",
-        trivia.join(" | ")
+        trivia(&[Trivia::Space, Trivia::Comment])
+    );
+    let _ = writeln!(
+        out,
+        "\n    /// Whether this is a comment of any form.\n    pub fn is_comment(self) -> bool {{\n        matches!(self, {})\n    }}",
+        trivia(&[Trivia::Comment])
     );
     let _ = writeln!(
         out,
