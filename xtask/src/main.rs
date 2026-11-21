@@ -197,12 +197,6 @@ fn run_fuzz_lock() -> CommandResult {
     report_fuzz_lock(&checked, fuzz_lock::rebuild_summary(&checked.problems))
 }
 
-/// What [`fuzz_lock::check`] finds for this repository, or why cargo
-/// cannot resolve the workspace.
-fn check_fuzz_lock() -> Result<fuzz_lock::Checked, String> {
-    fuzz_lock::check(&root()).map_err(|failed| failed.to_string())
-}
-
 /// Prints the feature warnings, then the problems the check found and the
 /// summary and fails, or, with no summary, prints that the fuzz crate is ok.
 fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> CommandResult {
@@ -222,9 +216,10 @@ fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> Co
 }
 
 /// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or the
-/// fuzz crate builds a crate it shares with the workspace differently.
+/// fuzz crate builds `mora-syntax` or a crate it depends on differently
+/// from the workspace; see [`fuzz_lock::check`].
 fn run_fuzz_lock_check() -> CommandResult {
-    let checked = check_fuzz_lock()?;
+    let checked = fuzz_lock::check(&root()).map_err(|failed| failed.to_string())?;
     report_fuzz_lock(&checked, fuzz_lock::check_summary(&checked.problems))
 }
 

@@ -19,6 +19,8 @@
 //! Two packages are the same crate when cargo would let only one of them in
 //! a resolve: the same name and versions that are semver compatible.
 
+#[cfg(test)]
+mod fixture_tests;
 mod resolve;
 
 use std::fmt;
@@ -29,7 +31,8 @@ use std::path::Path;
 use cargo_metadata::semver::Version;
 use toml::{Table, Value};
 
-pub use self::resolve::{Drift, Unresolved, check};
+pub use self::resolve::{Drift, Unresolved};
+use self::resolve::{FUZZED, closure, drift, resolve_locked};
 use crate::paths::{FUZZ_LOCK, FUZZ_MANIFEST, ROOT_LOCK, ROOT_MANIFEST, error_at};
 
 /// The key of a lockfile's array of package entries.
@@ -295,14 +298,14 @@ pub fn warning(features: &Drift) -> String {
 /// printed `warnings` feature warnings.
 pub fn ok_summary(packages: usize, warnings: usize) -> String {
     format!(
-        "fuzz-lock: mora-syntax and its normal dependencies, {packages} packages, built alike by \
+        "fuzz-lock: {FUZZED} and its normal dependencies, {packages} packages, built alike by \
          both builds (version, source and dependencies; {warnings} feature warning(s)), ok"
     )
 }
 
 impl fmt::Display for Unresolved {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&unresolved(self.manifest, self.error.trim_end()))
+        f.write_str(&unresolved(self.manifest, &self.error))
     }
 }
 
@@ -310,6 +313,33 @@ impl fmt::Display for Unresolved {
 /// rebuild has put the file back as it was.
 pub fn resolve_failure(failed: &Unresolved) -> String {
     format!("{failed}; {FUZZ_LOCK} is left as it was")
+}
+
+/// Resolves the workspace and the fuzz crate under `root` with `--locked`
+/// and compares how they build `mora-syntax` and the crates it depends on:
+/// other features are warnings, any other difference a problem. The fuzz
+/// crate failing to resolve is a problem of the fuzz lockfile; the
+/// workspace failing is an error.
+pub fn check(root: &Path) -> Result<Checked, Unresolved> {
+    let workspace = closure(&resolve_locked(root, ROOT_MANIFEST)?, ROOT_MANIFEST)?;
+    let fuzz = match resolve_locked(root, FUZZ_MANIFEST) {
+        Ok(fuzz) => closure(&fuzz, FUZZ_MANIFEST)?,
+        Err(unresolved) => {
+            return Ok(Checked {
+                problems: vec![Problem::Unlocked(unresolved.error)],
+                warnings: Vec::new(),
+                packages: 0,
+            });
+        }
+    };
+    let (warnings, apart): (Vec<Drift>, Vec<Drift>) = drift(&workspace, &fuzz)
+        .into_iter()
+        .partition(|drift| matches!(drift, Drift::Features { .. }));
+    Ok(Checked {
+        problems: apart.into_iter().map(Problem::Drift).collect(),
+        warnings,
+        packages: fuzz.len(),
+    })
 }
 
 /// Writes `text`, the rebuilt fuzz lockfile, to `file` and has cargo
@@ -365,7 +395,7 @@ pub fn rebuild(root: &Path) -> Result<(bool, Checked), String> {
     });
     let text = merged(&Lock::read(root, ROOT_LOCK)?, &fuzz);
     write_resolved(&root.join(FUZZ_LOCK), &text, || {
-        resolve::resolve(root, FUZZ_MANIFEST, false)?;
+        resolve::resolve(root, FUZZ_MANIFEST)?;
         check(root)
     })
 }
@@ -601,7 +631,7 @@ mod tests {
             fs::write(&file, before).unwrap();
             let failed = write_resolved(&file, "rebuilt", || {
                 assert_eq!(fs::read_to_string(&file).unwrap(), "rebuilt");
-                Err(fuzz_failed("error: the lock file is odd\n"))
+                Err(fuzz_failed("error: the lock file is odd"))
             });
             assert_eq!(
                 failed,
@@ -806,7 +836,7 @@ mod tests {
         );
         let workspace = Unresolved {
             manifest: ROOT_MANIFEST,
-            error: format!("{UNSATISFIED}\n"),
+            error: UNSATISFIED.into(),
         };
         assert_eq!(
             resolve_failure(&workspace),
