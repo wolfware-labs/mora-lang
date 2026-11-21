@@ -209,7 +209,7 @@ fn read_lock(root: &Path, lock: &str) -> Result<fuzz_lock::Lock, String> {
 /// The crates `Cargo.toml` and `fuzz/Cargo.toml` patch.
 fn read_patches(root: &Path) -> Result<fuzz_lock::Patches, String> {
     let patched = |manifest: &str| {
-        fuzz_lock::patched(&read_text(root, manifest)?)
+        fuzz_lock::patched_crates(&read_text(root, manifest)?)
             .map_err(paths::error_at(Path::new(manifest)))
     };
     Ok(fuzz_lock::Patches {
