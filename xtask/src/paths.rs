@@ -168,7 +168,6 @@ mod tests {
         fs::write(dir.join("target/CACHEDIR.TAG"), "").unwrap();
         let files = files_with_extension(&dir, "rs").unwrap();
         let shown: Vec<_> = files.iter().map(|file| relative(&dir, file)).collect();
-        let _ = fs::remove_dir_all(&dir);
         assert_eq!(shown, ["a.rs", "src/target/mod.rs"]);
         assert_eq!(
             files_with_extension(&dir.join("missing"), "rs").unwrap(),

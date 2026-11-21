@@ -216,7 +216,7 @@ fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> Co
 }
 
 /// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or the
-/// fuzz crate builds `mora-syntax` or a crate it depends on differently
+/// fuzz crate builds `mora-syntax` or a crate it is built on differently
 /// from the workspace; see [`fuzz_lock::check`].
 fn run_fuzz_lock_check() -> CommandResult {
     let checked = fuzz_lock::check(&root()).map_err(|failed| failed.to_string())?;

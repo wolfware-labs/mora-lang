@@ -28,7 +28,7 @@
 mod fixture_tests;
 mod resolve;
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -242,7 +242,7 @@ pub struct Checked {
     /// fuzz build does not need.
     pub warnings: Vec<Drift>,
     /// The number of packages the comparison covers: `mora-syntax` and the
-    /// crates it depends on, in the fuzz crate's build.
+    /// crates it is built on, in the fuzz crate's build.
     pub packages: usize,
 }
 
@@ -270,19 +270,21 @@ pub fn rebuild_summary(problems: &[Problem]) -> Option<String> {
         problems.len()
     );
     // Cargo resolves the crate this way from the rebuilt lockfile, so what
-    // holds it apart is in what each build reads besides it.
+    // holds it apart is in what each build reads besides it. Writing to a
+    // String cannot fail.
     if problems
         .iter()
         .any(|problem| matches!(problem, Problem::Drift(_)))
     {
-        summary += &format!(
+        let _ = write!(
+            summary,
             "; the versions above are those cargo resolves from the rebuilt {FUZZ_LOCK}, which \
              is not kept; {ROOT_MANIFEST} and {FUZZ_MANIFEST}, with the cargo config each build \
              reads (`.cargo/config.toml` above the folder it runs in), resolve each crate named \
              above differently: make them resolve it the same way"
         );
     }
-    summary += &format!("; {FUZZ_LOCK} is left as it was");
+    let _ = write!(summary, "; {FUZZ_LOCK} is left as it was");
     Some(summary)
 }
 
@@ -322,14 +324,14 @@ pub fn resolve_failure(failed: &Unresolved) -> String {
 }
 
 /// Resolves the workspace and the fuzz crate under `root` with `--locked`
-/// and compares how they build `mora-syntax` and the crates it depends on:
+/// and compares how they build `mora-syntax` and the crates it is built on:
 /// other features are warnings, any other difference a problem. The fuzz
 /// crate failing to resolve is a problem of the fuzz lockfile; the
 /// workspace failing is an error.
 pub fn check(root: &Path) -> Result<Checked, Unresolved> {
     let metadata = resolve_locked(root, ROOT_MANIFEST)?;
     let workspace = closure(&metadata, ROOT_MANIFEST)?;
-    let packages: Vec<Built> = metadata.packages.iter().map(Built::of).collect();
+    let resolved: Vec<Built> = metadata.packages.iter().map(Built::of).collect();
     let fuzz = match resolve_locked(root, FUZZ_MANIFEST) {
         Ok(fuzz) => closure(&fuzz, FUZZ_MANIFEST)?,
         Err(unresolved) => {
@@ -340,7 +342,7 @@ pub fn check(root: &Path) -> Result<Checked, Unresolved> {
             });
         }
     };
-    let (warnings, apart): (Vec<Drift>, Vec<Drift>) = drift(&workspace, &fuzz, &packages)
+    let (warnings, apart): (Vec<Drift>, Vec<Drift>) = drift(&workspace, &fuzz, &resolved)
         .into_iter()
         .partition(|drift| matches!(drift, Drift::Features { .. }));
     Ok(Checked {

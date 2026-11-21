@@ -592,7 +592,6 @@ mod tests {
             std::fs::write(path, text).unwrap();
         }
         let hits = check(&root).unwrap();
-        let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
             hits,
             [Hit {

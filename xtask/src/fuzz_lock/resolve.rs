@@ -1,4 +1,4 @@
-//! What each build resolves for `mora-syntax` and the crates it depends on,
+//! What each build resolves for `mora-syntax` and the crates it is built on,
 //! asked of `cargo metadata`, and how the two builds compare.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -286,14 +286,14 @@ fn listed<T>(items: &[T], show: impl Fn(&T) -> String) -> String {
 /// The features a build turns on, and the optional dependencies they turn
 /// on, if any.
 fn features_and_deps(features: &[String], deps: &[Optional]) -> String {
-    let mut shown = listed(features, |name| format!("`{name}`"));
-    if !deps.is_empty() {
-        shown += &format!(
-            ", which turn on the optional dependencies {}",
-            listed(deps, ToString::to_string)
-        );
+    let shown = listed(features, |name| format!("`{name}`"));
+    if deps.is_empty() {
+        return shown;
     }
-    shown
+    format!(
+        "{shown}, which turn on the optional dependencies {}",
+        listed(deps, ToString::to_string)
+    )
 }
 
 /// Advice to run `updates`, to follow a difference they settle; empty when
@@ -376,8 +376,11 @@ fn counterpart<'a>(
 
 /// The dependencies only one build builds a package on.
 struct Apart {
+    /// The dependencies only the workspace builds it on.
     root: Vec<Built>,
+    /// The dependencies only the fuzz crate builds it on.
     fuzz: Vec<Built>,
+    /// The updates that move the workspace to the fuzz crate's versions.
     updates: Vec<Update>,
     /// The optional dependencies only the workspace builds it on, through
     /// features only the workspace turns on.
@@ -457,9 +460,9 @@ fn apart(root: &Unit, fuzz: &Unit, workspace: &[Built], reported: &[(&Built, &Bu
 
 /// How `fuzz` builds [`FUZZED`]'s closure differently from `root`, each the
 /// closure of one build; `workspace` is every package of the workspace's
-/// resolve. A package both build alike is compared on its dependencies and
-/// features; one `root` builds at another compatible version or from
-/// another source is a difference of its own. A package only one build has
+/// resolve. A package both builds make alike is compared on its
+/// dependencies and features; one `root` builds at another compatible
+/// version or from another source is a difference of its own. A package only one build has
 /// shows in the dependencies of the package above it, or, when features
 /// only that build turns on turn it on, with those features.
 pub fn drift(root: &[Unit], fuzz: &[Unit], workspace: &[Built]) -> Vec<Drift> {
