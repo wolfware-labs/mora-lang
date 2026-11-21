@@ -155,20 +155,25 @@ impl<'t> Input<'t> {
         };
         // Every token but trivia, rejected text included.
         let mut all = empty();
-        let mut line_break = false;
+        // Whether a line break, or a block comment over lines, comes before
+        // each token: either ends the search for a closing quote.
+        let mut lines_end = Vec::new();
+        let (mut line_break, mut comment_break) = (false, false);
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
                 line_break |= token.kind == K::Newline;
+                comment_break |= token.kind == K::BlockComment && text[token.range].contains('\n');
                 continue;
             }
             all.line_start.push(line_break);
-            line_break = false;
+            lines_end.push(line_break || comment_break);
+            (line_break, comment_break) = (false, false);
             all.kinds.push(token.kind);
             all.ranges.push(token.range);
             all.raw.push(i);
             all.joined.push(lexed.is_joined(i));
         }
-        let (closing_quote, looked) = rejected::closing_quotes(&all);
+        let (closing_quote, looked) = rejected::closing_quotes(&all, &lines_end);
         // The same tokens with the rejected text left out.
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
@@ -188,19 +193,22 @@ impl<'t> Input<'t> {
                 continue;
             }
             // A run: each rejected token, a quote up to its closing quote.
+            // Trivia between them is not rejected text: it stays.
             let start = at;
+            let mut spaced = !input.joined.last().copied().unwrap_or(false);
             while all.kind(at) == K::Unknown {
-                at = closing_quote[at].unwrap_or(at) + 1;
+                let end = closing_quote[at].unwrap_or(at);
+                spaced |= !lexed.is_joined(all.raw[end]);
+                at = end + 1;
             }
             input.rejected_runs[all.raw[start]] = Some(all.raw[at - 1] + 1);
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
             rejected = true;
             // The tokens around the run touch as they would without it: when
-            // it touches both, they are joined, or one token when they lex as
-            // one, as `.` and `.` make `..`.
-            let touches = input.joined.last().copied().unwrap_or(false)
-                && at < all.len()
-                && lexed.is_joined(all.raw[at - 1]);
+            // no trivia comes between them and the run or inside the run,
+            // they are joined, or one token when they lex as one, as `.` and
+            // `.` make `..`.
+            let touches = !spaced && at < all.len();
             if touches && input.merge(&all, at) {
                 (rejected, line_break) = (false, false);
                 at += 1;
@@ -260,7 +268,8 @@ impl<'t> Input<'t> {
 
     /// Makes the last token one with token `at` of `all`, which rejected text
     /// between them separates, when both are punctuation and their texts
-    /// together lex as one token. Returns whether it did.
+    /// together lex as one token that is not trivia, as `/` and `/` make a
+    /// comment. Returns whether it did.
     fn merge(&mut self, all: &Input<'_>, at: usize) -> bool {
         let last = self.len() - 1;
         let punctuation = |kind: SyntaxKind| kind.text().filter(|_| !kind.is_keyword());
@@ -274,7 +283,7 @@ impl<'t> Input<'t> {
         let [token] = lexed.tokens.as_slice() else {
             return false;
         };
-        if !lexed.errors.is_empty() {
+        if !lexed.errors.is_empty() || token.kind.is_trivia() {
             return false;
         }
         self.kinds[last] = token.kind;

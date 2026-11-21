@@ -1215,30 +1215,171 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
         // The same nodes and tokens, the joined one with the run inside it.
         assert_eq!(kinds(text), kinds(&text.replace('\\', "")), "{text:?}");
     }
+    // Whitespace, a line break or a comment inside the run keeps the tokens
+    // around it apart, as it does without the rejected characters. Where
+    // the operand after `>` is missing, the run stands for it, so only the
+    // rejected characters are reported there.
+    for (text, rest) in [
+        ("let r = a.\\ \\.b;\n", &["expected an identifier"][..]),
+        ("let r = a.\\\n\\.b;\n", &["expected an identifier"]),
+        ("let r = a.\\/* c */\\.b;\n", &["expected an identifier"]),
+        ("x >\\ \\= 2;\n", &[]),
+        ("let a = x >\\ \\> 2;\n", &[]),
+        ("let a = x >\\\n\\> 2;\n", &[]),
+    ] {
+        let without = text.replace('\\', "");
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(&without),
+            "{text:?}"
+        );
+        assert_eq!(rest_of_errors(text), rest, "{text:?}");
+    }
+}
+
+/// The messages of the errors of `text` besides `MR0017`.
+fn rest_of_errors(text: &str) -> Vec<String> {
+    let errors = parse(text).errors().to_vec();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.code.to_string() == "MR0017"),
+        "{text:?}"
+    );
+    errors
+        .iter()
+        .filter(|error| error.code.to_string() != "MR0017")
+        .map(|error| error.message.clone())
+        .collect()
+}
+
+/// The nodes and tokens of the tree of `text`, nested, leaving out trivia
+/// and the `Error` nodes that hold only rejected text.
+fn shape_past_rejected(text: &str) -> String {
+    use mora_syntax::{SyntaxElement, SyntaxKind, SyntaxNode};
+    fn rejected_only(node: &SyntaxNode) -> bool {
+        node.children_with_tokens().all(|child| match child {
+            SyntaxElement::Token(token) => {
+                token.kind().is_trivia() || token.kind() == SyntaxKind::Unknown
+            }
+            SyntaxElement::Node(node) => rejected_only(&node),
+        })
+    }
+    fn walk(node: &SyntaxNode, out: &mut String) {
+        for child in node.children_with_tokens() {
+            match child {
+                SyntaxElement::Token(token) if !token.kind().is_trivia() => {
+                    let _ = write!(out, "{:?} ", token.kind());
+                }
+                SyntaxElement::Node(node)
+                    if !(node.kind() == SyntaxKind::Error && rejected_only(&node)) =>
+                {
+                    let _ = write!(out, "{:?}( ", node.kind());
+                    walk(&node, out);
+                    out.push_str(") ");
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(&parse(text).syntax(), &mut out);
+    out
 }
 
 #[test]
-fn rejected_text_after_a_doc_comment_leaves_it_attached() {
+fn rejected_text_never_makes_a_comment() {
+    // `/` and `/` with rejected text between them stay two operators, and
+    // the run stands for the operand missing between them.
+    for (text, rest) in [
+        ("let a = x /\\/ 2;\n", &[][..]),
+        ("let a = x /\\/= 2;\n", &[]),
+        ("let a = x /\\// 2;\n", &["expected `;`"]),
+    ] {
+        let spaced = text.replace('\\', " ");
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(&spaced),
+            "{text:?}"
+        );
+        assert_eq!(rest_of_errors(text), rest, "{text:?}");
+    }
+}
+
+#[test]
+fn an_error_on_a_joined_token_covers_the_rejected_text_inside_it() {
+    let text = "F(x: int) -\\> int { return x; }\n";
+    let errors = parse(text).errors().to_vec();
+    let error = errors
+        .iter()
+        .find(|error| error.code.to_string() == "MR0110")
+        .unwrap();
+    assert_eq!(error.message, "expected `=>`");
+    assert_eq!(
+        (u32::from(error.range.start()), u32::from(error.range.end())),
+        (10, 13)
+    );
+    let fixed = error.fix.as_ref().unwrap().apply(text);
+    assert_eq!(fixed, "F(x: int) => int { return x; }\n");
+}
+
+#[test]
+fn a_blank_line_inside_rejected_text_detaches_a_doc_comment() {
+    use mora_syntax::{SyntaxElement, SyntaxKind};
+    // The kind of the node that holds the doc comment.
+    let holder = |text: &str| {
+        let parse = parse(text);
+        let node = parse.syntax().descendants().find(|node| {
+            node.children_with_tokens().any(|child| {
+                matches!(child, SyntaxElement::Token(token)
+                    if token.kind() == SyntaxKind::DocComment)
+            })
+        });
+        node.map(|node| format!("{:?}", node.kind()))
+            .unwrap_or_default()
+    };
     for (text, kind) in [
-        ("/// Doc.\n\\\nclass A { }\n", "ClassDecl"),
-        ("/// Doc.\n\\class A { }\n", "ClassDecl"),
+        ("/// Doc.\n\\\n\n\\\nclass A { }\n", "SourceFile"),
+        ("/// Doc.\n\\\n\\\nclass A { }\n", "SourceFile"),
+        ("/// Doc.\n\\ \n \\\nclass A { }\n", "SourceFile"),
+        ("/// Doc.\n\\\nclass A { }\n", "SourceFile"),
         (
             "class A {\n    /// Doc.\n    \\\n    F() { }\n}\n",
-            "FunctionDecl",
+            "MemberList",
         ),
+        // A run on the comment's own line, the declaration on the next.
+        ("\\/// Doc.\nclass A { }\n", "ClassDecl"),
+        ("/// Doc.\n\\class A { }\n", "ClassDecl"),
         (
             "class A {\n    /// Doc.\n    \\F() { }\n}\n",
             "FunctionDecl",
         ),
     ] {
-        let parse = parse(text);
-        let node = parse
-            .syntax()
-            .descendants()
-            .find(|node| format!("{:?}", node.kind()) == kind)
-            .unwrap();
-        assert!(node.text().starts_with("/// Doc."), "{text:?}");
+        let without = text.replace('\\', "");
+        assert_eq!(holder(text), holder(&without), "{text:?}");
+        assert_eq!(holder(text), kind, "{text:?}");
     }
+    // A block comment with rejected text after it on its line.
+    let text = "/* Doc. */ \\\nclass A { }\n";
+    let parse = parse(text);
+    let class = parse
+        .syntax()
+        .descendants()
+        .find(|node| node.kind() == SyntaxKind::ClassDecl);
+    assert!(class.unwrap().text().starts_with("/* Doc. */"), "{text:?}");
+}
+
+#[test]
+fn a_block_comment_over_lines_ends_the_search_for_a_closing_quote() {
+    let text = "let a = \u{201c}x /*\n */ y\u{201d};\n";
+    // Each quote is rejected text on its own: `x` and `y` are still read.
+    let names = parse(text)
+        .syntax()
+        .debug_tree()
+        .matches("NameRef@")
+        .count();
+    assert_eq!(names, 2);
+    assert_rejected_over(text, "let a = x /*\n */ y;\n");
 }
 
 #[test]

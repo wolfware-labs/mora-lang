@@ -88,8 +88,10 @@ pub(super) fn build(
                     }
                 }
                 let in_place = matches!(events.get(i + 1), Some(Event::Rejected));
+                // The first token of the node, which `MR0018` covers.
+                let first_token = || events[i + 1..].iter().find_map(raw_tokens);
                 for kind in chain.drain(..).rev() {
-                    sink.start(kind, in_place);
+                    sink.start(kind, in_place, first_token);
                 }
             }
             Event::Finish => sink.finish(),
@@ -98,14 +100,11 @@ pub(super) fn build(
             // what the parser skipped there leaves holes it would report.
             Event::Error { .. } if sink.mutes_errors() => {}
             Event::Error { message, fix } => {
-                let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
-                sink.error(SYNTAX_ERROR, message, fix, wraps_token);
+                let wraps = events.get(i + 1).and_then(raw_tokens);
+                sink.error(SYNTAX_ERROR, message, fix, wraps);
             }
             // Inside a flattened node, the error that covers it is reported.
-            Event::TooDeep => {
-                let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
-                sink.too_deep(wraps_token);
-            }
+            Event::TooDeep => sink.too_deep(events.get(i + 1).and_then(raw_tokens)),
             Event::Rejected => sink.rejected_in_place(),
             Event::Tombstone => {}
         }
@@ -224,7 +223,14 @@ impl Sink<'_> {
 
     /// Opens a node; `in_place` when it takes the rejected text before the
     /// next token ([`Event::Rejected`]), which then goes inside it.
-    fn start(&mut self, kind: SyntaxKind, in_place: bool) {
+    /// `first_token` gives how many tokens of [`Lexed::tokens`] the node's
+    /// first token spans.
+    fn start(
+        &mut self,
+        kind: SyntaxKind,
+        in_place: bool,
+        first_token: impl FnOnce() -> Option<usize>,
+    ) {
         if let Some(open) = &mut self.flattened {
             *open += 1;
             return;
@@ -232,7 +238,7 @@ impl Sink<'_> {
         let parent = self.open.last().map(|&(parent, _)| parent);
         let nests = nests(kind, parent);
         if nests && self.levels == MAX_DEPTH {
-            self.too_deep(true);
+            self.too_deep(first_token());
             self.flattened = Some(0);
             self.open_node(K::Error, false, in_place);
         } else {
@@ -252,12 +258,12 @@ impl Sink<'_> {
     }
 
     /// Reports `MR0018` for the next node, unless an error already covers
-    /// the statement it is in.
-    fn too_deep(&mut self, wraps_token: bool) {
+    /// the statement it is in. `wraps` as in [`Sink::error`].
+    fn too_deep(&mut self, wraps: Option<usize>) {
         if self.muted.is_some() {
             return;
         }
-        self.error(codes::MR0018, TOO_DEEP.into(), None, wraps_token);
+        self.error(codes::MR0018, TOO_DEEP.into(), None, wraps);
         // The statement is the node directly inside the innermost block,
         // list of members, cases or enum members, or inside the file: a
         // statement of a block, or a member with its `;`. When nothing is
@@ -300,28 +306,37 @@ impl Sink<'_> {
 
     /// Where the comments directly above the token at `end` start: comments
     /// and the whitespace between them, up to a blank line or a directive.
-    /// Rejected text between them counts as nothing, and so does a line
-    /// that holds only rejected text.
+    /// Rejected text counts as nothing, and the trivia between its tokens
+    /// as it would without them: a line that holds only rejected text is a
+    /// blank line. A comment among rejected text attaches the whole run.
     fn attached_comments(&self, end: usize) -> usize {
         let mut from = end;
         let mut i = end;
         let mut newline_seen = false;
+        // The first token of the run of rejected text `i` is in.
+        let mut run = None;
         while i > self.raw {
             i -= 1;
-            if let Some(start) = self.rejected_run_ending_at(i) {
-                i = start;
-                newline_seen = false;
-                continue;
+            if run.is_none() {
+                run = self.rejected_run_ending_at(i);
             }
-            match self.kind(i) {
-                Some(K::LineComment | K::DocComment | K::BlockComment) => {
+            let kind = self.kind(i);
+            match (run, kind) {
+                (Some(start), Some(K::LineComment | K::DocComment | K::BlockComment)) => {
+                    from = start;
+                    newline_seen = false;
+                }
+                (None, Some(K::LineComment | K::DocComment | K::BlockComment)) => {
                     from = i;
                     newline_seen = false;
                 }
-                Some(K::Whitespace) => {}
-                Some(K::Newline) if newline_seen => break,
-                Some(K::Newline) => newline_seen = true,
-                _ => break,
+                (_, Some(K::Newline)) if newline_seen => break,
+                (_, Some(K::Newline)) => newline_seen = true,
+                (Some(_), _) | (None, Some(K::Whitespace)) => {}
+                (None, _) => break,
+            }
+            if run == Some(i) {
+                run = None;
             }
         }
         from
@@ -383,18 +398,22 @@ impl Sink<'_> {
     }
 
     /// Reports `code`: on the token that follows, when the error wraps it
-    /// in an `Error` node; otherwise just after the last token taken, where
-    /// something is missing.
-    /// A `fix` replaces the token the error wraps; without one, it is
-    /// dropped.
-    fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps_token: bool) {
+    /// in an `Error` node (`wraps` is then how many tokens of
+    /// [`Lexed::tokens`] it spans, as `>\>` spans three); otherwise just
+    /// after the last token taken, where something is missing.
+    /// A `fix` replaces the token the error wraps, rejected text inside it
+    /// included; without one, it is dropped.
+    fn error(&mut self, code: Code, message: String, fix: Option<TokenFix>, wraps: Option<usize>) {
         let next = self.next_significant();
-        let wrapped_token = if wraps_token {
-            self.lexed.tokens.get(next)
-        } else {
-            None
-        };
-        let wrapped = wrapped_token.map(|token| token.range);
+        let wrapped = wraps.and_then(|n_raw| {
+            let first = self.lexed.tokens.get(next)?;
+            let last = self
+                .lexed
+                .tokens
+                .get(next + n_raw.max(1) - 1)
+                .unwrap_or(first);
+            Some(TextRange::new(first.range.start(), last.range.end()))
+        });
         let range = if let Some(range) = wrapped {
             range
         } else {
@@ -416,6 +435,15 @@ impl Sink<'_> {
             });
         }
         self.errors.push(error);
+    }
+}
+
+/// How many tokens of [`Lexed::tokens`] the token `event` takes, when it
+/// takes one.
+fn raw_tokens(event: &Event) -> Option<usize> {
+    match event {
+        Event::Token { n_raw, .. } => Some(*n_raw),
+        _ => None,
     }
 }
 
