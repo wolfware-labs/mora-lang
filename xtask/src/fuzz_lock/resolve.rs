@@ -504,9 +504,10 @@ fn apart(root: &Unit, fuzz: &Unit, reported: &[(&Built, &Built)]) -> Apart {
 /// closure of one build; `workspace` is every package of the workspace's
 /// resolve. A package both builds make alike is compared on its
 /// dependencies and features; one `root` builds at another compatible
-/// version or from another source is a difference of its own. A package only one build has
-/// shows in the dependencies of the package above it, or, when features
-/// only that build turns on turn it on, with those features.
+/// version or from another source is a difference of its own. A package
+/// only one build has shows in the dependencies of the package above it,
+/// or, when features only that build turns on turn it on, with those
+/// features.
 pub fn drift(root: &[Unit], fuzz: &[Unit], workspace: &[Built]) -> Vec<Drift> {
     let roots = root.iter().map(|unit| &unit.built);
     let counterparts: Vec<(&Built, &Built)> = fuzz
@@ -948,7 +949,8 @@ pub(super) mod tests {
         );
     }
 
-    /// `unit` with `features`, declaring `optional`, turned on by `extra`.
+    /// `on(built, deps)` with `features`, declaring indexmap as an optional
+    /// normal dependency that `preserve_order` turns on.
     fn optional_on(built: Built, deps: &[Built], features: &[&str]) -> Unit {
         let indexmap = ("indexmap".to_owned(), Kind::Normal);
         Unit {
@@ -1053,7 +1055,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_optional_dependency_is_turned_on_by_name_by_dep_or_by_a_feature_of_it() {
+    fn an_optional_dependency_is_turned_on_by_the_features_that_list_it() {
         let twig = |rename| [("twig", rename, None, true)];
         let found = |deps: &[_], features| optional(&declaring(deps, features));
         let turned_on = |features: &[&str]| {
