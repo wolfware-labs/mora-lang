@@ -556,12 +556,9 @@ fn a_rejected_token_after_an_operand_is_parsed_past() {
     // The parser goes on after the token as if it were not there: `2` after
     // `(1` needs the `)` that the call of a parenthesized expression
     // expects, and what follows is the rest of the statement.
-    assert_eq!(
-        codes_of("let a = (1\u{201c}2);\n"),
-        ["MR0017", "MR0110", "MR0110", "MR0110", "MR0110"]
-    );
+    assert_rejected_over("let a = (1\u{201c}2);\n", "let a = (1 2);\n");
     // A missing `;` after it is still reported.
-    assert_eq!(codes_of("let a = 1 \\\nlet b = 2;\n"), ["MR0017", "MR0110"]);
+    assert_rejected_over("let a = 1 \\\nlet b = 2;\n", "let a = 1\nlet b = 2;\n");
 }
 
 /// Unclosed character literals, each with the same text with the literal
@@ -643,7 +640,6 @@ fn a_rejected_token_ends_at_a_statement_on_the_next_line() {
         let tree = parse(text).syntax().debug_tree();
         assert!(tree.contains("ExprStmt"), "{text:?}:\n{tree}");
         let codes = codes_of(text);
-        assert_eq!(codes.last().map(String::as_str), Some("MR0110"), "{text:?}");
         assert_eq!(
             codes.iter().filter(|code| *code == "MR0110").count(),
             1,
@@ -654,12 +650,13 @@ fn a_rejected_token_ends_at_a_statement_on_the_next_line() {
 
 #[test]
 fn a_quoted_run_ends_at_its_closing_quote() {
-    // What follows the closing quote is parsed: `+ + 1` adds a unary `+ 1`.
+    // What follows the closing quote is parsed as if the quoted text were
+    // not there: `+ + 1` is a unary `+` of a unary `+ 1`.
     let tree = parse("let a = \u{201c}x\u{201d} + + 1;\n")
         .syntax()
         .debug_tree();
     assert!(
-        tree.contains("BinExpr") && tree.contains("PrefixExpr"),
+        !tree.contains("BinExpr") && tree.matches("PrefixExpr").count() == 2,
         "{tree}"
     );
     assert_eq!(
@@ -724,12 +721,6 @@ fn top_level_kinds(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parses `text` and the same text without its rejected tokens, as if they
-/// were not there.
-fn with_and_without(text: &str) -> (Vec<String>, Vec<String>) {
-    (codes_of(text), codes_of(&text.replace("\\ ", "")))
-}
-
 #[test]
 fn a_rejected_token_keeps_the_declarations_after_it() {
     for text in [
@@ -781,22 +772,19 @@ fn a_rejected_token_is_parsed_past_as_if_it_were_not_there() {
         "let x = a \\ new P {\n    A = 1,\n    B = 2\n};\n",
         "let a = 1 \\ + 2;\n",
     ] {
-        let (with, without) = with_and_without(text);
-        assert_eq!(with[0], "MR0017", "{text:?}");
-        assert_eq!(with[1..], without, "{text:?}");
+        assert_rejected_over(text, &text.replace("\\ ", ""));
     }
-    // After an operand, a lambda is a second operand: its `=>` ends the
-    // statement, without the `;` the text without the token also misses.
+    // After an operand, `(x)` is a call, as without the token.
     for text in [
         "let f = a \\ (x) => {\n    return x;\n};\n",
         "let f = a \\ (x) => {\n    @Inline\n    let y = x;\n    return y;\n};\n",
     ] {
-        assert_eq!(codes_of(text), ["MR0017", "MR0110"], "{text:?}");
+        assert_rejected_over(text, &text.replace("\\ ", ""));
     }
     // A rejected token between an extension's parameters and its body.
     assert_eq!(
         codes_of("extension(p: Point) \\ {\n    public X(): int => 1;\n}\n"),
-        ["MR0017", "MR0110", "MR0110", "MR0110"]
+        ["MR0017"]
     );
 }
 
@@ -857,13 +845,11 @@ fn a_rejected_token_where_a_body_starts_is_not_the_body() {
     assert!(tree.contains("ElseClause"), "{tree}");
     // A missing body after the token is reported as it is without the
     // token; at the top level, the `}` is a stray one of its own.
-    let (with, without) = with_and_without("if (c) A(); else \\ }\n");
-    assert_eq!(with[0], "MR0017");
-    assert_eq!(with[1..], without);
+    assert_rejected_over("if (c) A(); else \\ }\n", "if (c) A(); else }\n");
     let text = "F() {\n    if (c) A(); else \\ }\nG() { }\n";
     assert_eq!(
         coded_offsets(text),
-        [("MR0017".to_owned(), 27), ("MR0110".to_owned(), 28)]
+        [("MR0110".to_owned(), 26), ("MR0017".to_owned(), 27)]
     );
     assert_eq!(top_level_kinds(text), ["FunctionDecl", "FunctionDecl"]);
 }
@@ -958,11 +944,15 @@ fn a_using_without_its_name_leaves_the_declaration_on_the_next_line() {
         "using \\\nF() {}\n",
         "using static\npublic struct S {}\n",
     ] {
-        assert_eq!(top_level_kinds(text).len(), 2, "{text:?}");
-        let messages = parse_messages(text);
+        let kinds = top_level_kinds(text);
         assert_eq!(
-            messages.last().map(String::as_str),
-            Some("expected an identifier"),
+            kinds.iter().filter(|kind| *kind != "Error").count(),
+            2,
+            "{text:?}"
+        );
+        let messages = parse_messages(text);
+        assert!(
+            messages.contains(&"expected an identifier".to_owned()),
             "{text:?}"
         );
         assert_eq!(messages.len(), 1 + text.matches('\\').count(), "{text:?}");
@@ -1030,5 +1020,144 @@ fn rejected_text_in_a_lambda_parameter_is_parsed_past() {
         "let f = (ref \\x: int) => x;\n",
     ] {
         assert_only_rejected(text);
+    }
+}
+
+/// Asserts that `text` reports its rejected tokens and then what `without`,
+/// the same text without its rejected text, reports.
+fn assert_rejected_over(text: &str, without: &str) {
+    let errors = parse(text).errors().to_vec();
+    let rejected = errors
+        .iter()
+        .filter(|error| error.code.to_string() == "MR0017")
+        .count();
+    assert!(rejected > 0, "{text:?}");
+    let rest: Vec<String> = errors
+        .iter()
+        .filter(|error| error.code.to_string() != "MR0017")
+        .map(|error| error.message.clone())
+        .collect();
+    assert_eq!(rest, parse_messages(without), "{text:?}");
+}
+
+#[test]
+fn rejected_text_before_the_while_of_a_do_is_parsed_past() {
+    for text in [
+        "do while (c); \\ while (d);\n",
+        "do while (c) \\ ; \\ while (d);\n",
+    ] {
+        assert_rejected_over(text, &text.replace("\\ ", ""));
+        assert!(
+            parse_messages(text)
+                .iter()
+                .all(|message| message.contains("cannot start a token")),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn a_lookahead_skips_a_quoted_run_as_the_parser_takes_it() {
+    // The quoted text is one run, so the `do` has no `while (c);` after it.
+    assert_rejected_over("do \u{201c} while (c) \u{201d};\n", "do ;\n");
+    assert_rejected_over(
+        "struct S {\n    public mut(\u{201c}a b\u{201d}) X: int;\n}\n",
+        "struct S {\n    public mut(private) X: int;\n}\n",
+    );
+    assert_rejected_over(
+        "F() {\n    static \u{201c}a b\u{201d} G() {}\n}\n",
+        "F() {\n    static G() {}\n}\n",
+    );
+}
+
+#[test]
+fn rejected_text_in_every_slot_of_an_enum_member_and_a_lambda_parameter() {
+    for text in [
+        "enum E { A \\ = 1 }\n",
+        "let f = (x \\: int) => x;\n",
+        "let f = (x: int \\, y: int) => x;\n",
+        "let f = (x: int = 1 \\) => x;\n",
+        "let f = (x: int = 1 \\, y: int) => x;\n",
+        "let f = (x: int, \\) => x;\n",
+    ] {
+        assert_only_rejected(text);
+    }
+    assert!(codes_of("let f = (x: int,) => x;\n").is_empty());
+}
+
+/// Small valid examples of each construct, for
+/// `a_rejected_token_anywhere_in_valid_code_reports_only_itself`.
+const VALID_EXAMPLES: &[&str] = &[
+    "let a: List<int> = new List<int>();\n",
+    "F(a: int, b: (int, string)): int? => a;\n",
+    "let t: Dictionary<string, List<int>>? = null;\n",
+    "F(): int {\n    return 1 + 2;\n}\n",
+    "F() {\n    return;\n}\n",
+    "let p = new P(1, 2);\n",
+    "let q = new P { X = 1, Y = 2 };\n",
+    "let xs = new int[4];\n",
+    "F() {\n    let a = 1;\n    a = a + 1;\n    G(a);\n    break;\n}\n",
+    "public static F(): int => 1;\n",
+    "public struct S {\n    public static X: int = 1;\n    private Y: int;\n}\n",
+    "internal async F() {}\n",
+    concat!(
+        "using Std.Json;\n",
+        "using static Std.Math;\n",
+        "using Json = Std.Json.JsonValue;\n",
+        "global using Std.Text;\n",
+        "F() {}\n",
+    ),
+    "enum E { A, B = 2, @X C }\n",
+    "enum Color : byte { Red, Green = 1 }\n",
+    "public Max<T>(a: T, b: T): T where T : IComparable<T> => a;\n",
+    "public struct Pair<A, B> where A : IEquatable<A>, IDefault where B : allows ref struct {}\n",
+    "struct S {\n    public mut(private) Step: int = 1;\n    public mut(ns) Version: int = 0;\n}\n",
+    "F() {\n    do { G(); } while (c);\n}\n",
+    "F() {\n    do G(); while (c);\n    while (c) G();\n}\n",
+    "let f = (x: int, ref y: int, z: int = 1) => x;\n",
+    "let g = (x) => x;\n",
+    "let h = x => x + 1;\n",
+    "let s = new int[n] + (any IShape)shape;\n",
+    "let c = (int)x + (long)(y);\n",
+    "F() {\n    static G() {}\n    async H() {}\n}\n",
+    concat!(
+        "F(xs: List<int>): int {\n",
+        "    foreach (let x in xs) {\n",
+        "        if (x > 0) { return x; } else { continue; }\n",
+        "    }\n",
+        "    for (var i = 0; i < 10; i++) { G(i); }\n",
+        "    return match (xs.Count) { 0 => 1, _ => 2 };\n",
+        "}\n",
+    ),
+    "let r = a ? b : c;\n",
+    "let t = (1, \"a\");\n",
+    "let ys = [1, 2, 3];\n",
+    "let z = F<int>(x)[0].Name;\n",
+    concat!(
+        "@Json\n",
+        "public class Point : IShape {\n",
+        "    public X: int;\n",
+        "    public Point(x: int) { X = x; }\n",
+        "}\n",
+    ),
+    "union Shape { Circle(r: double), Square }\n",
+    "interface IShape {\n    Area(): double;\n}\n",
+];
+
+#[test]
+fn a_rejected_token_anywhere_in_valid_code_reports_only_itself() {
+    for example in VALID_EXAMPLES {
+        assert!(codes_of(example).is_empty(), "{example:?}");
+        let ends = mora_syntax::lex(example)
+            .tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia())
+            .map(|token| u32::from(token.range.start()) as usize)
+            .chain([example.trim_end().len()])
+            .collect::<Vec<_>>();
+        for at in ends {
+            let text = format!("{}\\{}", &example[..at], &example[at..]);
+            assert_eq!(codes_of(&text), ["MR0017"], "{text:?}");
+        }
     }
 }

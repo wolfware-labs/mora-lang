@@ -47,9 +47,6 @@ fn ty_with(p: &mut Parser<'_>, arrays: bool, functions: bool) {
 }
 
 fn ty_inner(p: &mut Parser<'_>, arrays: bool, functions: bool) {
-    // Rejected text where a type starts is an error of its own, and the
-    // type is what follows it.
-    exprs::rejected(p);
     if !at_type_start(p) {
         p.error("expected a type");
         return;

@@ -1,8 +1,12 @@
-//! Turns parser events into a tree, putting trivia back in place.
+//! Turns parser events into a tree, putting trivia and rejected text back
+//! in place.
 //!
 //! Trivia goes into the innermost open node, with one exception: comments
 //! directly above a declaration, with no blank line between them, belong to
 //! that declaration, so a doc comment is part of the item it documents.
+//! Each run of rejected text, which the parser did not see ([`Input`]),
+//! goes in as trivia does, in an `Error` node of its own, unless the parser
+//! took it in place of something missing ([`Event::Rejected`]).
 //!
 //! The builder also enforces the nesting limit on the finished tree
 //! (§14.4): a node that would sit deeper than [`MAX_DEPTH`] levels gets
@@ -15,6 +19,8 @@ use mora_diag::{Code, codes};
 use mora_span::{TextRange, TextSize};
 use rustc_hash::FxHashSet;
 
+#[cfg(doc)]
+use super::Input;
 use super::{Event, MAX_DEPTH, SYNTAX_ERROR, TokenFix};
 use crate::ast::{self, AstNode};
 use crate::lexer::Lexed;
@@ -25,6 +31,7 @@ use SyntaxKind as K;
 pub(super) fn build(
     text: &str,
     lexed: &Lexed,
+    rejected_runs: &[Option<usize>],
     mut events: Vec<Event>,
 ) -> (GreenNode, Vec<SyntaxError>) {
     // Where each string the lexer found unclosed ends. A character literal
@@ -39,6 +46,7 @@ pub(super) fn build(
     let mut sink = Sink {
         text,
         lexed,
+        rejected_runs,
         unclosed_strings,
         raw: 0,
         open: Vec::new(),
@@ -71,8 +79,9 @@ pub(super) fn build(
                         _ => break,
                     }
                 }
+                let in_place = matches!(events.get(i + 1), Some(Event::Rejected));
                 for kind in chain.drain(..).rev() {
-                    sink.start(kind);
+                    sink.start(kind, in_place);
                 }
             }
             Event::Finish => sink.finish(),
@@ -89,6 +98,7 @@ pub(super) fn build(
                 let wraps_token = matches!(events.get(i + 1), Some(Event::Token { .. }));
                 sink.too_deep(wraps_token);
             }
+            Event::Rejected => sink.rejected_in_place(),
             Event::Tombstone => {}
         }
     }
@@ -100,6 +110,9 @@ struct Sink<'a> {
     text: &'a str,
     /// Every token of the text, trivia included.
     lexed: &'a Lexed,
+    /// For the first token of each run of rejected text, the index after its
+    /// last token ([`Input`]).
+    rejected_runs: &'a [Option<usize>],
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
     /// The next token of `lexed` to add.
@@ -130,16 +143,51 @@ impl Sink<'_> {
         self.lexed.tokens.get(i).map(|token| token.kind)
     }
 
-    /// The index of the next token that is not trivia, or the end.
+    /// The index after the run of rejected text that starts at token `i`.
+    fn rejected_run(&self, i: usize) -> Option<usize> {
+        self.rejected_runs.get(i).copied().flatten()
+    }
+
+    /// The index of the next token that is neither trivia nor rejected
+    /// text, or the end.
     fn next_significant(&self) -> usize {
         let mut i = self.raw;
-        while self.kind(i).is_some_and(SyntaxKind::is_trivia) {
+        loop {
+            if let Some(end) = self.rejected_run(i) {
+                i = end;
+            } else if self.kind(i).is_some_and(SyntaxKind::is_trivia) {
+                i += 1;
+            } else {
+                return i;
+            }
+        }
+    }
+
+    /// The index of the next run of rejected text, past trivia, or of the
+    /// next token when none comes first.
+    fn next_rejected(&self) -> usize {
+        let mut i = self.raw;
+        while self.rejected_run(i).is_none() && self.kind(i).is_some_and(SyntaxKind::is_trivia) {
             i += 1;
         }
         i
     }
 
+    /// Adds the tokens up to `until`, each run of rejected text in an
+    /// `Error` node.
     fn add_raw(&mut self, until: usize) {
+        while self.raw < until {
+            if let Some(end) = self.rejected_run(self.raw) {
+                self.builder.start_node(K::Error);
+                self.add_tokens(end);
+                self.builder.finish_node();
+            } else {
+                self.add_tokens(self.raw + 1);
+            }
+        }
+    }
+
+    fn add_tokens(&mut self, until: usize) {
         while self.raw < until {
             let token = self.lexed.tokens[self.raw];
             self.builder.token(token.kind, &self.text[token.range]);
@@ -147,7 +195,21 @@ impl Sink<'_> {
         }
     }
 
-    fn start(&mut self, kind: SyntaxKind) {
+    /// Adds the run of rejected text before the next token to the node just
+    /// opened, which stands for what is missing there.
+    fn rejected_in_place(&mut self) {
+        if self.flattened.is_some() {
+            return;
+        }
+        let at = self.next_rejected();
+        if let Some(end) = self.rejected_run(at) {
+            self.add_tokens(end);
+        }
+    }
+
+    /// Opens a node; `in_place` when it takes the rejected text before the
+    /// next token ([`Event::Rejected`]), which then goes inside it.
+    fn start(&mut self, kind: SyntaxKind, in_place: bool) {
         if let Some(open) = &mut self.flattened {
             *open += 1;
             return;
@@ -157,9 +219,9 @@ impl Sink<'_> {
         if nests && self.levels == MAX_DEPTH {
             self.too_deep(true);
             self.flattened = Some(0);
-            self.open_node(K::Error, false);
+            self.open_node(K::Error, false, in_place);
         } else {
-            self.open_node(kind, nests);
+            self.open_node(kind, nests, in_place);
         }
     }
 
@@ -194,7 +256,7 @@ impl Sink<'_> {
         self.muted = Some(inside + 1);
     }
 
-    fn open_node(&mut self, kind: SyntaxKind, nests: bool) {
+    fn open_node(&mut self, kind: SyntaxKind, nests: bool, in_place: bool) {
         if is_container(kind)
             && let Some(around) = self.muted.take()
         {
@@ -206,7 +268,11 @@ impl Sink<'_> {
             self.builder.start_node(kind);
             return;
         }
-        let end = self.next_significant();
+        let end = if in_place {
+            self.next_rejected()
+        } else {
+            self.next_significant()
+        };
         let attach_from = if attaches_comments(kind) {
             self.attached_comments(end)
         } else {
@@ -283,22 +349,13 @@ impl Sink<'_> {
     }
 
     /// Whether the lexer already reported the cause of a syntax error at
-    /// `range`: the error wraps a token it rejected (`MR0017`), or it marks
-    /// something missing at the end of a string it found unclosed
-    /// (`MR0012`). An unclosed string runs to the end of the line and takes
-    /// the token that was meant to follow it. An unclosed character literal
-    /// ends after its first character and takes nothing, so what is missing
-    /// after it is reported.
-    fn lexer_reported(
-        &self,
-        range: TextRange,
-        wraps: bool,
-        wrapped_kind: Option<SyntaxKind>,
-    ) -> bool {
-        if wraps {
-            return wrapped_kind == Some(K::Unknown);
-        }
-        self.unclosed_strings.contains(&range.start())
+    /// `range`: it marks something missing at the end of a string the lexer
+    /// found unclosed (`MR0012`). An unclosed string runs to the end of the
+    /// line and takes the token that was meant to follow it. An unclosed
+    /// character literal ends after its first character and takes nothing,
+    /// so what is missing after it is reported.
+    fn lexer_reported(&self, range: TextRange, wraps: bool) -> bool {
+        !wraps && self.unclosed_strings.contains(&range.start())
     }
 
     /// Reports `code`: on the token that follows, when the error wraps it
@@ -324,13 +381,7 @@ impl Sink<'_> {
                 .map_or(TextSize::new(0), |token| token.range.end());
             TextRange::empty(end)
         };
-        if code == SYNTAX_ERROR
-            && self.lexer_reported(
-                range,
-                wrapped.is_some(),
-                wrapped_token.map(|token| token.kind),
-            )
-        {
+        if code == SYNTAX_ERROR && self.lexer_reported(range, wrapped.is_some()) {
             return;
         }
         let mut error = SyntaxError::new(code, range, message);

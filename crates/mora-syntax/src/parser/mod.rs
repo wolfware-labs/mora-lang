@@ -80,14 +80,22 @@ fn parse_within(text: &str, budget: Option<usize>) -> Parse {
         p.budget = budget;
     }
     items::source_file(&mut p);
-    let (green, mut errors) = build::build(text, &lexed, p.events);
+    let (green, mut errors) = build::build(text, &lexed, &input.rejected_runs, p.events);
     errors.extend(lexed.errors.iter().cloned());
     errors.sort_by_key(|error| error.range.start());
     Parse { green, errors }
 }
 
-/// The tokens the parser sees: everything but trivia, with each token's
-/// place among all tokens and whether it touches the next one.
+/// The tokens the parser sees: everything but trivia and rejected text,
+/// with each token's place among all tokens and whether it touches the next
+/// one.
+///
+/// Rejected text is a token the lexer rejected (`MR0017`), or a quote of
+/// [`exprs::QUOTES`] with everything up to the quote that closes it
+/// ([`exprs::closing_quotes`]). The parser parses the text as if it were not
+/// there, so that it reports only what the text without it would; the
+/// lexer has reported it, and [`build`] puts each run of it back into the
+/// tree as an `Error` node.
 pub(crate) struct Input<'t> {
     /// The whole text.
     text: &'t str,
@@ -97,44 +105,93 @@ pub(crate) struct Input<'t> {
     ranges: Vec<TextRange>,
     /// The index of each token in [`Lexed::tokens`].
     raw: Vec<usize>,
-    /// Whether the token is directly followed by the next one, with no trivia.
+    /// Whether the token is directly followed by the next one, with no trivia
+    /// or rejected text between them.
     joined: Vec<bool>,
-    /// Whether a line break comes between the token and the one before it.
+    /// Whether a line break comes between the token and the one before it,
+    /// with only rejected text after the line break.
     line_start: Vec<bool>,
+    /// Whether rejected text comes right before the token; one entry more,
+    /// for the end of the text.
+    rejected_before: Vec<bool>,
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
+    /// For the first token of each run of rejected text, as an index in
+    /// [`Lexed::tokens`], the index after its last token.
+    rejected_runs: Vec<Option<usize>>,
     /// Tokens looked at: each once to pair parentheses, one per lookup.
     #[cfg(test)]
     scanned: std::cell::Cell<usize>,
+    /// How many tokens the scans for a closing quote looked at.
+    #[cfg(test)]
+    quotes_scanned: usize,
 }
 
 impl<'t> Input<'t> {
     fn new(text: &'t str, lexed: &Lexed) -> Self {
-        let mut input = Input {
+        let empty = || Input {
             text,
             kinds: Vec::new(),
             ranges: Vec::new(),
             raw: Vec::new(),
             joined: Vec::new(),
             line_start: Vec::new(),
+            rejected_before: Vec::new(),
             after_parens: Vec::new(),
+            rejected_runs: Vec::new(),
             #[cfg(test)]
             scanned: std::cell::Cell::new(0),
+            #[cfg(test)]
+            quotes_scanned: 0,
         };
+        // Every token but trivia, rejected text included.
+        let mut all = empty();
         let mut line_break = false;
         for (i, token) in lexed.tokens.iter().enumerate() {
             if token.kind.is_trivia() {
                 line_break |= token.kind == K::Newline;
                 continue;
             }
-            input.line_start.push(line_break);
+            all.line_start.push(line_break);
             line_break = false;
-            input.kinds.push(token.kind);
-            input.ranges.push(token.range);
-            input.raw.push(i);
-            input.joined.push(lexed.is_joined(i));
+            all.kinds.push(token.kind);
+            all.ranges.push(token.range);
+            all.raw.push(i);
+            all.joined.push(lexed.is_joined(i));
         }
+        let (closing_quote, looked) = exprs::closing_quotes(&all);
+        // The same tokens with the rejected text left out.
+        let mut input = empty();
+        input.rejected_runs = vec![None; lexed.tokens.len()];
+        let (mut rejected, mut line_break) = (false, false);
+        let mut at = 0;
+        while at < all.len() {
+            if all.kinds[at] != K::Unknown {
+                input.line_start.push(all.line_start[at] || line_break);
+                input.rejected_before.push(rejected);
+                (rejected, line_break) = (false, false);
+                input.kinds.push(all.kinds[at]);
+                input.ranges.push(all.ranges[at]);
+                input.raw.push(all.raw[at]);
+                input.joined.push(all.joined[at]);
+                at += 1;
+                continue;
+            }
+            // A run: each rejected token, a quote up to its closing quote.
+            let start = at;
+            while all.kind(at) == K::Unknown {
+                at = closing_quote[at].unwrap_or(at) + 1;
+            }
+            input.rejected_runs[all.raw[start]] = Some(all.raw[at - 1] + 1);
+            line_break |= all.line_start[start..at].iter().any(|&starts| starts);
+            rejected = true;
+            // Rejected text separates the tokens around it, as a space does.
+            if let Some(joined) = input.joined.last_mut() {
+                *joined = false;
+            }
+        }
+        input.rejected_before.push(rejected);
         input.after_parens = vec![None; input.kinds.len()];
         let mut open = Vec::new();
         for (i, &kind) in input.kinds.iter().enumerate() {
@@ -149,7 +206,12 @@ impl<'t> Input<'t> {
             }
         }
         #[cfg(test)]
-        input.scanned.set(input.kinds.len());
+        {
+            input.scanned.set(input.kinds.len());
+            input.quotes_scanned = looked;
+        }
+        #[cfg(not(test))]
+        let _ = looked;
         input
     }
 
@@ -178,6 +240,12 @@ impl<'t> Input<'t> {
         self.scanned.set(self.scanned.get() + 1);
         self.after_parens.get(open).copied().flatten()
     }
+
+    /// Whether rejected text comes right before token `i`, or before the end
+    /// of the text at `len`.
+    fn rejected_before(&self, i: usize) -> bool {
+        self.rejected_before.get(i).copied().unwrap_or(false)
+    }
 }
 
 /// What the parser did, in order.
@@ -201,6 +269,9 @@ pub(crate) enum Event {
     },
     /// Report `MR0018` at the next token: nesting goes past [`MAX_DEPTH`].
     TooDeep,
+    /// Take the rejected text before the next token into the node just
+    /// opened ([`Parser::rejected_in_place`]).
+    Rejected,
     /// A `Start` that was abandoned or moved.
     Tombstone,
 }
@@ -245,12 +316,9 @@ pub(crate) struct Parser<'t> {
     /// sees the end of the input and reports nothing, and
     /// [`Parser::finish_stopped`] takes the rest.
     stopped: Option<usize>,
-    /// For each set of closing quotes a scan found none of, the token where
-    /// that scan stopped ([`Parser::closing_quote_missing`]).
-    unclosed_quotes: Vec<(&'static [&'static str], usize)>,
-    /// How many tokens the scans for a closing quote looked at.
-    #[cfg(test)]
-    scanned: usize,
+    /// The token before which [`Parser::rejected_in_place`] took the
+    /// rejected text, which it takes once.
+    rejected_taken: Option<usize>,
 }
 
 /// A node that is open: it must be completed or abandoned.
@@ -314,9 +382,7 @@ impl<'t> Parser<'t> {
             depth: 0,
             budget: EVENTS_PER_TOKEN * (input.len() + 1),
             stopped: None,
-            unclosed_quotes: Vec::new(),
-            #[cfg(test)]
-            scanned: 0,
+            rejected_taken: None,
         }
     }
 
@@ -483,6 +549,20 @@ impl<'t> Parser<'t> {
         kinds.iter().any(|&kind| self.at(kind))
     }
 
+    /// Takes the rejected text right before the next token into an `Error`
+    /// node of its own, where it stands for what is missing there, as in
+    /// `let a = \u{201c};`: the lexer reported it, and nothing more is. `None`
+    /// when no rejected text is there.
+    pub(crate) fn rejected_in_place(&mut self) -> Option<CompletedMarker> {
+        if !self.input.rejected_before(self.pos) || self.rejected_taken == Some(self.pos) {
+            return None;
+        }
+        self.rejected_taken = Some(self.pos);
+        let m = self.start();
+        self.events.push(Event::Rejected);
+        Some(m.complete(self, K::Error))
+    }
+
     /// Whether a line break comes before the next token.
     pub(crate) fn at_line_start(&self) -> bool {
         self.nth_at_line_start(0)
@@ -495,28 +575,6 @@ impl<'t> Parser<'t> {
             .get(self.pos + n)
             .copied()
             .unwrap_or(false)
-    }
-
-    /// Whether an earlier scan for one of `closers` found none and stopped
-    /// past the next token. A scan stops where the statement ends, so a
-    /// scan from the next token would stop there too and find none.
-    pub(crate) fn closing_quote_missing(&self, closers: &[&str]) -> bool {
-        self.unclosed_quotes
-            .iter()
-            .any(|&(missing, end)| missing == closers && self.pos < end)
-    }
-
-    /// Records that a scan for one of `closers` found none before the
-    /// token at `end`, so that each token is scanned for them once.
-    pub(crate) fn record_no_closing_quote(&mut self, closers: &'static [&'static str], end: usize) {
-        match self
-            .unclosed_quotes
-            .iter_mut()
-            .find(|(missing, _)| *missing == closers)
-        {
-            Some((_, last)) => *last = end,
-            None => self.unclosed_quotes.push((closers, end)),
-        }
     }
 
     /// Whether the next token is the identifier `word`, which the grammar
@@ -661,19 +719,22 @@ mod tests {
         assert!(parse_within(text, Some(events)).errors().is_empty());
     }
 
-    /// How many tokens `text` has, and what `count` reads off the input and
-    /// the parser once `text` is parsed.
+    /// How many tokens `text` has besides trivia, rejected ones included,
+    /// and what `count` reads off the input and the parser once `text` is
+    /// parsed.
     fn counted(text: &str, count: impl Fn(&Input<'_>, &Parser<'_>) -> usize) -> (usize, usize) {
         let lexed = lex(text);
         let input = Input::new(text, &lexed);
         let mut p = Parser::new(&input);
         items::source_file(&mut p);
-        (input.len(), count(&input, &p))
+        let tokens = lexed.tokens.iter().filter(|token| !token.kind.is_trivia());
+        (tokens.count(), count(&input, &p))
     }
 
     #[test]
     fn each_token_is_scanned_for_a_closing_quote_once() {
-        // None of these quotes is closed, so each scan runs to the `;`.
+        // None of these quotes is closed, so each scan runs to the `;`; in
+        // the last, every quote is closed by the one at the end.
         let mut names = String::from("let names = [\n");
         for i in 0..20_000 {
             names.push_str(&format!("    \u{201c}name{i}\u{201c},\n"));
@@ -681,8 +742,9 @@ mod tests {
         names.push_str("];\n");
         let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(40_000));
         let operands = format!("let a = 1{};\n", " + \u{201c}x".repeat(40_000));
-        for text in [&names, &arguments, &operands] {
-            let (tokens, scanned) = counted(text, |_, p| p.scanned);
+        let closed = format!("let a = {}\u{201d};\n", "\u{201c}x ".repeat(40_000));
+        for text in [&names, &arguments, &operands, &closed] {
+            let (tokens, scanned) = counted(text, |input, _| input.quotes_scanned);
             // The first quote scans the statement, and no quote rescans it.
             assert!(scanned >= tokens / 2, "{scanned} of {tokens}");
             assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");

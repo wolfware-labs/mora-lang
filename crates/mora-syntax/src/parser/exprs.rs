@@ -240,13 +240,6 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
             lhs = m.complete(p, K::AssignExpr);
             continue;
         }
-        // A token the lexer rejected where an operator would go, or the rest
-        // of a literal it found unclosed: it is an error of its own, after
-        // the operand, which stays an expression to check, and the
-        // expression goes on after it.
-        if rejected(p).is_some() {
-            continue;
-        }
         return Some(lhs);
     }
 }
@@ -290,15 +283,11 @@ fn unary(p: &mut Parser<'_>) -> Option<CompletedMarker> {
 /// postfix `?` is taken at any depth of it, so `await -f()?` is
 /// `(await -f())?`.
 fn unary_with(p: &mut Parser<'_>, propagate: bool) -> Option<CompletedMarker> {
-    if let Some(error) = rejected(p) {
-        // The operand is what follows, as if the rejected text were not
-        // there. When no operand follows, or an operator does that the
-        // caller parses after an operand, a prefix one or `..`, the
-        // rejected text stands for it.
-        if !at_expr_start(p) || p.at_any(PREFIX) || p.at(K::DotDot) {
-            return Some(error);
-        }
-        return unary_with(p, propagate);
+    // Rejected text where no operand follows stands for the operand.
+    if !at_expr_start(p)
+        && let Some(error) = p.rejected_in_place()
+    {
+        return Some(error);
     }
     if PREFIX.iter().any(|&kind| p.at(kind)) {
         let m = p.start();
@@ -454,13 +443,10 @@ fn lambda(p: &mut Parser<'_>) -> CompletedMarker {
 /// `x: int`, `x`, `ref x: int`, `x: int = 0`.
 fn lambda_param(p: &mut Parser<'_>) {
     let m = p.start();
-    // Rejected text before the modifiers or the name is an error of its own.
-    rejected(p);
     while p.at_any(&[K::RefKw, K::InKw, K::MoveKw, K::ParamsKw]) {
         let modifier = p.start();
         p.bump_any();
         modifier.complete(p, K::Modifier);
-        rejected(p);
     }
     types::name(p);
     if p.at(K::Colon) {
@@ -764,7 +750,7 @@ fn arg_inner(p: &mut Parser<'_>) {
 
 /// The keywords that start a statement, which no expression holds: a line
 /// that starts with one ends the scan for a closing quote
-/// ([`closing_quote`]).
+/// ([`closing_quotes`]).
 const STATEMENT_KEYWORDS: &[SyntaxKind] = &[
     K::LetKw,
     K::VarKw,
@@ -781,7 +767,7 @@ const STATEMENT_KEYWORDS: &[SyntaxKind] = &[
 /// Each quote meant to open a string or a character, with the quotes that
 /// close it. The lexer rejects them all, so only an `Unknown`
 /// token has one of these texts.
-const QUOTES: &[(&str, &[&str])] = &[
+pub(super) const QUOTES: &[(&str, &[&str])] = &[
     ("\u{201c}", &["\u{201d}"]),
     ("\u{201d}", &["\u{201d}"]),
     ("\u{201e}", &["\u{201c}", "\u{201d}"]),
@@ -790,78 +776,60 @@ const QUOTES: &[(&str, &[&str])] = &[
     ("\u{201a}", &["\u{2018}", "\u{2019}"]),
 ];
 
-/// Takes the run of tokens the lexer rejected at the next token, each
-/// piece as [`skip_rejected`] takes it, into one `Error` node, so that
-/// rejected tokens in a row are one error. `None` when no rejected token is
-/// there.
-pub(crate) fn rejected(p: &mut Parser<'_>) -> Option<CompletedMarker> {
-    if !p.at(K::Unknown) {
-        return None;
-    }
-    let e = p.start();
-    while p.at(K::Unknown) {
-        skip_rejected(p);
-    }
-    Some(e.complete(p, K::Error))
-}
-
-/// How many tokens after the next one the quote that closes it comes, when
-/// one of `closers` comes before the statement ends: before a `;`, or a
-/// line that starts with a statement keyword or a `}`. Brackets in between
-/// are text.
+/// For each quote of [`QUOTES`] in `input`, the index of the quote that
+/// closes it, when one of its closers comes before the statement ends:
+/// before a `;`, or a line that starts with a statement keyword or a `}`.
+/// Brackets in between are text. Also returns how many tokens the scans
+/// looked at.
 ///
-/// A scan that finds none is recorded ([`Parser::record_no_closing_quote`]),
-/// and a later quote before where it stopped is not scanned again, so a
-/// statement with many unclosed quotes is scanned once.
-fn closing_quote(p: &mut Parser<'_>, closers: &'static [&'static str]) -> Option<usize> {
-    if p.closing_quote_missing(closers) {
-        return None;
-    }
-    let input = p.input();
-    let mut n = 1;
-    let found = loop {
-        if p.pos() + n >= input.len() {
-            break None;
+/// A scan answers for every later quote with the same closers that comes
+/// before where it stopped: that quote's scan would stop there too, with
+/// the same answer. So each token is scanned once for each set of closers.
+pub(super) fn closing_quotes(input: &Input<'_>) -> (Vec<Option<usize>>, usize) {
+    let mut closing = vec![None; input.len()];
+    // For each set of closers, where its last scan stopped and what it found.
+    let mut last: Vec<(&[&str], usize, Option<usize>)> = Vec::new();
+    let mut looked = 0;
+    for (at, slot) in closing.iter_mut().enumerate() {
+        if input.kind(at) != K::Unknown {
+            continue;
         }
-        let kind = p.nth(n);
-        if kind == K::Semicolon
-            || (p.nth_at_line_start(n) && (STATEMENT_KEYWORDS.contains(&kind) || kind == K::RBrace))
+        let Some(&(_, closers)) = QUOTES
+            .iter()
+            .find(|(opening, _)| *opening == input.text(at))
+        else {
+            continue;
+        };
+        let memo = last.iter_mut().find(|(set, ..)| *set == closers);
+        if let Some((_, stop, found)) = &memo
+            && at < *stop
         {
-            break None;
+            *slot = *found;
+            continue;
         }
-        if kind == K::Unknown && closers.contains(&p.nth_text(n)) {
-            break Some(n);
+        let mut i = at + 1;
+        let found = loop {
+            let kind = input.kind(i);
+            if i >= input.len()
+                || kind == K::Semicolon
+                || (input.line_start[i]
+                    && (STATEMENT_KEYWORDS.contains(&kind) || kind == K::RBrace))
+            {
+                break None;
+            }
+            if kind == K::Unknown && closers.contains(&input.text(i)) {
+                break Some(i);
+            }
+            i += 1;
+        };
+        looked += i - at;
+        *slot = found;
+        match memo {
+            Some(entry) => *entry = (closers, i, found),
+            None => last.push((closers, i, found)),
         }
-        n += 1;
-    };
-    #[cfg(test)]
-    {
-        p.scanned += n;
     }
-    if found.is_none() {
-        p.record_no_closing_quote(closers, p.pos() + n);
-    }
-    found
-}
-
-/// Takes the rejected token at the next token: a quote of [`QUOTES`] with
-/// everything up to its closing quote, when one comes before the statement
-/// ends ([`closing_quote`]); otherwise the token alone. The caller makes
-/// what it takes one `Error` node and parses on as if it were not there, so
-/// a mistake after it is reported as it would be without it. Always takes
-/// at least the first token.
-fn skip_rejected(p: &mut Parser<'_>) {
-    let closers = QUOTES
-        .iter()
-        .find(|(opening, _)| *opening == p.nth_text(0))
-        .map(|&(_, closers)| closers);
-    if let Some(n) = closers.and_then(|closers| closing_quote(p, closers)) {
-        for _ in 0..=n {
-            p.bump_any();
-        }
-        return;
-    }
-    p.bump_any();
+    (closing, looked)
 }
 
 /// `(e)`, `()`, `(a, b)`, `(Id: 1, Name: "a")`. A parenthesized
@@ -935,7 +903,6 @@ fn collection_inner(p: &mut Parser<'_>) -> CompletedMarker {
 fn new_expr(p: &mut Parser<'_>) -> CompletedMarker {
     let m = p.start();
     p.bump(K::NewKw);
-    rejected(p);
     if types::at_type_start(p) && !p.at(K::LParen) {
         types::element_ty(p);
         if p.at(K::LBracket) {

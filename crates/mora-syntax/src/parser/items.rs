@@ -89,7 +89,6 @@ fn using_directive(p: &mut Parser<'_>) {
     }
     p.bump(K::UsingKw);
     p.eat(K::StaticKw);
-    exprs::rejected(p);
     // A declaration on the next line is not the name: the name is missing.
     if p.at_line_start() && at_declaration_start(p) {
         p.error(format!("expected {}", super::describe(K::Ident)));
@@ -264,11 +263,6 @@ fn at_contextual_modifier(p: &Parser<'_>) -> bool {
 fn modifiers(p: &mut Parser<'_>) -> Vec<SyntaxKind> {
     let mut kinds = Vec::new();
     loop {
-        // Rejected text among the modifiers is an error of its own, and the
-        // declaration goes on after it.
-        if !kinds.is_empty() {
-            exprs::rejected(p);
-        }
         let m = p.start();
         if let Some(kind) = contextual_modifier(p) {
             p.bump_remap(kind);
@@ -295,16 +289,7 @@ fn at_write_scope(p: &Parser<'_>) -> bool {
     if !p.at(K::LParen) {
         return false;
     }
-    // Rejected tokens around the word are errors of their own.
-    let input = p.input();
-    let mut tokens = (p.pos() + 1..)
-        .map(|at| input.kind(at))
-        .filter(|&kind| kind != K::Unknown);
-    match tokens.next() {
-        Some(K::RParen) => true,
-        Some(_) => tokens.next() == Some(K::RParen),
-        None => false,
-    }
+    p.nth(1) == K::RParen || p.nth(2) == K::RParen
 }
 
 /// What a write scope reports when its word is missing or another one.
@@ -315,28 +300,20 @@ const EXPECTED_WRITE_SCOPE: &str = "expected `private`, `ns` or `internal`";
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
-    if p.at(K::RParen) {
+    // Rejected text in place of the word stands for it.
+    if p.at(K::RParen) && p.rejected_in_place().is_none() {
         p.error(EXPECTED_WRITE_SCOPE);
     }
-    // The word, and each run of rejected tokens around it as an error of its
-    // own: [`at_write_scope`] found the `)`.
-    while !p.at(K::RParen) {
-        if p.at(K::Unknown) {
-            let e = p.start();
-            while p.at(K::Unknown) {
-                p.bump_any();
-            }
-            e.complete(p, K::Error);
-        } else if p.at_any(&[K::PrivateKw, K::InternalKw]) {
-            p.bump_any();
-        } else if p.at_contextual("ns") {
-            p.bump_remap(K::NsKw);
-        } else {
-            let e = p.start();
-            p.error(EXPECTED_WRITE_SCOPE);
-            p.bump_any();
-            e.complete(p, K::Error);
-        }
+    // [`at_write_scope`] found the `)`.
+    if p.at_any(&[K::PrivateKw, K::InternalKw]) {
+        p.bump_any();
+    } else if p.at_contextual("ns") {
+        p.bump_remap(K::NsKw);
+    } else if !p.at(K::RParen) {
+        let e = p.start();
+        p.error(EXPECTED_WRITE_SCOPE);
+        p.bump_any();
+        e.complete(p, K::Error);
     }
     p.bump(K::RParen);
     m.complete(p, K::WriteScope);
@@ -472,23 +449,13 @@ fn enum_decl(p: &mut Parser<'_>, m: Marker) {
     if p.expect(K::LBrace) {
         while !p.at(K::RBrace) && !p.at_end() {
             let member = p.start();
-            // Rejected text before the attributes, the name or the `,` is an
-            // error of its own; before the `}`, it is no member.
-            exprs::rejected(p);
-            let attributes = p.at(K::At);
             while p.at(K::At) {
                 attribute(p);
-            }
-            exprs::rejected(p);
-            if p.at(K::RBrace) && !attributes {
-                member.abandon(p);
-                break;
             }
             name(p);
             if p.eat(K::Eq) {
                 exprs::expr(p);
             }
-            exprs::rejected(p);
             member.complete(p, K::EnumMember);
             if !p.eat(K::Comma) {
                 break;
@@ -1030,9 +997,7 @@ fn base_list(p: &mut Parser<'_>) {
 fn where_clause(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::WhereKw);
-    exprs::rejected(p);
     name_ref(p);
-    exprs::rejected(p);
     p.expect(K::Colon);
     loop {
         let c = p.start();
