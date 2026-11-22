@@ -100,24 +100,44 @@ pub(super) fn build(
                         .find(|event| !matches!(event, Event::Start { .. })),
                     Some(Event::Rejected)
                 );
-                // A node past the nesting limit that takes no token: no node
-                // is made for it, the nodes that wrap it are, and its
-                // `TooDeep`, followed by nothing it wraps, reports `MR0018`
-                // where it is, as an error with nothing to wrap is. Left out,
-                // it cannot end the muting of errors of a statement it would
-                // be, but it is never one: the tree counts every statement,
-                // block and expression the parser's depth counts, and the
-                // conditions and bodies around them too, so a statement past
-                // the parser's limit is inside a node the tree builder has
-                // already flattened, where no node is made either.
-                let alone = kind == K::Error
-                    && matches!(
-                        events.get(i + 1..i + 3),
-                        Some([Event::TooDeep, Event::Finish])
-                    );
+                // An `Error` node that would hold nothing but what it reports:
+                // one past the nesting limit that takes no token (its
+                // `TooDeep`), or one the parser opens for an error where
+                // nothing is left to take, as `statement` does at the end of
+                // the text after attributes and `accessor_list` before a
+                // word that is not `get` or `set`. No node is made for it; the
+                // nodes that wrap it are, and each of its events, followed by
+                // nothing it wraps, reports where it is, as an error with
+                // nothing to wrap does. Only an `Error` node is left out: a
+                // node of another kind that the parser leaves empty, as the
+                // `Name` of a parameter whose name is missing, stays.
+                //
+                // Left out, the node changes no muting of errors, which reads
+                // only where blocks, member lists and the file are open
+                // (`Sink::too_deep`, `Sink::mutes_errors`, `Sink::finish`):
+                // it is never directly in one. `nested_in` runs inside the
+                // node of the construct that went one level deeper, and every
+                // statement opens its own node before it nests (`ExprStmt`,
+                // `LocalDeclStmt`, ...). `nested_statement`'s `skip` takes a
+                // token unless the text has ended (`skip_statement`), and
+                // `statement` is reached at the end only after attributes,
+                // inside `AttributedStmt`: `block`, `body` and the file's loop
+                // (`source_file`) stop at the end first. `accessor_list`'s is
+                // inside `AccessorList`.
+                //
+                // Rejected text and comments before the token the node would
+                // start at go where they would without it: the run is parsed
+                // as if absent, and past the limit nothing is missing for it
+                // to stand for, since the left-out node is the operand.
+                let reported = events[i + 1..]
+                    .iter()
+                    .take_while(|event| matches!(event, Event::Error { .. } | Event::TooDeep))
+                    .count();
+                let alone =
+                    kind == K::Error && matches!(events.get(i + 1 + reported), Some(Event::Finish));
                 if alone {
                     chain.remove(0);
-                    events[i + 2] = Event::Tombstone;
+                    events[i + 1 + reported] = Event::Tombstone;
                 }
                 // The first token of the node, which `MR0018` covers.
                 let first_token = || events[i + 1..].iter().find_map(raw_tokens);

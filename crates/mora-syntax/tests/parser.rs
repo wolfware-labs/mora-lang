@@ -14,6 +14,7 @@ use mora_syntax::ast::{self, AstNode};
 use mora_syntax::parse;
 
 fn render(text: &str) -> String {
+    assert_errors_hold_tokens(text);
     let parse = parse(text);
     let mut out = parse.syntax().debug_tree();
     for error in parse.errors() {
@@ -457,6 +458,7 @@ fn nothing_chains_after_propagation() {
 }
 
 fn codes_of(text: &str) -> Vec<String> {
+    assert_errors_hold_tokens(text);
     parse(text)
         .errors()
         .iter()
@@ -601,6 +603,7 @@ fn an_unclosed_character_literal_reports_only_what_a_closed_one_would_more() {
 }
 
 fn parse_messages(text: &str) -> Vec<String> {
+    assert_errors_hold_tokens(text);
     parse(text)
         .errors()
         .iter()
@@ -704,6 +707,7 @@ fn a_quoted_run_ends_at_its_closing_quote() {
 
 /// Each error as its code and where it starts.
 fn coded_offsets(text: &str) -> Vec<(String, u32)> {
+    assert_errors_hold_tokens(text);
     parse(text)
         .errors()
         .iter()
@@ -1446,7 +1450,9 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
 /// is not trivia: a comment between parts of rejected text is trivia, as
 /// it would be without them, rejected text taken in place of something
 /// missing is in the node that stands for it, and no `Error` node holds no
-/// token at all, as one past the nesting limit that takes nothing would.
+/// token at all, as one past the nesting limit that takes nothing, or one
+/// for an error at the end of the text, would. It holds for every text:
+/// the snapshots and every helper here that parses run it.
 fn assert_errors_hold_tokens(text: &str) {
     for node in error_nodes(&parse(text).syntax()) {
         assert!(
@@ -1454,6 +1460,39 @@ fn assert_errors_hold_tokens(text: &str) {
             "{text:?}: {node:?} holds no token but trivia"
         );
     }
+}
+
+#[test]
+fn an_error_with_nothing_to_take_makes_no_error_node() {
+    // At the end of the text after attributes, and before a word that is
+    // not `get` or `set`, the error is reported where it is, with no
+    // `Error` node, which would hold nothing.
+    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
+    assert_eq!(full_errors("@A"), [error("expected a statement", 2)]);
+    assert_eq!(
+        full_errors("class Z { this[i: int]: int { ge } }"),
+        [
+            error("expected `get` or `set`", 29),
+            error("expected `}`", 29),
+            ("MR0110".to_owned(), "expected a member".to_owned(), 30, 32),
+            (
+                "MR0110".to_owned(),
+                "expected a statement".to_owned(),
+                35,
+                36
+            ),
+        ]
+    );
+    // A node of another kind that the parser leaves empty stays: the name
+    // of a parameter whose name is missing.
+    let parse = parse("let f = (const x: int) => x;\n");
+    assert!(
+        parse
+            .syntax()
+            .descendants()
+            .any(|node| node.kind() == mora_syntax::SyntaxKind::Name
+                && node.tokens().next().is_none())
+    );
 }
 
 #[test]
@@ -1523,6 +1562,7 @@ fn a_block_comment_on_one_line_keeps_a_quoted_run_whole() {
 
 /// Each error as its code, its message and its range.
 fn full_errors(text: &str) -> Vec<(String, String, u32, u32)> {
+    assert_errors_hold_tokens(text);
     parse(text)
         .errors()
         .iter()

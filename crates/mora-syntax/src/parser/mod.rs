@@ -517,7 +517,9 @@ impl<'t> Parser<'t> {
 
     /// [`Parser::nested`] for a statement. At [`MAX_DEPTH`] it reports
     /// `MR0018` instead and `skip` takes the statement into an `Error`
-    /// node. Returns whether the statement was parsed.
+    /// node. At the end of the text `skip` takes nothing, and the tree
+    /// builder reports `MR0018` there without the node, which would hold
+    /// nothing. Returns whether the statement was parsed.
     pub(crate) fn nested_statement(
         &mut self,
         parse: impl FnOnce(&mut Self),
@@ -685,7 +687,10 @@ impl<'t> Parser<'t> {
     /// there and no other is missing at that token: the next one comes after
     /// an operator, a token that moves on. [`Parser::nested_statement`]
     /// takes the statement, and the next statement starts at its own token,
-    /// where nothing is missing yet. A `Start` that
+    /// where nothing is missing yet. At the end of the text it takes
+    /// nothing, and `statement` then opens an `Error` node for "expected a
+    /// statement" at the same token, so the note is taken there; nothing is
+    /// parsed after it. A `Start` that
     /// `precede` pushed opens at the first token of the node it wraps, not
     /// at the next token; none is followed by an error, which this relies
     /// on. An error with a fix needs no note: it wraps the next token, which

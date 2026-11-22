@@ -712,3 +712,103 @@ fn a_node_past_the_limit_that_takes_no_token_is_left_out() {
         assert_ne!(last.map(|child| child.kind()), Some(K::Error), "{name}");
     }
 }
+
+/// Each error of `text` as its code and range.
+fn coded_ranges(text: &str) -> Vec<(Code, usize, usize)> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| {
+            (
+                error.code,
+                usize::from(error.range.start()),
+                usize::from(error.range.end()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_statement_past_the_limit_at_the_end_of_the_text_reports_once() {
+    // The statement after the attributes is past the limit and the text
+    // ends there: one `MR0018`, at the end, and no `Error` node.
+    for text in [
+        format!("{}@A", "{ ".repeat(255)),
+        format!("{}@A \u{201c}", "{ ".repeat(255)),
+    ] {
+        let errors = coded_ranges(&text);
+        let too_deep: Vec<_> = errors
+            .iter()
+            .filter(|error| error.0 == codes::MR0018)
+            .collect();
+        assert_eq!(too_deep, [&(codes::MR0018, 512, 512)], "{text:?}");
+        assert_errors_hold_tokens(&text);
+    }
+}
+
+#[test]
+fn the_statement_after_one_past_the_limit_reports_its_own_errors() {
+    // Muting ends with the statement that went past the limit, though its
+    // node was left out.
+    let text = format!("let x = {};\nlet z = ;\n", "- ".repeat(255));
+    assert_eq!(
+        coded_ranges(&text),
+        [(codes::MR0018, 517, 517), (codes::MR0110, 527, 527)]
+    );
+}
+
+/// The kind of the node that holds the first token of `text` that is `what`.
+fn holder_of(text: &str, what: &str) -> K {
+    let parse = parse(text);
+    parse
+        .syntax()
+        .descendants()
+        .find(|node| {
+            node.children_with_tokens()
+                .any(|child| child.into_token().is_some_and(|token| token.text() == what))
+                || node
+                    .children()
+                    .any(|child| child.kind() == K::Error && child.text() == what)
+        })
+        .map(|node| node.kind())
+        .unwrap()
+}
+
+#[test]
+fn what_comes_before_a_node_left_out_goes_where_it_would_without_it() {
+    // Past the limit the node left out is the operand, so nothing is missing
+    // for rejected text there to stand for: it is parsed as if absent and
+    // goes where its whitespace does, in the statement, as the comment does.
+    // Without the limit it stands for the missing operand, in the
+    // parentheses.
+    let deep = |inner: &str| format!("let x = {} {inner} ;\nlet z = ;\n", "(".repeat(255));
+    let bare = deep("");
+    assert_eq!(coded_ranges(&bare)[0], (codes::MR0018, 263, 263));
+    let run = deep("\u{201c}");
+    assert_eq!(holder_of(&run, "\u{201c}"), K::LocalDeclStmt);
+    assert_errors_hold_tokens(&run);
+    let comment = deep("/* c */");
+    assert_eq!(holder_of(&comment, "/* c */"), K::LocalDeclStmt);
+    assert_eq!(
+        holder_of("let x = ( /* c */ ;\n", "/* c */"),
+        K::LocalDeclStmt
+    );
+    assert_eq!(
+        holder_of("let x = ( \u{201c} ;\n", "\u{201c}"),
+        K::ParenExpr
+    );
+    // The errors are those of the text without them, past the rejected
+    // token, and the statement after it reports its own.
+    let shifted = |text: &str, by: usize| {
+        coded_ranges(text)
+            .into_iter()
+            .filter(|error| error.0 != codes::MR0017)
+            .map(|(code, start, end)| {
+                let by = if start > 263 { by } else { 0 };
+                (code, start - by, end - by)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shifted(&run, "\u{201c}".len()), coded_ranges(&bare));
+    assert_eq!(shifted(&comment, "/* c */".len()), coded_ranges(&bare));
+}
