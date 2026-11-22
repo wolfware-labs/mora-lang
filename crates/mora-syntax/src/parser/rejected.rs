@@ -50,6 +50,18 @@ use crate::lexer::Lexed;
 
 use SyntaxKind as K;
 
+/// Rejected text right before a token of [`Input`], by what comes before
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Rejected {
+    /// No comment comes between the token before and the rejected text.
+    Bare,
+    /// A comment comes before the rejected text: it may belong to the
+    /// declaration after the run, which then takes the run with it
+    /// ([`at_item_start`]).
+    AfterComment,
+}
+
 /// The tokens that make up an interpolated string around its holes.
 const INTERPOLATION: &[SyntaxKind] = &[
     K::InterpStart,

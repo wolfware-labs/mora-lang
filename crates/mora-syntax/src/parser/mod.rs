@@ -37,6 +37,7 @@ use mora_span::TextRange;
 use crate::ast::{self, AstNode};
 use crate::lexer::{Lexed, lex};
 use crate::{GreenNode, SyntaxError, SyntaxKind, SyntaxNode};
+use rejected::Rejected;
 
 use SyntaxKind as K;
 
@@ -120,12 +121,10 @@ pub(crate) struct Input<'t> {
     /// with only rejected text after the line break.
     line_start: Vec<bool>,
     /// `Some` when rejected text comes right before the token, so that it
-    /// can stand for something missing there, with whether a comment comes
-    /// before that rejected text: then it does only when no declaration
-    /// that takes the comment starts at the token
-    /// ([`Parser::rejected_in_place`]). One entry more, for the end of the
-    /// text.
-    rejected_before: Vec<Option<bool>>,
+    /// can stand for something missing there ([`Parser::rejected_in_place`]),
+    /// with what comes before that rejected text. One entry more, for the
+    /// end of the text.
+    rejected_before: Vec<Option<Rejected>>,
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
@@ -224,11 +223,14 @@ impl<'t> Input<'t> {
             // A comment before the run may belong to the declaration after
             // it ([`Parser::rejected_in_place`]).
             let after = start.checked_sub(1).map_or(0, |before| all.raw[before] + 1);
-            rejected = Some(
-                lexed.tokens[after..first]
-                    .iter()
-                    .any(|token| token.kind.is_comment()),
-            );
+            let commented = lexed.tokens[after..first]
+                .iter()
+                .any(|token| token.kind.is_comment());
+            rejected = Some(if commented {
+                Rejected::AfterComment
+            } else {
+                Rejected::Bare
+            });
             // The tokens around the run touch as they would without it: when
             // no trivia comes between them and the run, nor inside the run
             // (it spans no more tokens of `lexed` than it holds), they are
@@ -332,8 +334,8 @@ impl<'t> Input<'t> {
     }
 
     /// `Some` when rejected text comes right before token `i`, or before the
-    /// end of the text at `len`, with whether a comment comes before it.
-    fn rejected_before(&self, i: usize) -> Option<bool> {
+    /// end of the text at `len`, with what comes before it.
+    fn rejected_before(&self, i: usize) -> Option<Rejected> {
         self.rejected_before.get(i).copied().flatten()
     }
 }
@@ -652,8 +654,10 @@ impl<'t> Parser<'t> {
     /// the comment, and the run with it, go to that declaration, as the
     /// comment would without the run.
     pub(crate) fn rejected_in_place(&mut self) -> Option<CompletedMarker> {
-        let commented = self.input.rejected_before(self.pos)?;
-        if self.rejected_taken == Some(self.pos) || (commented && items::at_item_start(self)) {
+        let rejected = self.input.rejected_before(self.pos)?;
+        if self.rejected_taken == Some(self.pos)
+            || (rejected == Rejected::AfterComment && items::at_item_start(self))
+        {
             return None;
         }
         self.rejected_taken = Some(self.pos);
@@ -813,6 +817,8 @@ pub(crate) const SYNTAX_ERROR: mora_diag::Code = codes::MR0110;
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
     use super::{Input, Parser, STUCK, items, lex, parse, parse_within};
 
     #[test]
@@ -860,9 +866,10 @@ mod tests {
     fn each_token_is_scanned_for_a_closing_quote_once() {
         // None of these quotes is closed, so each scan runs to the `;`; in
         // the last, every quote is closed by the one at the end.
+        // Writing to a `String` cannot fail.
         let mut names = String::from("let names = [\n");
         for i in 0..20_000 {
-            names.push_str(&format!("    \u{201c}name{i}\u{201c},\n"));
+            let _ = writeln!(names, "    \u{201c}name{i}\u{201c},");
         }
         names.push_str("];\n");
         let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(40_000));

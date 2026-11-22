@@ -374,6 +374,7 @@ fn unsupported_host(error: mora_target::Error) -> CodegenError {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -749,18 +750,21 @@ mod tests {
     /// `F`, whose locals take 128 KiB, built up from a `long` of 7 that it
     /// returns, and a call of it.
     fn large_frame() -> String {
+        // Writing to a `String` cannot fail.
         let mut text = doubling(13);
         text.push_str("F(): long {\n    let s0 = new S0 { A = 7 };\n");
         for i in 1..=13 {
             let before = i - 1;
-            text.push_str(&format!(
-                "    let s{i} = new S{i} {{ A = s{before}, B = s{before} }};\n"
-            ));
+            let _ = writeln!(
+                text,
+                "    let s{i} = new S{i} {{ A = s{before}, B = s{before} }};"
+            );
         }
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             "    return s13{};\n}}\nF();\n",
             ".B".repeat(13) + ".A"
-        ));
+        );
         text
     }
 
@@ -785,10 +789,11 @@ mod tests {
     /// The structs of [`doubling`] up to `S28`, a function `F` with a local
     /// of each struct `S{i}` for `i` in `sizes`, and a call of it.
     fn frame_of(sizes: impl IntoIterator<Item = u32>) -> String {
+        // Writing to a `String` cannot fail.
         let mut text = doubling(28);
         text.push_str("F(): int {\n");
         for i in sizes {
-            text.push_str(&format!("    var a{i}: S{i};\n"));
+            let _ = writeln!(text, "    var a{i}: S{i};");
         }
         text.push_str("    return 1;\n}\nF();\n");
         text
@@ -847,7 +852,8 @@ mod tests {
             "    return 1;\n",
             &format!("    return G({});\n", arguments.join(", ")),
         );
-        text.push_str(&format!("G({}): int => 1;\n", parameters.join(", ")));
+        // Writing to a `String` cannot fail.
+        let _ = writeln!(text, "G({}): int => 1;", parameters.join(", "));
         let error = build(&text).unwrap_err();
         assert_eq!(
             error.to_string(),

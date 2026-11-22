@@ -1427,10 +1427,17 @@ fn comment_holders(text: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The text of each `Error` node in `node`.
-fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
+/// The `Error` nodes in `node`, `node` included.
+fn error_nodes<'a>(
+    node: &mora_syntax::SyntaxNode<'a>,
+) -> impl Iterator<Item = mora_syntax::SyntaxNode<'a>> {
     node.descendants()
         .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
+}
+
+/// The text of each `Error` node in `node`.
+fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
+    error_nodes(node)
         .map(|node| node.text().to_string())
         .collect()
 }
@@ -1440,14 +1447,11 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
 /// it would be without them, and rejected text taken in place of something
 /// missing is in the node that stands for it.
 fn assert_errors_hold_tokens(text: &str) {
-    let parse = parse(text);
-    for node in parse.syntax().descendants() {
-        if node.kind() == mora_syntax::SyntaxKind::Error {
-            assert!(
-                node.tokens().any(|token| !token.kind().is_trivia()),
-                "{text:?}: {node:?} holds only trivia"
-            );
-        }
+    for node in error_nodes(&parse(text).syntax()) {
+        assert!(
+            node.tokens().any(|token| !token.kind().is_trivia()),
+            "{text:?}: {node:?} holds only trivia"
+        );
     }
 }
 
@@ -1702,10 +1706,7 @@ fn rejected_text_after_a_comment_stands_for_what_is_missing_where_no_declaration
                 .find(|token| !token.kind().is_trivia())
                 .map(|token| token.text_range())
         };
-        let errors: Vec<_> = root
-            .descendants()
-            .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
-            .collect();
+        let errors: Vec<_> = error_nodes(&root).collect();
         assert!(
             errors
                 .iter()
@@ -1754,7 +1755,6 @@ fn rejected_text_a_node_placed_does_not_stand_for_what_is_missing_after_it() {
     // goes before it; the body missing after the parameter list is then
     // reported, as without the `\\`.
     let text = "let f = (\\const x: int) => x;\n";
-    assert_errors_hold_tokens(text);
     assert_rejected_over(text, "let f = (const x: int) => x;\n");
 }
 
@@ -1844,7 +1844,6 @@ fn comments_between_parts_of_rejected_text_are_trivia() {
     // In place, the first part stands for the value; the comments after it
     // go to the class, as they would without the run.
     let text = "let a = \\ /* a */ /* b */ \\\nclass C { }\n";
-    assert_errors_hold_tokens(text);
     assert_eq!(
         comment_holders(text),
         comment_holders("let a =  /* a */ /* b */ \nclass C { }\n")
@@ -1915,6 +1914,16 @@ fn a_comment_inside_a_quoted_run_is_rejected_text() {
 
 #[test]
 fn rejected_text_after_a_range_is_not_its_end() {
+    // Whether the range in `text` has an end, and its text.
+    let range_of = |text: &str| {
+        let parse = parse(text);
+        let range = parse
+            .syntax()
+            .descendants()
+            .find_map(ast::RangeExpr::cast)
+            .unwrap();
+        (range.end().is_some(), range.syntax().text().to_string())
+    };
     for (text, without) in [
         (
             "let r = (a, ..\\/// f\n\n/* g */\\);\n",
@@ -1937,26 +1946,14 @@ fn rejected_text_after_a_range_is_not_its_end() {
             "{text:?}"
         );
         assert_rejected_over(text, without);
-        let parse = parse(text);
-        let range = parse
-            .syntax()
-            .descendants()
-            .find_map(ast::RangeExpr::cast)
-            .unwrap();
-        assert!(range.end().is_none(), "{text:?}");
+        let (has_end, range_text) = range_of(text);
+        assert!(!has_end, "{text:?}");
         // Neither the run nor a comment after it is in the range.
-        let range_text = range.syntax().text().to_string();
         assert!(range_text.ends_with(".."), "{text:?}: {range_text:?}");
     }
     // Rejected text before a real end leaves the end to the range.
     for text in ["let r = a..\\b;\n", "let r = ..\\b;\n"] {
-        let parse = parse(text);
-        let range = parse
-            .syntax()
-            .descendants()
-            .find_map(ast::RangeExpr::cast)
-            .unwrap();
-        assert!(range.end().is_some(), "{text:?}");
+        assert!(range_of(text).0, "{text:?}");
     }
 }
 
