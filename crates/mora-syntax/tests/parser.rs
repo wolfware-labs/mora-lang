@@ -881,6 +881,7 @@ fn a_rejected_token_where_a_type_a_value_or_a_semicolon_starts_is_parsed_past() 
 /// Asserts that `text`, with its one `\`, reports only that token, and
 /// that a run of rejected tokens in its place reports only them.
 fn assert_only_rejected(text: &str) {
+    assert_errors_hold_tokens(text);
     assert_eq!(codes_of(text), ["MR0017"], "{text:?}");
     for run in ["\\\\", "\\\\\\", "\u{a0}\u{a0}"] {
         let longer = text.replacen('\\', run, 1);
@@ -1234,6 +1235,7 @@ fn rejected_text_inside_a_joined_operator_is_parsed_past() {
 /// The messages of the errors of `text` besides `MR0017`, which it must
 /// report.
 fn rest_of_errors(text: &str) -> Vec<String> {
+    assert_errors_hold_tokens(text);
     let errors = parse(text).errors().to_vec();
     assert!(
         errors
@@ -1277,6 +1279,7 @@ fn shape_past_rejected(text: &str) -> String {
             }
         }
     }
+    assert_errors_hold_tokens(text);
     let mut out = String::new();
     walk(&parse(text).syntax(), &mut out);
     out
@@ -1416,6 +1419,7 @@ fn comment_holders(text: &str) -> Vec<(String, String)> {
             }
         }
     }
+    assert_errors_hold_tokens(text);
     let mut out = Vec::new();
     let parse = parse(text);
     let root = parse.syntax();
@@ -1429,6 +1433,22 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
         .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
         .map(|node| node.text().to_string())
         .collect()
+}
+
+/// Asserts that every `Error` node in the tree of `text` holds a token that
+/// is not trivia: a comment between parts of rejected text is trivia, as
+/// it would be without them, and rejected text taken in place of something
+/// missing is in the node that stands for it.
+fn assert_errors_hold_tokens(text: &str) {
+    let parse = parse(text);
+    for node in parse.syntax().descendants() {
+        if node.kind() == mora_syntax::SyntaxKind::Error {
+            assert!(
+                node.tokens().any(|token| !token.kind().is_trivia()),
+                "{text:?}: {node:?} holds only trivia"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1605,9 +1625,10 @@ fn rejected_text_in_place_leaves_the_comments_below_it_to_the_declaration() {
 }
 
 #[test]
-fn rejected_text_after_a_comment_does_not_stand_for_what_is_missing() {
-    // The comment, and the run under it, go to the class, as the comment
-    // would without the run; what is missing is reported as it would be.
+fn rejected_text_after_a_comment_before_a_declaration_does_not_stand_for_what_is_missing() {
+    // The comment, and the run under it, go to the declaration after them,
+    // as the comment would without the run; what is missing is reported as
+    // it would be.
     for (text, without) in [
         (
             "let a = /// Doc.\n\\class C { }\n",
@@ -1617,7 +1638,19 @@ fn rejected_text_after_a_comment_does_not_stand_for_what_is_missing() {
             "let a = /* c */ \\class C { }\n",
             "let a = /* c */ class C { }\n",
         ),
-        ("let u = await // c\n\\\n", "let u = await // c\n\n"),
+        (
+            "let a = /* c */ \\\n@A G(): int => 1;\n",
+            "let a = /* c */ \n@A G(): int => 1;\n",
+        ),
+        (
+            "let a = /* c */ \\\nusing X;\n",
+            "let a = /* c */ \nusing X;\n",
+        ),
+        // `operator` starts a declaration only in a member list.
+        (
+            "class K {\n    G(): int => /* c */ \\\n    operator +(a: K): K => a;\n}\n",
+            "class K {\n    G(): int => /* c */\n    operator +(a: K): K => a;\n}\n",
+        ),
     ] {
         assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
         assert_eq!(
@@ -1630,6 +1663,129 @@ fn rejected_text_after_a_comment_does_not_stand_for_what_is_missing() {
     let (class, errors) = class_of("let a = /// Doc.\n\\class C { }\n");
     assert!(class.starts_with("/// Doc."), "{class:?}");
     assert_eq!(errors, ["\\"]);
+}
+
+#[test]
+fn rejected_text_after_a_comment_stands_for_what_is_missing_where_no_declaration_follows() {
+    // No declaration comes after the run to take the comment, so the run
+    // stands for the missing operand, and the text reports what it would
+    // without the comment. The comment stays outside the run's `Error`
+    // node.
+    for (text, comment) in [
+        ("let s = /* note */ \u{201c}text\u{201d};\n", "/* note */"),
+        ("let a = 1 + /* c */ \\;\n", "/* c */"),
+        ("let a = /* c */\n\\;\n", "/* c */"),
+        ("(/* c */ \\> 0\\\n\n\\)\n", "/* c */"),
+        ("let u = await // c\n\\\n", "// c"),
+        ("struct W { public mut(/* c */ \\) X: int; }\n", "/* c */"),
+    ] {
+        let blank = text.replace(comment, &" ".repeat(comment.len()));
+        assert_eq!(full_errors(text), full_errors(&blank), "{text:?}");
+        assert_errors_hold_tokens(text);
+        // The first token after the comment starts an `Error` node that
+        // the comment is not in.
+        let parse = parse(text);
+        let root = parse.syntax();
+        let tokens: Vec<_> = root.tokens().collect();
+        let at = tokens
+            .iter()
+            .position(|token| token.text() == comment)
+            .unwrap();
+        let comment = tokens[at].text_range();
+        let next = tokens[at + 1..]
+            .iter()
+            .find(|token| !token.kind().is_trivia())
+            .unwrap()
+            .text_range();
+        let first_of = |node: &mora_syntax::SyntaxNode| {
+            node.tokens()
+                .find(|token| !token.kind().is_trivia())
+                .map(|token| token.text_range())
+        };
+        let errors: Vec<_> = root
+            .descendants()
+            .filter(|node| node.kind() == mora_syntax::SyntaxKind::Error)
+            .collect();
+        assert!(
+            errors
+                .iter()
+                .all(|node| !node.text_range().contains_range(comment)),
+            "{text:?}"
+        );
+        assert!(
+            errors.iter().any(|node| first_of(node) == Some(next)),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn rejected_text_in_place_goes_inside_the_nodes_opened_around_it() {
+    // An argument or an element opens before the `Error` node that stands
+    // for its value: the rejected text goes in that `Error` node, and what
+    // is missing after it is reported after it.
+    for (text, node, missing) in [
+        ("F(\\: int;\n", "Arg", 3),
+        ("G(a, \\: b);\n", "Arg", 6),
+        ("let x = [\\: 1];\n", "CollectionElem", 10),
+        ("F(\u{201d})\u{201d}: int;\n", "Arg", 9),
+    ] {
+        assert_errors_hold_tokens(text);
+        let parse = parse(text);
+        let holder = parse
+            .syntax()
+            .descendants()
+            .find(|n| format!("{:?}", n.kind()) == node && n.text().contains(['\\', '\u{201d}']))
+            .unwrap();
+        assert_eq!(error_texts(&holder), [holder.text()], "{text:?}");
+        assert_eq!(
+            coded_offsets(text)
+                .into_iter()
+                .find(|(code, _)| code == "MR0110"),
+            Some(("MR0110".to_owned(), missing)),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
+fn rejected_text_a_node_placed_does_not_stand_for_what_is_missing_after_it() {
+    // The parameter, whose name is missing, opens after the `\\`, which
+    // goes before it; the body missing after the parameter list is then
+    // reported, as without the `\\`.
+    let text = "let f = (\\const x: int) => x;\n";
+    assert_errors_hold_tokens(text);
+    assert_rejected_over(text, "let f = (const x: int) => x;\n");
+}
+
+#[test]
+fn comments_between_parts_of_rejected_text_are_trivia() {
+    for (text, without) in [
+        (
+            "x;\n\\ /* a */ /* b */ \\\nclass C { }\n",
+            "x;\n /* a */ /* b */ \nclass C { }\n",
+        ),
+        ("\\\n\n/* a */\n\n\\\n", "\n\n/* a */\n\n\n"),
+    ] {
+        assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
+        assert_rejected_over(text, without);
+    }
+    // In place, the first part stands for the value; the comments after it
+    // go to the class, as they would without the run.
+    let text = "let a = \\ /* a */ /* b */ \\\nclass C { }\n";
+    assert_errors_hold_tokens(text);
+    assert_eq!(
+        comment_holders(text),
+        comment_holders("let a =  /* a */ /* b */ \nclass C { }\n")
+    );
+    assert_eq!(error_texts(&parse(text).syntax()), ["\\", "/* b */ \\"]);
+    let (class, errors) = class_of("x;\n\\ /* a */ /* b */ \\\nclass C { }\n");
+    assert!(class.starts_with("/* a */"), "{class:?}");
+    assert_eq!(errors, ["/* b */ \\"]);
+    assert_eq!(
+        error_texts(&parse("\\\n\n/* a */\n\n\\\n").syntax()),
+        ["\\", "\\"]
+    );
 }
 
 #[test]

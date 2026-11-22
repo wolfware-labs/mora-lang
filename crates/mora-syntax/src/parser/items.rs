@@ -68,7 +68,7 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
 /// Parses one top-level element and returns whether it was an item or a
 /// statement. A `using` directive after one is still parsed, with an error.
 fn top_level(p: &mut Parser<'_>, seen_item: bool) -> bool {
-    if p.at(K::UsingKw) || (p.at_contextual("global") && p.nth(1) == K::UsingKw) {
+    if at_using_directive(p) {
         if seen_item {
             p.error("`using` directives come before the declarations");
         }
@@ -79,6 +79,19 @@ fn top_level(p: &mut Parser<'_>, seen_item: bool) -> bool {
         stmts::statement(p);
     }
     true
+}
+
+/// Whether a `using` directive starts here.
+fn at_using_directive(p: &Parser<'_>) -> bool {
+    p.at(K::UsingKw) || (p.at_contextual("global") && p.nth(1) == K::UsingKw)
+}
+
+/// Whether a declaration that takes the comments above it can start here,
+/// in some context: a `using` directive, a top-level declaration, or an
+/// operator, which only a member list holds. Every other member starts
+/// with a name, `~`, `this` or `$`, which start an expression too.
+pub(crate) fn at_item_start(p: &Parser<'_>) -> bool {
+    at_using_directive(p) || at_declaration_start(p) || p.at(K::OperatorKw)
 }
 
 /// `using X;`, `using static X;`, `using A = X;`, `global using X;` (§4.3).

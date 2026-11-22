@@ -504,3 +504,35 @@ fn a_type_past_the_limit_is_still_a_type() {
     let text = "let ok = s is any IShape u;";
     assert_eq!((too_deep(text), count(text, K::DeclarationPattern)), (0, 1));
 }
+
+#[test]
+fn a_range_with_no_end_is_as_deep_as_its_text() {
+    // The statement is the first level and each `(` one more, so the range
+    // inside 254 of them is the 256th level, and its start, `a`, the 257th.
+    // A range with no end has nothing inside it to go past the limit.
+    let range = |depth: usize, start: &str| {
+        let text = format!(
+            "let r = {}{start}..{};",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        parse(&text)
+            .errors()
+            .iter()
+            .map(|error| {
+                (
+                    error.code,
+                    usize::from(error.range.start()),
+                    usize::from(error.range.end()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let at = |depth: usize| "let r = ".len() + depth;
+    assert_eq!(range(254, ""), []);
+    assert_eq!(range(254, "a"), [(codes::MR0018, at(254), at(254) + 1)]);
+    // One level more: the range itself is past the limit, from its first
+    // token.
+    assert_eq!(range(255, ""), [(codes::MR0018, at(255), at(255) + 2)]);
+    assert_eq!(range(255, "a"), [(codes::MR0018, at(255), at(255) + 1)]);
+}

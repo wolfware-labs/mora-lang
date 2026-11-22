@@ -23,19 +23,25 @@
 //! into parts with an `Error` node each, and each comment inside a run
 //! starts a part, so a comment attaches to the declaration below as it
 //! would without the run, with no rejected text from before it
-//! ([`record_run`]). A comment between a quote and the quote that closes
-//! it is rejected text, not a comment: it neither attaches nor splits a
-//! run.
+//! ([`record_run`]). A part with no rejected text, only comments, gets no
+//! `Error` node: its comments are trivia. A comment between a quote and
+//! the quote that closes it is rejected text, not a comment: it neither
+//! attaches nor splits a run.
 //!
 //! Where something is missing, rejected text in its place stands for it:
 //! [`Parser::rejected_in_place`] takes the first part of the run into the
 //! node of the missing operand or write-scope word ([`Event::Rejected`]),
 //! and nothing more is reported there. The parts after it go in as they
-//! would anywhere else.
+//! would anywhere else. A comment before the run keeps it from standing
+//! for what is missing only when the token after the run can start a
+//! declaration that takes the comments above it ([`at_item_start`]): the
+//! comment, and the run with it, then go to that declaration, and what is
+//! missing is reported as it would be without them. Elsewhere the comment
+//! stays before the run's `Error` node.
 
 use super::Input;
 #[cfg(doc)]
-use super::{Event, Parser};
+use super::{Event, Parser, items::at_item_start};
 use crate::SyntaxKind;
 use crate::lexer::Lexed;
 
@@ -130,7 +136,10 @@ pub(super) fn closing_quotes(input: &Input<'_>, lines_end: &[bool]) -> (Vec<Opti
 /// attaches without the rejected text before it, and a node that takes
 /// the part before it in place of something missing leaves it to the
 /// declaration below. The trivia between two parts is not in either. A
-/// comment `quoted` marks, inside a quoted run, is rejected text.
+/// comment `quoted` marks, inside a quoted run, is rejected text. A part
+/// that holds only comments, as `/* a */` in `\ /* a */ /* b */ \`, is not
+/// recorded: no rejected text is in it, so its comments stay trivia, as
+/// they would without the run.
 pub(super) fn record_run(
     lexed: &Lexed,
     quoted: &[bool],
@@ -145,6 +154,9 @@ pub(super) fn record_run(
     // Whether a line break came since the last comment, as rejected text
     // counts as nothing on its line, and whether a blank line did.
     let (mut newline_seen, mut blank) = (false, false);
+    // Whether the part so far holds rejected text: the first one starts
+    // with it.
+    let mut rejected = true;
     let tokens = lexed.tokens[first..end].iter().zip(&quoted[first..end]);
     for (i, (token, &in_quotes)) in (first..end).zip(tokens) {
         let kind = token.kind;
@@ -160,10 +172,14 @@ pub(super) fn record_run(
             _ => {}
         }
         if blank || comment {
-            runs[start] = Some(last + 1);
-            (start, blank) = (i, false);
+            if rejected {
+                runs[start] = Some(last + 1);
+            }
+            (start, blank, rejected) = (i, false, false);
         }
+        rejected |= !comment;
         last = i;
     }
+    // The run ends with rejected text, so its last part holds some.
     runs[start] = Some(last + 1);
 }

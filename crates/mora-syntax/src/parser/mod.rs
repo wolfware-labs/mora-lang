@@ -119,16 +119,20 @@ pub(crate) struct Input<'t> {
     /// Whether a line break comes between the token and the one before it,
     /// with only rejected text after the line break.
     line_start: Vec<bool>,
-    /// Whether rejected text comes right before the token with no comment
-    /// before it, so that it can stand for something missing there; one
-    /// entry more, for the end of the text.
-    rejected_before: Vec<bool>,
+    /// `Some` when rejected text comes right before the token, so that it
+    /// can stand for something missing there, with whether a comment comes
+    /// before that rejected text: then it does only when no declaration
+    /// that takes the comment starts at the token
+    /// ([`Parser::rejected_in_place`]). One entry more, for the end of the
+    /// text.
+    rejected_before: Vec<Option<bool>>,
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
     /// For the first token of each run of rejected text, or of each part of
-    /// one a blank line or a comment splits ([`rejected::record_run`]), as
-    /// an index in [`Lexed::tokens`], the index after its last token.
+    /// one a blank line or a comment splits that holds rejected text
+    /// ([`rejected::record_run`]), as an index in [`Lexed::tokens`], the
+    /// index after its last token.
     rejected_runs: Vec<Option<usize>>,
     /// For each token of [`Lexed::tokens`], whether it lies between a quote
     /// and the quote that closes it: a comment there is rejected text, not a
@@ -186,13 +190,13 @@ impl<'t> Input<'t> {
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
         input.quoted = vec![false; lexed.tokens.len()];
-        let (mut rejected, mut line_break) = (false, false);
+        let (mut rejected, mut line_break) = (None, false);
         let mut at = 0;
         while at < all.len() {
             if all.kinds[at] != K::Unknown {
                 input.line_start.push(all.line_start[at] || line_break);
                 input.rejected_before.push(rejected);
-                (rejected, line_break) = (false, false);
+                (rejected, line_break) = (None, false);
                 input.kinds.push(all.kinds[at]);
                 input.ranges.push(all.ranges[at]);
                 input.raw.push(all.raw[at]);
@@ -217,13 +221,14 @@ impl<'t> Input<'t> {
                 &mut input.rejected_runs,
             );
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
-            // A comment before the run keeps it from standing for what is
-            // missing: the comment, and the run with it, may belong to the
-            // declaration after it.
+            // A comment before the run may belong to the declaration after
+            // it ([`Parser::rejected_in_place`]).
             let after = start.checked_sub(1).map_or(0, |before| all.raw[before] + 1);
-            rejected = !lexed.tokens[after..first]
-                .iter()
-                .any(|token| token.kind.is_comment());
+            rejected = Some(
+                lexed.tokens[after..first]
+                    .iter()
+                    .any(|token| token.kind.is_comment()),
+            );
             // The tokens around the run touch as they would without it: when
             // no trivia comes between them and the run, nor inside the run
             // (it spans no more tokens of `lexed` than it holds), they are
@@ -234,7 +239,7 @@ impl<'t> Input<'t> {
                 && lexed.is_joined(last)
                 && at < all.len();
             if touches && input.merge(&all, at) {
-                (rejected, line_break) = (false, false);
+                (rejected, line_break) = (None, false);
                 at += 1;
             } else if let Some(joined) = input.joined.last_mut() {
                 *joined = touches;
@@ -326,10 +331,10 @@ impl<'t> Input<'t> {
         end - first
     }
 
-    /// Whether rejected text with no comment before it comes right before
-    /// token `i`, or before the end of the text at `len`.
-    fn rejected_before(&self, i: usize) -> bool {
-        self.rejected_before.get(i).copied().unwrap_or(false)
+    /// `Some` when rejected text comes right before token `i`, or before the
+    /// end of the text at `len`, with whether a comment comes before it.
+    fn rejected_before(&self, i: usize) -> Option<bool> {
+        self.rejected_before.get(i).copied().flatten()
     }
 }
 
@@ -405,7 +410,8 @@ pub(crate) struct Parser<'t> {
     /// [`Parser::finish_stopped`] takes the rest.
     stopped: Option<usize>,
     /// The token before which [`Parser::rejected_in_place`] took the
-    /// rejected text, which it takes once.
+    /// rejected text, which it takes once, or before which a node that was
+    /// just opened placed it ([`Parser::rejected_placed`]).
     rejected_taken: Option<usize>,
 }
 
@@ -425,6 +431,7 @@ impl Marker {
         if let Some(Event::Start { kind: slot, .. }) = p.events.get_mut(self.pos) {
             *slot = kind;
         }
+        p.rejected_placed();
         p.events.push(Event::Finish);
         CompletedMarker { pos: self.pos }
     }
@@ -521,6 +528,7 @@ impl<'t> Parser<'t> {
             return true;
         }
         let m = self.start();
+        self.rejected_placed();
         self.events.push(Event::TooDeep);
         skip(self);
         m.complete(self, K::Error);
@@ -543,6 +551,7 @@ impl<'t> Parser<'t> {
 
     fn too_deep(&mut self, angles: bool) -> CompletedMarker {
         let m = self.start();
+        self.rejected_placed();
         self.events.push(Event::TooDeep);
         let group = matches!(self.current(), K::LParen | K::LBracket | K::LBrace)
             || (angles && self.at(K::Lt));
@@ -640,15 +649,33 @@ impl<'t> Parser<'t> {
     /// Takes the rejected text right before the next token into an `Error`
     /// node of its own, where it stands for what is missing there, as in
     /// `let a = \u{201c};`: the lexer reported it, and nothing more is. `None`
-    /// when no rejected text is there, or a comment comes before it.
+    /// when no rejected text is there, or when a comment comes before it and
+    /// the next token can start a declaration that takes the comments above
+    /// it ([`items::at_item_start`]), as in `let a = /// Doc.\n\\class C { }`:
+    /// the comment, and the run with it, go to that declaration, as the
+    /// comment would without the run.
     pub(crate) fn rejected_in_place(&mut self) -> Option<CompletedMarker> {
-        if !self.input.rejected_before(self.pos) || self.rejected_taken == Some(self.pos) {
+        let commented = self.input.rejected_before(self.pos)?;
+        if self.rejected_taken == Some(self.pos) || (commented && items::at_item_start(self)) {
             return None;
         }
         self.rejected_taken = Some(self.pos);
         let m = self.start();
         self.events.push(Event::Rejected);
         Some(m.complete(self, K::Error))
+    }
+
+    /// Notes, before an event other than a token, that the rejected text
+    /// before the next token is placed when a node was just opened: the
+    /// tree builder puts it before that node ([`Event::Start`]), so it can
+    /// no longer stand for something missing, as in `(\\const x: int) => x`,
+    /// where the parameter before the missing body took it.
+    fn rejected_placed(&mut self) {
+        if matches!(self.events.last(), Some(Event::Start { .. }))
+            && self.input.rejected_before(self.pos).is_some()
+        {
+            self.rejected_taken = Some(self.pos);
+        }
     }
 
     /// Whether a line break comes before the next token.
@@ -715,6 +742,7 @@ impl<'t> Parser<'t> {
         if self.stopped.is_some() {
             return;
         }
+        self.rejected_placed();
         self.events.push(Event::Error {
             message: message.into(),
             fix: None,
@@ -732,6 +760,7 @@ impl<'t> Parser<'t> {
         if self.stopped.is_some() {
             return;
         }
+        self.rejected_placed();
         self.events.push(Event::Error {
             message: message.into(),
             fix: Some(TokenFix {

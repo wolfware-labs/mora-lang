@@ -90,7 +90,16 @@ pub(super) fn build(
                         _ => break,
                     }
                 }
-                let in_place = matches!(events.get(i + 1), Some(Event::Rejected));
+                // The node takes the rejected text before its first token
+                // when the parser took it in place right after opening it,
+                // or after opening nodes inside it before any token, as an
+                // `Arg` opens around the `Error` that stands for its value.
+                let in_place = matches!(
+                    events[i + 1..]
+                        .iter()
+                        .find(|event| !matches!(event, Event::Start { .. })),
+                    Some(Event::Rejected)
+                );
                 // The first token of the node, which `MR0018` covers.
                 let first_token = || events[i + 1..].iter().find_map(raw_tokens);
                 for kind in chain.drain(..).rev() {
@@ -121,8 +130,8 @@ struct Sink<'a> {
     /// Every token of the text, trivia included.
     lexed: &'a Lexed,
     /// For the first token of each run of rejected text, or of each part of
-    /// one a blank line or a comment splits, the index after its last token
-    /// ([`Input`]).
+    /// one a blank line or a comment splits that holds rejected text, the
+    /// index after its last token ([`Input`]).
     rejected_runs: &'a [Option<usize>],
     /// For the last token of each run of rejected text, or of each part of
     /// one, its first token.
@@ -326,8 +335,9 @@ impl Sink<'_> {
     /// blank line. A comment among rejected text attaches the part of its
     /// run it is in, which starts at the comment
     /// ([`super::rejected::record_run`]), so no rejected text from before
-    /// the comment comes with it. A comment inside a quoted run is rejected
-    /// text.
+    /// the comment comes with it; a comment in a part with no rejected text
+    /// is in none, and attaches on its own. A comment inside a quoted run is
+    /// rejected text.
     fn attached_comments(&self, end: usize) -> usize {
         let mut from = end;
         let mut i = end;
