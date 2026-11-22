@@ -15,6 +15,18 @@ pub const PAGES: &str = "docs/errors";
 /// The file in [`PAGES`] that holds the page template, not a page.
 pub const PAGE_TEMPLATE: &str = "README.md";
 
+/// The workspace manifest, relative to the repository root.
+pub const ROOT_MANIFEST: &str = "Cargo.toml";
+
+/// The workspace lockfile, relative to the repository root.
+pub const ROOT_LOCK: &str = "Cargo.lock";
+
+/// The fuzz crate's manifest, relative to the repository root.
+pub const FUZZ_MANIFEST: &str = "fuzz/Cargo.toml";
+
+/// The fuzz crate's lockfile, relative to the repository root.
+pub const FUZZ_LOCK: &str = "fuzz/Cargo.lock";
+
 /// The repository root: the parent of this crate.
 pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -72,14 +84,42 @@ fn is_build_dir(dir: &Path) -> bool {
     dir.join("CACHEDIR.TAG").is_file()
 }
 
-/// An empty directory for one test, named for it and this process, under
-/// the system's temporary directory.
+/// An empty directory for one test, under the system's temporary
+/// directory, removed with what it holds when the value is dropped, so
+/// also when the test panics.
 #[cfg(test)]
-pub fn scratch(name: &str) -> PathBuf {
+pub struct Scratch(PathBuf);
+
+#[cfg(test)]
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl AsRef<Path> for Scratch {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A [`Scratch`] directory named for the test `name` and this process.
+#[cfg(test)]
+pub fn scratch(name: &str) -> Scratch {
     let dir = env::temp_dir().join(format!("mora-xtask-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
 #[cfg(test)]
@@ -105,6 +145,19 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_directory_is_removed_when_its_test_ends_or_panics() {
+        let kept = std::panic::catch_unwind(|| {
+            let dir = scratch("removed-on-panic");
+            fs::write(dir.join("file"), "").unwrap();
+            let path = dir.to_path_buf();
+            std::panic::panic_any(path);
+        })
+        .unwrap_err();
+        let path = kept.downcast::<PathBuf>().unwrap();
+        assert!(!path.exists(), "{}", path.display());
+    }
+
+    #[test]
     fn files_skip_build_directories_but_not_modules_named_target() {
         let dir = scratch("files-with-extension");
         for file in ["a.rs", "src/target/mod.rs", "target/debug/b.rs", "c.txt"] {
@@ -115,7 +168,6 @@ mod tests {
         fs::write(dir.join("target/CACHEDIR.TAG"), "").unwrap();
         let files = files_with_extension(&dir, "rs").unwrap();
         let shown: Vec<_> = files.iter().map(|file| relative(&dir, file)).collect();
-        let _ = fs::remove_dir_all(&dir);
         assert_eq!(shown, ["a.rs", "src/target/mod.rs"]);
         assert_eq!(
             files_with_extension(&dir.join("missing"), "rs").unwrap(),

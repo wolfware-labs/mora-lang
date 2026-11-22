@@ -7,6 +7,18 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+  # The fuzz crate is outside the workspace and has its own lockfile. Only
+  # libfuzzer-sys is updated here: the crates it shares with the workspace
+  # follow Cargo.lock (cargo xtask fuzz-lock).
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: libfuzzer-sys
+    groups:
+      fuzz:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

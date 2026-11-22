@@ -1838,6 +1838,7 @@ dependencies = [
  "mora-testkit",
  "serde_json",
  "sha2",
+ "toml",
  "ungrammar",
 ]
 
