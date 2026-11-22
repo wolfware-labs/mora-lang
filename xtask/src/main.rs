@@ -1,6 +1,6 @@
 //! Repository tooling, run as `cargo xtask <command>`: the layering, error
-//! code and spec example checks, code generation, the runtime and sysroot
-//! builds, and benchmark comparison. See [`USAGE`].
+//! code and spec example checks, code generation, the fuzz lockfile, the
+//! runtime and sysroot builds, and benchmark comparison. See [`USAGE`].
 
 // Test and tooling code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -9,6 +9,7 @@ mod bench_compare;
 mod bench_run;
 mod codegen;
 mod error_codes;
+mod fuzz_lock;
 mod layers;
 mod paths;
 mod runtime;
@@ -25,7 +26,7 @@ use mora_diag::registry;
 
 use crate::paths::root;
 
-const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | runtime [--test] [target...] | sysroot | bench-compare [--base <rev>] [--threshold <percent>]>";
+const USAGE: &str = "usage: cargo xtask <layers | error-codes | spec-examples | codegen [--check] | fuzz-lock [--check] | runtime [--test] [target...] | sysroot | bench-compare [--base <rev>] [--threshold <percent>]>";
 
 /// What a command ends with: its exit code, or the reason it could not run,
 /// which `main` prints after the command's name.
@@ -34,7 +35,9 @@ type CommandResult = Result<ExitCode, String>;
 /// `cargo metadata --no-deps` for the workspace at `root`.
 fn metadata_command(root: &Path) -> MetadataCommand {
     let mut command = MetadataCommand::new();
-    command.manifest_path(root.join("Cargo.toml")).no_deps();
+    command
+        .manifest_path(root.join(paths::ROOT_MANIFEST))
+        .no_deps();
     command
 }
 
@@ -184,6 +187,42 @@ fn run_codegen_check() -> CommandResult {
     }
 }
 
+/// Rebuilds `fuzz/Cargo.lock` from `Cargo.lock` and checks it; see
+/// [`fuzz_lock::rebuild`].
+fn run_fuzz_lock() -> CommandResult {
+    let (changed, checked) = fuzz_lock::rebuild(&root())?;
+    if checked.problems.is_empty() {
+        println!("{}", fuzz_lock::rebuilt(changed));
+    }
+    report_fuzz_lock(&checked, fuzz_lock::rebuild_summary(&checked.problems))
+}
+
+/// Prints the feature warnings, then the problems the check found and the
+/// summary and fails, or, with no summary, prints that the fuzz crate is ok.
+fn report_fuzz_lock(checked: &fuzz_lock::Checked, summary: Option<String>) -> CommandResult {
+    for features in &checked.warnings {
+        eprintln!("{}", fuzz_lock::warning(features));
+    }
+    let Some(summary) = summary else {
+        let warnings = checked.warnings.len();
+        println!("{}", fuzz_lock::ok_summary(checked.packages, warnings));
+        return Ok(ExitCode::SUCCESS);
+    };
+    for problem in &checked.problems {
+        eprintln!("{problem}");
+    }
+    eprintln!("{summary}");
+    Ok(ExitCode::FAILURE)
+}
+
+/// Fails when `fuzz/Cargo.lock` does not match the fuzz manifest, or the
+/// fuzz crate builds `mora-syntax` or a crate it is built on differently
+/// from the workspace; see [`fuzz_lock::check`].
+fn run_fuzz_lock_check() -> CommandResult {
+    let checked = fuzz_lock::check(&root()).map_err(|failed| failed.to_string())?;
+    report_fuzz_lock(&checked, fuzz_lock::check_summary(&checked.problems))
+}
+
 /// Benchmarks a base revision and the working tree, and fails when a
 /// benchmark regresses by more than the threshold.
 fn run_bench_compare(args: &[&str]) -> CommandResult {
@@ -231,6 +270,8 @@ fn main() -> ExitCode {
         ("spec-examples", []) => run_spec_examples(),
         ("codegen", []) => run_codegen(),
         ("codegen", ["--check"]) => run_codegen_check(),
+        ("fuzz-lock", []) => run_fuzz_lock(),
+        ("fuzz-lock", ["--check"]) => run_fuzz_lock_check(),
         ("runtime", rest) => run_runtime(rest),
         ("sysroot", []) => run_sysroot(),
         ("bench-compare", rest) => run_bench_compare(rest),

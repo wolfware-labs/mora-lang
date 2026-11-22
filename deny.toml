@@ -17,6 +17,13 @@ allow = [
     "Zlib",
     "Unicode-3.0",
 ]
+# libfuzzer-sys bundles LLVM's libFuzzer under NCSA. Only the fuzz binaries
+# (fuzz/, outside the workspace) link it, so the workspace's own check never
+# meets the exception and would warn about it on every run.
+unused-license-exception = "allow"
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
 
 [bans]
 multiple-versions = "warn"

@@ -452,7 +452,6 @@ mod tests {
         // A directory without results is not a benchmark.
         fs::create_dir_all(home.join("report")).unwrap();
         let found = collect(&home).unwrap();
-        fs::remove_dir_all(&home).unwrap();
         assert_eq!(
             found,
             vec![
@@ -495,16 +494,14 @@ mod tests {
         write_estimates(&home.join("new/case/base"), 7.0, 6.0, 8.0);
         clear_new(&home).unwrap();
         let found = collect(&home).unwrap();
-        let file_kept = home.join("cold/new").is_file();
-        fs::remove_dir_all(&home).unwrap();
-        assert!(file_kept);
+        assert!(home.join("cold/new").is_file());
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].id, "cold/parse");
         assert_eq!(found[0].new, None);
         assert_eq!(found[0].base, Some(1000.0));
         assert_eq!(found[1].id, "new/case");
         assert_eq!(found[1].new, None);
-        assert!(clear_new(&home).is_err());
+        assert!(clear_new(&home.join("missing")).is_err());
     }
 
     #[test]
@@ -514,7 +511,6 @@ mod tests {
         fs::create_dir_all(&new).unwrap();
         fs::write(new.join("estimates.json"), r#"{"mean":{}}"#).unwrap();
         let error = collect(&home).unwrap_err();
-        fs::remove_dir_all(&home).unwrap();
         assert!(error.contains("/mean/point_estimate"), "{error}");
     }
 

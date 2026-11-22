@@ -90,6 +90,21 @@ jobs:
       - name: cargo deny
         if: ${{ !cancelled() }}
         run: cargo deny check
+      # The fuzz crate sits outside the workspace with a lockfile of its own
+      # (§20.1). It must match its manifest and build mora-syntax and every
+      # crate it is built on (normal and build dependencies, recursively) as
+      # the workspace does: version, source and dependencies. Other features
+      # only warn, with the optional dependencies they turn on: cargo turns a
+      # feature on for the whole workspace when one member asks for it, so
+      # tools and benchmarks turn on features the fuzz build does not need.
+      - name: xtask fuzz-lock
+        if: ${{ !cancelled() }}
+        run: cargo xtask fuzz-lock --check
+      # Advisories for the fuzz crate run in the nightly `fuzz-deny` job, so
+      # a new advisory does not fail pull requests that do not touch it.
+      - name: cargo deny (fuzz)
+        if: ${{ !cancelled() }}
+        run: cargo deny --locked --manifest-path fuzz/Cargo.toml check bans licenses sources
       - name: xtask layers
         if: ${{ !cancelled() }}
         run: cargo xtask layers
