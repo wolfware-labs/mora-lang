@@ -1758,6 +1758,77 @@ fn rejected_text_a_node_placed_does_not_stand_for_what_is_missing_after_it() {
     assert_rejected_over(text, "let f = (const x: int) => x;\n");
 }
 
+/// The kind of the node that holds the `Error` node of the rejected text
+/// `run` in the tree of `text`.
+fn holder_of_run(text: &str, run: &str) -> String {
+    let parse = parse(text);
+    let holder = parse
+        .syntax()
+        .descendants()
+        .find(|node| {
+            node.children()
+                .any(|child| child.kind() == mora_syntax::SyntaxKind::Error && child.text() == run)
+        })
+        .unwrap();
+    format!("{:?}", holder.kind())
+}
+
+#[test]
+fn rejected_text_after_a_token_still_stands_for_what_is_missing() {
+    // An error right after a token, where no node was opened at the run,
+    // leaves the run to the operand after it: only what the run does not
+    // stand for is reported.
+    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
+    let rejected = |at: u32| {
+        (
+            "MR0017".to_owned(),
+            "`\\\\` cannot start a token".to_owned(),
+            at,
+            at + 1,
+        )
+    };
+    for (text, errors, holder) in [
+        (
+            "if \\ { }\n",
+            vec![
+                error("expected `(`", 2),
+                rejected(3),
+                error("expected `)`", 4),
+            ],
+            "IfStmt",
+        ),
+        (
+            "let p = new P { X \\ };\n",
+            vec![error("expected `=`", 17), rejected(18)],
+            "MemberInit",
+        ),
+    ] {
+        assert_eq!(full_errors(text), errors, "{text:?}");
+        assert_eq!(holder_of_run(text, "\\"), holder, "{text:?}");
+    }
+}
+
+#[test]
+fn comments_after_rejected_text_in_place_go_to_the_declaration_below() {
+    // The first part stands for the argument, as an argument written there
+    // would; the comment after it then goes to the enum, as it does after
+    // `G(x`. Without the run it stays in the open argument list.
+    let text = "G(\\/* z */\\\nenum E { A }\n";
+    assert_eq!(holder_of_run(text, "\\"), "Arg");
+    assert_eq!(
+        comment_holders(text),
+        [("/* z */".to_owned(), "EnumDecl".to_owned())]
+    );
+    assert_eq!(
+        comment_holders("G(x/* z */\nenum E { A }\n"),
+        comment_holders(text)
+    );
+    assert_eq!(
+        comment_holders("G(/* z */\nenum E { A }\n"),
+        [("/* z */".to_owned(), "ArgList".to_owned())]
+    );
+}
+
 #[test]
 fn comments_between_parts_of_rejected_text_are_trivia() {
     for (text, without) in [

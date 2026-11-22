@@ -431,7 +431,6 @@ impl Marker {
         if let Some(Event::Start { kind: slot, .. }) = p.events.get_mut(self.pos) {
             *slot = kind;
         }
-        p.rejected_placed();
         p.events.push(Event::Finish);
         CompletedMarker { pos: self.pos }
     }
@@ -528,7 +527,6 @@ impl<'t> Parser<'t> {
             return true;
         }
         let m = self.start();
-        self.rejected_placed();
         self.events.push(Event::TooDeep);
         skip(self);
         m.complete(self, K::Error);
@@ -551,7 +549,6 @@ impl<'t> Parser<'t> {
 
     fn too_deep(&mut self, angles: bool) -> CompletedMarker {
         let m = self.start();
-        self.rejected_placed();
         self.events.push(Event::TooDeep);
         let group = matches!(self.current(), K::LParen | K::LBracket | K::LBrace)
             || (angles && self.at(K::Lt));
@@ -665,11 +662,22 @@ impl<'t> Parser<'t> {
         Some(m.complete(self, K::Error))
     }
 
-    /// Notes, before an event other than a token, that the rejected text
-    /// before the next token is placed when a node was just opened: the
-    /// tree builder puts it before that node ([`Event::Start`]), so it can
-    /// no longer stand for something missing, as in `(\\const x: int) => x`,
-    /// where the parameter before the missing body took it.
+    /// Notes, before an error, that the rejected text before the next token
+    /// is placed when a node was just opened: the tree builder puts it
+    /// before that node ([`Event::Start`]), so it can no longer stand for
+    /// something missing, as in `(\const x: int) => x`, where the parameter
+    /// whose name is missing took it before the missing body. After a token
+    /// no node is open at the rejected text, so `if \ { }` still lets it
+    /// stand for the condition.
+    ///
+    /// Only an error follows a node just opened with nothing in it: no node
+    /// is completed empty but a [`CompletedMarker::precede`] wrapper, and a
+    /// node past the nesting limit reports nothing more in its statement,
+    /// where the rejected text then counts for no error. A `Start` that
+    /// `precede` pushed opens at the first token of the node it wraps, not
+    /// at the next token; none is followed by an error, which this relies
+    /// on. An error with a fix needs no note: it wraps the next token, which
+    /// the caller then takes ([`Parser::error_with_fix`]).
     fn rejected_placed(&mut self) {
         if matches!(self.events.last(), Some(Event::Start { .. }))
             && self.input.rejected_before(self.pos).is_some()
@@ -760,7 +768,6 @@ impl<'t> Parser<'t> {
         if self.stopped.is_some() {
             return;
         }
-        self.rejected_placed();
         self.events.push(Event::Error {
             message: message.into(),
             fix: Some(TokenFix {

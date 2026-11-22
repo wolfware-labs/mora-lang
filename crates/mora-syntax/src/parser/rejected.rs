@@ -32,12 +32,15 @@
 //! [`Parser::rejected_in_place`] takes the first part of the run into the
 //! node of the missing operand or write-scope word ([`Event::Rejected`]),
 //! and nothing more is reported there. The parts after it go in as they
-//! would anywhere else. A comment before the run keeps it from standing
-//! for what is missing only when the token after the run can start a
-//! declaration that takes the comments above it ([`at_item_start`]): the
-//! comment, and the run with it, then go to that declaration, and what is
-//! missing is reported as it would be without them. Elsewhere the comment
-//! stays before the run's `Error` node.
+//! would anywhere else, as after an operand written there: a comment
+//! after the part that stands in place goes to the declaration below, even
+//! where the text without the run leaves it in a list still open, as in
+//! `G(\/* z */\` above `enum E { A }`. A comment before the run keeps it
+//! from standing for what is missing only when the token after the run can
+//! start a declaration that takes the comments above it
+//! ([`at_item_start`]): the comment, and the run with it, then go to that
+//! declaration, and what is missing is reported as it would be without
+//! them. Elsewhere the comment stays before the run's `Error` node.
 
 use super::Input;
 #[cfg(doc)]
