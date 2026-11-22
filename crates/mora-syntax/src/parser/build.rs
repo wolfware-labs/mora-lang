@@ -113,9 +113,10 @@ pub(super) fn build(
                 // `Name` of a parameter whose name is missing, stays.
                 //
                 // Left out, the node changes no muting of errors, which reads
-                // only where blocks, member lists and the file are open
-                // (`Sink::too_deep`, `Sink::mutes_errors`, `Sink::finish`):
-                // it is never directly in one. `nested_in` runs inside the
+                // only where the file or a node `is_container` names is open
+                // (a block, a member list, a union or an enum body;
+                // `Sink::too_deep`, `Sink::mutes_errors`, `Sink::finish`): it
+                // is never directly in one. `nested_in` runs inside the
                 // node of the construct that went one level deeper, and every
                 // statement opens its own node before it nests (`ExprStmt`,
                 // `LocalDeclStmt`, ...). `nested_statement`'s `skip` takes a

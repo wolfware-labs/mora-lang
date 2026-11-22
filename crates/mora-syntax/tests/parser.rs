@@ -1451,8 +1451,10 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
 /// it would be without them, rejected text taken in place of something
 /// missing is in the node that stands for it, and no `Error` node holds no
 /// token at all, as one past the nesting limit that takes nothing, or one
-/// for an error at the end of the text, would. It holds for every text:
-/// the snapshots and every helper here that parses run it.
+/// for an error at the end of the text, would. It holds for every text
+/// [`parse`] parses: the snapshots and every helper here that parses run
+/// it. A parse past its budget of events (`parse_within`) can still leave
+/// one, where it stops.
 fn assert_errors_hold_tokens(text: &str) {
     for node in error_nodes(&parse(text).syntax()) {
         assert!(
@@ -1460,6 +1462,56 @@ fn assert_errors_hold_tokens(text: &str) {
             "{text:?}: {node:?} holds no token but trivia"
         );
     }
+}
+
+#[test]
+fn what_comes_before_an_error_with_nothing_to_take_goes_where_it_would_without_its_node() {
+    // With no node for the error, a comment or rejected text before the
+    // word goes where it would if the error were not there: a doc comment
+    // to the declaration below it, rejected text into the member list, as
+    // in a class without the indexer; at the end of the text, to the file.
+    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
+    let indexer = |inner: &str| {
+        format!("class Z {{ this[i: int]: int {{\n{inner}F(): int {{ return 1; }} }}")
+    };
+    let text = indexer("/// d\n");
+    assert_eq!(
+        full_errors(&text),
+        [
+            error("expected `get` or `set`", 29),
+            error("expected `}`", 29)
+        ]
+    );
+    assert_eq!(
+        comment_holders(&text),
+        [("/// d".to_owned(), "FunctionDecl".to_owned())]
+    );
+    assert_eq!(
+        comment_holders(&text),
+        comment_holders("class Z {\n/// d\nF(): int { return 1; } }")
+    );
+    let text = indexer("\u{201c} ");
+    assert_eq!(
+        full_errors(&text)[..2],
+        [
+            error("expected `get` or `set`", 29),
+            error("expected `}`", 29)
+        ]
+    );
+    assert_eq!(holder_of_run(&text, "\u{201c}"), "MemberList");
+    assert_eq!(
+        holder_of_run(&text, "\u{201c}"),
+        holder_of_run("class Z {\n\u{201c} F(): int { return 1; } }", "\u{201c}")
+    );
+    let text = "@A /* c */";
+    assert_eq!(full_errors(text), [error("expected a statement", 2)]);
+    assert_eq!(
+        comment_holders(text),
+        [("/* c */".to_owned(), "SourceFile".to_owned())]
+    );
+    let text = "@A \u{201c}";
+    assert_eq!(full_errors(text)[0], error("expected a statement", 2));
+    assert_eq!(holder_of_run(text, "\u{201c}"), "SourceFile");
 }
 
 #[test]

@@ -695,6 +695,14 @@ impl<'t> Parser<'t> {
     /// at the next token; none is followed by an error, which this relies
     /// on. An error with a fix needs no note: it wraps the next token, which
     /// the caller then takes ([`Parser::error_with_fix`]).
+    ///
+    /// For an `Error` node that would hold nothing but its errors, the tree
+    /// builder makes no node, so the rejected text does not go before it:
+    /// it goes where the next node or token puts it. The note is still
+    /// safe, since nothing takes the text in place at that token either: at
+    /// the end of the text (`statement`) nothing is parsed after it, and
+    /// after `accessor_list`'s error the next thing that starts there is a
+    /// member, whose first token is never something missing.
     fn rejected_placed(&mut self) {
         if matches!(self.events.last(), Some(Event::Start { .. }))
             && self.input.rejected_before(self.pos).is_some()
