@@ -498,7 +498,8 @@ impl<'t> Parser<'t> {
     /// `MR0018` instead and wraps the rest of the construct in an `Error`
     /// node: a bracketed group, when the construct starts with an opening
     /// bracket, and otherwise the tokens up to a `;`, a `,` or a closing
-    /// bracket that is not its own.
+    /// bracket that is not its own. When none is left, the tree builder
+    /// reports `MR0018` there without the node, which would hold nothing.
     pub(crate) fn nested<T>(
         &mut self,
         parse: impl FnOnce(&mut Self) -> T,
@@ -675,9 +676,16 @@ impl<'t> Parser<'t> {
     /// stand for the condition.
     ///
     /// Only an error follows a node just opened with nothing in it: no node
-    /// is completed empty but a [`CompletedMarker::precede`] wrapper, and a
-    /// node past the nesting limit reports nothing more in its statement,
-    /// where the rejected text then counts for no error. A `Start` that
+    /// is completed empty but a [`CompletedMarker::precede`] wrapper, and the
+    /// file of a text with no tokens, after which nothing is parsed. Nor
+    /// does a node past the nesting limit need the note, though its `Start`
+    /// comes right before [`Event::TooDeep`]: no [`Parser::rejected_in_place`]
+    /// runs at the token it opened at. [`Parser::nested`] hands that node to
+    /// its caller as the operand ([`Parser::nested_in`]), so the operand is
+    /// there and no other is missing at that token: the next one comes after
+    /// an operator, a token that moves on. [`Parser::nested_statement`]
+    /// takes the statement, and the next statement starts at its own token,
+    /// where nothing is missing yet. A `Start` that
     /// `precede` pushed opens at the first token of the node it wraps, not
     /// at the next token; none is followed by an error, which this relies
     /// on. An error with a fix needs no note: it wraps the next token, which

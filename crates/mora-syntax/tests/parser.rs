@@ -1444,13 +1444,14 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
 
 /// Asserts that every `Error` node in the tree of `text` holds a token that
 /// is not trivia: a comment between parts of rejected text is trivia, as
-/// it would be without them, and rejected text taken in place of something
-/// missing is in the node that stands for it.
+/// it would be without them, rejected text taken in place of something
+/// missing is in the node that stands for it, and no `Error` node holds no
+/// token at all, as one past the nesting limit that takes nothing would.
 fn assert_errors_hold_tokens(text: &str) {
     for node in error_nodes(&parse(text).syntax()) {
         assert!(
             node.tokens().any(|token| !token.kind().is_trivia()),
-            "{text:?}: {node:?} holds only trivia"
+            "{text:?}: {node:?} holds no token but trivia"
         );
     }
 }
@@ -1774,10 +1775,10 @@ fn holder_of_run(text: &str, run: &str) -> String {
 }
 
 #[test]
-fn rejected_text_after_a_token_still_stands_for_what_is_missing() {
-    // An error right after a token, where no node was opened at the run,
-    // leaves the run to the operand after it: only what the run does not
-    // stand for is reported.
+fn rejected_text_after_a_token_or_a_completed_node_still_stands_for_what_is_missing() {
+    // An error right after a token (`if`) or a completed node (the name
+    // `X`), where no node was opened at the run, leaves the run to the
+    // operand after it: only what the run does not stand for is reported.
     let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
     let rejected = |at: u32| {
         (

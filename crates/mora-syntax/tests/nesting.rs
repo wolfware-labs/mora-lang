@@ -5,7 +5,7 @@
 //! up to the limit, reported once just past it, and parsed without running
 //! out of stack far past it.
 
-use mora_diag::codes;
+use mora_diag::{Code, codes};
 use mora_syntax::{SyntaxKind as K, parse};
 
 /// A construct nested `n` times, and the largest `n` the limit accepts. The
@@ -131,6 +131,7 @@ const SHAPES: &[Shape] = &[
 fn too_deep(text: &str) -> usize {
     let parse = parse(text);
     assert_eq!(parse.syntax().text(), text);
+    assert_errors_hold_tokens(text);
     let others: Vec<_> = parse
         .errors()
         .iter()
@@ -138,6 +139,20 @@ fn too_deep(text: &str) -> usize {
         .collect();
     assert!(others.is_empty(), "{others:?}");
     parse.errors().len()
+}
+
+/// Asserts that every `Error` node in the tree of `text` holds a token that
+/// is not trivia: a node past the limit that takes no token is left out,
+/// and its `MR0018` is reported where it would be.
+fn assert_errors_hold_tokens(text: &str) {
+    for node in parse(text).syntax().descendants() {
+        if node.kind() == K::Error {
+            assert!(
+                node.tokens().any(|token| !token.kind().is_trivia()),
+                "{node:?} holds no token but trivia"
+            );
+        }
+    }
 }
 
 /// Runs `test` on a thread with the default stack of a spawned thread, as
@@ -535,4 +550,165 @@ fn a_range_with_no_end_is_as_deep_as_its_text() {
     // token.
     assert_eq!(range(255, ""), [(codes::MR0018, at(255), at(255) + 2)]);
     assert_eq!(range(255, "a"), [(codes::MR0018, at(255), at(255) + 1)]);
+}
+
+/// A place the parser stops at the limit: its name, the text up to where
+/// the node past it would start, what ends the text there, the kind of node
+/// it would have been in, and each error's code and range.
+type Site = (
+    &'static str,
+    String,
+    &'static str,
+    &'static str,
+    Vec<(Code, usize, usize)>,
+);
+
+#[test]
+fn a_node_past_the_limit_that_takes_no_token_is_left_out() {
+    // Each place the parser stops at the limit, with the text ending where
+    // the node past it would start: `MR0018` where it is reported, and no
+    // `Error` node for the nothing it would hold. The node it would have been
+    // in ends at the last token instead, as it does when an operand is
+    // missing.
+    let repeat = |s: &str, n: usize| s.repeat(n);
+    let sites: Vec<Site> = vec![
+        (
+            "prefix operand",
+            format!("let x = {}", repeat("- ", 255)),
+            ";",
+            "PrefixExpr",
+            vec![(codes::MR0018, 517, 517)],
+        ),
+        (
+            "awaited value",
+            format!("let x = {}", repeat("await ", 255)),
+            ";",
+            "AwaitExpr",
+            vec![(codes::MR0018, 1537, 1537)],
+        ),
+        (
+            "lambda body",
+            format!("let x = {}", repeat("() => ", 255)),
+            ";",
+            "LambdaExpr",
+            vec![(codes::MR0018, 1537, 1537)],
+        ),
+        (
+            "parenthesized",
+            format!("let x = {}", repeat("(", 255)),
+            ";",
+            "ParenExpr",
+            vec![(codes::MR0018, 263, 263)],
+        ),
+        (
+            "tuple element",
+            format!("let x = {}", repeat("(", 255)),
+            ",",
+            "TupleElem",
+            vec![(codes::MR0018, 263, 263)],
+        ),
+        (
+            "index",
+            format!("let x = a{}", repeat("[", 255)),
+            ";",
+            "CollectionElem",
+            vec![(codes::MR0018, 264, 264)],
+        ),
+        (
+            "conditional branch",
+            format!("let x = {}", repeat("a ? b : ", 255)),
+            ";",
+            "ConditionalExpr",
+            vec![(codes::MR0018, 2040, 2041)],
+        ),
+        (
+            "match arm",
+            format!("let x = {}", repeat("match (a) { _ => ", 255)),
+            ";",
+            "MatchArm",
+            vec![(codes::MR0018, 4333, 4334)],
+        ),
+        (
+            "generic argument",
+            format!("let x: {}", repeat("List<", 255)),
+            ";",
+            "GenericArgList",
+            vec![(codes::MR0018, 1282, 1282)],
+        ),
+        (
+            "tuple type element",
+            format!("let x: {}", repeat("(int, ", 255)),
+            ";",
+            "TupleTypeElem",
+            vec![(codes::MR0018, 1532, 1535)],
+        ),
+        (
+            "function type result",
+            format!("let x: {}", repeat("(int) => ", 255)),
+            ";",
+            "FnType",
+            vec![(codes::MR0018, 2285, 2288)],
+        ),
+        (
+            "constant pattern",
+            format!("let b = x is {}", repeat("not ", 253)),
+            ";",
+            "ConstantPattern",
+            vec![(codes::MR0018, 1024, 1024)],
+        ),
+        (
+            "negated pattern",
+            format!("let b = x is {}", repeat("not ", 254)),
+            ";",
+            "NotPattern",
+            vec![(codes::MR0018, 1028, 1028)],
+        ),
+        (
+            "pattern field",
+            format!("let b = x is {}", repeat("(", 254)),
+            ";",
+            "PatternField",
+            vec![(codes::MR0018, 267, 267)],
+        ),
+        (
+            "interpolation hole",
+            format!("let x = {}", repeat("$\"{", 255)),
+            "",
+            "InterpHole",
+            vec![(codes::MR0012, 8, 10), (codes::MR0018, 773, 773)],
+        ),
+    ];
+    for (name, body, stop, holder, errors) in sites {
+        let text = format!("{body}{stop}\n");
+        let parse = parse(&text);
+        let got: Vec<_> = parse
+            .errors()
+            .iter()
+            .map(|error| {
+                (
+                    error.code,
+                    usize::from(error.range.start()),
+                    usize::from(error.range.end()),
+                )
+            })
+            .collect();
+        assert_eq!(got, errors, "{name}");
+        assert_errors_hold_tokens(&text);
+        // The node the empty one was in ends before the stop, with no
+        // `Error` node last in it; a tuple element that held only that node
+        // is empty.
+        let at = body.trim_end().len();
+        let node = parse
+            .syntax()
+            .descendants()
+            .find(|node| {
+                format!("{:?}", node.kind()) == holder
+                    && (at..=body.len()).contains(&usize::from(node.text_range().end()))
+            })
+            .unwrap_or_else(|| panic!("{name}: no {holder} ending at {at}"));
+        let last = node
+            .children_with_tokens()
+            .rfind(|child| !child.kind().is_trivia());
+        assert_ne!(last.map(|child| child.kind()), Some(K::Error), "{name}");
+    }
 }

@@ -100,6 +100,25 @@ pub(super) fn build(
                         .find(|event| !matches!(event, Event::Start { .. })),
                     Some(Event::Rejected)
                 );
+                // A node past the nesting limit that takes no token: no node
+                // is made for it, the nodes that wrap it are, and its
+                // `TooDeep`, followed by nothing it wraps, reports `MR0018`
+                // where it is, as an error with nothing to wrap is. Left out,
+                // it cannot end the muting of errors of a statement it would
+                // be, but it is never one: the tree counts every statement,
+                // block and expression the parser's depth counts, and the
+                // conditions and bodies around them too, so a statement past
+                // the parser's limit is inside a node the tree builder has
+                // already flattened, where no node is made either.
+                let alone = kind == K::Error
+                    && matches!(
+                        events.get(i + 1..i + 3),
+                        Some([Event::TooDeep, Event::Finish])
+                    );
+                if alone {
+                    chain.remove(0);
+                    events[i + 2] = Event::Tombstone;
+                }
                 // The first token of the node, which `MR0018` covers.
                 let first_token = || events[i + 1..].iter().find_map(raw_tokens);
                 for kind in chain.drain(..).rev() {
