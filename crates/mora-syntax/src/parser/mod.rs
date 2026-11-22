@@ -84,7 +84,8 @@ fn parse_within(text: &str, budget: Option<usize>) -> Parse {
         p.budget = budget;
     }
     items::source_file(&mut p);
-    let (green, mut errors) = build::build(text, &lexed, &input.rejected_runs, p.events);
+    let (green, mut errors) =
+        build::build(text, &lexed, &input.rejected_runs, &input.quoted, p.events);
     errors.extend(lexed.errors.iter().cloned());
     errors.sort_by_key(|error| error.range.start());
     Parse { green, errors }
@@ -118,16 +119,21 @@ pub(crate) struct Input<'t> {
     /// Whether a line break comes between the token and the one before it,
     /// with only rejected text after the line break.
     line_start: Vec<bool>,
-    /// Whether rejected text comes right before the token; one entry more,
-    /// for the end of the text.
+    /// Whether rejected text comes right before the token with no comment
+    /// before it, so that it can stand for something missing there; one
+    /// entry more, for the end of the text.
     rejected_before: Vec<bool>,
     /// For each `(`, the index after the `)` that closes it, counting only
     /// parentheses; `None` for an unclosed `(` and for any other token.
     after_parens: Vec<Option<usize>>,
     /// For the first token of each run of rejected text, or of each part of
-    /// one a blank line splits ([`rejected::record_run`]), as an index in
-    /// [`Lexed::tokens`], the index after its last token.
+    /// one a blank line or a comment splits ([`rejected::record_run`]), as
+    /// an index in [`Lexed::tokens`], the index after its last token.
     rejected_runs: Vec<Option<usize>>,
+    /// For each token of [`Lexed::tokens`], whether it lies between a quote
+    /// and the quote that closes it: a comment there is rejected text, not a
+    /// comment.
+    quoted: Vec<bool>,
     /// Tokens looked at: each once to pair parentheses, one per lookup.
     #[cfg(test)]
     scanned: std::cell::Cell<usize>,
@@ -149,6 +155,7 @@ impl<'t> Input<'t> {
             rejected_before: Vec::new(),
             after_parens: Vec::new(),
             rejected_runs: Vec::new(),
+            quoted: Vec::new(),
             #[cfg(test)]
             scanned: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -178,6 +185,7 @@ impl<'t> Input<'t> {
         // The same tokens with the rejected text left out.
         let mut input = empty();
         input.rejected_runs = vec![None; lexed.tokens.len()];
+        input.quoted = vec![false; lexed.tokens.len()];
         let (mut rejected, mut line_break) = (false, false);
         let mut at = 0;
         while at < all.len() {
@@ -196,12 +204,26 @@ impl<'t> Input<'t> {
             // A run: each rejected token, a quote up to its closing quote.
             let start = at;
             while all.kind(at) == K::Unknown {
-                at = closing_quote[at].unwrap_or(at) + 1;
+                let close = closing_quote[at].unwrap_or(at);
+                input.quoted[all.raw[at]..all.raw[close]].fill(true);
+                at = close + 1;
             }
             let (first, last) = (all.raw[start], all.raw[at - 1]);
-            rejected::record_run(lexed, first, last + 1, &mut input.rejected_runs);
+            rejected::record_run(
+                lexed,
+                &input.quoted,
+                first,
+                last + 1,
+                &mut input.rejected_runs,
+            );
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
-            rejected = true;
+            // A comment before the run keeps it from standing for what is
+            // missing: the comment, and the run with it, may belong to the
+            // declaration after it.
+            let after = start.checked_sub(1).map_or(0, |before| all.raw[before] + 1);
+            rejected = !lexed.tokens[after..first]
+                .iter()
+                .any(|token| token.kind.is_comment());
             // The tokens around the run touch as they would without it: when
             // no trivia comes between them and the run, nor inside the run
             // (it spans no more tokens of `lexed` than it holds), they are
@@ -304,8 +326,8 @@ impl<'t> Input<'t> {
         end - first
     }
 
-    /// Whether rejected text comes right before token `i`, or before the end
-    /// of the text at `len`.
+    /// Whether rejected text with no comment before it comes right before
+    /// token `i`, or before the end of the text at `len`.
     fn rejected_before(&self, i: usize) -> bool {
         self.rejected_before.get(i).copied().unwrap_or(false)
     }
@@ -618,7 +640,7 @@ impl<'t> Parser<'t> {
     /// Takes the rejected text right before the next token into an `Error`
     /// node of its own, where it stands for what is missing there, as in
     /// `let a = \u{201c};`: the lexer reported it, and nothing more is. `None`
-    /// when no rejected text is there.
+    /// when no rejected text is there, or a comment comes before it.
     pub(crate) fn rejected_in_place(&mut self) -> Option<CompletedMarker> {
         if !self.input.rejected_before(self.pos) || self.rejected_taken == Some(self.pos) {
             return None;

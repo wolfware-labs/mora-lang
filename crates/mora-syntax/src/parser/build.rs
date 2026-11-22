@@ -33,6 +33,7 @@ pub(super) fn build(
     text: &str,
     lexed: &Lexed,
     rejected_runs: &[Option<usize>],
+    quoted: &[bool],
     mut events: Vec<Event>,
 ) -> (GreenNode, Vec<SyntaxError>) {
     // Where each string the lexer found unclosed ends. A character literal
@@ -55,6 +56,7 @@ pub(super) fn build(
         lexed,
         rejected_runs,
         rejected_run_starts,
+        quoted,
         unclosed_strings,
         taken_in_place: FxHashSet::default(),
         raw: 0,
@@ -119,15 +121,20 @@ struct Sink<'a> {
     /// Every token of the text, trivia included.
     lexed: &'a Lexed,
     /// For the first token of each run of rejected text, or of each part of
-    /// one a blank line splits, the index after its last token ([`Input`]).
+    /// one a blank line or a comment splits, the index after its last token
+    /// ([`Input`]).
     rejected_runs: &'a [Option<usize>],
     /// For the last token of each run of rejected text, or of each part of
     /// one, its first token.
     rejected_run_starts: Vec<Option<usize>>,
+    /// For each token, whether it lies inside a quoted run, where a comment
+    /// is rejected text ([`Input`]).
+    quoted: &'a [bool],
     /// Where each string the lexer found unclosed (`MR0012`) ends.
     unclosed_strings: FxHashSet<TextSize>,
-    /// The last token of each run of rejected text a node took in place of
-    /// something missing ([`Event::Rejected`]): the run stands for it.
+    /// The last token of the part of each run of rejected text a node took
+    /// in place of something missing ([`Event::Rejected`]): the part
+    /// stands for it.
     taken_in_place: FxHashSet<usize>,
     /// The next token of `lexed` to add.
     raw: usize,
@@ -214,14 +221,16 @@ impl Sink<'_> {
         }
     }
 
-    /// Adds the run of rejected text before the next token to the node just
-    /// opened, which stands for what is missing there: every part of it,
-    /// as only trivia comes between the parts of one run.
+    /// Adds the first part of the run of rejected text before the next
+    /// token to the node just opened, which stands for what is missing
+    /// there. The parts after it, below a blank line or from a comment on,
+    /// go in as they would anywhere else, so a comment among them attaches
+    /// to the declaration below.
     fn rejected_in_place(&mut self) {
         if self.flattened.is_some() {
             return;
         }
-        while let Some(end) = self.rejected_run(self.next_rejected()) {
+        if let Some(end) = self.rejected_run(self.next_rejected()) {
             self.add_tokens(end);
             self.taken_in_place.insert(end - 1);
         }
@@ -315,7 +324,10 @@ impl Sink<'_> {
     /// Rejected text counts as nothing, and the trivia between its tokens
     /// as it would without them: a line that holds only rejected text is a
     /// blank line. A comment among rejected text attaches the part of its
-    /// run it is in, as blank lines inside a run split it.
+    /// run it is in, which starts at the comment
+    /// ([`super::rejected::record_run`]), so no rejected text from before
+    /// the comment comes with it. A comment inside a quoted run is rejected
+    /// text.
     fn attached_comments(&self, end: usize) -> usize {
         let mut from = end;
         let mut i = end;
@@ -329,7 +341,7 @@ impl Sink<'_> {
             }
             let kind = self.kind(i);
             match (run, kind) {
-                (_, Some(kind)) if kind.is_comment() => {
+                (_, Some(kind)) if kind.is_comment() && !self.quoted[i] => {
                     from = run.unwrap_or(i);
                     newline_seen = false;
                 }

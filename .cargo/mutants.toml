@@ -22,12 +22,12 @@ exclude_re = [
     # identifier is always an identifier character.
     '^crates/mora-syntax/src/lexer/mod\.rs:481:35: replace > with >= in Lexer<.a>::code_token$',
     # Popping the last event and leaving a tombstone build the same tree.
-    '^crates/mora-syntax/src/parser/mod\.rs:412:21: replace \+ with - in Marker::abandon$',
-    '^crates/mora-syntax/src/parser/mod\.rs:412:21: replace \+ with \* in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:434:21: replace \+ with - in Marker::abandon$',
+    '^crates/mora-syntax/src/parser/mod\.rs:434:21: replace \+ with \* in Marker::abandon$',
     # The scan starting one token early sees the `?` itself, which it skips;
     # scanning past the end reads the end-of-file kind.
-    '^crates/mora-syntax/src/parser/exprs\.rs:259:20: replace \+ with \* in conditional_follows$',
-    '^crates/mora-syntax/src/parser/exprs\.rs:260:13: replace < with <= in conditional_follows$',
+    '^crates/mora-syntax/src/parser/exprs\.rs:267:20: replace \+ with \* in conditional_follows$',
+    '^crates/mora-syntax/src/parser/exprs\.rs:268:13: replace < with <= in conditional_follows$',
     # Any hash finds equal tokens; only the speed of the table depends on it.
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 0$',
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 1$',

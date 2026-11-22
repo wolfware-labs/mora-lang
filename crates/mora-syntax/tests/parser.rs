@@ -1462,28 +1462,21 @@ fn comments_in_rejected_text_attach_as_they_would_without_it() {
         );
         assert_rejected_over(text, without);
     }
-    // The text of the class, and of each `Error` node inside it.
-    let class = |text: &str| {
-        use mora_syntax::SyntaxKind;
-        let parse = parse(text);
-        let class = parse
-            .syntax()
-            .descendants()
-            .find(|node| node.kind() == SyntaxKind::ClassDecl)
-            .unwrap();
-        (class.text().to_string(), error_texts(&class))
-    };
-    // The comment at the top of the run attaches it whole to the class.
-    let (text, errors) = class("\\ /* c */ \\\nclass A { }\n");
-    assert!(text.starts_with('\\'), "{text:?}");
-    assert_eq!(errors, ["\\ /* c */ \\"]);
-    // A comment between two line breaks makes no blank line: one run.
-    let (text, errors) = class("\\\n/* c */\n\\class A { }\n");
-    assert!(text.starts_with('\\'), "{text:?}");
-    assert_eq!(errors, ["\\\n/* c */\n\\"]);
+    // A comment starts a part of the run: the rejected text before it, on
+    // its line or the lines above, stays out of the class.
+    let (text, errors) = class_of("\\ /* c */ \\\nclass A { }\n");
+    assert!(text.starts_with("/* c */"), "{text:?}");
+    assert_eq!(errors, ["/* c */ \\"]);
+    let (text, errors) = class_of("\\\n/* c */\n\\class A { }\n");
+    assert!(text.starts_with("/* c */"), "{text:?}");
+    assert_eq!(errors, ["/* c */\n\\"]);
+    assert_eq!(
+        error_texts(&parse("\\\n/* c */\n\\class A { }\n").syntax()).len(),
+        2
+    );
     // Below a blank line, the part starts at its comment, past the
     // indentation, as the comment would without the run.
-    let (text, errors) = class("\\/// Doc.\n\n  /* c */\\class A { }\n");
+    let (text, errors) = class_of("\\/// Doc.\n\n  /* c */\\class A { }\n");
     assert!(text.starts_with("/* c */"), "{text:?}");
     assert_eq!(errors, ["/* c */\\"]);
 }
@@ -1534,18 +1527,210 @@ fn something_missing_is_reported_before_the_rejected_text() {
 }
 
 #[test]
-fn rejected_text_over_a_blank_line_stands_for_what_is_missing_whole() {
+fn only_the_part_before_a_blank_line_stands_for_what_is_missing() {
     let text = "let a = \\\n\n\\\nlet b = 1;\n";
+    // The `;` is missing right after the part that stands for the value.
     assert_eq!(
         coded_offsets(text),
         [
             ("MR0017".to_owned(), 8),
-            ("MR0017".to_owned(), 11),
-            ("MR0110".to_owned(), 12)
+            ("MR0110".to_owned(), 9),
+            ("MR0017".to_owned(), 11)
         ]
     );
-    // Both parts of the run are in the node of the missing value.
-    assert_eq!(error_texts(&parse(text).syntax()), ["\\\n\n\\"]);
+    // The part below the blank line is an `Error` node of its own.
+    assert_eq!(error_texts(&parse(text).syntax()), ["\\", "\\"]);
+}
+
+/// The text of the class declared in `text`, and of each `Error` node
+/// inside it.
+fn class_of(text: &str) -> (String, Vec<String>) {
+    let parse = parse(text);
+    let class = parse
+        .syntax()
+        .descendants()
+        .find(|node| node.kind() == mora_syntax::SyntaxKind::ClassDecl)
+        .unwrap();
+    (class.text().to_string(), error_texts(&class))
+}
+
+#[test]
+fn rejected_text_in_place_leaves_the_comments_below_it_to_the_declaration() {
+    for (text, without, rejected_at) in [
+        (
+            "let a = \\\n\n/// Doc.\n\\class C { }\n",
+            "let a = \n\n/// Doc.\nclass C { }\n",
+            20,
+        ),
+        (
+            "let a = \\\n/// Doc.\n\\class C { }\n",
+            "let a = \n/// Doc.\nclass C { }\n",
+            19,
+        ),
+        // On the line of the rejected text that stands for the value.
+        (
+            "let a = \\ /// Doc.\n\\class C { }\n",
+            "let a =  /// Doc.\nclass C { }\n",
+            19,
+        ),
+    ] {
+        assert_eq!(
+            comment_holders(text),
+            [("/// Doc.".to_owned(), "ClassDecl".to_owned())],
+            "{text:?}"
+        );
+        assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
+        // The first `\` stands for the value; the `;` is missing after it.
+        assert_eq!(
+            coded_offsets(text),
+            [
+                ("MR0017".to_owned(), 8),
+                ("MR0110".to_owned(), 9),
+                ("MR0017".to_owned(), rejected_at)
+            ],
+            "{text:?}"
+        );
+    }
+    // Not in place: the line of rejected text above the comment stays out
+    // of the class, as a blank line would.
+    let text = "x;\n\\\n/// Doc.\n\\class C { }\n";
+    assert_eq!(
+        comment_holders(text),
+        [("/// Doc.".to_owned(), "ClassDecl".to_owned())]
+    );
+    let (class, errors) = class_of(text);
+    assert!(class.starts_with("/// Doc."), "{class:?}");
+    assert_eq!(errors, ["/// Doc.\n\\"]);
+    assert_rejected_over(text, "x;\n\n/// Doc.\nclass C { }\n");
+}
+
+#[test]
+fn rejected_text_after_a_comment_does_not_stand_for_what_is_missing() {
+    // The comment, and the run under it, go to the class, as the comment
+    // would without the run; what is missing is reported as it would be.
+    for (text, without) in [
+        (
+            "let a = /// Doc.\n\\class C { }\n",
+            "let a = /// Doc.\nclass C { }\n",
+        ),
+        (
+            "let a = /* c */ \\class C { }\n",
+            "let a = /* c */ class C { }\n",
+        ),
+        ("let u = await // c\n\\\n", "let u = await // c\n\n"),
+    ] {
+        assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(without),
+            "{text:?}"
+        );
+        assert_rejected_over(text, without);
+    }
+    let (class, errors) = class_of("let a = /// Doc.\n\\class C { }\n");
+    assert!(class.starts_with("/// Doc."), "{class:?}");
+    assert_eq!(errors, ["\\"]);
+}
+
+#[test]
+fn a_comment_inside_a_quoted_run_is_rejected_text() {
+    // Each comment's holder, but the quoted one, which the text without
+    // the run does not have.
+    let holders = |text: &str| {
+        comment_holders(text)
+            .into_iter()
+            .filter(|(comment, _)| comment != "/* z */")
+            .collect::<Vec<_>>()
+    };
+    for (text, without) in [
+        // Under a line of rejected text only, the comment is not above
+        // the class.
+        (
+            "/// Doc.\n\u{201c}/* z */\u{201d}\nclass A { }\n",
+            "/// Doc.\n\nclass A { }\n",
+        ),
+        // On the class's own line, the run goes with the class.
+        (
+            "let a = 1;\n/// Doc.\n\u{201c}/* z */\u{201d} class A { }\n",
+            "let a = 1;\n/// Doc.\n class A { }\n",
+        ),
+        (
+            "/// Doc.\n\n\u{201c}/* z */\u{201d} class A { }\n",
+            "/// Doc.\n\n class A { }\n",
+        ),
+        // A line that holds only a quoted run is blank: it splits the run.
+        (
+            "/// Doc.\n\\\n\u{201c}/* z */\u{201d}\n\\class A { }\n",
+            "/// Doc.\n\n\nclass A { }\n",
+        ),
+    ] {
+        assert_eq!(holders(text), holders(without), "{text:?}");
+        assert_rejected_over(text, without);
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(without),
+            "{text:?}"
+        );
+    }
+    let text = "/// Doc.\n\n\u{201c}/* z */\u{201d} class A { }\n";
+    assert!(class_of(text).0.starts_with("class"));
+    assert_eq!(
+        comment_holders(text)[1],
+        ("/* z */".to_owned(), "SourceFile".to_owned())
+    );
+    let text = "/// Doc.\n\\\n\u{201c}/* z */\u{201d}\n\\class A { }\n";
+    assert!(class_of(text).0.starts_with("class"));
+    assert_eq!(
+        error_texts(&parse(text).syntax()),
+        ["\\\n\u{201c}/* z */\u{201d}", "\\"]
+    );
+}
+
+#[test]
+fn rejected_text_after_a_range_is_not_its_end() {
+    for (text, without) in [
+        (
+            "let r = (a, ..\\/// f\n\n/* g */\\);\n",
+            "let r = (a, ../// f\n\n/* g */);\n",
+        ),
+        (
+            "let r = (a, ../// e\n\\\n);\n",
+            "let r = (a, ../// e\n\n);\n",
+        ),
+        (
+            "let r = (a, ../* j */\\\n\n\\/* j2 */);\n",
+            "let r = (a, ../* j */\n\n/* j2 */);\n",
+        ),
+        ("let r = (..\\);\n", "let r = (..);\n"),
+    ] {
+        assert_eq!(comment_holders(text), comment_holders(without), "{text:?}");
+        assert_eq!(
+            shape_past_rejected(text),
+            shape_past_rejected(without),
+            "{text:?}"
+        );
+        assert_rejected_over(text, without);
+        let parse = parse(text);
+        let range = parse
+            .syntax()
+            .descendants()
+            .find_map(ast::RangeExpr::cast)
+            .unwrap();
+        assert!(range.end().is_none(), "{text:?}");
+        // Neither the run nor a comment after it is in the range.
+        let range_text = range.syntax().text().to_string();
+        assert!(range_text.ends_with(".."), "{text:?}: {range_text:?}");
+    }
+    // Rejected text before a real end leaves the end to the range.
+    for text in ["let r = a..\\b;\n", "let r = ..\\b;\n"] {
+        let parse = parse(text);
+        let range = parse
+            .syntax()
+            .descendants()
+            .find_map(ast::RangeExpr::cast)
+            .unwrap();
+        assert!(range.end().is_some(), "{text:?}");
+    }
 }
 
 #[test]

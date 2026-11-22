@@ -20,14 +20,18 @@
 //! start inside a token of the lexer. The tree builder puts each run back
 //! where it falls, in an `Error` node of its own or inside the token it
 //! joins, so the tree stays lossless. A blank line inside a run splits it
-//! into parts with an `Error` node each, so a comment under the blank line
-//! attaches to the declaration below as it would without the run
-//! ([`record_run`]).
+//! into parts with an `Error` node each, and each comment inside a run
+//! starts a part, so a comment attaches to the declaration below as it
+//! would without the run, with no rejected text from before it
+//! ([`record_run`]). A comment between a quote and the quote that closes
+//! it is rejected text, not a comment: it neither attaches nor splits a
+//! run.
 //!
 //! Where something is missing, rejected text in its place stands for it:
-//! [`Parser::rejected_in_place`] takes the run into the node of the missing
-//! operand or write-scope word ([`Event::Rejected`]), and nothing more is
-//! reported there.
+//! [`Parser::rejected_in_place`] takes the first part of the run into the
+//! node of the missing operand or write-scope word ([`Event::Rejected`]),
+//! and nothing more is reported there. The parts after it go in as they
+//! would anywhere else.
 
 use super::Input;
 #[cfg(doc)]
@@ -122,16 +126,29 @@ pub(super) fn closing_quotes(input: &Input<'_>, lines_end: &[bool]) -> (Vec<Opti
 /// the index after its last token. A blank line inside the run splits it,
 /// a line that holds only rejected text counting as blank, so a comment
 /// below the blank line attaches to the declaration under it without the
-/// text above the blank line. The trivia between two parts is not in
-/// either.
-pub(super) fn record_run(lexed: &Lexed, first: usize, end: usize, runs: &mut [Option<usize>]) {
+/// text above the blank line. Each comment starts a part too, so it
+/// attaches without the rejected text before it, and a node that takes
+/// the part before it in place of something missing leaves it to the
+/// declaration below. The trivia between two parts is not in either. A
+/// comment `quoted` marks, inside a quoted run, is rejected text.
+pub(super) fn record_run(
+    lexed: &Lexed,
+    quoted: &[bool],
+    first: usize,
+    end: usize,
+    runs: &mut [Option<usize>],
+) {
     let mut start = first;
     // The last token of the part so far that is not whitespace or a line
     // break.
     let mut last = first;
+    // Whether a line break came since the last comment, as rejected text
+    // counts as nothing on its line, and whether a blank line did.
     let (mut newline_seen, mut blank) = (false, false);
-    for i in first..end {
-        let kind = lexed.tokens[i].kind;
+    let tokens = lexed.tokens[first..end].iter().zip(&quoted[first..end]);
+    for (i, (token, &in_quotes)) in (first..end).zip(tokens) {
+        let kind = token.kind;
+        let comment = kind.is_comment() && !in_quotes;
         match kind {
             K::Newline => {
                 blank |= newline_seen;
@@ -139,10 +156,10 @@ pub(super) fn record_run(lexed: &Lexed, first: usize, end: usize, runs: &mut [Op
                 continue;
             }
             K::Whitespace => continue,
-            _ if kind.is_comment() => newline_seen = false,
+            _ if comment => newline_seen = false,
             _ => {}
         }
-        if blank {
+        if blank || comment {
             runs[start] = Some(last + 1);
             (start, blank) = (i, false);
         }

@@ -162,6 +162,15 @@ fn expr_bp(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
     p.nested(|p| expr_bp_inner(p, min)).unwrap_or_else(Some)
 }
 
+/// The optional end of a range, after its `..`. Without an expression
+/// there, it takes nothing: rejected text there does not stand for an
+/// end, since none is missing.
+fn range_end(p: &mut Parser<'_>) {
+    if at_expr_start(p) {
+        expr_bp(p, RANGE + 1);
+    }
+}
+
 fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
     // A range does not associate: `a..b..c` takes one `..`, then stops.
     let mut is_range = p.at(K::DotDot) && min <= RANGE;
@@ -169,8 +178,7 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
         // `..y` and `..`.
         let m = p.start();
         p.bump(K::DotDot);
-        // The end is optional: without one, this takes nothing.
-        expr_bp(p, RANGE + 1);
+        range_end(p);
         m.complete(p, K::RangeExpr)
     } else {
         unary(p)?
@@ -180,7 +188,7 @@ fn expr_bp_inner(p: &mut Parser<'_>, min: u8) -> Option<CompletedMarker> {
         if p.at(K::DotDot) && min <= RANGE && !is_range {
             let m = lhs.precede(p);
             p.bump(K::DotDot);
-            expr_bp(p, RANGE + 1);
+            range_end(p);
             lhs = m.complete(p, K::RangeExpr);
             is_range = true;
             continue;
