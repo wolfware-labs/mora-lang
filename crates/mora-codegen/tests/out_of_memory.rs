@@ -9,7 +9,10 @@
 //! Each case runs in a child process that re-executes this binary, which
 //! has no standard harness, so nothing touches stdout before the program
 //! does. The child's allocator refuses a block of [`REFUSED`] bytes once
-//! the case arms it, and every block after that.
+//! the case arms it, and every block after that. It writes a line for each
+//! block it refuses straight to the file of stderr, which allocates
+//! nothing, and the parent checks that the one refused block is the
+//! string's: when another allocation is on the panic path, its size shows.
 
 // Test code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -18,6 +21,9 @@
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::fs::File;
+use std::io::Write;
+use std::mem::ManuallyDrop;
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -31,6 +37,9 @@ const LEN: usize = 1200;
 /// The size of the heap object of that string, the block the allocator
 /// refuses.
 const REFUSED: usize = BYTES_OFFSET + LEN;
+
+/// How the child's line for a refused block starts.
+const REFUSED_LINE: &str = "out_of_memory: refused ";
 
 /// Names the case a child process runs.
 const CHILD_ENV: &str = "MORA_OUT_OF_MEMORY_CASE";
@@ -50,8 +59,48 @@ impl Refusing {
         if ARMED.load(Ordering::SeqCst) && size == REFUSED {
             REFUSING.store(true, Ordering::SeqCst);
         }
-        REFUSING.load(Ordering::SeqCst)
+        let refuses = REFUSING.load(Ordering::SeqCst);
+        if refuses {
+            report_refused(size);
+        }
+        refuses
     }
+}
+
+/// Writes `out_of_memory: refused <size> bytes` to stderr, formatted on the
+/// stack and written to the file under stderr, past the lock and the buffer
+/// of `std::io::stderr`, which may allocate.
+fn report_refused(size: usize) {
+    let mut line = [0u8; 64];
+    let mut rest = &mut line[..];
+    // The line fits the buffer.
+    let _ = writeln!(rest, "{REFUSED_LINE}{size} bytes");
+    let len = 64 - rest.len();
+    let stderr = ManuallyDrop::new(stderr_file());
+    // Nothing is left to report a failed write to.
+    let _ = (&*stderr).write_all(&line[..len]);
+}
+
+/// The file of stderr, to write to without `std::io::stderr`; never closed,
+/// since it is wrapped in a `ManuallyDrop`.
+#[cfg(unix)]
+fn stderr_file() -> File {
+    use std::os::fd::FromRawFd;
+
+    // SAFETY: descriptor 2 is stderr, open for the whole process, and the
+    // caller never closes it.
+    unsafe { File::from_raw_fd(2) }
+}
+
+/// The file of stderr, to write to without `std::io::stderr`; never closed,
+/// since it is wrapped in a `ManuallyDrop`.
+#[cfg(windows)]
+fn stderr_file() -> File {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+
+    // SAFETY: the handle is the process's stderr, open for the whole
+    // process, and the caller never closes it.
+    unsafe { File::from_raw_handle(std::io::stderr().as_raw_handle()) }
 }
 
 // SAFETY: every block comes from `System` with the caller's layout, or is
@@ -124,8 +173,17 @@ fn main() -> ExitCode {
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let (refused, rest): (Vec<_>, Vec<_>) = stderr
+            .split_inclusive('\n')
+            .partition(|line| line.starts_with(REFUSED_LINE));
+        let rest: String = rest.concat();
         let expected = format!("panic: out of memory allocating {REFUSED} bytes\n");
-        if output.status.code() == Some(101) && stderr == expected && output.stdout.is_empty() {
+        let only_the_string = refused == [format!("{REFUSED_LINE}{REFUSED} bytes\n")];
+        if output.status.code() == Some(101)
+            && rest == expected
+            && only_the_string
+            && output.stdout.is_empty()
+        {
             println!("out of memory: {name} ... ok");
         } else {
             println!(
