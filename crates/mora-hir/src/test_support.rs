@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use mora_diag::Diagnostic;
 use mora_span::{Dependency, FileId, LineIndex, Project, ProjectKind, SourceFile};
 
-use crate::{ItemId, Scope, item_tree, pascal_case};
+use crate::{ItemId, Scope, Ty, item_tree, pascal_case};
 
 /// A database that records every query execution.
 #[salsa::db]
@@ -124,6 +124,12 @@ pub fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -
         .find(|(_, item)| item.name == name)
         .unwrap_or_else(|| panic!("no item named {name}"));
     Scope::file(project, file).item(idx)
+}
+
+/// `Result<ok, error>` as the checker sees it while the standard library is
+/// not loaded.
+pub fn result_of(ok: Ty, error: Ty) -> Ty {
+    Ty::external(vec![ok, error])
 }
 
 /// The codes of `diagnostics`.

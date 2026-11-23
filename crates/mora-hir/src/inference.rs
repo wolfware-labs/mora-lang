@@ -704,7 +704,7 @@ mod tests {
     use mora_span::{Project, SourceFile};
     use salsa::Setter;
 
-    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
+    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages, result_of};
     use crate::*;
 
     /// The codes `src/Program.mr` alone in an app reports.
@@ -786,16 +786,6 @@ mod tests {
         infer(&db, project, file, BodyOwner::TopLevel)
             .entry_return()
             .cloned()
-    }
-
-    /// `Result<ok, error>` as the checker sees it while the standard library
-    /// is not loaded.
-    fn result_of(ok: Ty, error: Ty) -> Ty {
-        Ty::Unsupported(Unsupported {
-            construct: Construct::External,
-            item: None,
-            parts: vec![ok, error],
-        })
     }
 
     #[test]

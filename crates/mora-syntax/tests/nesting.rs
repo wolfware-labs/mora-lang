@@ -8,6 +8,10 @@
 use mora_diag::{Code, codes};
 use mora_syntax::{SyntaxKind as K, parse};
 
+mod common;
+
+use common::assert_errors_hold_tokens;
+
 /// A construct nested `n` times, and the largest `n` the limit accepts. The
 /// largest `n` is below 256 where the statement around the construct, or a
 /// node inside it, is a level too.
@@ -139,20 +143,6 @@ fn too_deep(text: &str) -> usize {
         .collect();
     assert!(others.is_empty(), "{others:?}");
     parse.errors().len()
-}
-
-/// Asserts that every `Error` node in the tree of `text` holds a token that
-/// is not trivia: a node past the limit that takes no token is left out,
-/// and its `MR0018` is reported where it would be.
-fn assert_errors_hold_tokens(text: &str) {
-    for node in parse(text).syntax().descendants() {
-        if node.kind() == K::Error {
-            assert!(
-                node.tokens().any(|token| !token.kind().is_trivia()),
-                "{node:?} holds no token but trivia"
-            );
-        }
-    }
 }
 
 /// Runs `test` on a thread with the default stack of a spawned thread, as
@@ -531,17 +521,7 @@ fn a_range_with_no_end_is_as_deep_as_its_text() {
             "(".repeat(depth),
             ")".repeat(depth)
         );
-        parse(&text)
-            .errors()
-            .iter()
-            .map(|error| {
-                (
-                    error.code,
-                    usize::from(error.range.start()),
-                    usize::from(error.range.end()),
-                )
-            })
-            .collect::<Vec<_>>()
+        coded_ranges(&text)
     };
     let at = |depth: usize| "let r = ".len() + depth;
     assert_eq!(range(254, ""), []);
@@ -680,19 +660,8 @@ fn a_node_past_the_limit_that_takes_no_token_is_left_out() {
     ];
     for (name, body, stop, holder, errors) in sites {
         let text = format!("{body}{stop}\n");
+        assert_eq!(coded_ranges(&text), errors, "{name}");
         let parse = parse(&text);
-        let got: Vec<_> = parse
-            .errors()
-            .iter()
-            .map(|error| {
-                (
-                    error.code,
-                    usize::from(error.range.start()),
-                    usize::from(error.range.end()),
-                )
-            })
-            .collect();
-        assert_eq!(got, errors, "{name}");
         assert_errors_hold_tokens(&text);
         // The node the empty one was in ends before the stop, with no
         // `Error` node last in it; a tuple element that held only that node

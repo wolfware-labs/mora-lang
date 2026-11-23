@@ -912,22 +912,15 @@ mod tests {
     /// one.
     fn sample_texts() -> Vec<String> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut dirs = vec![
+        let dirs = vec![
             root.join("tests/parser"),
             root.join("../../tests/ui"),
             root.join("../../tests/run"),
         ];
-        let mut texts = Vec::new();
-        while let Some(dir) = dirs.pop() {
-            for entry in std::fs::read_dir(&dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    dirs.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "mr") {
-                    texts.push(std::fs::read_to_string(&path).unwrap());
-                }
-            }
-        }
+        let mut texts: Vec<String> = crate::test_files::mr_files(dirs)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
         assert!(texts.len() > 100, "{} texts", texts.len());
         texts.extend(
             [

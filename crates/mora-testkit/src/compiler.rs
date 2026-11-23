@@ -144,19 +144,19 @@ impl FrontEnd {
     /// Analyzes the case and gives the analysis to `read`, on a thread with
     /// the compiler's stack, where the analysis is dropped too: dropping a
     /// syntax tree recurses as deep as it nests.
-    fn analyzed<T: Send>(
+    pub(crate) fn analyzed<T: Send>(
         &self,
         path: &str,
         text: &str,
         read: impl FnOnce(Analysis) -> T + Send,
     ) -> T {
-        mora_driver::on_compiler_stack(|| read(self.analyze_here(path, text)))
+        mora_driver::on_compiler_stack(|| read(self.analyze(path, text)))
             .expect("a thread for the compiler")
     }
 
     /// Analyzes the case on this thread, which must have the compiler's
     /// stack ([`mora_driver::COMPILER_STACK_SIZE`]).
-    pub(crate) fn analyze_here(&self, path: &str, text: &str) -> Analysis {
+    fn analyze(&self, path: &str, text: &str) -> Analysis {
         let case = case::split(path, text).unwrap_or_else(|problem| panic!("{problem}"));
         let namespace = case
             .namespace

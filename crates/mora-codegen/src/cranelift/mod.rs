@@ -353,7 +353,7 @@ impl Exit {
             _ if layouts.of_local(result).size == 0 => Exit::Zero,
             _ => function::broken(
                 entry,
-                "an entry point returns a type other than `()`, `int` or a `Result`",
+                "an entry point that returns a type other than `()`, `int` or a `Result`",
             ),
         }
     }
@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "internal error generating code for UsersApi.Main: \
-                               invalid MIR: an entry point returns a type other than `()`, \
-                               `int` or a `Result`")]
+                               invalid MIR: an entry point that returns a type other than \
+                               `()`, `int` or a `Result`")]
     fn an_entry_returning_another_type_is_an_internal_error() {
         // The front end reports it (`MR0120`); code generation still checks.
         let db = TestDb::default();
@@ -730,11 +730,7 @@ mod tests {
         let mir = mora_mir::mir(&db, project, file, mora_hir::BodyOwner::Item(item.item));
         let mut body = mir.bodies[0].clone();
         body.locals[LocalId::RETURN.index()].ty =
-            LocalTy::Value(Ty::Unsupported(mora_hir::Unsupported {
-                construct: mora_hir::Construct::External,
-                item: None,
-                parts: vec![Ty::UNIT, Ty::String],
-            }));
+            LocalTy::Value(mora_hir::test_support::result_of(Ty::UNIT, Ty::String));
         let program = Program::from_body(&db, project, file, &body);
         let _ = Cranelift.jit(&program, Profile::Debug);
     }

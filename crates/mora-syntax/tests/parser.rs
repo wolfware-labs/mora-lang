@@ -13,6 +13,11 @@ use std::path::Path;
 use mora_syntax::ast::{self, AstNode};
 use mora_syntax::parse;
 
+mod common;
+
+// The snapshots and every helper here that parses run it.
+use common::assert_errors_hold_tokens;
+
 fn render(text: &str) -> String {
     assert_errors_hold_tokens(text);
     let parse = parse(text);
@@ -1446,31 +1451,12 @@ fn error_texts(node: &mora_syntax::SyntaxNode) -> Vec<String> {
         .collect()
 }
 
-/// Asserts that every `Error` node in the tree of `text` holds a token that
-/// is not trivia: a comment between parts of rejected text is trivia, as
-/// it would be without them, rejected text taken in place of something
-/// missing is in the node that stands for it, and no `Error` node holds no
-/// token at all, as one past the nesting limit that takes nothing, or one
-/// for an error at the end of the text, would. It holds for every text
-/// [`parse`] parses: the snapshots and every helper here that parses run
-/// it. A parse past its budget of events (`parse_within`) can still leave
-/// one, where it stops.
-fn assert_errors_hold_tokens(text: &str) {
-    for node in error_nodes(&parse(text).syntax()) {
-        assert!(
-            node.tokens().any(|token| !token.kind().is_trivia()),
-            "{text:?}: {node:?} holds no token but trivia"
-        );
-    }
-}
-
 #[test]
 fn what_comes_before_an_error_with_nothing_to_take_goes_where_it_would_without_its_node() {
     // With no node for the error, a comment or rejected text before the
     // word goes where it would if the error were not there: a doc comment
     // to the declaration below it, rejected text into the member list, as
     // in a class without the indexer; at the end of the text, to the file.
-    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
     let indexer = |inner: &str| {
         format!("class Z {{ this[i: int]: int {{\n{inner}F(): int {{ return 1; }} }}")
     };
@@ -1478,8 +1464,8 @@ fn what_comes_before_an_error_with_nothing_to_take_goes_where_it_would_without_i
     assert_eq!(
         full_errors(&text),
         [
-            error("expected `get` or `set`", 29),
-            error("expected `}`", 29)
+            missing_at("expected `get` or `set`", 29),
+            missing_at("expected `}`", 29)
         ]
     );
     assert_eq!(
@@ -1494,8 +1480,8 @@ fn what_comes_before_an_error_with_nothing_to_take_goes_where_it_would_without_i
     assert_eq!(
         full_errors(&text)[..2],
         [
-            error("expected `get` or `set`", 29),
-            error("expected `}`", 29)
+            missing_at("expected `get` or `set`", 29),
+            missing_at("expected `}`", 29)
         ]
     );
     assert_eq!(holder_of_run(&text, "\u{201c}"), "MemberList");
@@ -1504,13 +1490,13 @@ fn what_comes_before_an_error_with_nothing_to_take_goes_where_it_would_without_i
         holder_of_run("class Z {\n\u{201c} F(): int { return 1; } }", "\u{201c}")
     );
     let text = "@A /* c */";
-    assert_eq!(full_errors(text), [error("expected a statement", 2)]);
+    assert_eq!(full_errors(text), [missing_at("expected a statement", 2)]);
     assert_eq!(
         comment_holders(text),
         [("/* c */".to_owned(), "SourceFile".to_owned())]
     );
     let text = "@A \u{201c}";
-    assert_eq!(full_errors(text)[0], error("expected a statement", 2));
+    assert_eq!(full_errors(text)[0], missing_at("expected a statement", 2));
     assert_eq!(holder_of_run(text, "\u{201c}"), "SourceFile");
 }
 
@@ -1519,13 +1505,12 @@ fn an_error_with_nothing_to_take_makes_no_error_node() {
     // At the end of the text after attributes, and before a word that is
     // not `get` or `set`, the error is reported where it is, with no
     // `Error` node, which would hold nothing.
-    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
-    assert_eq!(full_errors("@A"), [error("expected a statement", 2)]);
+    assert_eq!(full_errors("@A"), [missing_at("expected a statement", 2)]);
     assert_eq!(
         full_errors("class Z { this[i: int]: int { ge } }"),
         [
-            error("expected `get` or `set`", 29),
-            error("expected `}`", 29),
+            missing_at("expected `get` or `set`", 29),
+            missing_at("expected `}`", 29),
             ("MR0110".to_owned(), "expected a member".to_owned(), 30, 32),
             (
                 "MR0110".to_owned(),
@@ -1629,6 +1614,12 @@ fn full_errors(text: &str) -> Vec<(String, String, u32, u32)> {
         .collect()
 }
 
+/// A syntax error (`MR0110`) with `message` at `at`, where something is
+/// missing, as [`full_errors`] gives it.
+fn missing_at(message: &str, at: u32) -> (String, String, u32, u32) {
+    ("MR0110".to_owned(), message.to_owned(), at, at)
+}
+
 #[test]
 fn something_missing_is_reported_before_the_rejected_text() {
     let text = "class A \\x { }\n";
@@ -1637,7 +1628,7 @@ fn something_missing_is_reported_before_the_rejected_text() {
         full_errors(text)
             .into_iter()
             .find(|(code, ..)| code == "MR0110"),
-        Some(("MR0110".to_owned(), "expected `{`".to_owned(), 7, 7))
+        Some(missing_at("expected `{`", 7))
     );
     assert_rejected_over(text, "class A x { }\n");
     assert_eq!(coded_offsets("class A x { }\n")[0].1, 7);
@@ -1871,7 +1862,6 @@ fn rejected_text_after_a_token_or_a_completed_node_still_stands_for_what_is_miss
     // An error right after a token (`if`) or a completed node (the name
     // `X`), where no node was opened at the run, leaves the run to the
     // operand after it: only what the run does not stand for is reported.
-    let error = |message: &str, at: u32| ("MR0110".to_owned(), message.to_owned(), at, at);
     let rejected = |at: u32| {
         (
             "MR0017".to_owned(),
@@ -1884,15 +1874,15 @@ fn rejected_text_after_a_token_or_a_completed_node_still_stands_for_what_is_miss
         (
             "if \\ { }\n",
             vec![
-                error("expected `(`", 2),
+                missing_at("expected `(`", 2),
                 rejected(3),
-                error("expected `)`", 4),
+                missing_at("expected `)`", 4),
             ],
             "IfStmt",
         ),
         (
             "let p = new P { X \\ };\n",
-            vec![error("expected `=`", 17), rejected(18)],
+            vec![missing_at("expected `=`", 17), rejected(18)],
             "MemberInit",
         ),
     ] {

@@ -16,9 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
-use mora_driver::on_compiler_stack;
 
-use crate::compiler::{Checked, FrontEnd, Output, has_error};
+use crate::compiler::{Analysis, Checked, FrontEnd, Output, has_error};
 use crate::harness::{panic_text, without_panic_output};
 use crate::ui::rendered;
 
@@ -110,12 +109,11 @@ fn build_and_run(path: &str, text: &str) -> Result<i32, BuildError> {
 /// the program's, such as a type too large, join the front end's. A panic of
 /// the compiler is an error, not a crash.
 pub(crate) fn build(path: &str, text: &str) -> Result<JitProgram, BuildError> {
-    caught(|| on_compiler_stack(|| compile(path, text)).expect("a thread for the compiler"))
+    caught(|| FrontEnd::new().analyzed(path, text, compile))
 }
 
-/// [`build`] on this thread.
-fn compile(path: &str, text: &str) -> Result<JitProgram, BuildError> {
-    let mut analysis = FrontEnd::new().analyze_here(path, text);
+/// Compiles the analysis of [`build`], on the compiler's thread.
+fn compile(mut analysis: Analysis) -> Result<JitProgram, BuildError> {
     if has_error(&analysis.checked.diagnostics) {
         return Err(BuildError::Program(analysis.checked));
     }
@@ -244,7 +242,7 @@ pub(crate) fn output_of(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Resu
 mod tests {
     use super::*;
     use crate::Compiler;
-    use crate::harness::{PANIC_HOOK, with_panic_hook};
+    use crate::harness::assert_gives_the_hook_back;
 
     #[test]
     fn output_passes_exit_codes_through() {
@@ -506,20 +504,9 @@ mod tests {
 
     #[test]
     fn a_quiet_build_gives_the_hook_back() {
-        use std::cell::Cell;
-        use std::sync::PoisonError;
-        // The hook runs on the thread that panics, so other tests that panic
-        // while it is installed do not set this thread's flag.
-        thread_local! {
-            static CALLED: Cell<bool> = const { Cell::new(false) };
-        }
-        let _hook = PANIC_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
-        with_panic_hook(Box::new(|_| CALLED.with(|called| called.set(true))), || {
+        assert_gives_the_hook_back(|| {
             assert!(build_quietly("a.mr", "return 3;\n").is_ok());
             assert!(build_quietly("a.mr", "").is_err());
-            assert!(!CALLED.with(Cell::get));
-            let _ = catch_unwind(|| panic!("after the build"));
         });
-        assert!(CALLED.with(Cell::get));
     }
 }

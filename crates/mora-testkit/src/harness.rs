@@ -288,53 +288,58 @@ pub fn with_panic_hook<T>(hook: PanicHook, f: impl FnOnce() -> T) -> T {
     result.unwrap_or_else(|payload| panic::resume_unwind(payload))
 }
 
-/// Held by the tests that set the panic hook, which is global, so that one
-/// does not take the hook another set as the one to put back.
+/// Runs `run` under a hook that records the panics of this thread, and
+/// checks that `run` lets no panic reach that hook and puts it back: a
+/// panic after `run` does reach it.
+///
+/// # Panics
+///
+/// When a check fails.
 #[cfg(test)]
-pub(crate) static PANIC_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) fn assert_gives_the_hook_back(run: impl FnOnce()) {
+    use std::cell::Cell;
+    use std::sync::{Mutex, PoisonError};
+
+    /// Held while the hook is set, which is global, so that one test does
+    /// not take the hook another set as the one to put back.
+    static HOOK_SET: Mutex<()> = Mutex::new(());
+    thread_local! {
+        // The hook runs on the thread that panics, so the panics of other
+        // tests do not set this one's.
+        static CALLED: Cell<bool> = const { Cell::new(false) };
+    }
+    let _set = HOOK_SET.lock().unwrap_or_else(PoisonError::into_inner);
+    CALLED.with(|called| called.set(false));
+    with_panic_hook(Box::new(|_| CALLED.with(|called| called.set(true))), || {
+        run();
+        assert!(
+            !CALLED.with(Cell::get),
+            "a panic in the run reached the hook"
+        );
+        let _ = panic::catch_unwind(|| panic!("after the run"));
+    });
+    assert!(CALLED.with(Cell::get), "the hook is not back after the run");
+}
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::sync::PoisonError;
-
     use super::*;
-
-    thread_local! {
-        // Set by the hook the tests install. The hook runs on the thread
-        // that panics, so the panics of other tests do not set this one's.
-        static CALLED: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// A hook that records that it ran on this thread.
-    fn recording() -> PanicHook {
-        Box::new(|_| CALLED.with(|called| called.set(true)))
-    }
 
     #[test]
     fn a_panic_in_a_quiet_run_gives_the_hook_back() {
-        let _hook = PANIC_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
-        CALLED.with(|called| called.set(false));
-        with_panic_hook(recording(), || {
+        assert_gives_the_hook_back(|| {
             let quiet = panic::catch_unwind(|| without_panic_output(|| panic!("inside")));
             assert!(quiet.is_err());
-            assert!(!CALLED.with(Cell::get));
-            let _ = panic::catch_unwind(|| panic!("after the quiet run"));
         });
-        assert!(CALLED.with(Cell::get));
     }
 
     #[test]
     fn a_hook_comes_back_when_its_run_panics() {
-        let _hook = PANIC_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
-        CALLED.with(|called| called.set(false));
-        with_panic_hook(recording(), || {
+        assert_gives_the_hook_back(|| {
             let run = panic::catch_unwind(|| with_panic_hook(Box::new(|_| {}), || panic!("x")));
             let payload = run.err().and_then(|p| p.downcast::<&str>().ok());
             assert_eq!(payload.as_deref(), Some(&"x"));
-            let _ = panic::catch_unwind(|| panic!("after the run"));
         });
-        assert!(CALLED.with(Cell::get));
     }
 
     #[test]

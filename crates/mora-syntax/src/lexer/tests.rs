@@ -504,20 +504,11 @@ fn repository_sources_lex_losslessly() {
             }
         }
     }
-    let mut dirs = vec![root.join("tests")];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if path.extension().is_some_and(|e| e == "mr") {
-                sources.push((
-                    path.display().to_string(),
-                    std::fs::read_to_string(&path).unwrap(),
-                ));
-            }
-        }
-    }
+    sources.extend(
+        crate::test_files::mr_files(vec![root.join("tests")])
+            .into_iter()
+            .map(|(path, text)| (path.display().to_string(), text)),
+    );
     assert!(sources.len() >= 20, "found only {} sources", sources.len());
     for (origin, text) in &sources {
         let lexed = lex(text);

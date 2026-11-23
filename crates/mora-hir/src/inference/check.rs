@@ -32,7 +32,7 @@ use crate::signature::{
     struct_field, this_type,
 };
 use crate::suggest::closest;
-use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty, Unsupported};
+use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -656,11 +656,7 @@ impl Check<'_> {
             value
         } else {
             let error = propagate.error.clone().unwrap_or(Ty::Error);
-            Ty::Unsupported(Unsupported {
-                construct: Construct::External,
-                item: None,
-                parts: vec![value, error],
-            })
+            Ty::external(vec![value, error])
         });
     }
 
