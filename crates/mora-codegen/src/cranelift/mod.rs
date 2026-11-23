@@ -962,10 +962,11 @@ mod tests {
         // states as an exception: its loop stores first to the bottom of the
         // probed area, `sp - STEP`, and moves up a page at a time, stopping
         // before the page just below `sp`. A frame that runs past the free
-        // stack is touched first far below the guard page. When a Cranelift
-        // update probes from the top down, as on x86-64 and aarch64, this
-        // test fails; then the exception leaves §13.10 and this test
-        // checks the new order.
+        // stack is touched first far below the guard page. Reported as
+        // https://github.com/bytecodealliance/wasmtime/issues/15447. When a
+        // Cranelift update probes from the top down, as on x86-64 and
+        // aarch64, this test fails; then the exception leaves §13.10 and
+        // this test checks the new order.
         //
         //       addi sp, sp, -16 ; sd ra, 8(sp) ; sd s0, 0(sp) ; mv s0, sp
         //       lui t6, STEP ; lui t3, 0x1

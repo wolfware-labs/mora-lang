@@ -9,7 +9,7 @@ use cranelift_codegen::ir;
 use mora_hir::{
     BodyOwner, ItemId, ItemKind, Ty, is_generic_type, item_name_span, item_tree, ty_name,
 };
-use mora_mir::{LocalTy, Rvalue, StatementKind};
+use mora_mir::{Rvalue, StatementKind};
 use mora_span::{Db, Project, Span};
 use mora_target::Target;
 
@@ -76,16 +76,16 @@ pub(crate) fn check_structs(layouts: &Layouts<'_>, project: Project) -> Result<(
 }
 
 /// Checks the type of every local of every function of `program`, for a
-/// tuple too large that no struct holds.
+/// tuple too large that no struct holds: the type a local holds, or the one
+/// it borrows, which the calling convention lays out too to pass an `in`
+/// borrow by value.
 pub(crate) fn check_locals(
     layouts: &Layouts<'_>,
     program: &Program<'_>,
 ) -> Result<(), CodegenError> {
     for function in program.functions() {
         for local in &function.body.locals {
-            if let LocalTy::Value(ty) = &local.ty {
-                check(layouts, ty, Some(function.body.span))?;
-            }
+            check(layouts, local.ty.ty(), Some(function.body.span))?;
         }
     }
     Ok(())
@@ -230,7 +230,9 @@ mod tests {
     use mora_hir::test_support::TestDb;
 
     use super::*;
-    use crate::test_util::{app_of, doubling, x86_64};
+    use mora_mir::{BorrowMode, LocalTy};
+
+    use crate::test_util::{app_of, doubling, tuple, x86_64};
     use crate::{Backend, Cranelift, JitBackend, Profile};
 
     /// The text a span covers in the one file of `project`.
@@ -346,6 +348,52 @@ mod tests {
         assert_eq!(name, "(S28, S28)");
         let at = text_at(&db, project, span);
         assert!(at.starts_with('{') && at.contains("let t"), "{at:?}");
+    }
+
+    #[test]
+    fn a_borrowed_tuple_too_large_is_reported_at_its_function() {
+        // No caller can hold such a tuple, so the body is given the borrow:
+        // `F`'s parameter `t` borrows `(S28, S28)` in place of `(int, int)`.
+        let db = TestDb::default();
+        let text = format!(
+            "{}F(t: (int, int), ref r: S28): int => 1;\nreturn 0;\n",
+            doubling(28)
+        );
+        let project = app_of(&db, &text);
+        let file = project.files(&db)[0];
+        let item = mora_hir::test_support::item_named(&db, project, file, "F");
+        let mir = mora_mir::mir(&db, project, file, mora_hir::BodyOwner::Item(item.item));
+        let layouts = Layouts::new(&db, &x86_64());
+        // A small `in` borrow and a `ref` one pass.
+        let body = mir.bodies[0].clone();
+        assert!(matches!(
+            body.locals[1].ty,
+            LocalTy::Borrow(BorrowMode::In, _)
+        ));
+        assert!(matches!(
+            body.locals[2].ty,
+            LocalTy::Borrow(BorrowMode::Ref, _)
+        ));
+        let program = Program::from_body(&db, project, file, &body);
+        assert_eq!(check_locals(&layouts, &program), Ok(()));
+        let mut body = body;
+        let s28 = || body_ty(&db, project, "S28");
+        body.locals[1].ty = LocalTy::Borrow(BorrowMode::In, tuple(vec![s28(), s28()]));
+        let program = Program::from_body(&db, project, file, &body);
+        let error = check_locals(&layouts, &program).unwrap_err();
+        assert_eq!(error.diagnostic().unwrap().code.to_string(), "MR0156");
+        let CodegenError::TypeTooLarge { name, span } = error else {
+            panic!("{error}");
+        };
+        assert_eq!(name, "(S28, S28)");
+        // The body of `F`, as for a tuple it holds.
+        assert_eq!(text_at(&db, project, span), "1");
+    }
+
+    /// The type of the struct `name` declared in `project`.
+    fn body_ty(db: &TestDb, project: Project, name: &str) -> Ty {
+        let file = project.files(db)[0];
+        Ty::Struct(mora_hir::test_support::item_named(db, project, file, name))
     }
 
     /// What building `text` for x86_64 gives, with arrays of strings of at
