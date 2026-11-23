@@ -372,10 +372,11 @@ mod tests {
             let Err(error) = build_within(&text, 47) else {
                 panic!("no error for {joins}");
             };
-            let CodegenError::FrameTooLarge { span, .. } = &error else {
-                panic!("{error:?}");
-            };
-            assert_eq!(&text[std::ops::Range::<usize>::from(span.range)], name);
+            assert!(
+                matches!(&error, CodegenError::FrameTooLarge { span, .. }
+                    if &text[std::ops::Range::<usize>::from(span.range)] == name),
+                "{error:?}"
+            );
             assert_eq!(
                 error.to_string(),
                 format!("the stack frame of `UsersApi.{name}` would take more than 2^30 bytes")

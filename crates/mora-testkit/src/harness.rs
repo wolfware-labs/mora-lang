@@ -369,6 +369,16 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_without_the_mark_goes_to_the_earlier_hook() {
+        // The earlier hook reports it, and it does not count as one that
+        // reached the hook under test.
+        assert_gives_the_hook_back(|| {
+            let other = panic::catch_unwind(|| panic!("another test's panic"));
+            assert!(other.is_err());
+        });
+    }
+
+    #[test]
     fn the_text_of_a_panic_is_its_string_payload() {
         assert_eq!(panic_text(&"a"), Some("a".to_owned()));
         assert_eq!(panic_text(&String::from("b")), Some("b".to_owned()));
