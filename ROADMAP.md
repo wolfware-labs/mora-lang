@@ -821,7 +821,7 @@ Done when:
 
 ### M3.7 Results and `?` propagation
 
-Spec: [§4.6](docs/design/mora.md#46-entry-point), [§5.7](docs/design/mora.md#57-result-types), [§7.4](docs/design/mora.md#74-propagation-), [§11.1](docs/design/mora.md#111-two-kinds-of-failure), [§11.2](docs/design/mora.md#112-error-types), [§11.3](docs/design/mora.md#113-conversions-in-). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6.
+Spec: [§4.6](docs/design/mora.md#46-entry-point), [§5.7](docs/design/mora.md#57-result-types), [§7.4](docs/design/mora.md#74-propagation-), [§11.1](docs/design/mora.md#111-two-kinds-of-failure), [§11.2](docs/design/mora.md#112-error-types), [§11.3](docs/design/mora.md#113-conversions-in-). Crates: `mora-hir`, `mora-mir`, `mora-codegen`, `std`. Blocked by: M3.5, M3.6.
 
 `Result<T, E>`, `@MustUse` and `MR2002`, `IError` with `Code`, `PublicMessage` and `HttpStatus` (D-108), the `?` operator with identity and `IFrom` conversions (`MR0201`, `MR0202`, `MR0161`), `@From` and `MR0151` (D-100), the implicit `Ok` conversion and `MR0132`, and return-type inference for top-level statements with the exit codes of §4.6.
 
@@ -829,6 +829,7 @@ Done when:
 
 - §2.4's `Total` runs.
 - A top-level `?` that fails prints `error: ...` and exits with 1.
+- Run tests for each `Result` outcome of §4.6, from a declared `Main` and from top-level statements: `Ok(())` exits with 0, `Ok(n)` of a `Result<int, E>` exits with `n`, and `Err(e)` prints `error: {e}` on stderr and exits with 1.
 - UI tests for the `T` to `Result<T, E>` and `@From` rows of §5.10.
 - Drop-order run tests for the `?` exit under the debug runtime: locals with destructors are dropped in reverse order when `?` returns early, a local moved before the `?` is not dropped, a temporary of the statement that holds the `?` is dropped once, and the error value converted through `IFrom` (§11.3) is dropped once. The tests are added to `tests/memory` (M2.15).
 - The exhaustiveness property test of M3.4 also generates results: for every arm list the checker accepts as exhaustive, every generated value of a result type matches an arm, and for every arm it reports as unreachable (`MR2010`) no generated value reaches it first.
