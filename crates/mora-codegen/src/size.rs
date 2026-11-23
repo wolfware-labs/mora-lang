@@ -2,7 +2,8 @@
 //! bytes, and the stack frame of each function at most 2^30 (§13.5),
 //! `MR0156`. Layouts depend on the target, so the checks run with them:
 //! the sizes of types before any code is generated, and the frame of each
-//! function once its code is built, before it is compiled.
+//! function in two steps, its arrays of strings before its code is built
+//! and the whole frame once it is built, before it is compiled.
 
 use cranelift_codegen::ir;
 use mora_hir::{
@@ -92,7 +93,7 @@ pub(crate) fn check_locals(
 
 /// The most bytes the array of a concatenation or interpolation may take:
 /// [`MAX_FRAME_SLOTS`], or in a test of this crate the limit
-/// [`with_temporary_limit`] sets, so that a small program can pass it.
+/// `with_temporary_limit` sets, so that a small program can pass it.
 fn temporary_limit() -> u64 {
     #[cfg(test)]
     if let Some(limit) = TEMPORARY_LIMIT.get() {
@@ -371,6 +372,10 @@ mod tests {
             let Err(error) = build_within(&text, 47) else {
                 panic!("no error for {joins}");
             };
+            let CodegenError::FrameTooLarge { span, .. } = &error else {
+                panic!("{error:?}");
+            };
+            assert_eq!(&text[std::ops::Range::<usize>::from(span.range)], name);
             assert_eq!(
                 error.to_string(),
                 format!("the stack frame of `UsersApi.{name}` would take more than 2^30 bytes")

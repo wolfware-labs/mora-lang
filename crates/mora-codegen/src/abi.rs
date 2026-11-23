@@ -109,7 +109,7 @@ mod tests {
     use mora_target::Target;
 
     use super::*;
-    use crate::test_util::{CHAIN, app_of, struct_chain, tuple, x86_64};
+    use crate::test_util::{CHAIN, app_of, doubling_from, struct_chain, tuple, x86_64};
 
     fn mode(ty: &Ty, target: &Target) -> PassMode {
         let db = TestDb::new();
@@ -174,16 +174,9 @@ mod tests {
 
     #[test]
     fn a_plain_check_looks_at_each_type_once() {
-        // `E60` holds 2^60 empty structs down its paths; it is zero-sized
+        // `S60` holds 2^60 empty structs down its paths; it is zero-sized
         // and plain, so `in` passes it as a value.
-        let mut text = "struct E0 {}\n".to_owned();
-        for i in 1..=60 {
-            let before = i - 1;
-            text.push_str(&format!(
-                "struct E{i} {{\n    public A: E{before};\n    public B: E{before};\n}}\n"
-            ));
-        }
-        text.push_str("F(e: E60): int => 1;\n");
+        let text = format!("{}F(e: S60): int => 1;\n", doubling_from("", 60));
         let db = TestDb::new();
         let project = app_of(&db, &text);
         let file = file_named(&db, project, "src/Program.mr");

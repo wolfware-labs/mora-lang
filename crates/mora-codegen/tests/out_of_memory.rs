@@ -75,7 +75,8 @@ fn report_refused(size: usize) {
     let mut rest = &mut line[..];
     // The line fits the buffer.
     let _ = writeln!(rest, "{REFUSED_LINE}{size} bytes");
-    let len = 64 - rest.len();
+    let left = rest.len();
+    let len = line.len() - left;
     let stderr = ManuallyDrop::new(stderr_file());
     // Nothing is left to report a failed write to.
     let _ = (&*stderr).write_all(&line[..len]);

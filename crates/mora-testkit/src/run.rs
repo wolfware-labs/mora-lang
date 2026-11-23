@@ -78,17 +78,11 @@ fn marked<'a>(
     profile: Profile,
     number: usize,
 ) -> Result<Option<&'a str>, String> {
-    let Some(rest) = line.strip_prefix(marker) else {
+    let Some((name, rest)) = split_marker(line, marker) else {
         return Ok(None);
     };
-    if let Some(rest) = rest.strip_prefix(':') {
+    let Some(name) = name else {
         return Ok(Some(rest));
-    }
-    let Some((name, rest)) = rest
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once("]:"))
-    else {
-        return Ok(None);
     };
     match profile_named(name) {
         Some(named) => Ok((named == profile).then_some(rest)),
@@ -96,18 +90,26 @@ fn marked<'a>(
     }
 }
 
+/// The name in `marker[name]:` at the start of `line`, `None` for a plain
+/// `marker:`, and the text after the colon; `None` for a line that starts
+/// with neither.
+fn split_marker<'a>(line: &'a str, marker: &str) -> Option<(Option<&'a str>, &'a str)> {
+    let rest = line.strip_prefix(marker)?;
+    if let Some(rest) = rest.strip_prefix(':') {
+        return Some((None, rest));
+    }
+    let (name, rest) = rest.strip_prefix('[')?.split_once("]:")?;
+    Some((Some(name), rest))
+}
+
 /// Whether `line` starts with the marker of a run expectation, plain or
 /// marked for a profile, as `// expect:` or `// exit[debug]:`. A name that
 /// is not a profile counts too, so that [`expected`] reports it.
 pub fn is_expectation(line: &str) -> bool {
-    [EXPECT, STDERR, EXIT].iter().any(|marker| {
-        line.trim_start().strip_prefix(marker).is_some_and(|rest| {
-            rest.starts_with(':')
-                || rest
-                    .strip_prefix('[')
-                    .is_some_and(|rest| rest.split_once("]:").is_some())
-        })
-    })
+    let line = line.trim_start();
+    [EXPECT, STDERR, EXIT]
+        .iter()
+        .any(|marker| split_marker(line, marker).is_some())
 }
 
 /// Adds the line of output `rest`, the text after a marker, to `out`: less

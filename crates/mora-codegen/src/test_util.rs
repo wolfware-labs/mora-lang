@@ -63,8 +63,15 @@ pub(crate) fn struct_chain(count: usize) -> String {
 /// other `S{i}` two of the one before it in `A` and `B`, so `S{i}` takes
 /// `8 << i` bytes.
 pub(crate) fn doubling(last: usize) -> String {
+    doubling_from("    public A: long;\n", last)
+}
+
+/// [`doubling`] with `fields`, whole lines, as the fields of `S0`: with none,
+/// every struct is empty, and `S{last}` holds `2^last` of `S0` down its
+/// fields.
+pub(crate) fn doubling_from(fields: &str, last: usize) -> String {
     // Writing to a `String` cannot fail.
-    let mut text = "struct S0 {\n    public A: long;\n}\n".to_owned();
+    let mut text = format!("struct S0 {{\n{fields}}}\n");
     for i in 1..=last {
         let before = i - 1;
         let _ = writeln!(
