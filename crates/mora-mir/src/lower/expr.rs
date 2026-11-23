@@ -379,9 +379,10 @@ impl Lowerer<'_> {
         !self.owner.evaluation && *ty == Ty::String
     }
 
-    /// The expressions that `expr` joins, in order: the parts of a `+` of
-    /// strings, parentheses and nested `+` of strings included, and `expr`
-    /// itself when it is no such `+`.
+    /// The expressions that `expr`, a string, joins, in order: the parts of
+    /// a `+`, parentheses and nested `+` included, and `expr` itself when it
+    /// is no `+`. A `+` that gives a string takes two strings (§5.3), so
+    /// every `+` inside one joins strings too.
     fn concat_parts(&self, expr: ExprId) -> Vec<ExprId> {
         let mut parts = Vec::new();
         self.add_concat_parts(expr, &mut parts);
@@ -395,7 +396,7 @@ impl Lowerer<'_> {
                 op: BinaryOp::Add,
                 lhs,
                 rhs,
-            } if self.joins_strings(&self.ty(expr)) => {
+            } => {
                 self.add_concat_parts(*lhs, parts);
                 self.add_concat_parts(*rhs, parts);
             }

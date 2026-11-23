@@ -1,6 +1,8 @@
 //! How a value or a function crosses a call: the pass mode of each parameter
 //! and of the result.
 
+use std::collections::HashSet;
+
 use mora_hir::Ty;
 use mora_mir::{Body, BorrowMode, LocalId, LocalTy};
 
@@ -81,14 +83,18 @@ pub(crate) fn borrowed_value(ty: &LocalTy, layouts: &Layouts<'_>) -> Option<Layo
 /// copy of its bytes is a value of it. A string holds one to its heap
 /// object, and a type a later milestone lowers may hold one. The fields
 /// are walked with a stack of their own, as deep as the program nests
-/// structs.
+/// structs, and each type once: a struct that holds another twice, nested
+/// as deep as the program writes, has as many fields inside it as it has
+/// paths down to them.
 fn is_plain(ty: &Ty, layouts: &Layouts<'_>) -> bool {
     let mut pending = vec![ty.clone()];
+    let mut seen = HashSet::new();
     while let Some(ty) = pending.pop() {
         match ty {
             Ty::Primitive(_) => {}
             Ty::Tuple(_) | Ty::Struct(_) => {
-                pending.extend(layouts.fields(&ty).into_iter().map(|(_, field)| field));
+                let fields = layouts.fields(&ty).into_iter().map(|(_, field)| field);
+                pending.extend(fields.filter(|field| seen.insert(field.clone())));
             }
             _ => return false,
         }
@@ -164,6 +170,28 @@ mod tests {
             FnAbi::of(&mir.bodies[0], &layouts).params,
             [PassMode::Words(1)]
         );
+    }
+
+    #[test]
+    fn a_plain_check_looks_at_each_type_once() {
+        // `E60` holds 2^60 empty structs down its paths; it is zero-sized
+        // and plain, so `in` passes it as a value.
+        let mut text = "struct E0 {}\n".to_owned();
+        for i in 1..=60 {
+            let before = i - 1;
+            text.push_str(&format!(
+                "struct E{i} {{\n    public A: E{before};\n    public B: E{before};\n}}\n"
+            ));
+        }
+        text.push_str("F(e: E60): int => 1;\n");
+        let db = TestDb::new();
+        let project = app_of(&db, &text);
+        let file = file_named(&db, project, "src/Program.mr");
+        let item = item_named(&db, project, file, "F");
+        let mir = mora_mir::mir(&db, project, file, BodyOwner::Item(item.item));
+        let layouts = Layouts::new(&db, &x86_64());
+        let param = &mir.bodies[0].locals[1].ty;
+        assert_eq!(borrowed_value(param, &layouts).map(|l| l.size), Some(0));
     }
 
     #[test]

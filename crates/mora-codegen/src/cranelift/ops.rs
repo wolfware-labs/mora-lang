@@ -1197,6 +1197,23 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_struct_compares_its_fields_at_their_offsets() {
+        // `I` starts 4 bytes in, and its `B` 4 bytes into it: `B` is 8 bytes
+        // into `Out`, and only it differs.
+        let program = jit_one(
+            "struct In {\n    public A: int;\n    public B: int;\n}\n\
+             struct Out {\n    public X: int;\n    public I: In;\n}\n\
+             F(a: int, b: int): bool => \
+             new Out { X = 1, I = new In { A = 2, B = a } } == \
+             new Out { X = 1, I = new In { A = 2, B = b } };\n",
+            "F",
+        );
+        let f = func::<extern "C" fn(i32, i32) -> bool>(&program, "F");
+        assert!(f(5, 5));
+        assert!(!f(5, 6));
+    }
+
+    #[test]
     fn structs_nested_deep_compare_their_innermost_field() {
         let text = format!("{}F(a: S0, b: S0): bool => a == b;\n", struct_chain(CHAIN));
         let program = jit_one(&text, "F");

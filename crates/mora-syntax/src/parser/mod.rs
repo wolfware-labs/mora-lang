@@ -778,14 +778,9 @@ impl<'t> Parser<'t> {
 
     /// Whether a line break comes before the next token.
     pub(crate) fn at_line_start(&self) -> bool {
-        self.nth_at_line_start(0)
-    }
-
-    /// Whether a line break comes before the `n`th token ahead.
-    pub(crate) fn nth_at_line_start(&self, n: usize) -> bool {
         self.input
             .line_start
-            .get(self.pos + n)
+            .get(self.pos)
             .copied()
             .unwrap_or(false)
     }
@@ -1028,16 +1023,19 @@ mod tests {
     #[test]
     fn each_token_is_scanned_for_a_closing_quote_once() {
         // None of these quotes is closed, so each scan runs to the `;`; in
-        // the last, every quote is closed by the one at the end.
+        // the last, every quote is closed by the one at the end. A few
+        // thousand quotes are enough to tell one scan per token from one per
+        // quote, which would look at millions, and keep this test fast when
+        // it fails.
         // Writing to a `String` cannot fail.
         let mut names = String::from("let names = [\n");
-        for i in 0..20_000 {
+        for i in 0..2_000 {
             let _ = writeln!(names, "    \u{201c}name{i}\u{201c},");
         }
         names.push_str("];\n");
-        let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(40_000));
-        let operands = format!("let a = 1{};\n", " + \u{201c}x".repeat(40_000));
-        let closed = format!("let a = {}\u{201d};\n", "\u{201c}x ".repeat(40_000));
+        let arguments = format!("let a = G({});\n", "\u{201c}x, ".repeat(4_000));
+        let operands = format!("let a = 1{};\n", " + \u{201c}x".repeat(4_000));
+        let closed = format!("let a = {}\u{201d};\n", "\u{201c}x ".repeat(4_000));
         for text in [&names, &arguments, &operands, &closed] {
             let (tokens, scanned) = counted(text, |input, _| input.quotes_scanned);
             // The first quote scans the statement, and no quote rescans it.
@@ -1045,7 +1043,7 @@ mod tests {
             assert!(scanned <= 2 * tokens, "{scanned} of {tokens}");
         }
         let errors = parse(&names).errors().to_vec();
-        assert_eq!(errors.len(), 40_000);
+        assert_eq!(errors.len(), 4_000);
         assert!(
             errors
                 .iter()

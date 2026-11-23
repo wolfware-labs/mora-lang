@@ -1265,6 +1265,23 @@ pub(in crate::cranelift) mod tests {
     }
 
     #[test]
+    fn a_field_of_a_borrowed_value_passes_the_field() {
+        // `p` comes as a value in place of its borrow, and `G` takes the
+        // field of it, `copy (*p).Y`, not the whole of `p`.
+        let program = jit(
+            "struct P {\n    public X: int;\n    public Y: int;\n}\n\
+             G(move a: int): int => a;\nF(p: P): int => G(p.Y);\n\
+             F(new P { X = 1, Y = 2 });\n",
+            Profile::Debug,
+        );
+        let mut p = [0u8; 8];
+        p[..4].copy_from_slice(&1i32.to_ne_bytes());
+        p[4..].copy_from_slice(&2i32.to_ne_bytes());
+        let f: extern "C" fn(u64) -> i32 = func(&program, "F");
+        assert_eq!(f(u64::from_ne_bytes(p)), 2);
+    }
+
+    #[test]
     fn large_or_non_plain_in_parameters_are_pointers_to_the_callers_value() {
         // Three words: the callee reads the caller's own value.
         let program = jit(

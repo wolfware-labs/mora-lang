@@ -28,6 +28,13 @@ exclude_re = [
     # scanning past the end reads the end-of-file kind.
     '^crates/mora-syntax/src/parser/exprs\.rs:267:20: replace \+ with \* in conditional_follows$',
     '^crates/mora-syntax/src/parser/exprs\.rs:268:13: replace < with <= in conditional_follows$',
+    # The parser takes rejected text in place only right before a run of it
+    # (`Event::Rejected`), so the scan for it reaches the run before any
+    # token that is not trivia, and stopping at such a token never happens.
+    '^crates/mora-syntax/src/parser/build\.rs:263:46: replace && with \|\| in Sink<._>::next_rejected$',
+    # The word was shifted left by 8, so its low byte is zero: `|` and `^`
+    # with a byte give the same bits.
+    '^crates/mora-codegen/src/cranelift/strings\.rs:146:50: replace \| with \^ in word_bits$',
     # Any hash finds equal tokens; only the speed of the table depends on it.
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 0$',
     '^crates/mora-syntax/src/tree\.rs:472:5: replace token_hash -> u64 with 1$',

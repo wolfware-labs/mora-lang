@@ -818,6 +818,12 @@ mod tests {
                 Ty::Primitive(Primitive::Bool)
             ))
         );
+        // The first `?` gives the error type, whatever the later ones give.
+        let h = "H(): Result<long, bool> => Ok(2);\nlet y = H()?;\n";
+        assert_eq!(
+            entry_return_ty(&format!("{f}{h}")),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
         // An operand the checker does not see as a `Result` gives no error
         // type.
         assert_eq!(

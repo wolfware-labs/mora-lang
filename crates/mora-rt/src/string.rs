@@ -120,7 +120,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_util::{child, only_in_child};
+    use crate::test_util::{child, last_allocation, only_in_child};
 
     /// What a process that ends in the panic `test` runs prints.
     fn panics_with(test: &str, message: &str) {
@@ -238,6 +238,13 @@ mod tests {
         assert!(!eq(&x, &new_string(&[b'x'; 21])));
         // An inline string and a heap string never hold the same text.
         assert!(!eq(&a, &x));
+    }
+
+    #[test]
+    fn a_heap_string_takes_its_header_and_its_bytes() {
+        let string = new_string(&[b'a'; 40]);
+        assert_eq!(last_allocation(), BYTES_OFFSET + 40);
+        assert_eq!(string.len(), 40);
     }
 
     #[test]

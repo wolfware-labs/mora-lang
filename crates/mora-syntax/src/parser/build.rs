@@ -151,8 +151,9 @@ pub(super) fn build(
                     chain.remove(0);
                     events[i + 1 + reported] = Event::Tombstone;
                 }
-                // The first token of the node, which `MR0018` covers.
-                let first_token = || events[i + 1..].iter().find_map(raw_tokens);
+                // The first token of the node, which `MR0018` covers. The
+                // node's own `Start` at `i` is no token.
+                let first_token = || events[i..].iter().find_map(raw_tokens);
                 for kind in chain.drain(..).rev() {
                     sink.start(kind, in_place, first_token);
                 }

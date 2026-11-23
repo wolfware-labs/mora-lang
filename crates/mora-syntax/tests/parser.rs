@@ -521,6 +521,12 @@ fn a_quoted_run_takes_its_brackets_whole() {
         codes_of("F(\u{201c}a\u{201d}));\n"),
         ["MR0017", "MR0017", "MR0110", "MR0110"]
     );
+    // Another rejected token inside does not close the quote: the `(`
+    // after it is text too.
+    assert_eq!(
+        codes_of("F(\u{201c}a \\ (b\u{201d});\n"),
+        ["MR0017", "MR0017", "MR0017"]
+    );
 }
 
 #[test]
@@ -968,6 +974,12 @@ fn a_using_without_its_name_leaves_the_declaration_on_the_next_line() {
     }
     // A name on the next line that starts no declaration is the name.
     assert!(codes_of("using\n    Std.Text;\nF() {}\n").is_empty());
+    // On the same line, what follows `using` is its name, whatever it starts.
+    let messages = parse_messages("using F() {}\n");
+    assert!(
+        !messages.contains(&"expected an identifier".to_owned()),
+        "{messages:?}"
+    );
 }
 
 #[test]

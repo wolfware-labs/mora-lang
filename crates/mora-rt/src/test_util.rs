@@ -1,8 +1,42 @@
 //! Helpers shared by the tests of this crate: a test whose entry point ends
 //! the process, as a panic does, or writes to stdout, runs in a child
-//! process that re-executes the test binary.
+//! process that re-executes the test binary. The test binary's allocator
+//! records the size of the last block each thread asked for.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::process::{Command, Output};
+
+std::thread_local! {
+    /// The size of the last block this thread asked the allocator for.
+    static LAST_ALLOCATION: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The system allocator, recording the size of each block it hands out.
+struct Recording;
+
+// SAFETY: every call goes to `System` as it came.
+unsafe impl GlobalAlloc for Recording {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // A thread being torn down has no record to keep.
+        let _ = LAST_ALLOCATION.try_with(|last| last.set(layout.size()));
+        // SAFETY: the caller's contract for `alloc` is `System`'s.
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: the block came from `System` with this layout.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Recording = Recording;
+
+/// The size of the last block this thread asked the allocator for.
+pub(crate) fn last_allocation() -> usize {
+    LAST_ALLOCATION.get()
+}
 
 /// Set in the child process of a test.
 const CHILD_ENV: &str = "MORA_RT_CHILD";

@@ -246,6 +246,52 @@ mod tests {
     }
 
     #[test]
+    fn the_host_check_reports_a_struct_past_the_largest_size() {
+        let db = TestDb::default();
+        let project = app_of(&db, &format!("{}return 0;\n", doubling(29)));
+        let Err(CodegenError::TypeTooLarge { name, .. }) = check_sizes_on_host(&db, project) else {
+            panic!("no error");
+        };
+        assert_eq!(name, "S29");
+    }
+
+    #[test]
+    fn only_structs_that_are_not_generic_are_laid_out() {
+        // Each takes 2^32 bytes as written; a generic struct is laid out
+        // for each of its instances, and a class is not a value laid out
+        // here.
+        for declaration in [
+            "struct G<T> {\n    public A: S28;\n    public B: S28;\n}\n",
+            "class C {\n    public A: S28;\n    public B: S28;\n}\n",
+        ] {
+            let db = TestDb::default();
+            let text = format!("{}{declaration}return 0;\n", doubling(28));
+            let project = app_of(&db, &text);
+            assert_eq!(
+                check_sizes(&db, project, &x86_64()),
+                Ok(()),
+                "{declaration}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_function_too_large_is_reported_at_its_body() {
+        let text = format!(
+            "{}F(): int {{\n    G(): int {{\n        var a: S27;\n        return 1;\n    }}\n\
+             \x20   return G();\n}}\nF();\n",
+            doubling(27)
+        );
+        let Err(CodegenError::FrameTooLarge { name, span }) = build_within(&text, MAX_FRAME_SLOTS)
+        else {
+            panic!("no error");
+        };
+        assert_eq!(name, "UsersApi.F.G");
+        let at = &text[std::ops::Range::<usize>::from(span.range)];
+        assert!(at.starts_with('{') && at.contains("var a: S27;"), "{at:?}");
+    }
+
+    #[test]
     fn a_struct_past_the_largest_size_is_reported_at_its_name() {
         let db = TestDb::default();
         let project = app_of(&db, &format!("{}return 0;\n", doubling(30)));

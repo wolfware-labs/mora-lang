@@ -3231,9 +3231,34 @@ mod tests {
     }
 
     #[test]
+    fn an_option_is_named_when_the_checker_knows_its_type() {
+        for (text, message) in [
+            (
+                "F(): int? => 1;\nreturn F();\n",
+                "an entry point cannot return `int?`",
+            ),
+            (
+                "F(): List<int>? => [];\nreturn F();\n",
+                "an entry point cannot return an option type",
+            ),
+        ] {
+            let reported = diagnostics_of(text);
+            let entry: Vec<_> = reported
+                .iter()
+                .filter(|d| d.code.to_string() == "MR0120")
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(entry, [message], "{text:?}");
+        }
+    }
+
+    #[test]
     fn a_main_returns_the_result_of_the_standard_library_by_any_name() {
         for text in [
             "using R = Std.Result;\nMain(): R<int, string> { return Ok(1); }\n",
+            // The alias by the name, not the first alias of `Std`.
+            "using D = Std.Dictionary;\nusing R = Std.Result;\n\
+             Main(): R<int, string> { return Ok(1); }\n",
             "Main(): Std.Result<int, string> { return Ok(1); }\n",
             "using Std;\nMain(): Result<(), string> { return Ok(()); }\n",
         ] {
