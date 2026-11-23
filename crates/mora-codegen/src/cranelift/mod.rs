@@ -392,8 +392,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use cranelift_codegen::settings::{OptLevel, ProbestackStrategy};
-    use mora_hir::test_support::TestDb;
-    use mora_hir::{Construct, Unsupported};
+    use mora_hir::Construct;
+    use mora_hir::test_support::{TestDb, unsupported_of};
     use mora_mir::LocalTy;
     use mora_target::builtin_names;
     use object::{Object, ObjectSection, ObjectSymbol};
@@ -741,15 +741,6 @@ mod tests {
         payload.downcast::<String>().map(|text| *text).unwrap()
     }
 
-    /// A type a later milestone gives meaning to, made with `construct`.
-    fn unsupported(construct: Construct, parts: Vec<Ty>) -> Ty {
-        Ty::Unsupported(Unsupported {
-            construct,
-            item: None,
-            parts,
-        })
-    }
-
     #[test]
     fn an_entry_returning_a_result_waits_for_results() {
         // A `Result` is a type of the standard library, with its two type
@@ -758,7 +749,7 @@ mod tests {
         for ty in [
             mora_hir::test_support::result_of(Ty::UNIT, Ty::String),
             mora_hir::test_support::result_of(int, Ty::String),
-            unsupported(Construct::External, Vec::new()),
+            unsupported_of(Construct::External, Vec::new()),
         ] {
             assert_eq!(
                 panic_of_an_entry_returning(ty),
@@ -779,12 +770,12 @@ mod tests {
             result_of(Ty::String, Ty::String),
             result_of(Ty::Primitive(Primitive::Bool), int()),
             result_of(result_of(int(), Ty::String), Ty::String),
-            unsupported(Construct::External, vec![int()]),
-            unsupported(Construct::External, vec![int(), int(), int()]),
-            unsupported(Construct::Optional, vec![int()]),
-            unsupported(Construct::Function, vec![int()]),
-            unsupported(Construct::Class, Vec::new()),
-            unsupported(Construct::Generic, vec![int(), Ty::String]),
+            unsupported_of(Construct::External, vec![int()]),
+            unsupported_of(Construct::External, vec![int(), int(), int()]),
+            unsupported_of(Construct::Optional, vec![int()]),
+            unsupported_of(Construct::Function, vec![int()]),
+            unsupported_of(Construct::Class, Vec::new()),
+            unsupported_of(Construct::Generic, vec![int(), Ty::String]),
         ] {
             assert_eq!(
                 panic_of_an_entry_returning(ty.clone()),

@@ -321,15 +321,22 @@ pub enum Backend {
 }
 
 /// The profiles a run test goes through, each with every backend (§20.1).
-pub const PROFILES: [Profile; 2] = [Profile::Debug, Profile::Release];
+pub(crate) const PROFILES: [Profile; 2] = [Profile::Debug, Profile::Release];
 
 /// The name of `profile`, as problems name it and as a run test marks a line
 /// that holds only for it, as in `// exit[debug]: 101`.
-pub fn profile_name(profile: Profile) -> &'static str {
+pub(crate) fn profile_name(profile: Profile) -> &'static str {
     match profile {
         Profile::Debug => "debug",
         Profile::Release => "release",
     }
+}
+
+/// The profile [`profile_name`] names `name`; `None` for another name.
+pub(crate) fn profile_named(name: &str) -> Option<Profile> {
+    PROFILES
+        .into_iter()
+        .find(|&profile| profile_name(profile) == name)
 }
 
 impl Backend {

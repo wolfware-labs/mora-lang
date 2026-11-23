@@ -17,7 +17,5 @@ pub mod run;
 pub mod runner;
 pub mod ui;
 
-pub use compiler::{
-    Backend, Checked, Compiler, FrontEnd, Output, PROFILES, Unbuilt, compiler, profile_name,
-};
+pub use compiler::{Backend, Checked, Compiler, FrontEnd, Output, Unbuilt, compiler};
 pub use mora_codegen::Profile;

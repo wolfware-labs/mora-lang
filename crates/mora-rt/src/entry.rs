@@ -17,3 +17,15 @@ pub fn run_entry(main: impl FnOnce() -> i32) -> i32 {
     let _ = stdout.flush();
     code
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_exit_code_is_the_one_main_returns() {
+        for code in [0, 3, 101] {
+            assert_eq!(run_entry(|| code), code);
+        }
+    }
+}

@@ -18,10 +18,11 @@ use std::time::{Duration, Instant};
 
 use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
 
-use crate::compiler::{Analysis, Checked, FrontEnd, Output, has_error};
+use crate::compiler::{
+    Analysis, Checked, FrontEnd, Output, has_error, profile_name, profile_named,
+};
 use crate::harness::{panic_text, without_panic_output};
 use crate::ui::rendered;
-use crate::{PROFILES, profile_name};
 
 /// The exit code of the runner when the program has errors, the code a
 /// build that fails exits with (§17.1).
@@ -57,7 +58,7 @@ pub const INTERNAL_ERROR_PREFIX: &str = "jit-runner: internal error: ";
 /// (§13.10).
 pub fn main() -> ! {
     let mut args = std::env::args().skip(1);
-    let (Some(path), Some(profile)) = (args.next(), args.next().as_deref().and_then(profile_of))
+    let (Some(path), Some(profile)) = (args.next(), args.next().as_deref().and_then(profile_named))
     else {
         fail("usage: jit-runner <path> <debug|release>, with the program on standard input")
     };
@@ -90,13 +91,6 @@ fn compile_error(checked: &Checked) -> ! {
 /// prints its message.
 fn build_quietly(path: &str, text: &str, profile: Profile) -> Result<JitProgram, BuildError> {
     without_panic_output(|| build(path, text, profile))
-}
-
-/// The profile named `name`, as [`profile_name`] names it.
-fn profile_of(name: &str) -> Option<Profile> {
-    PROFILES
-        .into_iter()
-        .find(|&profile| profile_name(profile) == name)
 }
 
 /// Reports `reason` as an internal error and exits.
@@ -256,6 +250,7 @@ pub(crate) fn output_of(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Resu
 mod tests {
     use super::*;
     use crate::Compiler;
+    use crate::compiler::PROFILES;
     use crate::harness::{HOOK_MARK, assert_gives_the_hook_back};
 
     #[test]

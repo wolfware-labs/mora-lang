@@ -224,16 +224,16 @@ impl<'db> Layouts<'db> {
     }
 
     /// The size of `count` values of `element`, one after another; `None`
-    /// when it is larger than 2^31 bytes, the largest size of a type.
-    pub fn array_size(element: &Layout, count: usize) -> Option<u32> {
+    /// when it is larger than [`MAX_SIZE`] bytes.
+    pub(crate) fn array_size(element: &Layout, count: usize) -> Option<u32> {
         let count = u32::try_from(count).ok()?;
         fits(element.size.checked_mul(count))
     }
 
     /// The layout of `count` values of `element`, one after another: an
     /// aggregate whose fields are the elements, and the offset of each;
-    /// `None` when it is larger than 2^31 bytes, the largest size of a type.
-    pub fn array(element: &Layout, count: usize) -> Option<(Layout, Vec<u32>)> {
+    /// `None` when it is larger than [`MAX_SIZE`] bytes.
+    pub(crate) fn array(element: &Layout, count: usize) -> Option<(Layout, Vec<u32>)> {
         let size = Self::array_size(element, count)?;
         // Every offset is below the size, which fits.
         let offsets: Vec<u32> = (0..count as u32)

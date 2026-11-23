@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use mora_diag::Diagnostic;
 use mora_span::{Dependency, FileId, LineIndex, Project, ProjectKind, SourceFile};
 
-use crate::{ItemId, Scope, Ty, item_tree, pascal_case};
+use crate::{Construct, ItemId, Scope, Ty, Unsupported, item_tree, pascal_case};
 
 /// A database that records every query execution.
 #[salsa::db]
@@ -130,6 +130,16 @@ pub fn item_named(db: &TestDb, project: Project, file: SourceFile, name: &str) -
 /// not loaded.
 pub fn result_of(ok: Ty, error: Ty) -> Ty {
     Ty::external(vec![ok, error])
+}
+
+/// A type a later milestone gives meaning to, made with `construct` of
+/// `parts` and naming no item.
+pub fn unsupported_of(construct: Construct, parts: Vec<Ty>) -> Ty {
+    Ty::Unsupported(Unsupported {
+        construct,
+        item: None,
+        parts,
+    })
 }
 
 /// The codes of `diagnostics`.

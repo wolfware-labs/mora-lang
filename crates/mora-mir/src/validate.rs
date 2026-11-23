@@ -939,8 +939,8 @@ fn is_integer(ty: &Ty) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use mora_hir::test_support::{TestDb, app, file_named, item_named};
-    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported};
+    use mora_hir::test_support::{TestDb, app, file_named, item_named, unsupported_of};
+    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
     use super::{Checker, LoweredFor, check, debug_validate, debug_validate_evaluation, validate};
@@ -1695,11 +1695,7 @@ mod tests {
     #[test]
     fn rejects_a_local_of_no_concrete_type() {
         let fx = fx();
-        let array = Ty::Unsupported(Unsupported {
-            construct: Construct::Array,
-            item: None,
-            parts: vec![int()],
-        });
+        let array = unsupported_of(Construct::Array, vec![int()]);
         let pair = |ty: Ty| {
             Ty::Tuple(vec![
                 TupleElem {

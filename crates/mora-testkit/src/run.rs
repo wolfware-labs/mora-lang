@@ -5,10 +5,10 @@
 //! written `// expect[debug]:`, `// stderr[release]:` and so on holds only
 //! for that profile.
 
-use crate::compiler::Compiler;
+use crate::Profile;
+use crate::compiler::{Compiler, PROFILES, profile_name, profile_named};
 use crate::diff::diff;
 use crate::ui::rendered;
-use crate::{PROFILES, Profile, profile_name};
 
 const EXPECT: &str = "// expect";
 const STDERR: &str = "// stderr";
@@ -37,11 +37,10 @@ pub fn expected(text: &str, profile: Profile) -> Result<Expected, String> {
     let mut exit = None;
     for (number, line) in (1usize..).zip(text.lines()) {
         let line = line.trim_start();
-        let line_of = |rest: &str| format!("{}\n", rest.strip_prefix(' ').unwrap_or(rest));
         if let Some(rest) = marked(line, EXPECT, profile, number)? {
-            stdout.push_str(&line_of(rest));
+            push_line(&mut stdout, rest);
         } else if let Some(rest) = marked(line, STDERR, profile, number)? {
-            stderr.push_str(&line_of(rest));
+            push_line(&mut stderr, rest);
         } else if let Some(rest) = marked(line, EXIT, profile, number)? {
             if exit.is_some() {
                 return Err(format!("line {number}: a second `{EXIT}:` line"));
@@ -85,10 +84,17 @@ fn marked<'a>(
     else {
         return Ok(None);
     };
-    match PROFILES.iter().find(|&&known| profile_name(known) == name) {
-        Some(&known) => Ok((known == profile).then_some(rest)),
+    match profile_named(name) {
+        Some(named) => Ok((named == profile).then_some(rest)),
         None => Err(format!("line {number}: `{name}` is not a profile")),
     }
+}
+
+/// Adds the line of output `rest`, the text after a marker, to `out`: less
+/// the one space after the marker, and with its line ending.
+fn push_line(out: &mut String, rest: &str) {
+    out.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+    out.push('\n');
 }
 
 /// What `text` expects in each profile, in the order of [`PROFILES`].
