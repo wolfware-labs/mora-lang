@@ -116,10 +116,12 @@ fn section_number(line: &str) -> Option<&str> {
     numbered.then_some(number)
 }
 
-/// What an example's first line says it does, if it is an example.
+/// What an example's first line says it does, if it is an example: a run
+/// expectation of §20.1, plain or marked for a profile, makes it a program
+/// to run.
 pub fn expects(first: &str) -> Option<Expects> {
     let first = first.trim();
-    if first.starts_with("// expect:") {
+    if run::is_expectation(first) {
         return Some(Expects::Output);
     }
     let markers = [
@@ -425,6 +427,21 @@ F();
             examples[3].expects,
             Expects::Diagnostic(Severity::Warning, "MR2002".parse().unwrap())
         );
+    }
+
+    #[test]
+    fn any_run_expectation_starts_a_program_example() {
+        for first in [
+            "// expect: a",
+            "// stderr: a",
+            "// exit: 3",
+            "// exit[debug]: 101",
+            "// expect[release]: a",
+        ] {
+            assert_eq!(expects(first), Some(Expects::Output), "{first}");
+        }
+        assert_eq!(expects("// expected: a"), None);
+        assert_eq!(expects("let x = 1;"), None);
     }
 
     #[test]

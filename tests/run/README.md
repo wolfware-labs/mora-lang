@@ -7,7 +7,7 @@ Each `.mr` file here is a program (§20.1). Its `// expect:` lines give its stan
 Console.WriteLine(1 + 2);
 ```
 
-The program runs in the debug and in the release profile, and every line holds for both. A line that holds for one profile only names it after the marker, as `// expect[release]:`, `// stderr[debug]:` or `// exit[debug]:`. An overflow of `+` panics in a debug build and wraps in a release one (§7.12), so `overflow.mr` states both:
+The program runs in the debug and in the release profile, and every line holds for both. A line that holds for one profile only names it after the marker, as `// expect[release]:`, `// stderr[debug]:` or `// exit[debug]:`. The `// expect:` and `// stderr:` lines that hold in a profile, plain or marked, are its output in the order they are written. A profile has one exit code, so a plain `// exit:` line and one marked for a profile, or two lines for the same profile, are an error. An overflow of `+` panics in a debug build and wraps in a release one (§7.12), so `overflow.mr` states both:
 
 ```mora
 // expect: before

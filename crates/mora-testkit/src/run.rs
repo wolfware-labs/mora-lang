@@ -30,7 +30,9 @@ pub struct Expected {
 /// # Errors
 ///
 /// A line marked with a name that is not a profile, an exit code that is
-/// not a number, and a second exit code for one profile.
+/// not a number, and a second exit code for one profile: two plain
+/// `// exit:` lines, or a plain one and one marked for the profile. The
+/// `// expect:` and `// stderr:` lines, plain or marked, add up in order.
 pub fn expected(text: &str, profile: Profile) -> Result<Expected, String> {
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -43,7 +45,11 @@ pub fn expected(text: &str, profile: Profile) -> Result<Expected, String> {
             push_line(&mut stderr, rest);
         } else if let Some(rest) = marked(line, EXIT, profile, number)? {
             if exit.is_some() {
-                return Err(format!("line {number}: a second `{EXIT}:` line"));
+                let written = &line[..line.len() - rest.len()];
+                let profile = profile_name(profile);
+                return Err(format!(
+                    "line {number}: `{written}` gives the {profile} profile a second exit code"
+                ));
             }
             let code = rest.trim();
             exit = Some(
@@ -88,6 +94,20 @@ fn marked<'a>(
         Some(named) => Ok((named == profile).then_some(rest)),
         None => Err(format!("line {number}: `{name}` is not a profile")),
     }
+}
+
+/// Whether `line` starts with the marker of a run expectation, plain or
+/// marked for a profile, as `// expect:` or `// exit[debug]:`. A name that
+/// is not a profile counts too, so that [`expected`] reports it.
+pub fn is_expectation(line: &str) -> bool {
+    [EXPECT, STDERR, EXIT].iter().any(|marker| {
+        line.trim_start().strip_prefix(marker).is_some_and(|rest| {
+            rest.starts_with(':')
+                || rest
+                    .strip_prefix('[')
+                    .is_some_and(|rest| rest.split_once("]:").is_some())
+        })
+    })
 }
 
 /// Adds the line of output `rest`, the text after a marker, to `out`: less
@@ -261,7 +281,7 @@ mod tests {
         );
         assert_eq!(
             expected("// exit: 1\n// exit: 2", Profile::Debug),
-            Err("line 2: a second `// exit:` line".to_owned())
+            Err("line 2: `// exit:` gives the debug profile a second exit code".to_owned())
         );
     }
 
@@ -291,6 +311,28 @@ mod tests {
     }
 
     #[test]
+    fn expectation_markers_are_plain_or_marked() {
+        for line in [
+            "// expect: a",
+            "// stderr: a",
+            "// exit: 1",
+            "  // exit[debug]: 101",
+            "// expect[release]: a",
+            "// stderr[fast]: a",
+        ] {
+            assert!(is_expectation(line), "{line}");
+        }
+        for line in [
+            "// expected: a",
+            "// expect[debug] a",
+            "// error: MR0300",
+            "let x = 1;",
+        ] {
+            assert!(!is_expectation(line), "{line}");
+        }
+    }
+
+    #[test]
     fn a_marked_line_must_name_a_profile_and_one_exit_each() {
         assert_eq!(
             expected("// expect[fast]: x\n", Profile::Release),
@@ -300,7 +342,10 @@ mod tests {
         assert_eq!(expected(text, Profile::Debug).map(|e| e.exit), Ok(1));
         assert_eq!(
             expected(text, Profile::Release),
-            Err("line 2: a second `// exit:` line".to_owned())
+            Err(
+                "line 2: `// exit[release]:` gives the release profile a second exit code"
+                    .to_owned()
+            )
         );
         assert_eq!(
             expectations("// stderr[fast]: x\n"),

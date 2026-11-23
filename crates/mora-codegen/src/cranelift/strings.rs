@@ -249,7 +249,7 @@ impl Lowering<'_, '_> {
     ///
     /// With an internal error when `place` is not a string, and when the
     /// array is larger than a type may be, which the size checks report
-    /// before any code is generated (`check_temporaries`).
+    /// before the function's code is built (`check_temporaries`).
     pub(super) fn string_parts(
         &mut self,
         place: &Place,

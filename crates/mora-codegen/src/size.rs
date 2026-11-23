@@ -90,44 +90,65 @@ pub(crate) fn check_locals(
     Ok(())
 }
 
+/// The most bytes the array of a concatenation or interpolation may take:
+/// [`MAX_FRAME_SLOTS`], or in a test of this crate the limit
+/// [`with_temporary_limit`] sets, so that a small program can pass it.
+fn temporary_limit() -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEMPORARY_LIMIT.get() {
+        return limit;
+    }
+    MAX_FRAME_SLOTS
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// The limit [`with_temporary_limit`] sets on this thread.
+    static TEMPORARY_LIMIT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with `limit` bytes in place of [`MAX_FRAME_SLOTS`] for the
+/// checks of [`check_temporaries`] on this thread.
+#[cfg(test)]
+pub(crate) fn with_temporary_limit<T>(limit: u64, f: impl FnOnce() -> T) -> T {
+    TEMPORARY_LIMIT.set(Some(limit));
+    let result = f();
+    TEMPORARY_LIMIT.set(None);
+    result
+}
+
 /// Checks the array of strings that each concatenation and interpolation of
-/// every function of `program` builds on its stack, one string a part: an
-/// array that alone takes more than [`MAX_FRAME_SLOTS`] bytes cannot be laid
-/// out in a frame, so the frame is too large before any code is built.
+/// `function` builds on its stack, one string a part, before its code is
+/// built: an array that alone takes more than [`MAX_FRAME_SLOTS`] bytes
+/// cannot be laid out in a frame. Code generation checks each function so,
+/// then builds it and checks its frame ([`check_frame`]), in the order of
+/// [`Program::functions`], so the first function in that order that is too
+/// large is the one reported.
 ///
 /// # Errors
 ///
-/// [`CodegenError::FrameTooLarge`] for the first function with such an
-/// array, where [`check_frame`] reports it.
+/// [`CodegenError::FrameTooLarge`] for `function`, where [`check_frame`]
+/// reports it.
 pub(crate) fn check_temporaries(
     layouts: &Layouts<'_>,
-    program: &Program<'_>,
-) -> Result<(), CodegenError> {
-    temporaries_within(layouts, program, MAX_FRAME_SLOTS)
-}
-
-/// [`check_temporaries`] with `max` bytes in place of [`MAX_FRAME_SLOTS`].
-fn temporaries_within(
-    layouts: &Layouts<'_>,
-    program: &Program<'_>,
-    max: u64,
+    function: &Function<'_>,
 ) -> Result<(), CodegenError> {
     let string = layouts.of(&Ty::String);
-    for function in program.functions() {
-        let statements = function
-            .body
-            .blocks
-            .iter()
-            .flat_map(|block| &block.statements);
-        for statement in statements {
-            let parts = match &statement.kind {
-                StatementKind::Assign(_, Rvalue::Concat(operands)) => operands.len(),
-                StatementKind::Assign(_, Rvalue::Interpolate(pieces)) => pieces.len(),
-                _ => continue,
-            };
-            if Layouts::array_size(&string, parts).is_none_or(|size| u64::from(size) > max) {
-                return Err(frame_too_large(layouts.db(), function));
-            }
+    let statements = function
+        .body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements);
+    for statement in statements {
+        let parts = match &statement.kind {
+            StatementKind::Assign(_, Rvalue::Concat(operands)) => operands.len(),
+            StatementKind::Assign(_, Rvalue::Interpolate(pieces)) => pieces.len(),
+            _ => continue,
+        };
+        if Layouts::array_size(&string, parts)
+            .is_none_or(|size| u64::from(size) > temporary_limit())
+        {
+            return Err(frame_too_large(layouts.db(), function));
         }
     }
     Ok(())
@@ -209,7 +230,7 @@ mod tests {
 
     use super::*;
     use crate::test_util::{app_of, doubling, x86_64};
-    use crate::{Cranelift, JitBackend, Profile};
+    use crate::{Backend, Cranelift, JitBackend, Profile};
 
     /// The text a span covers in the one file of `project`.
     fn text_at(db: &TestDb, project: Project, span: Span) -> String {
@@ -280,26 +301,65 @@ mod tests {
         assert!(at.starts_with('{') && at.contains("let t"), "{at:?}");
     }
 
+    /// What building `text` for x86_64 gives, with arrays of strings of at
+    /// most `limit` bytes.
+    fn build_within(text: &str, limit: u64) -> Result<(), CodegenError> {
+        let db = TestDb::default();
+        let project = app_of(&db, text);
+        let program = Program::collect(&db, project).unwrap();
+        with_temporary_limit(limit, || {
+            Cranelift
+                .object(&program, &x86_64(), Profile::Debug)
+                .map(drop)
+        })
+    }
+
     #[test]
     fn a_string_built_of_too_many_parts_makes_its_frame_too_large() {
-        // Three parts take 48 bytes: with a limit of 47 the function that
-        // joins them is too large, at its name, and with 48 it is not. The
-        // number in the interpolation keeps it from becoming a `+`.
+        // Three parts take 48 bytes: with a limit of 47 the build stops at
+        // the function that joins them, before its code is built, and with
+        // 48 it does not. The number in the interpolation keeps it from
+        // becoming a `+`.
         for (joins, name) in [("a + a + a", "F"), ("$\"{a}{1}{a}\"", "G")] {
-            let db = TestDb::default();
             let text = format!("{name}(a: string): string => {joins};\nlet s = {name}(\"s\");\n");
-            let project = app_of(&db, &text);
-            let program = Program::collect(&db, project).unwrap();
-            let layouts = Layouts::new(&db, &x86_64());
-            let Err(CodegenError::FrameTooLarge { name: full, span }) =
-                temporaries_within(&layouts, &program, 47)
-            else {
+            let Err(error) = build_within(&text, 47) else {
                 panic!("no error for {joins}");
             };
-            assert_eq!(full, format!("UsersApi.{name}"));
-            assert_eq!(text_at(&db, project, span), name);
-            assert_eq!(temporaries_within(&layouts, &program, 48), Ok(()));
-            assert_eq!(check_temporaries(&layouts, &program), Ok(()));
+            assert_eq!(
+                error.to_string(),
+                format!("the stack frame of `UsersApi.{name}` would take more than 2^30 bytes")
+            );
+            assert_eq!(error.diagnostic().unwrap().code.to_string(), "MR0156");
+            assert_eq!(build_within(&text, 48), Ok(()));
+        }
+    }
+
+    #[test]
+    fn the_first_function_too_large_is_reported() {
+        // `Join` builds an array of five strings, 80 bytes, past a limit of
+        // 64, and `Big` keeps a local of 2^30 bytes, past the frame's: the
+        // one code generation reaches first is reported, whichever check
+        // finds it.
+        let functions = "Join(a: string): string => a + a + a + a + a;\n\
+                         Big(): int {\n    var a: S27;\n    return 1;\n}\n";
+        for (calls, first) in [
+            ("let j = Join(\"a\");\nlet n = Big();\n", "Join"),
+            ("let n = Big();\nlet j = Join(\"a\");\n", "Big"),
+        ] {
+            let text = format!("{}{functions}{calls}", doubling(27));
+            let db = TestDb::default();
+            let project = app_of(&db, &text);
+            let program = Program::collect(&db, project).unwrap();
+            let order: Vec<_> = program
+                .functions()
+                .iter()
+                .map(|f| f.body.name.as_str())
+                .collect();
+            assert_eq!(order[1], format!("UsersApi.{first}"), "{order:?}");
+            let Err(CodegenError::FrameTooLarge { name, .. }) = build_within(&text, 64) else {
+                panic!("no error");
+            };
+            assert_eq!(name, format!("UsersApi.{first}"));
         }
     }
 

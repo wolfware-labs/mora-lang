@@ -1,7 +1,10 @@
 //! A program whose first allocation fails panics with `out of memory` and
-//! exits with code 101, through the JIT as through the process entry: stdout
-//! is set up before the program runs, because the panic flushes it and
-//! getting it the first time allocates.
+//! exits with code 101: stdout is set up before the program runs, because
+//! the panic flushes it and getting it the first time allocates. The case
+//! `jit` runs a program through the JIT, and the case `entry` runs
+//! `mora_rt::run_entry`, which the process entry of a built executable
+//! calls too; the process entry itself is built only into the runtime
+//! libraries, and `cargo xtask runtime --test` checks only its exit code.
 //!
 //! Each case runs in a child process that re-executes this binary, which
 //! has no standard harness, so nothing touches stdout before the program
