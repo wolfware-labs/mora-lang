@@ -381,8 +381,10 @@ impl Lowerer<'_> {
 
     /// The expressions that `expr`, a string, joins, in order: the parts of
     /// a `+`, parentheses and nested `+` included, and `expr` itself when it
-    /// is no `+`. A `+` that gives a string takes two strings (§5.3), so
-    /// every `+` inside one joins strings too.
+    /// is no `+`. A `+` that gives a string takes two strings (§5.3), or a
+    /// string and a value of the never type, which takes the other
+    /// operand's type; a `+` of the never type inside one diverges at its
+    /// first operand, so taking its operands as parts changes nothing.
     fn concat_parts(&self, expr: ExprId) -> Vec<ExprId> {
         let mut parts = Vec::new();
         self.add_concat_parts(expr, &mut parts);

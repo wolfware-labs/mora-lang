@@ -24,6 +24,19 @@ unsafe impl GlobalAlloc for Recording {
         unsafe { System.alloc(layout) }
     }
 
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let _ = LAST_ALLOCATION.try_with(|last| last.set(layout.size()));
+        // SAFETY: the caller's contract for `alloc_zeroed` is `System`'s.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let _ = LAST_ALLOCATION.try_with(|last| last.set(new_size));
+        // SAFETY: the block came from `System` with this layout, and the
+        // caller's contract for `realloc` is `System`'s.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: the block came from `System` with this layout.
         unsafe { System.dealloc(ptr, layout) }
