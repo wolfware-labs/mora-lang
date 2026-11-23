@@ -62,10 +62,9 @@ mod tests {
 
     #[test]
     fn the_compiler_stack_holds_what_a_thread_s_default_does_not() {
-        // 6 MiB is past the 2 MiB a spawned thread gets by default, the
-        // 1 MiB of a Windows main thread and the 8 MiB of a Linux one less
-        // what the harness uses, and well within 16 MiB. A smaller stack
-        // overflows, which aborts the test process.
+        // 6 MiB is past the 2 MiB a spawned thread gets by default and the
+        // 1 MiB of a Windows main thread, and well within 16 MiB. A smaller
+        // stack overflows, which aborts the test process.
         const NEED: usize = 6 << 20;
         let used = on_compiler_stack(|| {
             let top = std::hint::black_box(0u8);

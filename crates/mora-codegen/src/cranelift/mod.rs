@@ -142,8 +142,10 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
     flags
         .enable("enable_multi_ret_implicit_sret")
         .map_err(cranelift_error)?;
-    // A frame larger than a page touches each page as it grows, so that a
-    // stack overflow reaches the guard page instead of jumping past it.
+    // A frame larger than a page touches its pages, inline, before it is
+    // used (§13.10): from the top down on x86-64 and aarch64, so that a
+    // stack overflow reaches the guard page instead of jumping past it; on
+    // riscv64 a frame of four pages or more is probed from the bottom up.
     flags.enable("enable_probestack").map_err(cranelift_error)?;
     flags
         .set("probestack_strategy", "inline")
@@ -865,7 +867,7 @@ mod tests {
             .symbols()
             .find(|s| s.name() == Ok(symbol("F()").as_str()))
             .unwrap();
-        let section = file.section_by_name(".text").unwrap();
+        let section = file.section_by_index(f.section_index().unwrap()).unwrap();
         let start = usize::try_from(f.address() - section.address()).unwrap();
         let end = start + usize::try_from(f.size()).unwrap();
         section.data().unwrap()[start..end].to_vec()
@@ -952,6 +954,51 @@ mod tests {
             "sub x16, x16, #1, lsl #12; str wzr, [sp, x16]; cmn x16, x17; b.gt"
         );
         assert!(end >= 4 << 20, "{end}");
+    }
+
+    #[test]
+    fn riscv64_probes_a_large_frame_from_the_bottom_up() {
+        // This pins the order Cranelift 0.137 uses on riscv64, which §13.10
+        // states as an exception: its loop stores first to the bottom of the
+        // probed area, `sp - STEP`, and moves up a page at a time, stopping
+        // before the page just below `sp`. A frame that runs past the free
+        // stack is touched first far below the guard page. When a Cranelift
+        // update probes from the top down, as on x86-64 and aarch64, this
+        // test fails; then the exception leaves §13.10 and this test
+        // checks the new order.
+        //
+        //       addi sp, sp, -16 ; sd ra, 8(sp) ; sd s0, 0(sp) ; mv s0, sp
+        //       lui t6, STEP ; lui t3, 0x1
+        //   L:  bgeu t3, t6, done ; sub t5, sp, t6 ; sb zero, 0(t5)
+        //       sub t6, t6, t3 ; j L
+        let code = code_of_f(
+            &frame_of([19]),
+            &Target::builtin("riscv64gc-linux").unwrap(),
+        );
+        let words: Vec<u32> = code
+            .chunks(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            words[..4],
+            [0xFF01_0113, 0x0011_3423, 0x0081_3023, 0x0001_0413]
+        );
+        // `lui t6, STEP`: the step starts at the bottom, the whole frame.
+        assert_eq!(words[4] & 0xFFF, 0xFB7, "lui t6");
+        let step = words[4] & 0xFFFF_F000;
+        assert_eq!(step, 4 << 20);
+        assert_eq!(words[5], 0x0000_1E37, "lui t3, 0x1");
+        assert_eq!(
+            words[6..11],
+            [
+                0x01FE_7A63,
+                0x41F1_0F33,
+                0x000F_0023,
+                0x41CF_8FB3,
+                0xFF1F_F06F
+            ],
+            "bgeu t3, t6, done; sub t5, sp, t6; sb zero, 0(t5); sub t6, t6, t3; j L"
+        );
     }
 
     /// The structs of [`doubling`] up to `S28`, a function `F` with a local
