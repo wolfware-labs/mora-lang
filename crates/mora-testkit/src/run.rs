@@ -1,15 +1,18 @@
 //! Run tests: a `.mr` program with `// expect:` lines giving its standard
 //! output, one line each, `// stderr:` lines giving its standard error the
 //! same way (empty by default), and an optional `// exit:` line giving its
-//! exit code (0 by default).
+//! exit code (0 by default). The program runs in both profiles, and a line
+//! written `// expect[debug]:`, `// stderr[release]:` and so on holds only
+//! for that profile.
 
 use crate::compiler::Compiler;
 use crate::diff::diff;
 use crate::ui::rendered;
+use crate::{PROFILES, Profile, profile_name};
 
-const EXPECT: &str = "// expect:";
-const STDERR: &str = "// stderr:";
-const EXIT: &str = "// exit:";
+const EXPECT: &str = "// expect";
+const STDERR: &str = "// stderr";
+const EXIT: &str = "// exit";
 
 /// What a run test expects.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,23 +22,29 @@ pub struct Expected {
     pub exit: i32,
 }
 
-/// Reads the `// expect:`, `// stderr:` and `// exit:` lines. The text after the marker,
-/// less one space, is a line of output.
-pub fn expected(text: &str) -> Result<Expected, String> {
+/// Reads the `// expect:`, `// stderr:` and `// exit:` lines that hold for
+/// `profile`: those without a profile and those marked with its name, as
+/// `// exit[release]: 0`. The text after the marker, less one space, is a
+/// line of output.
+///
+/// # Errors
+///
+/// A line marked with a name that is not a profile, an exit code that is
+/// not a number, and a second exit code for one profile.
+pub fn expected(text: &str, profile: Profile) -> Result<Expected, String> {
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut exit = None;
     for (number, line) in (1usize..).zip(text.lines()) {
         let line = line.trim_start();
-        if let Some(rest) = line.strip_prefix(EXPECT) {
-            stdout.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-            stdout.push('\n');
-        } else if let Some(rest) = line.strip_prefix(STDERR) {
-            stderr.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-            stderr.push('\n');
-        } else if let Some(rest) = line.strip_prefix(EXIT) {
+        let line_of = |rest: &str| format!("{}\n", rest.strip_prefix(' ').unwrap_or(rest));
+        if let Some(rest) = marked(line, EXPECT, profile, number)? {
+            stdout.push_str(&line_of(rest));
+        } else if let Some(rest) = marked(line, STDERR, profile, number)? {
+            stderr.push_str(&line_of(rest));
+        } else if let Some(rest) = marked(line, EXIT, profile, number)? {
             if exit.is_some() {
-                return Err(format!("line {number}: a second `{EXIT}` line"));
+                return Err(format!("line {number}: a second `{EXIT}:` line"));
             }
             let code = rest.trim();
             exit = Some(
@@ -51,12 +60,56 @@ pub fn expected(text: &str) -> Result<Expected, String> {
     })
 }
 
+/// The text after `marker:` on `line`, or after `marker[name]:` when `name`
+/// is the name of `profile`; `None` for another line, and for a line marked
+/// for the other profile.
+///
+/// # Errors
+///
+/// When `name` is not the name of a profile.
+fn marked<'a>(
+    line: &'a str,
+    marker: &str,
+    profile: Profile,
+    number: usize,
+) -> Result<Option<&'a str>, String> {
+    let Some(rest) = line.strip_prefix(marker) else {
+        return Ok(None);
+    };
+    if let Some(rest) = rest.strip_prefix(':') {
+        return Ok(Some(rest));
+    }
+    let Some((name, rest)) = rest
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]:"))
+    else {
+        return Ok(None);
+    };
+    match PROFILES.iter().find(|&&known| profile_name(known) == name) {
+        Some(&known) => Ok((known == profile).then_some(rest)),
+        None => Err(format!("line {number}: `{name}` is not a profile")),
+    }
+}
+
+/// What `text` expects in each profile, in the order of [`PROFILES`].
+///
+/// # Errors
+///
+/// As [`expected`].
+fn expectations(text: &str) -> Result<Vec<(Profile, Expected)>, String> {
+    PROFILES
+        .iter()
+        .map(|&profile| Ok((profile, expected(text, profile)?)))
+        .collect()
+}
+
 /// Checks one case: builds and runs `text` as `path` with every backend the
-/// compiler has, and compares each run's output, error output and exit code with the
-/// expected ones. Returns the problems, empty when the case passes.
+/// compiler has, in each profile, and compares each run's output, error
+/// output and exit code with the ones expected in that profile. Returns the
+/// problems, empty when the case passes.
 pub fn check(compiler: &dyn Compiler, path: &str, text: &str) -> Vec<String> {
-    let expected = match expected(text) {
-        Ok(expected) => expected,
+    let expectations = match expectations(text) {
+        Ok(expectations) => expectations,
         Err(problem) => return vec![problem],
     };
     let backends = compiler.backends();
@@ -65,34 +118,37 @@ pub fn check(compiler: &dyn Compiler, path: &str, text: &str) -> Vec<String> {
     }
     let mut problems = Vec::new();
     for &backend in backends {
-        let name = backend.name();
-        let output = match compiler.run(path, text, backend) {
-            Ok(output) => output,
-            Err(checked) => {
-                problems.push(format!("{name}: the build failed:\n{}", rendered(&checked)));
-                continue;
+        for (profile, expected) in &expectations {
+            let name = format!("{} {}", backend.name(), profile_name(*profile));
+            let output = match compiler.run(path, text, backend, *profile) {
+                Ok(output) => output,
+                Err(checked) => {
+                    problems.push(format!("{name}: the build failed:\n{}", rendered(&checked)));
+                    continue;
+                }
+            };
+            // A program that prints with `\r\n` on Windows passes the same
+            // test.
+            let stdout = output.stdout.replace("\r\n", "\n");
+            if stdout != expected.stdout {
+                problems.push(format!(
+                    "{name}: stdout differs (- expected, + actual):\n{}",
+                    diff(&expected.stdout, &stdout)
+                ));
             }
-        };
-        // A program that prints with `\r\n` on Windows passes the same test.
-        let stdout = output.stdout.replace("\r\n", "\n");
-        if stdout != expected.stdout {
-            problems.push(format!(
-                "{name}: stdout differs (- expected, + actual):\n{}",
-                diff(&expected.stdout, &stdout)
-            ));
-        }
-        let stderr = output.stderr.replace("\r\n", "\n");
-        if stderr != expected.stderr {
-            problems.push(format!(
-                "{name}: stderr differs (- expected, + actual):\n{}",
-                diff(&expected.stderr, &stderr)
-            ));
-        }
-        if output.exit != expected.exit {
-            problems.push(format!(
-                "{name}: exit code {}, expected {}",
-                output.exit, expected.exit
-            ));
+            let stderr = output.stderr.replace("\r\n", "\n");
+            if stderr != expected.stderr {
+                problems.push(format!(
+                    "{name}: stderr differs (- expected, + actual):\n{}",
+                    diff(&expected.stderr, &stderr)
+                ));
+            }
+            if output.exit != expected.exit {
+                problems.push(format!(
+                    "{name}: exit code {}, expected {}",
+                    output.exit, expected.exit
+                ));
+            }
         }
     }
     problems
@@ -116,7 +172,7 @@ pub struct Outcome {
 /// Then it runs through every backend the compiler has, as [`check`] does;
 /// while there are none, compiling is the whole test.
 pub fn check_case(compiler: &dyn Compiler, path: &str, text: &str) -> Outcome {
-    if let Err(problem) = expected(text) {
+    if let Err(problem) = expectations(text) {
         return Outcome {
             problems: vec![problem],
             hir: None,
@@ -171,7 +227,7 @@ mod tests {
     fn expect_lines_build_stdout_in_order() {
         let text = "// expect: Hello\n// expect:\n//expect: not a marker\nf(); // exit: is not first\n    // expect:  two spaces\n// exit: 3\n";
         assert_eq!(
-            expected(text),
+            expected(text, Profile::Debug),
             Ok(Expected {
                 stdout: "Hello\n\n two spaces\n".to_owned(),
                 stderr: String::new(),
@@ -183,7 +239,7 @@ mod tests {
     #[test]
     fn stderr_lines_build_expected_stderr() {
         assert_eq!(
-            expected("// stderr: panic at a\n// stderr: b\n")
+            expected("// stderr: panic at a\n// stderr: b\n", Profile::Release)
                 .unwrap()
                 .stderr,
             "panic at a\nb\n"
@@ -192,14 +248,57 @@ mod tests {
 
     #[test]
     fn exit_defaults_to_zero_and_must_be_a_number() {
-        assert_eq!(expected("f();").map(|e| e.exit), Ok(0));
+        assert_eq!(expected("f();", Profile::Debug).map(|e| e.exit), Ok(0));
         assert_eq!(
-            expected("// exit: one"),
+            expected("// exit: one", Profile::Debug),
             Err("line 1: `one` is not an exit code".to_owned())
         );
         assert_eq!(
-            expected("// exit: 1\n// exit: 2"),
+            expected("// exit: 1\n// exit: 2", Profile::Debug),
             Err("line 2: a second `// exit:` line".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_marked_line_holds_only_for_its_profile() {
+        let text = "// expect: both\n// expect[debug]: debug\n// expect[release]: release\n\
+                    // stderr[debug]: panic\n// exit[debug]: 101\n// expect: last\n";
+        assert_eq!(
+            expected(text, Profile::Debug),
+            Ok(Expected {
+                stdout: "both\ndebug\nlast\n".to_owned(),
+                stderr: "panic\n".to_owned(),
+                exit: 101,
+            })
+        );
+        assert_eq!(
+            expected(text, Profile::Release),
+            Ok(Expected {
+                stdout: "both\nrelease\nlast\n".to_owned(),
+                stderr: String::new(),
+                exit: 0,
+            })
+        );
+        // Not markers: no colon after the name.
+        let text = "// expect[debug] x\n// expected: y\n// expect[debug x\n";
+        assert_eq!(expected(text, Profile::Debug).unwrap().stdout, "");
+    }
+
+    #[test]
+    fn a_marked_line_must_name_a_profile_and_one_exit_each() {
+        assert_eq!(
+            expected("// expect[fast]: x\n", Profile::Release),
+            Err("line 1: `fast` is not a profile".to_owned())
+        );
+        let text = "// exit: 1\n// exit[release]: 2\n";
+        assert_eq!(expected(text, Profile::Debug).map(|e| e.exit), Ok(1));
+        assert_eq!(
+            expected(text, Profile::Release),
+            Err("line 2: a second `// exit:` line".to_owned())
+        );
+        assert_eq!(
+            expectations("// stderr[fast]: x\n"),
+            Err("line 1: `fast` is not a profile".to_owned())
         );
     }
 }

@@ -1,0 +1,6 @@
+// expect: before
+// exit: 101
+// stderr: panic at src/Program.mr:4:29: arithmetic overflow: -2147483648 / -1
+Div(a: int, b: int): int => a / b;
+Console.WriteLine("before");
+Console.WriteLine(Div(-2147483648, -1));

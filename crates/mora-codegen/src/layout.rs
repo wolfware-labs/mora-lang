@@ -223,16 +223,28 @@ impl<'db> Layouts<'db> {
         }
     }
 
+    /// The size of `count` values of `element`, one after another; `None`
+    /// when it is larger than 2^31 bytes, the largest size of a type.
+    pub fn array_size(element: &Layout, count: usize) -> Option<u32> {
+        let count = u32::try_from(count).ok()?;
+        fits(element.size.checked_mul(count))
+    }
+
     /// The layout of `count` values of `element`, one after another: an
-    /// aggregate whose fields are the elements, and the offset of each.
-    pub fn array(&self, element: &Layout, count: u32) -> (Layout, Vec<u32>) {
-        let offsets: Vec<u32> = (0..count).map(|index| index * element.size).collect();
+    /// aggregate whose fields are the elements, and the offset of each;
+    /// `None` when it is larger than 2^31 bytes, the largest size of a type.
+    pub fn array(element: &Layout, count: usize) -> Option<(Layout, Vec<u32>)> {
+        let size = Self::array_size(element, count)?;
+        // Every offset is below the size, which fits.
+        let offsets: Vec<u32> = (0..count as u32)
+            .map(|index| index * element.size)
+            .collect();
         let layout = Layout {
-            size: element.size * count,
+            size,
             align: element.align,
             shape: Shape::Aggregate(offsets.clone()),
         };
-        (layout, offsets)
+        Some((layout, offsets))
     }
 
     /// The layout of a local: a borrow is a pointer.
@@ -543,13 +555,27 @@ mod tests {
         let db = TestDb::new();
         let layouts = Layouts::new(&db, &x86_64());
         let string = layouts.of(&Ty::String);
-        let (three, offsets) = layouts.array(&string, 3);
+        let (three, offsets) = Layouts::array(&string, 3).unwrap();
         assert_eq!(offsets, [0, 16, 32]);
         assert_eq!(three.size, 48);
         assert_eq!(three.align, string.align);
         assert_eq!(three.shape, Shape::Aggregate(vec![0, 16, 32]));
-        let (none, offsets) = layouts.array(&string, 0);
+        let (none, offsets) = Layouts::array(&string, 0).unwrap();
         assert_eq!((none.size, offsets.len()), (0, 0));
+    }
+
+    #[test]
+    fn an_array_larger_than_the_largest_size_has_no_layout() {
+        let db = TestDb::new();
+        let string = Layouts::new(&db, &x86_64()).of(&Ty::String);
+        // 2^27 strings of 16 bytes take 2^31 bytes.
+        let most = 1 << 27;
+        assert_eq!(Layouts::array_size(&string, most), Some(MAX_SIZE));
+        assert_eq!(Layouts::array_size(&string, most + 1), None);
+        // 2^28 of them would wrap to 0 in 32 bits.
+        assert_eq!(Layouts::array_size(&string, 1 << 28), None);
+        assert_eq!(Layouts::array_size(&string, usize::MAX), None);
+        assert_eq!(Layouts::array(&string, most + 1), None);
     }
 
     #[test]

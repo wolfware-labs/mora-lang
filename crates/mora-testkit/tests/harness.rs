@@ -10,14 +10,15 @@ use std::process::ExitCode;
 use mora_diag::{Code, Diagnostic, Files, Label};
 use mora_span::{FileId, Span, TextRange, TextSize};
 use mora_testkit::harness::{Options, Report, run_suite, ui_suite};
-use mora_testkit::{Backend, Checked, Compiler, Output};
+use mora_testkit::{Backend, Checked, Compiler, Output, Profile};
 
 /// Compiles a toy language, one statement per line, with `//` comments:
 /// `fail MRnnnn` reports an error on the word `fail`, `warn MRnnnn` a
 /// warning, `print text` prints a line, `jit-print text` prints it under the
-/// JIT only, `exit n` sets the exit code, `hir text` adds a line to the HIR,
-/// `mir text` one to the MIR, `unlowered MRnnnn` reports an error only when
-/// the program is lowered to MIR, and `panic` crashes the compiler.
+/// JIT only and `release-print text` in the release profile only, `exit n`
+/// sets the exit code, `hir text` adds a line to the HIR, `mir text` one to
+/// the MIR, `unlowered MRnnnn` reports an error only when the program is
+/// lowered to MIR, and `panic` crashes the compiler.
 struct Fake {
     backends: &'static [Backend],
 }
@@ -80,7 +81,13 @@ impl Compiler for Fake {
         self.backends
     }
 
-    fn run(&self, path: &str, text: &str, backend: Backend) -> Result<Output, Checked> {
+    fn run(
+        &self,
+        path: &str,
+        text: &str,
+        backend: Backend,
+        profile: Profile,
+    ) -> Result<Output, Checked> {
         let checked = self.check(path, text);
         if !checked.diagnostics.is_empty() {
             return Err(checked);
@@ -93,6 +100,10 @@ impl Compiler for Fake {
         for (_, word, rest) in statements(text) {
             match word {
                 "print" => {
+                    output.stdout.push_str(rest);
+                    output.stdout.push('\n');
+                }
+                "release-print" if profile == Profile::Release => {
                     output.stdout.push_str(rest);
                     output.stdout.push('\n');
                 }
@@ -347,12 +358,22 @@ fn run_reports_a_stdout_mismatch_with_a_diff() {
     assert_eq!(
         failure(&report),
         "\
-jit: stdout differs (- expected, + actual):
+jit debug: stdout differs (- expected, + actual):
   one
 - two
 + 2
 
-aot: stdout differs (- expected, + actual):
+jit release: stdout differs (- expected, + actual):
+  one
+- two
++ 2
+
+aot debug: stdout differs (- expected, + actual):
+  one
+- two
++ 2
+
+aot release: stdout differs (- expected, + actual):
   one
 - two
 + 2
@@ -368,12 +389,22 @@ fn run_reports_a_stderr_mismatch_with_a_diff() {
     assert_eq!(
         failure(&report),
         "\
-jit: stderr differs (- expected, + actual):
+jit debug: stderr differs (- expected, + actual):
   one
 - two
 + 2
 
-aot: stderr differs (- expected, + actual):
+jit release: stderr differs (- expected, + actual):
+  one
+- two
++ 2
+
+aot debug: stderr differs (- expected, + actual):
+  one
+- two
++ 2
+
+aot release: stderr differs (- expected, + actual):
   one
 - two
 + 2
@@ -407,7 +438,8 @@ fn run_reports_an_exit_code_mismatch() {
     let report = run(&BOTH, &root);
     assert_eq!(
         failure(&report),
-        "jit: exit code 2, expected 1\naot: exit code 2, expected 1"
+        "jit debug: exit code 2, expected 1\njit release: exit code 2, expected 1\n\
+         aot debug: exit code 2, expected 1\naot release: exit code 2, expected 1"
     );
 }
 
@@ -417,8 +449,45 @@ fn run_names_the_backend_that_disagrees() {
     let root = suite_dir("run-differential", "run", &[("a.mr", text)]);
     let report = run(&BOTH, &root);
     let problems = failure(&report);
-    assert!(problems.starts_with("aot: stdout differs"), "{problems}");
-    assert!(!problems.contains("jit:"), "{problems}");
+    assert!(
+        problems.starts_with("aot debug: stdout differs"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("aot release: stdout differs"),
+        "{problems}"
+    );
+    assert!(!problems.contains("jit "), "{problems}");
+}
+
+#[test]
+fn run_names_the_profile_that_disagrees() {
+    let text = "// expect: a\nprint a\nrelease-print b\n";
+    let root = suite_dir("run-profiles", "run", &[("a.mr", text)]);
+    let problems = failure(&run(&BOTH, &root)).to_owned();
+    assert!(
+        problems.starts_with("jit release: stdout differs"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("aot release: stdout differs"),
+        "{problems}"
+    );
+    assert!(!problems.contains("debug"), "{problems}");
+    // Marked for the release profile, the line holds there only.
+    let text = "// expect: a\n// expect[release]: b\nprint a\nrelease-print b\n";
+    let root = suite_dir("run-profiles-marked", "run", &[("a.mr", text)]);
+    let report = run(&BOTH, &root);
+    assert_eq!((report.passed, report.failures.len()), (1, 0));
+}
+
+#[test]
+fn run_reports_a_line_marked_with_no_profile() {
+    let root = suite_dir("run-bad-profile", "run", &[("a.mr", "// exit[fast]: 1\n")]);
+    assert_eq!(
+        failure(&run(&BOTH, &root)),
+        "line 1: `fast` is not a profile"
+    );
 }
 
 #[test]
@@ -430,7 +499,7 @@ fn run_reports_a_program_that_does_not_compile_once() {
         problems.starts_with("the program does not compile:\nerror[MR0300]: fake failure\n"),
         "{problems}"
     );
-    assert!(!problems.contains("jit:"), "{problems}");
+    assert!(!problems.contains("jit "), "{problems}");
 }
 
 #[test]

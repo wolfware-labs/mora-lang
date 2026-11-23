@@ -5,24 +5,24 @@ fn top-level() -> () {
     let sum#2: int;
 
     bb0: {
-        call Console.WriteLine{external}("before") -> bb1; // 4:1
+        call Console.WriteLine{external}("before") -> bb1; // 5:1
     }
 
     bb1: {
-        storage_live(max#0); // 5:5
-        max#0 = 2147483647; // 5:11
-        storage_live(one#1); // 6:5
-        one#1 = 1; // 6:11
-        storage_live(sum#2); // 7:5
-        sum#2 = copy max#0 + copy one#1; // 7:11
-        call Console.WriteLine{external}(copy sum#2) -> bb2; // 8:1
+        storage_live(max#0); // 6:5
+        max#0 = 2147483647; // 6:11
+        storage_live(one#1); // 7:5
+        one#1 = 1; // 7:11
+        storage_live(sum#2); // 8:5
+        sum#2 = copy max#0 + copy one#1; // 8:11
+        call Console.WriteLine{external}(copy sum#2) -> bb2; // 9:1
     }
 
     bb2: {
-        _0 = (); // 8:24
-        storage_dead(sum#2); // 8:24
-        storage_dead(one#1); // 8:24
-        storage_dead(max#0); // 8:24
-        return; // 8:24
+        _0 = (); // 9:24
+        storage_dead(sum#2); // 9:24
+        storage_dead(one#1); // 9:24
+        storage_dead(max#0); // 9:24
+        return; // 9:24
     }
 }

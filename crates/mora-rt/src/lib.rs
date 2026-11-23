@@ -2,6 +2,7 @@
 // One of the crates allowed to contain `unsafe` code (CONTRIBUTING.md).
 #![allow(unsafe_code)]
 
+mod entry;
 mod pal;
 pub mod panic;
 pub mod standin;
@@ -14,5 +15,6 @@ mod symbols;
 #[cfg(test)]
 mod test_util;
 
+pub use entry::run_entry;
 pub use mora_rt_core::DEBUG;
 pub use symbols::jit_symbols;

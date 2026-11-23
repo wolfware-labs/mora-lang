@@ -1,0 +1,15 @@
+// expect: 0
+// expect: 2147483647
+// expect: -2147483648
+// expect: 2147483647
+// expect: 0
+// expect: 255
+Div(a: double, b: double): double => a / b;
+ToInt(x: double): int => (int)x;
+ToByte(x: double): byte => (byte)x;
+Console.WriteLine(ToInt(Div(0.0, 0.0)));
+Console.WriteLine(ToInt(Div(1.0, 0.0)));
+Console.WriteLine(ToInt(Div(-1.0, 0.0)));
+Console.WriteLine(ToInt(3e10));
+Console.WriteLine(ToByte(-5.0));
+Console.WriteLine(ToByte(300.0));

@@ -7,7 +7,16 @@ Each `.mr` file here is a program (§20.1). Its `// expect:` lines give its stan
 Console.WriteLine(1 + 2);
 ```
 
-The harness first compiles the program, which must report no error, and compares the text form of its HIR and of its MIR with the `.hir` and `.mir` files beside it. Then it runs the program through the JIT, in a child `jit-runner` process because a panic exits the process, and compares its standard output, standard error and exit code with the expected ones. The AOT build joins the JIT with M1.14. While the compiler has no backend, compiling and the two snapshots are the whole test. A program that reports errors has neither snapshot.
+The program runs in the debug and in the release profile, and every line holds for both. A line that holds for one profile only names it after the marker, as `// expect[release]:`, `// stderr[debug]:` or `// exit[debug]:`. An overflow of `+` panics in a debug build and wraps in a release one (§7.12), so `overflow.mr` states both:
+
+```mora
+// expect: before
+// exit[debug]: 101
+// stderr[debug]: panic at src/Program.mr:8:11: arithmetic overflow: 2147483647 + 1
+// expect[release]: -2147483648
+```
+
+The harness first compiles the program, which must report no error, and compares the text form of its HIR and of its MIR with the `.hir` and `.mir` files beside it. Then it runs the program through the JIT in each profile, in a child `jit-runner` process because a panic exits the process, and compares its standard output, standard error and exit code with the ones expected in that profile. The AOT build joins the JIT with M1.14. While the compiler has no backend, compiling and the two snapshots are the whole test. A program that reports errors has neither snapshot.
 
 In the HIR, a local is `name#n`, and a name that is not a local is followed by what it names in braces, as `Console{external}` or `X{field App.Point.X}`. An operand that is itself an operation is in parentheses.
 

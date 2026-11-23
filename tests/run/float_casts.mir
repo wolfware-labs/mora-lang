@@ -1,0 +1,210 @@
+fn top-level() -> () {
+    let _0: ();
+    let _1: double;
+    let _2: in double;
+    let _3: double;
+    let _4: in double;
+    let _5: double;
+    let _6: in double;
+    let _7: int;
+    let _8: double;
+    let _9: in double;
+    let _10: double;
+    let _11: in double;
+    let _12: double;
+    let _13: in double;
+    let _14: int;
+    let _15: double;
+    let _16: in double;
+    let _17: double;
+    let _18: in double;
+    let _19: double;
+    let _20: in double;
+    let _21: int;
+    let _22: double;
+    let _23: in double;
+    let _24: int;
+    let _25: double;
+    let _26: in double;
+    let _27: byte;
+    let _28: double;
+    let _29: in double;
+    let _30: byte;
+
+    bb0: {
+        storage_live(_1); // 10:29
+        _1 = 0.0; // 10:29
+        storage_live(_2); // 10:29
+        _2 = &in _1; // 10:29
+        storage_live(_3); // 10:34
+        _3 = 0.0; // 10:34
+        storage_live(_4); // 10:34
+        _4 = &in _3; // 10:34
+        storage_live(_5); // 10:25
+        _5 = call App.Div{fn App.Div}(copy _2, copy _4) -> bb1; // 10:25
+    }
+
+    bb1: {
+        storage_live(_6); // 10:25
+        _6 = &in _5; // 10:25
+        storage_live(_7); // 10:19
+        _7 = call App.ToInt{fn App.ToInt}(copy _6) -> bb2; // 10:19
+    }
+
+    bb2: {
+        call Console.WriteLine{external}(copy _7) -> bb3; // 10:1
+    }
+
+    bb3: {
+        storage_dead(_7); // 10:1
+        storage_dead(_6); // 10:1
+        storage_dead(_5); // 10:1
+        storage_dead(_4); // 10:1
+        storage_dead(_3); // 10:1
+        storage_dead(_2); // 10:1
+        storage_dead(_1); // 10:1
+        storage_live(_8); // 11:29
+        _8 = 1.0; // 11:29
+        storage_live(_9); // 11:29
+        _9 = &in _8; // 11:29
+        storage_live(_10); // 11:34
+        _10 = 0.0; // 11:34
+        storage_live(_11); // 11:34
+        _11 = &in _10; // 11:34
+        storage_live(_12); // 11:25
+        _12 = call App.Div{fn App.Div}(copy _9, copy _11) -> bb4; // 11:25
+    }
+
+    bb4: {
+        storage_live(_13); // 11:25
+        _13 = &in _12; // 11:25
+        storage_live(_14); // 11:19
+        _14 = call App.ToInt{fn App.ToInt}(copy _13) -> bb5; // 11:19
+    }
+
+    bb5: {
+        call Console.WriteLine{external}(copy _14) -> bb6; // 11:1
+    }
+
+    bb6: {
+        storage_dead(_14); // 11:1
+        storage_dead(_13); // 11:1
+        storage_dead(_12); // 11:1
+        storage_dead(_11); // 11:1
+        storage_dead(_10); // 11:1
+        storage_dead(_9); // 11:1
+        storage_dead(_8); // 11:1
+        storage_live(_15); // 12:29
+        _15 = -1.0; // 12:29
+        storage_live(_16); // 12:29
+        _16 = &in _15; // 12:29
+        storage_live(_17); // 12:35
+        _17 = 0.0; // 12:35
+        storage_live(_18); // 12:35
+        _18 = &in _17; // 12:35
+        storage_live(_19); // 12:25
+        _19 = call App.Div{fn App.Div}(copy _16, copy _18) -> bb7; // 12:25
+    }
+
+    bb7: {
+        storage_live(_20); // 12:25
+        _20 = &in _19; // 12:25
+        storage_live(_21); // 12:19
+        _21 = call App.ToInt{fn App.ToInt}(copy _20) -> bb8; // 12:19
+    }
+
+    bb8: {
+        call Console.WriteLine{external}(copy _21) -> bb9; // 12:1
+    }
+
+    bb9: {
+        storage_dead(_21); // 12:1
+        storage_dead(_20); // 12:1
+        storage_dead(_19); // 12:1
+        storage_dead(_18); // 12:1
+        storage_dead(_17); // 12:1
+        storage_dead(_16); // 12:1
+        storage_dead(_15); // 12:1
+        storage_live(_22); // 13:25
+        _22 = 30000000000.0; // 13:25
+        storage_live(_23); // 13:25
+        _23 = &in _22; // 13:25
+        storage_live(_24); // 13:19
+        _24 = call App.ToInt{fn App.ToInt}(copy _23) -> bb10; // 13:19
+    }
+
+    bb10: {
+        call Console.WriteLine{external}(copy _24) -> bb11; // 13:1
+    }
+
+    bb11: {
+        storage_dead(_24); // 13:1
+        storage_dead(_23); // 13:1
+        storage_dead(_22); // 13:1
+        storage_live(_25); // 14:26
+        _25 = -5.0; // 14:26
+        storage_live(_26); // 14:26
+        _26 = &in _25; // 14:26
+        storage_live(_27); // 14:19
+        _27 = call App.ToByte{fn App.ToByte}(copy _26) -> bb12; // 14:19
+    }
+
+    bb12: {
+        call Console.WriteLine{external}(copy _27) -> bb13; // 14:1
+    }
+
+    bb13: {
+        storage_dead(_27); // 14:1
+        storage_dead(_26); // 14:1
+        storage_dead(_25); // 14:1
+        storage_live(_28); // 15:26
+        _28 = 300.0; // 15:26
+        storage_live(_29); // 15:26
+        _29 = &in _28; // 15:26
+        storage_live(_30); // 15:19
+        _30 = call App.ToByte{fn App.ToByte}(copy _29) -> bb14; // 15:19
+    }
+
+    bb14: {
+        call Console.WriteLine{external}(copy _30) -> bb15; // 15:1
+    }
+
+    bb15: {
+        storage_dead(_30); // 15:1
+        storage_dead(_29); // 15:1
+        storage_dead(_28); // 15:1
+        _0 = (); // 15:34
+        return; // 15:34
+    }
+}
+
+fn App.Div(a#0: in double, b#1: in double) -> double {
+    let _0: double;
+    let a#0: in double;
+    let b#1: in double;
+
+    bb0: {
+        _0 = copy (*a#0) / copy (*b#1); // 7:38
+        return; // 7:38
+    }
+}
+
+fn App.ToInt(x#0: in double) -> int {
+    let _0: int;
+    let x#0: in double;
+
+    bb0: {
+        _0 = (int)copy (*x#0); // 8:26
+        return; // 8:26
+    }
+}
+
+fn App.ToByte(x#0: in double) -> byte {
+    let _0: byte;
+    let x#0: in double;
+
+    bb0: {
+        _0 = (byte)copy (*x#0); // 9:28
+        return; // 9:28
+    }
+}

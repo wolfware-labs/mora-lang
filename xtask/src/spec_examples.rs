@@ -350,7 +350,7 @@ pub fn load(root: &Path) -> io::Result<Repo> {
 mod tests {
     use mora_diag::{Diagnostic, Files, Label};
     use mora_span::{Span, TextRange};
-    use mora_testkit::{Backend, Checked, FrontEnd, Output, Unbuilt};
+    use mora_testkit::{Backend, Checked, FrontEnd, Output, Profile, Unbuilt};
 
     use super::*;
 
@@ -474,8 +474,14 @@ F();
             &[Backend::Jit]
         }
 
-        fn run(&self, _: &str, text: &str, _: Backend) -> Result<Output, Checked> {
-            let expected = run::expected(text).unwrap();
+        fn run(
+            &self,
+            _: &str,
+            text: &str,
+            _: Backend,
+            profile: Profile,
+        ) -> Result<Output, Checked> {
+            let expected = run::expected(text, profile).unwrap();
             Ok(Output {
                 stdout: expected.stdout,
                 stderr: expected.stderr,
@@ -566,7 +572,7 @@ F();
             fn backends(&self) -> &[Backend] {
                 &[]
             }
-            fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
+            fn run(&self, _: &str, _: &str, _: Backend, _: Profile) -> Result<Output, Checked> {
                 unreachable!()
             }
         }
@@ -589,7 +595,7 @@ F();
             fn backends(&self) -> &[Backend] {
                 &[]
             }
-            fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
+            fn run(&self, _: &str, _: &str, _: Backend, _: Profile) -> Result<Output, Checked> {
                 unreachable!()
             }
         }

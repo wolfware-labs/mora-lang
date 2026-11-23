@@ -198,6 +198,7 @@ fn define_program<M: Module>(
     let exit = Exit::of(entry.body, layouts);
     crate::size::check_structs(layouts, entry.key.project)?;
     crate::size::check_locals(layouts, program)?;
+    crate::size::check_temporaries(layouts, program)?;
     let ids = define_functions(module, program, layouts, profile)?;
     let call_conv = module.isa().default_call_conv();
     let mut signature = Signature::new(call_conv);

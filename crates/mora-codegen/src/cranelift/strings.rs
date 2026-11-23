@@ -15,7 +15,7 @@ use super::cranelift_error;
 use super::function::{Lowering, Source, broken};
 use super::runtime::{RuntimeFn, data_symbol};
 use crate::error::CodegenError;
-use crate::layout::Shape;
+use crate::layout::{Layouts, Shape};
 use crate::program::Program;
 
 /// The alignment of a string object in read-only data.
@@ -247,7 +247,9 @@ impl Lowering<'_, '_> {
     ///
     /// # Panics
     ///
-    /// With an internal error when `place` is not a string.
+    /// With an internal error when `place` is not a string, and when the
+    /// array is larger than a type may be, which the size checks report
+    /// before any code is generated (`check_temporaries`).
     pub(super) fn string_parts(
         &mut self,
         place: &Place,
@@ -261,7 +263,12 @@ impl Lowering<'_, '_> {
                 &format!("{what} into `{place:?}`, which is not a string"),
             );
         }
-        let (parts, offsets) = self.layouts.array(&layout, count as u32);
+        let Some((parts, offsets)) = Layouts::array(&layout, count) else {
+            broken(
+                self.body,
+                &format!("{what} of {count} parts, more than the size checks let through"),
+            );
+        };
         (self.temporary(&parts), offsets)
     }
 

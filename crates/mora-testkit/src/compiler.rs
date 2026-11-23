@@ -8,6 +8,7 @@ use std::time::Duration;
 use mora_diag::{Diagnostic, Files, Severity};
 use mora_span::{FileId, Project, SourceFile};
 
+use crate::Profile;
 use crate::case;
 
 /// What the harnesses need from a compiler. The driver implements it once it
@@ -22,9 +23,15 @@ pub trait Compiler: Sync {
     /// exists. A run test goes through each of them.
     fn backends(&self) -> &[Backend];
 
-    /// Builds the program and runs it with `backend`, or returns the
-    /// diagnostics that stopped the build.
-    fn run(&self, path: &str, text: &str, backend: Backend) -> Result<Output, Checked>;
+    /// Builds the program in `profile` and runs it with `backend`, or
+    /// returns the diagnostics that stopped the build.
+    fn run(
+        &self,
+        path: &str,
+        text: &str,
+        backend: Backend,
+        profile: Profile,
+    ) -> Result<Output, Checked>;
 
     /// Compiles `text` as the file `path` and returns the text form of its
     /// HIR, or the diagnostics when it reports an error. A compiler that
@@ -62,7 +69,7 @@ impl Compiler for Unbuilt {
         &[]
     }
 
-    fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
+    fn run(&self, _: &str, _: &str, _: Backend, _: Profile) -> Result<Output, Checked> {
         unimplemented!("the driver cannot run programs yet");
     }
 }
@@ -233,7 +240,7 @@ impl Compiler for FrontEnd {
     /// Runs the program in a `jit-runner` process. Panics when the program
     /// runs longer than the limit, when a signal ends it, or when the runner
     /// cannot build it, which fails only the case.
-    fn run(&self, path: &str, text: &str, _: Backend) -> Result<Output, Checked> {
+    fn run(&self, path: &str, text: &str, _: Backend, profile: Profile) -> Result<Output, Checked> {
         let Some(runner) = &self.runner else {
             unimplemented!("this front end has no runner");
         };
@@ -241,11 +248,11 @@ impl Compiler for FrontEnd {
         if has_error(&checked.diagnostics) {
             return Err(checked);
         }
-        match crate::runner::run_child(runner, path, text, self.timeout) {
+        match crate::runner::run_child(runner, path, text, profile, self.timeout) {
             Ok(output) => Ok(output),
             // The program has errors only code generation finds. The build
             // that finds them again here gives them as diagnostics.
-            Err(shown) => match crate::runner::build(path, text) {
+            Err(shown) => match crate::runner::build(path, text, profile) {
                 Err(crate::runner::BuildError::Program(checked)) => Err(checked),
                 _ => panic!("the runner reported errors that a build here does not:\n{shown}"),
             },
@@ -313,6 +320,18 @@ pub enum Backend {
     Aot,
 }
 
+/// The profiles a run test goes through, each with every backend (§20.1).
+pub const PROFILES: [Profile; 2] = [Profile::Debug, Profile::Release];
+
+/// The name of `profile`, as problems name it and as a run test marks a line
+/// that holds only for it, as in `// exit[debug]: 101`.
+pub fn profile_name(profile: Profile) -> &'static str {
+    match profile {
+        Profile::Debug => "debug",
+        Profile::Release => "release",
+    }
+}
+
 impl Backend {
     /// The name problems are reported under.
     pub fn name(self) -> &'static str {
@@ -356,7 +375,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "no runner")]
     fn a_front_end_without_a_runner_cannot_run() {
-        let _ = FrontEnd::new().run("a.mr", "let x = 1;\n", Backend::Jit);
+        let _ = FrontEnd::new().run("a.mr", "let x = 1;\n", Backend::Jit, Profile::Debug);
     }
 
     #[test]

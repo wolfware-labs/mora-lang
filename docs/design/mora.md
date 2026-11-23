@@ -3213,7 +3213,7 @@ The UI and run harnesses live in `mora-testkit` and run under `cargo test`. Each
 
 - **UI annotations** go after the code on the line where the primary label starts: `//~ ERROR MRnnnn` or `//~ WARNING MRnnnn`, several per line if needed, with any text after the code as a comment. A diagnostic without an annotation fails the case, and so does an annotation nothing reported.
 - **UI snapshots** are the diagnostics rendered without color as in §17.6, in the `.stderr` file beside the case; a case that reports nothing has none. `cargo test -p mora-testkit --test ui -- --bless` rewrites them.
-- **Run expectations** are one `// expect:` line per line of standard output, in order, one `// stderr:` line per line of standard error, in order, none when the program writes nothing there, and at most one `// exit:` line, 0 when absent. The program runs through every backend the compiler has, and each run is compared with them, so the JIT and the AOT build must agree. A `\r\n` line ending compares equal to `\n`.
+- **Run expectations** are one `// expect:` line per line of standard output, in order, one `// stderr:` line per line of standard error, in order, none when the program writes nothing there, and at most one `// exit:` line, 0 when absent. The program runs through every backend the compiler has, in the debug and in the release profile, and each run is compared with them, so the JIT and the AOT build must agree. A line that holds in one profile only names it after the marker, as `// exit[debug]: 101` or `// expect[release]: -2147483648`, for a program whose behavior the profile changes, such as an overflow that panics in a debug build and wraps in a release one (§7.12). A `\r\n` line ending compares equal to `\n`.
 
 ### 20.2 The MVP acceptance test
 

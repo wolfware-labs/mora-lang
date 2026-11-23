@@ -1,0 +1,6 @@
+// expect: before
+// exit: 101
+// stderr: panic at src/Program.mr:4:32: arithmetic overflow: -9223372036854775808 % -1
+Rem(a: long, b: long): long => a % b;
+Console.WriteLine("before");
+Console.WriteLine(Rem(-9223372036854775808L, -1L));

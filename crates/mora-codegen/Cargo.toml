@@ -35,3 +35,9 @@ object.workspace = true
 [[bench]]
 name = "codegen"
 harness = false
+
+# Each case runs in a child process that must not have touched stdout, which
+# the standard harness does before any test.
+[[test]]
+name = "out_of_memory"
+harness = false

@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use mora_testkit::{Backend, Compiler, FrontEnd};
+use mora_testkit::{Backend, Compiler, FrontEnd, Profile};
 
 fn front_end() -> FrontEnd {
     FrontEnd::with_runner(env!("CARGO_BIN_EXE_jit-runner").into())
@@ -16,7 +16,7 @@ fn runner_with(input: &[u8]) -> std::process::Output {
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_jit-runner"))
-        .arg("a.mr")
+        .args(["a.mr", "debug"])
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -46,7 +46,12 @@ fn tuple_too_large() -> String {
 #[test]
 fn the_runner_runs_a_program_and_returns_its_output() {
     let output = front_end()
-        .run("a.mr", "Console.WriteLine(1);\nreturn 3;\n", Backend::Jit)
+        .run(
+            "a.mr",
+            "Console.WriteLine(1);\nreturn 3;\n",
+            Backend::Jit,
+            Profile::Debug,
+        )
         .unwrap();
     assert_eq!(output.stdout, "1\n");
     assert_eq!(output.stderr, "");
@@ -56,7 +61,9 @@ fn the_runner_runs_a_program_and_returns_its_output() {
 #[test]
 fn a_panic_reaches_stderr_with_exit_101() {
     let text = "Console.WriteLine(\"before\");\nlet max = 2147483647;\nlet one = 1;\nlet sum = max + one;\nConsole.WriteLine(sum);\n";
-    let output = front_end().run("a.mr", text, Backend::Jit).unwrap();
+    let output = front_end()
+        .run("a.mr", text, Backend::Jit, Profile::Debug)
+        .unwrap();
     assert_eq!(output.stdout, "before\n");
     assert!(
         output
@@ -71,7 +78,7 @@ fn a_panic_reaches_stderr_with_exit_101() {
 #[test]
 fn a_program_with_errors_is_not_run() {
     let checked = front_end()
-        .run("a.mr", "let x = y;\n", Backend::Jit)
+        .run("a.mr", "let x = y;\n", Backend::Jit, Profile::Debug)
         .unwrap_err();
     assert_eq!(checked.diagnostics.len(), 1);
 }
@@ -83,6 +90,7 @@ fn a_program_that_runs_too_long_fails_its_case() {
         "a.mr",
         "while (true) {}\n",
         Backend::Jit,
+        Profile::Debug,
     );
 }
 
@@ -93,6 +101,7 @@ fn a_missing_runner_fails_the_case() {
         "a.mr",
         "return 0;\n",
         Backend::Jit,
+        Profile::Debug,
     );
 }
 
@@ -101,7 +110,7 @@ fn a_missing_runner_fails_the_case() {
 fn a_program_the_runner_cannot_build_fails_the_case() {
     // The parent only analyzes; a program with no entry point passes that and
     // the runner reports it.
-    let _ = front_end().run("a.mr", "", Backend::Jit);
+    let _ = front_end().run("a.mr", "", Backend::Jit, Profile::Debug);
 }
 
 #[test]
@@ -124,7 +133,8 @@ fn a_runner_without_a_path_is_a_usage_error() {
     assert_eq!(output.status.code(), Some(70));
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "jit-runner: internal error: usage: jit-runner <path>, with the program on standard input\n"
+        "jit-runner: internal error: usage: jit-runner <path> <debug|release>, with the program on \
+         standard input\n"
     );
 }
 
@@ -142,7 +152,9 @@ fn an_error_only_code_generation_finds_is_a_compile_error() {
         stderr.starts_with("jit-runner: the program has errors\nerror[MR0156]"),
         "{stderr}"
     );
-    let checked = front_end().run("a.mr", &text, Backend::Jit).unwrap_err();
+    let checked = front_end()
+        .run("a.mr", &text, Backend::Jit, Profile::Debug)
+        .unwrap_err();
     let codes: Vec<String> = checked
         .diagnostics
         .iter()
@@ -154,7 +166,7 @@ fn an_error_only_code_generation_finds_is_a_compile_error() {
 #[test]
 fn a_tuple_too_large_is_shown_as_its_diagnostic() {
     let checked = front_end()
-        .run("a.mr", &tuple_too_large(), Backend::Jit)
+        .run("a.mr", &tuple_too_large(), Backend::Jit, Profile::Debug)
         .unwrap_err();
     let shown = mora_testkit::ui::rendered(&checked);
     assert!(

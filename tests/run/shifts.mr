@@ -1,0 +1,14 @@
+// expect: 1
+// expect: 2
+// expect: -2
+// expect: 4
+// expect: 1
+Shl(a: int, n: int): int => a << n;
+Shr(a: int, n: int): int => a >> n;
+ShlLong(a: long, n: int): long => a << n;
+ShrULong(a: ulong, n: int): ulong => a >>> n;
+Console.WriteLine(Shl(1, 32));
+Console.WriteLine(Shl(1, 33));
+Console.WriteLine(Shr(-8, 34));
+Console.WriteLine(ShlLong(1L, 66));
+Console.WriteLine(ShrULong(2UL, 65));

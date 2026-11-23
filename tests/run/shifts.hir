@@ -1,0 +1,15 @@
+top-level {
+    Console{external}.WriteLine{external}(Shl{fn App.Shl}(1, 32));
+    Console{external}.WriteLine{external}(Shl{fn App.Shl}(1, 33));
+    Console{external}.WriteLine{external}(Shr{fn App.Shr}(-8, 34));
+    Console{external}.WriteLine{external}(ShlLong{fn App.ShlLong}(1L, 66));
+    Console{external}.WriteLine{external}(ShrULong{fn App.ShrULong}(2UL, 65));
+}
+
+fn App.Shl(a#0, n#1) => a#0 << n#1;
+
+fn App.Shr(a#0, n#1) => a#0 >> n#1;
+
+fn App.ShlLong(a#0, n#1) => a#0 << n#1;
+
+fn App.ShrULong(a#0, n#1) => a#0 >>> n#1;

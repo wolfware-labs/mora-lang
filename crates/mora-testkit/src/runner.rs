@@ -2,11 +2,12 @@
 //! the process with code 101, so the harness runs each program in a
 //! `jit-runner` process of its own and reads what it printed.
 //!
-//! The protocol is `jit-runner <shown path>` with the text of the case on
-//! standard input. The runner's standard output and error and its exit code
-//! are the program's, unless the program has errors that only code
-//! generation finds: then it exits with [`COMPILE_ERROR_EXIT`] and writes
-//! [`COMPILE_ERROR_PREFIX`] and the diagnostics.
+//! The protocol is `jit-runner <shown path> <profile>`, the profile being
+//! `debug` or `release`, with the text of the case on standard input. The
+//! runner's standard output and error and its exit code are the program's,
+//! unless the program has errors that only code generation finds: then it
+//! exits with [`COMPILE_ERROR_EXIT`] and writes [`COMPILE_ERROR_PREFIX`] and
+//! the diagnostics.
 
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,6 +21,7 @@ use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
 use crate::compiler::{Analysis, Checked, FrontEnd, Output, has_error};
 use crate::harness::{panic_text, without_panic_output};
 use crate::ui::rendered;
+use crate::{PROFILES, profile_name};
 
 /// The exit code of the runner when the program has errors, the code a
 /// build that fails exits with (§17.1).
@@ -47,19 +49,21 @@ pub const INTERNAL_ERROR_EXIT: i32 = 70;
 pub const INTERNAL_ERROR_PREFIX: &str = "jit-runner: internal error: ";
 
 /// Runs the program of the case on standard input, shown as the path in the
-/// first argument, and exits with its exit code. Without the argument it
-/// exits with a usage error.
+/// first argument and built in the profile the second names, and exits with
+/// its exit code. Without both arguments it exits with a usage error.
 ///
 /// The program is compiled on a thread with the compiler's stack and runs
 /// on the main thread, where an executable built ahead of time runs it too
 /// (§13.10).
 pub fn main() -> ! {
-    let Some(path) = std::env::args().nth(1) else {
-        fail("usage: jit-runner <path>, with the program on standard input")
+    let mut args = std::env::args().skip(1);
+    let (Some(path), Some(profile)) = (args.next(), args.next().as_deref().and_then(profile_of))
+    else {
+        fail("usage: jit-runner <path> <debug|release>, with the program on standard input")
     };
     let mut text = String::new();
     let built = match std::io::stdin().read_to_string(&mut text) {
-        Ok(_) => build_quietly(&path, &text),
+        Ok(_) => build_quietly(&path, &text, profile),
         Err(error) => Err(BuildError::Internal(format!(
             "cannot read the program: {error}"
         ))),
@@ -84,8 +88,15 @@ fn compile_error(checked: &Checked) -> ! {
 /// once, by `fail`, and the default hook would repeat it. The hook comes
 /// back before the program runs, so a panic of the runtime's own code
 /// prints its message.
-fn build_quietly(path: &str, text: &str) -> Result<JitProgram, BuildError> {
-    without_panic_output(|| build(path, text))
+fn build_quietly(path: &str, text: &str, profile: Profile) -> Result<JitProgram, BuildError> {
+    without_panic_output(|| build(path, text, profile))
+}
+
+/// The profile named `name`, as [`profile_name`] names it.
+fn profile_of(name: &str) -> Option<Profile> {
+    PROFILES
+        .into_iter()
+        .find(|&profile| profile_name(profile) == name)
 }
 
 /// Reports `reason` as an internal error and exits.
@@ -101,26 +112,27 @@ fn fail(reason: &str) -> ! {
 /// returning its exit code. A panic of the compiler is an error, not a crash.
 #[cfg(test)]
 fn build_and_run(path: &str, text: &str) -> Result<i32, BuildError> {
-    Ok(build(path, text)?.run_main())
+    Ok(build(path, text, Profile::Debug)?.run_main())
 }
 
-/// Analyzes `text` as `path` and compiles it with the debug profile, on a
-/// thread with the compiler's stack. The errors of code generation that are
+/// Analyzes `text` as `path` and compiles it in `profile`, on a thread with
+/// the compiler's stack. The errors of code generation that are
 /// the program's, such as a type too large, join the front end's. A panic of
 /// the compiler is an error, not a crash.
-pub(crate) fn build(path: &str, text: &str) -> Result<JitProgram, BuildError> {
-    caught(|| FrontEnd::new().analyzed(path, text, compile))
+pub(crate) fn build(path: &str, text: &str, profile: Profile) -> Result<JitProgram, BuildError> {
+    caught(|| FrontEnd::new().analyzed(path, text, |analysis| compile(analysis, profile)))
 }
 
-/// Compiles the analysis of [`build`], on the compiler's thread.
-fn compile(mut analysis: Analysis) -> Result<JitProgram, BuildError> {
+/// Compiles the analysis of [`build`] in `profile`, on the compiler's
+/// thread.
+fn compile(mut analysis: Analysis, profile: Profile) -> Result<JitProgram, BuildError> {
     if has_error(&analysis.checked.diagnostics) {
         return Err(BuildError::Program(analysis.checked));
     }
     let internal = |error: mora_codegen::CodegenError| BuildError::Internal(error.to_string());
     let program = Program::collect(&analysis.db, analysis.project).map_err(internal)?;
     Cranelift
-        .jit(&program, Profile::Debug)
+        .jit(&program, profile)
         .map_err(|error| match error.diagnostic() {
             Some(diagnostic) => {
                 analysis.checked.diagnostics.push(diagnostic);
@@ -140,7 +152,8 @@ fn caught<T>(compile: impl FnOnce() -> Result<T, BuildError>) -> Result<T, Build
     })?
 }
 
-/// Runs the case in a `runner` process and returns what the program did.
+/// Runs the case in a `runner` process, built in `profile`, and returns what
+/// the program did.
 ///
 /// # Panics
 ///
@@ -156,10 +169,11 @@ pub(crate) fn run_child(
     runner: &Path,
     path: &str,
     text: &str,
+    profile: Profile,
     timeout: Duration,
 ) -> Result<Output, String> {
     let mut child = Command::new(runner)
-        .arg(path)
+        .args([path, profile_name(profile)])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -394,8 +408,8 @@ mod tests {
     fn every_construct_compiles_at_the_nesting_limit_on_the_compiler_stack() {
         // `build` runs on a thread with exactly the compiler's stack, so a
         // pass that needs more at the limit overflows it here.
-        for nested in NESTED {
-            let built = build("a.mr", &(nested.text)(nested.n));
+        for (nested, profile) in NESTED.iter().flat_map(|n| PROFILES.map(|p| (n, p))) {
+            let built = build("a.mr", &(nested.text)(nested.n), profile);
             match (built, nested.returns) {
                 (Ok(jit), Some(exit)) => assert_eq!(jit.run_main(), exit, "{}", nested.name),
                 // A construct a later milestone lowers goes through every
@@ -418,7 +432,8 @@ mod tests {
                 _ => panic!("{} did not build as expected", nested.name),
             }
             // One more level is past the limit.
-            let Err(BuildError::Program(checked)) = build("a.mr", &(nested.text)(nested.n + 1))
+            let Err(BuildError::Program(checked)) =
+                build("a.mr", &(nested.text)(nested.n + 1), profile)
             else {
                 panic!("{} is not at the limit", nested.name);
             };
@@ -442,7 +457,10 @@ mod tests {
         let (diagnostics, built) = small
             .spawn(move || {
                 let checked = FrontEnd::new().check("a.mr", &calls);
-                (checked.diagnostics.len(), build("a.mr", &calls).is_ok())
+                (
+                    checked.diagnostics.len(),
+                    build("a.mr", &calls, Profile::Debug).is_ok(),
+                )
             })
             .unwrap()
             .join()
@@ -509,8 +527,9 @@ mod tests {
         let file = format!("//@ file src/{HOOK_MARK}.mr\n");
         let twice = format!("{file}{file}");
         assert_gives_the_hook_back(|| {
-            assert!(build_quietly("a.mr", "return 3;\n").is_ok());
-            let Err(BuildError::Internal(reason)) = build_quietly("a.mr", &twice) else {
+            assert!(build_quietly("a.mr", "return 3;\n", Profile::Debug).is_ok());
+            let Err(BuildError::Internal(reason)) = build_quietly("a.mr", &twice, Profile::Debug)
+            else {
                 panic!("not an internal error");
             };
             assert_eq!(

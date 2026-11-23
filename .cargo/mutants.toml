@@ -38,7 +38,7 @@ exclude_re = [
     '^crates/mora-hir/src/inference/check/call\.rs:191:52: replace > with >= in Check<.a>::call$',
     # The compiler has no backend yet: `&[]` and a leaked empty `Vec` are
     # the same empty slice.
-    '^crates/mora-testkit/src/compiler\.rs:62:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
+    '^crates/mora-testkit/src/compiler\.rs:69:9: replace <impl Compiler for Unbuilt>::backends -> &\[Backend\] with Vec::leak\(Vec::new\(\)\)$',
     # Where the lines differ, `common[i][j]` is the larger of the two
     # entries the diff compares, so comparing with it picks the same side.
     '^crates/mora-testkit/src/diff\.rs:34:87: replace \+ with \* in diff$',
@@ -50,7 +50,7 @@ exclude_re = [
     # - `main` is built only into the runtime library; `cargo xtask runtime
     #   --test` links a C program whose `__mora_main` returns 42 and checks
     #   the process exits with 42.
-    '^crates/mora-rt/src/start\.rs:18:5: replace main -> c_int with Default::default\(\)$',
+    '^crates/mora-rt/src/start\.rs:15:5: replace main -> c_int with Default::default\(\)$',
     # - Windows hosts only; the Windows legs run `cargo xtask sysroot`,
     #   which installs llvm-mingw and checks the linker it copied.
     '^xtask/src/sysroot\.rs:291:18: replace == with != in install_llvm_mingw$',

@@ -8,7 +8,7 @@ use cranelift_codegen::ir;
 use mora_hir::{
     BodyOwner, ItemId, ItemKind, Ty, is_generic_type, item_name_span, item_tree, ty_name,
 };
-use mora_mir::LocalTy;
+use mora_mir::{LocalTy, Rvalue, StatementKind};
 use mora_span::{Db, Project, Span};
 use mora_target::Target;
 
@@ -84,6 +84,49 @@ pub(crate) fn check_locals(
         for local in &function.body.locals {
             if let LocalTy::Value(ty) = &local.ty {
                 check(layouts, ty, Some(function.body.span))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks the array of strings that each concatenation and interpolation of
+/// every function of `program` builds on its stack, one string a part: an
+/// array that alone takes more than [`MAX_FRAME_SLOTS`] bytes cannot be laid
+/// out in a frame, so the frame is too large before any code is built.
+///
+/// # Errors
+///
+/// [`CodegenError::FrameTooLarge`] for the first function with such an
+/// array, where [`check_frame`] reports it.
+pub(crate) fn check_temporaries(
+    layouts: &Layouts<'_>,
+    program: &Program<'_>,
+) -> Result<(), CodegenError> {
+    temporaries_within(layouts, program, MAX_FRAME_SLOTS)
+}
+
+/// [`check_temporaries`] with `max` bytes in place of [`MAX_FRAME_SLOTS`].
+fn temporaries_within(
+    layouts: &Layouts<'_>,
+    program: &Program<'_>,
+    max: u64,
+) -> Result<(), CodegenError> {
+    let string = layouts.of(&Ty::String);
+    for function in program.functions() {
+        let statements = function
+            .body
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements);
+        for statement in statements {
+            let parts = match &statement.kind {
+                StatementKind::Assign(_, Rvalue::Concat(operands)) => operands.len(),
+                StatementKind::Assign(_, Rvalue::Interpolate(pieces)) => pieces.len(),
+                _ => continue,
+            };
+            if Layouts::array_size(&string, parts).is_none_or(|size| u64::from(size) > max) {
+                return Err(frame_too_large(layouts.db(), function));
             }
         }
     }
@@ -235,6 +278,29 @@ mod tests {
         assert_eq!(name, "(S28, S28)");
         let at = text_at(&db, project, span);
         assert!(at.starts_with('{') && at.contains("let t"), "{at:?}");
+    }
+
+    #[test]
+    fn a_string_built_of_too_many_parts_makes_its_frame_too_large() {
+        // Three parts take 48 bytes: with a limit of 47 the function that
+        // joins them is too large, at its name, and with 48 it is not. The
+        // number in the interpolation keeps it from becoming a `+`.
+        for (joins, name) in [("a + a + a", "F"), ("$\"{a}{1}{a}\"", "G")] {
+            let db = TestDb::default();
+            let text = format!("{name}(a: string): string => {joins};\nlet s = {name}(\"s\");\n");
+            let project = app_of(&db, &text);
+            let program = Program::collect(&db, project).unwrap();
+            let layouts = Layouts::new(&db, &x86_64());
+            let Err(CodegenError::FrameTooLarge { name: full, span }) =
+                temporaries_within(&layouts, &program, 47)
+            else {
+                panic!("no error for {joins}");
+            };
+            assert_eq!(full, format!("UsersApi.{name}"));
+            assert_eq!(text_at(&db, project, span), name);
+            assert_eq!(temporaries_within(&layouts, &program, 48), Ok(()));
+            assert_eq!(check_temporaries(&layouts, &program), Ok(()));
+        }
     }
 
     #[test]

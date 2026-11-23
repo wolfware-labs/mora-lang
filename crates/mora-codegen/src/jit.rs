@@ -1,6 +1,5 @@
 //! A program compiled into the memory of this process.
 
-use std::io::Write;
 use std::mem::ManuallyDrop;
 
 use cranelift_jit::JITModule;
@@ -26,18 +25,15 @@ impl JitProgram {
         &mut self.module
     }
 
-    /// Runs `__mora_main` and returns the exit code.
+    /// Runs `__mora_main` and returns the exit code, through the runtime's
+    /// entry as the process entry point runs it.
     pub fn run_main(&self) -> i32 {
         let main = self.function(MAIN);
         // SAFETY: `__mora_main` is defined with the signature `() -> i32` in
         // the host's C convention, which `extern "C"` names, and its code
         // lives as long as `self`, which this call borrows.
         let main = unsafe { std::mem::transmute::<*const u8, extern "C" fn() -> i32>(main) };
-        let code = main();
-        // As the process entry point does: output the program buffered must
-        // not be lost, and nothing is left to report a failed flush to.
-        let _ = std::io::stdout().flush();
-        code
+        mora_rt::run_entry(|| main())
     }
 
     /// The address of the finalized function `symbol`.

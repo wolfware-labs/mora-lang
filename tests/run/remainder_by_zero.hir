@@ -1,0 +1,6 @@
+top-level {
+    Console{external}.WriteLine{external}("before");
+    Console{external}.WriteLine{external}(Rem{fn App.Rem}(7, 0));
+}
+
+fn App.Rem(a#0, b#1) => a#0 % b#1;
