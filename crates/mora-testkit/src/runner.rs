@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
+use mora_driver::on_compiler_stack;
 
 use crate::compiler::{Checked, FrontEnd, Output, has_error};
 use crate::harness::{panic_text, without_panic_output};
@@ -49,6 +50,10 @@ pub const INTERNAL_ERROR_PREFIX: &str = "jit-runner: internal error: ";
 /// Runs the program of the case on standard input, shown as the path in the
 /// first argument, and exits with its exit code. Without the argument it
 /// exits with a usage error.
+///
+/// The program is compiled on a thread with the compiler's stack and runs
+/// on the main thread, where an executable built ahead of time runs it too
+/// (§13.10).
 pub fn main() -> ! {
     let Some(path) = std::env::args().nth(1) else {
         fail("usage: jit-runner <path>, with the program on standard input")
@@ -100,28 +105,31 @@ fn build_and_run(path: &str, text: &str) -> Result<i32, BuildError> {
     Ok(build(path, text)?.run_main())
 }
 
-/// Analyzes `text` as `path` and compiles it with the debug profile. The
-/// errors of code generation that are the program's, such as a type too
-/// large, join the front end's. A panic of the compiler is an error, not a
-/// crash.
+/// Analyzes `text` as `path` and compiles it with the debug profile, on a
+/// thread with the compiler's stack. The errors of code generation that are
+/// the program's, such as a type too large, join the front end's. A panic of
+/// the compiler is an error, not a crash.
 pub(crate) fn build(path: &str, text: &str) -> Result<JitProgram, BuildError> {
-    caught(|| {
-        let mut analysis = FrontEnd::new().analyze(path, text);
-        if has_error(&analysis.checked.diagnostics) {
-            return Err(BuildError::Program(analysis.checked));
-        }
-        let internal = |error: mora_codegen::CodegenError| BuildError::Internal(error.to_string());
-        let program = Program::collect(&analysis.db, analysis.project).map_err(internal)?;
-        Cranelift
-            .jit(&program, Profile::Debug)
-            .map_err(|error| match error.diagnostic() {
-                Some(diagnostic) => {
-                    analysis.checked.diagnostics.push(diagnostic);
-                    BuildError::Program(analysis.checked)
-                }
-                None => internal(error),
-            })
-    })
+    caught(|| on_compiler_stack(|| compile(path, text)).expect("a thread for the compiler"))
+}
+
+/// [`build`] on this thread.
+fn compile(path: &str, text: &str) -> Result<JitProgram, BuildError> {
+    let mut analysis = FrontEnd::new().analyze_here(path, text);
+    if has_error(&analysis.checked.diagnostics) {
+        return Err(BuildError::Program(analysis.checked));
+    }
+    let internal = |error: mora_codegen::CodegenError| BuildError::Internal(error.to_string());
+    let program = Program::collect(&analysis.db, analysis.project).map_err(internal)?;
+    Cranelift
+        .jit(&program, Profile::Debug)
+        .map_err(|error| match error.diagnostic() {
+            Some(diagnostic) => {
+                analysis.checked.diagnostics.push(diagnostic);
+                BuildError::Program(analysis.checked)
+            }
+            None => internal(error),
+        })
 }
 
 /// What `compile` gives, with a panic in it as an internal error: its
@@ -235,6 +243,8 @@ pub(crate) fn output_of(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Compiler;
+    use crate::harness::{PANIC_HOOK, with_panic_hook};
 
     #[test]
     fn output_passes_exit_codes_through() {
@@ -285,6 +295,179 @@ mod tests {
         assert!(matches!(build_and_run("a.mr", "return 3;\n"), Ok(3)));
     }
 
+    /// A program that nests one construct `n` levels deep, the most the
+    /// nesting limit accepts, and what it returns once code generation
+    /// lowers it.
+    struct Nested {
+        name: &'static str,
+        text: fn(usize) -> String,
+        n: usize,
+        returns: Option<i32>,
+    }
+
+    /// The constructs whose passes need the most stack a level.
+    const NESTED: &[Nested] = &[
+        Nested {
+            name: "a sum",
+            text: |n| format!("let x = 1{};\nreturn x;\n", " + 1".repeat(n)),
+            n: 254,
+            returns: Some(255),
+        },
+        Nested {
+            name: "parentheses",
+            text: |n| format!("return {}1{};\n", "(".repeat(n), ")".repeat(n)),
+            n: 254,
+            returns: Some(1),
+        },
+        Nested {
+            name: "prefix operators",
+            text: |n| format!("let x = {}1;\nreturn x;\n", "- ".repeat(n)),
+            n: 254,
+            returns: Some(1),
+        },
+        Nested {
+            name: "calls",
+            text: |n| {
+                let calls = format!("{}1{}", "F(".repeat(n), ")".repeat(n));
+                format!("F(x: int): int {{ return x; }}\nreturn {calls};\n")
+            },
+            n: 254,
+            returns: Some(1),
+        },
+        Nested {
+            name: "blocks",
+            text: |n| format!("{}{}\nreturn 2;\n", "{ ".repeat(n), "}".repeat(n)),
+            n: 256,
+            returns: Some(2),
+        },
+        Nested {
+            name: "if statements",
+            text: |n| {
+                format!(
+                    "var x = 0;\n{}x = 1;\nreturn x;\n",
+                    "if (x == 0) ".repeat(n)
+                )
+            },
+            n: 253,
+            returns: Some(1),
+        },
+        Nested {
+            name: "tuple types",
+            text: |n| {
+                let ty = format!("{}int, int{}", "(int, ".repeat(n), ")".repeat(n));
+                format!("F(t: {ty}) {{}}\nreturn 0;\n")
+            },
+            n: 255,
+            returns: Some(0),
+        },
+        Nested {
+            name: "nested types",
+            text: |n| format!("{}{}\nreturn 0;\n", "struct A { ".repeat(n), "}".repeat(n)),
+            n: 256,
+            returns: Some(0),
+        },
+        Nested {
+            name: "collections",
+            text: |n| format!("let x = {}1{};\n", "[".repeat(n), "]".repeat(n)),
+            n: 254,
+            returns: None,
+        },
+        Nested {
+            name: "lambdas",
+            text: |n| format!("let f = {}1;\n", "(y: int) => ".repeat(n)),
+            n: 254,
+            returns: None,
+        },
+        Nested {
+            name: "`not` patterns",
+            text: |n| format!("let y = 1;\nlet x = y is {}1;\n", "not ".repeat(n)),
+            n: 252,
+            returns: None,
+        },
+        Nested {
+            name: "`or` patterns",
+            text: |n| format!("let y = 1;\nlet x = y is 1{};\n", " or 1".repeat(n)),
+            n: 252,
+            returns: None,
+        },
+    ];
+
+    #[test]
+    fn every_construct_compiles_at_the_nesting_limit_on_the_compiler_stack() {
+        // `build` runs on a thread with exactly the compiler's stack, so a
+        // pass that needs more at the limit overflows it here.
+        for nested in NESTED {
+            let built = build("a.mr", &(nested.text)(nested.n));
+            match (built, nested.returns) {
+                (Ok(jit), Some(exit)) => assert_eq!(jit.run_main(), exit, "{}", nested.name),
+                // A construct a later milestone lowers goes through every
+                // pass up to the one that stops on it.
+                (Err(BuildError::Internal(reason)), None) => {
+                    assert!(
+                        reason.contains("is not lowered until"),
+                        "{}: {reason}",
+                        nested.name
+                    );
+                }
+                (Err(BuildError::Program(checked)), None) => {
+                    let codes: Vec<_> = checked.diagnostics.iter().map(|d| d.code).collect();
+                    assert!(
+                        !codes.contains(&mora_diag::codes::MR0018),
+                        "{}",
+                        nested.name
+                    );
+                }
+                _ => panic!("{} did not build as expected", nested.name),
+            }
+            // One more level is past the limit.
+            let Err(BuildError::Program(checked)) = build("a.mr", &(nested.text)(nested.n + 1))
+            else {
+                panic!("{} is not at the limit", nested.name);
+            };
+            assert!(
+                checked
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == mora_diag::codes::MR0018),
+                "{} is not at the limit",
+                nested.name
+            );
+        }
+    }
+
+    #[test]
+    fn checks_and_builds_leave_the_calling_thread_s_stack() {
+        // 254 nested calls take far more than 256 KiB in the front end.
+        let nested = NESTED.iter().find(|nested| nested.name == "calls").unwrap();
+        let calls = (nested.text)(nested.n);
+        let small = std::thread::Builder::new().stack_size(256 << 10);
+        let (diagnostics, built) = small
+            .spawn(move || {
+                let checked = FrontEnd::new().check("a.mr", &calls);
+                (checked.diagnostics.len(), build("a.mr", &calls).is_ok())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!((diagnostics, built), (0, true));
+    }
+
+    #[test]
+    fn a_question_mark_at_top_level_waits_for_results() {
+        // With the `?` the generated `Main` returns a `Result`, which neither
+        // the front end nor code generation takes for `()`.
+        for text in ["let x = F()?;\n", "let x = F()?;\nreturn x;\n"] {
+            let text = format!("F(): Result<int, string> => Ok(1);\n{text}");
+            let Err(BuildError::Internal(reason)) = build_and_run("a.mr", &text) else {
+                panic!("not an internal error");
+            };
+            assert_eq!(
+                reason,
+                "internal error lowering top-level: `?` is not lowered until M3.7"
+            );
+        }
+    }
+
     #[test]
     fn a_program_with_errors_is_not_built() {
         let Err(BuildError::Program(checked)) = build_and_run("a.mr", "let x = y;\n") else {
@@ -324,18 +507,19 @@ mod tests {
     #[test]
     fn a_quiet_build_gives_the_hook_back() {
         use std::cell::Cell;
+        use std::sync::PoisonError;
         // The hook runs on the thread that panics, so other tests that panic
         // while it is installed do not set this thread's flag.
         thread_local! {
             static CALLED: Cell<bool> = const { Cell::new(false) };
         }
-        let original = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| CALLED.with(|called| called.set(true))));
-        assert!(build_quietly("a.mr", "return 3;\n").is_ok());
-        assert!(build_quietly("a.mr", "").is_err());
-        assert!(!CALLED.with(Cell::get));
-        let _ = catch_unwind(|| panic!("after the build"));
-        std::panic::set_hook(original);
+        let _hook = PANIC_HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        with_panic_hook(Box::new(|_| CALLED.with(|called| called.set(true))), || {
+            assert!(build_quietly("a.mr", "return 3;\n").is_ok());
+            assert!(build_quietly("a.mr", "").is_err());
+            assert!(!CALLED.with(Cell::get));
+            let _ = catch_unwind(|| panic!("after the build"));
+        });
         assert!(CALLED.with(Cell::get));
     }
 }

@@ -1095,6 +1095,7 @@ dependencies = [
  "mora-check",
  "mora-codegen",
  "mora-diag",
+ "mora-driver",
  "mora-hir",
  "mora-mir",
  "mora-span",

@@ -20,7 +20,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError, default_libcall_names};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
-use mora_mir::{Body, LocalId, LocalTy, TerminatorKind};
+use mora_mir::{Body, LocalId, TerminatorKind};
 use mora_target::{CallConv, ObjectFormat, Target};
 use target_lexicon::Triple;
 
@@ -186,7 +186,7 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
 ///
 /// With an internal error for MIR that is not lowered yet, and for an entry
 /// point with parameters or with a result other than `int` or a zero-sized
-/// one, which M1.13 brings.
+/// one (see [`Exit::of`]).
 fn define_program<M: Module>(
     module: &mut M,
     program: &Program<'_>,
@@ -194,9 +194,10 @@ fn define_program<M: Module>(
     profile: Profile,
 ) -> Result<(), CodegenError> {
     let entry = program.function(program.entry());
+    // Before the sizes, which need a layout of the result.
+    let exit = Exit::of(entry.body, layouts);
     crate::size::check_structs(layouts, entry.key.project)?;
     crate::size::check_locals(layouts, program)?;
-    let exit = Exit::of(entry.body, layouts);
     let ids = define_functions(module, program, layouts, profile)?;
     let call_conv = module.isa().default_call_conv();
     let mut signature = Signature::new(call_conv);
@@ -333,20 +334,27 @@ impl Exit {
     ///
     /// # Panics
     ///
-    /// With an internal error for an entry point with parameters or a result
-    /// that is neither `int` nor zero-sized.
+    /// With an internal error for an entry point with parameters, which
+    /// M1.13 brings, one that returns a `Result`, whose exit codes M3.7
+    /// brings, and one with another result that is neither `int` nor
+    /// zero-sized, which the front end reports (`MR0120`).
     fn of(entry: &Body, layouts: &Layouts<'_>) -> Exit {
         let result = &entry.locals[LocalId::RETURN.index()].ty;
-        if entry.params == 0 && *result == LocalTy::Value(Ty::Primitive(Primitive::Int)) {
-            Exit::Int
-        } else if entry.params == 0 && layouts.of_local(result).size == 0 {
-            Exit::Zero
-        } else {
-            function::fail(
+        if entry.params != 0 {
+            function::fail(entry, "an entry point with parameters", "M1.13")
+        }
+        match result.ty() {
+            Ty::Primitive(Primitive::Int) => Exit::Int,
+            // Of the types a later milestone gives meaning to, §4.6 lets an
+            // entry point return only a `Result`.
+            Ty::Unsupported(_) => {
+                function::fail(entry, "an entry point that returns a `Result`", "M3.7")
+            }
+            _ if layouts.of_local(result).size == 0 => Exit::Zero,
+            _ => function::broken(
                 entry,
-                "an entry point with parameters or a result other than `int`",
-                "M1.13",
-            )
+                "an entry point returns a type other than `()`, `int` or a `Result`",
+            ),
         }
     }
 }
@@ -380,6 +388,7 @@ mod tests {
 
     use cranelift_codegen::settings::{OptLevel, ProbestackStrategy};
     use mora_hir::test_support::TestDb;
+    use mora_mir::LocalTy;
     use mora_target::builtin_names;
     use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -696,14 +705,37 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "internal error generating code for UsersApi.Main: \
-                               an entry point with parameters or a result other than `int` \
-                               is not lowered until M1.13")]
+                               invalid MIR: an entry point returns a type other than `()`, \
+                               `int` or a `Result`")]
     fn an_entry_returning_another_type_is_an_internal_error() {
         // The front end reports it (`MR0120`); code generation still checks.
         let db = TestDb::default();
         let project =
             mora_hir::test_support::app(&db, &[("src/Program.mr", "Main(): long { return 7; }\n")]);
         let program = Program::collect(&db, project).unwrap();
+        let _ = Cranelift.jit(&program, Profile::Debug);
+    }
+
+    #[test]
+    #[should_panic(expected = "internal error generating code for UsersApi.Main: \
+                               an entry point that returns a `Result` \
+                               is not lowered until M3.7")]
+    fn an_entry_returning_a_result_waits_for_results() {
+        // Lowering stops earlier while a `Result` is a type of the standard
+        // library, so the body is given its `Result<(), string>` here.
+        let db = TestDb::default();
+        let project = app_of(&db, "Main() {}\n");
+        let file = mora_hir::test_support::file_named(&db, project, "src/Program.mr");
+        let item = mora_hir::test_support::item_named(&db, project, file, "Main");
+        let mir = mora_mir::mir(&db, project, file, mora_hir::BodyOwner::Item(item.item));
+        let mut body = mir.bodies[0].clone();
+        body.locals[LocalId::RETURN.index()].ty =
+            LocalTy::Value(Ty::Unsupported(mora_hir::Unsupported {
+                construct: mora_hir::Construct::External,
+                item: None,
+                parts: vec![Ty::UNIT, Ty::String],
+            }));
+        let program = Program::from_body(&db, project, file, &body);
         let _ = Cranelift.jit(&program, Profile::Debug);
     }
 

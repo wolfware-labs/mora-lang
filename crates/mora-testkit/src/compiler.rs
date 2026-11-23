@@ -141,7 +141,22 @@ impl FrontEnd {
         FrontEnd { timeout, ..self }
     }
 
-    pub(crate) fn analyze(&self, path: &str, text: &str) -> Analysis {
+    /// Analyzes the case and gives the analysis to `read`, on a thread with
+    /// the compiler's stack, where the analysis is dropped too: dropping a
+    /// syntax tree recurses as deep as it nests.
+    fn analyzed<T: Send>(
+        &self,
+        path: &str,
+        text: &str,
+        read: impl FnOnce(Analysis) -> T + Send,
+    ) -> T {
+        mora_driver::on_compiler_stack(|| read(self.analyze_here(path, text)))
+            .expect("a thread for the compiler")
+    }
+
+    /// Analyzes the case on this thread, which must have the compiler's
+    /// stack ([`mora_driver::COMPILER_STACK_SIZE`]).
+    pub(crate) fn analyze_here(&self, path: &str, text: &str) -> Analysis {
         let case = case::split(path, text).unwrap_or_else(|problem| panic!("{problem}"));
         let namespace = case
             .namespace
@@ -204,7 +219,7 @@ pub(crate) fn has_error(diagnostics: &[Diagnostic]) -> bool {
 
 impl Compiler for FrontEnd {
     fn check(&self, path: &str, text: &str) -> Checked {
-        self.analyze(path, text).checked
+        self.analyzed(path, text, |analysis| analysis.checked)
     }
 
     fn backends(&self) -> &[Backend] {
@@ -222,9 +237,9 @@ impl Compiler for FrontEnd {
         let Some(runner) = &self.runner else {
             unimplemented!("this front end has no runner");
         };
-        let analysis = self.analyze(path, text);
-        if has_error(&analysis.checked.diagnostics) {
-            return Err(analysis.checked);
+        let checked = self.analyzed(path, text, |analysis| analysis.checked);
+        if has_error(&checked.diagnostics) {
+            return Err(checked);
         }
         match crate::runner::run_child(runner, path, text, self.timeout) {
             Ok(output) => Ok(output),
@@ -259,20 +274,21 @@ impl FrontEnd {
         text: &str,
         dump: fn(&dyn mora_span::Db, Project, SourceFile) -> String,
     ) -> Result<String, Checked> {
-        let analysis = self.analyze(path, text);
-        if has_error(&analysis.checked.diagnostics) {
-            return Err(analysis.checked);
-        }
-        let mut out = String::new();
-        let several = analysis.inputs.len() > 1;
-        for (file, shown) in analysis.inputs.iter().zip(&analysis.shown) {
-            if several {
-                // Writing to a `String` cannot fail.
-                let _ = writeln!(out, "//@ file {shown}");
+        self.analyzed(path, text, |analysis| {
+            if has_error(&analysis.checked.diagnostics) {
+                return Err(analysis.checked);
             }
-            out.push_str(&dump(&analysis.db, analysis.project, *file));
-        }
-        Ok(out)
+            let mut out = String::new();
+            let several = analysis.inputs.len() > 1;
+            for (file, shown) in analysis.inputs.iter().zip(&analysis.shown) {
+                if several {
+                    // Writing to a `String` cannot fail.
+                    let _ = writeln!(out, "//@ file {shown}");
+                }
+                out.push_str(&dump(&analysis.db, analysis.project, *file));
+            }
+            Ok(out)
+        })
     }
 }
 

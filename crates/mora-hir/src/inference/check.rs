@@ -32,7 +32,7 @@ use crate::signature::{
     struct_field, this_type,
 };
 use crate::suggest::closest;
-use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty};
+use crate::ty::{Construct, Field, Primitive, Signature, TupleElem, Ty, Unsupported};
 
 const BOOL: Ty = Ty::Primitive(Primitive::Bool);
 const INT: Ty = Ty::Primitive(Primitive::Int);
@@ -299,7 +299,8 @@ struct Check<'a> {
     /// statements, whose return type is inferred from its `return`s (§4.6):
     /// false inside a local function or a lambda.
     entry: bool,
-    /// The type the generated `Main` returns, once a `return` gives it.
+    /// The type the generated `Main` returns, once a `return` gives it; a
+    /// `?` makes it a `Result` after the walk.
     entry_ret: Option<Ty>,
     /// The first `return` with a value of the top-level statements.
     entry_value: Option<StmtId>,
@@ -635,11 +636,39 @@ impl Check<'_> {
         }
     }
 
+    /// The return type of the generated `Main`, once its statements are
+    /// checked: with a `?` in them it returns a `Result` of what its
+    /// `return` statements give, `()` when none gives a value, with the
+    /// error type of the first `?` (§4.6). A value of a type of the standard
+    /// library, which may be a `Result` already, is the return type itself.
+    fn entry_return(&mut self) {
+        self.entry_value_check();
+        let Some(propagate) = &self.entry_propagate else {
+            return;
+        };
+        let value = match (self.entry_ret.take(), self.entry_value) {
+            (Some(value), _) => value,
+            (None, None) => Ty::UNIT,
+            // A value whose type the checker does not know.
+            (None, Some(_)) => Ty::Error,
+        };
+        self.entry_ret = Some(if value.as_external().is_some() {
+            value
+        } else {
+            let error = propagate.error.clone().unwrap_or(Ty::Error);
+            Ty::Unsupported(Unsupported {
+                construct: Construct::External,
+                item: None,
+                parts: vec![value, error],
+            })
+        });
+    }
+
     /// `MR0120` when the first `return` with a value of the top-level
     /// statements gives the generated `Main` a type an entry point cannot
     /// return (§4.6). With a `?` in the statements the generated `Main`
     /// returns a `Result` of the value, unless the value is one already.
-    fn entry_return(&mut self) {
+    fn entry_value_check(&mut self) {
         let Some(stmt) = self.entry_value else {
             return;
         };

@@ -60,7 +60,8 @@ pub struct Inference {
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
     /// For top-level statements, the type the generated `Main` returns: the
-    /// type of its first `return` value (§4.6).
+    /// type of its first `return` value, as a `Result` with a `?` in the
+    /// statements (§4.6).
     entry_ret: Option<Ty>,
 }
 
@@ -129,7 +130,8 @@ pub struct Conversion {
 
 impl Inference {
     /// The return type of the generated `Main` of top-level statements, as
-    /// their `return` statements give it; `None` when none returns a value.
+    /// their `return` statements and `?` operators give it; `None` when
+    /// they have neither.
     pub fn entry_return(&self) -> Option<&Ty> {
         self.entry_ret.as_ref()
     }
@@ -772,6 +774,76 @@ mod tests {
         assert_eq!(
             entry_return("let x: long = 1;\nif (x > 0) { return 1; }\nreturn 2;\n"),
             Some("int".to_owned())
+        );
+    }
+
+    /// The return type of the generated `Main` of the top-level statements
+    /// of `text`, as inference records it.
+    fn entry_return_ty(text: &str) -> Option<Ty> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        infer(&db, project, file, BodyOwner::TopLevel)
+            .entry_return()
+            .cloned()
+    }
+
+    /// `Result<ok, error>` as the checker sees it while the standard library
+    /// is not loaded.
+    fn result_of(ok: Ty, error: Ty) -> Ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::External,
+            item: None,
+            parts: vec![ok, error],
+        })
+    }
+
+    #[test]
+    fn a_question_mark_makes_the_generated_main_return_a_result() {
+        let f = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\n";
+        let string = Ty::String;
+        assert_eq!(
+            entry_return_ty(f),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
+        assert_eq!(
+            entry_return_ty(&format!("{f}return 3;\n")),
+            Some(result_of(Ty::Primitive(Primitive::Int), string.clone()))
+        );
+        assert_eq!(
+            entry_return_ty(&format!("{f}return;\n")),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
+        // A value whose type the checker does not know (`MR0120`).
+        assert_eq!(
+            entry_return_ty(&format!("{f}return (y: int) => y;\n")),
+            Some(result_of(Ty::Error, string.clone()))
+        );
+        // A value that is a `Result` already is the return type.
+        let g = "G(): Result<int, bool> => Ok(2);\nreturn G();\n";
+        assert_eq!(
+            entry_return_ty(&format!("{f}{g}")),
+            Some(result_of(
+                Ty::Primitive(Primitive::Int),
+                Ty::Primitive(Primitive::Bool)
+            ))
+        );
+        // An operand the checker does not see as a `Result` gives no error
+        // type.
+        assert_eq!(
+            entry_return_ty("let x = 1?;\n"),
+            Some(result_of(Ty::UNIT, Ty::Error))
+        );
+    }
+
+    #[test]
+    fn a_question_mark_in_a_local_function_does_not_type_the_generated_main() {
+        let f = "F(): Result<int, string> => Ok(1);\n";
+        assert_eq!(
+            entry_return_ty(&format!(
+                "{f}G(): Result<int, string> {{ let x = F()?; return Ok(x); }}\n"
+            )),
+            None
         );
     }
 
