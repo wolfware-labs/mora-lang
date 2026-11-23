@@ -242,7 +242,7 @@ pub(crate) fn output_of(code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Resu
 mod tests {
     use super::*;
     use crate::Compiler;
-    use crate::harness::assert_gives_the_hook_back;
+    use crate::harness::{HOOK_MARK, assert_gives_the_hook_back};
 
     #[test]
     fn output_passes_exit_codes_through() {
@@ -504,9 +504,19 @@ mod tests {
 
     #[test]
     fn a_quiet_build_gives_the_hook_back() {
+        // A file listed twice makes the analysis panic, on the compiler's
+        // thread, with the mark in the path.
+        let file = format!("//@ file src/{HOOK_MARK}.mr\n");
+        let twice = format!("{file}{file}");
         assert_gives_the_hook_back(|| {
             assert!(build_quietly("a.mr", "return 3;\n").is_ok());
-            assert!(build_quietly("a.mr", "").is_err());
+            let Err(BuildError::Internal(reason)) = build_quietly("a.mr", &twice) else {
+                panic!("not an internal error");
+            };
+            assert_eq!(
+                reason,
+                format!("line 2: `src/{HOOK_MARK}.mr` is listed twice")
+            );
         });
     }
 }

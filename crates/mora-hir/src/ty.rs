@@ -47,7 +47,7 @@ impl Ty {
     /// The parts of this type when it is a type of the standard library
     /// while that is not loaded ([`Construct::External`]); `None` for
     /// another type.
-    pub(crate) fn as_external(&self) -> Option<&[Ty]> {
+    pub fn as_external(&self) -> Option<&[Ty]> {
         match self {
             Ty::Unsupported(Unsupported {
                 construct: Construct::External,

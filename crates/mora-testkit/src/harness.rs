@@ -288,37 +288,51 @@ pub fn with_panic_hook<T>(hook: PanicHook, f: impl FnOnce() -> T) -> T {
     result.unwrap_or_else(|payload| panic::resume_unwind(payload))
 }
 
-/// Runs `run` under a hook that records the panics of this thread, and
-/// checks that `run` lets no panic reach that hook and puts it back: a
-/// panic after `run` does reach it.
+/// The text the panics of [`assert_gives_the_hook_back`] carry, so that its
+/// hook tells them from the panics of other tests.
+#[cfg(test)]
+pub(crate) const HOOK_MARK: &str = "hook-mark";
+
+/// Runs `run` under a hook that records the panics whose message holds
+/// [`HOOK_MARK`], on any thread, and checks that `run` lets none of them
+/// reach that hook and puts it back: a panic after `run` does reach it.
+/// `run` panics with the mark itself, so that a hook it fails to silence
+/// would see it.
 ///
 /// # Panics
 ///
 /// When a check fails.
 #[cfg(test)]
 pub(crate) fn assert_gives_the_hook_back(run: impl FnOnce()) {
-    use std::cell::Cell;
+    use std::sync::atomic::AtomicBool;
     use std::sync::{Mutex, PoisonError};
 
     /// Held while the hook is set, which is global, so that one test does
     /// not take the hook another set as the one to put back.
     static HOOK_SET: Mutex<()> = Mutex::new(());
-    thread_local! {
-        // The hook runs on the thread that panics, so the panics of other
-        // tests do not set this one's.
-        static CALLED: Cell<bool> = const { Cell::new(false) };
-    }
+    // The hook runs on the thread that panics, which may be one `run`
+    // starts, such as the compiler's; the mark keeps out the panics of
+    // other tests.
+    static CALLED: AtomicBool = AtomicBool::new(false);
     let _set = HOOK_SET.lock().unwrap_or_else(PoisonError::into_inner);
-    CALLED.with(|called| called.set(false));
-    with_panic_hook(Box::new(|_| CALLED.with(|called| called.set(true))), || {
+    CALLED.store(false, Ordering::SeqCst);
+    let record = |info: &panic::PanicHookInfo<'_>| {
+        if info.to_string().contains(HOOK_MARK) {
+            CALLED.store(true, Ordering::SeqCst);
+        }
+    };
+    with_panic_hook(Box::new(record), || {
         run();
         assert!(
-            !CALLED.with(Cell::get),
+            !CALLED.load(Ordering::SeqCst),
             "a panic in the run reached the hook"
         );
-        let _ = panic::catch_unwind(|| panic!("after the run"));
+        let _ = panic::catch_unwind(|| panic!("{HOOK_MARK}: after the run"));
     });
-    assert!(CALLED.with(Cell::get), "the hook is not back after the run");
+    assert!(
+        CALLED.load(Ordering::SeqCst),
+        "the hook is not back after the run"
+    );
 }
 
 #[cfg(test)]
@@ -328,7 +342,7 @@ mod tests {
     #[test]
     fn a_panic_in_a_quiet_run_gives_the_hook_back() {
         assert_gives_the_hook_back(|| {
-            let quiet = panic::catch_unwind(|| without_panic_output(|| panic!("inside")));
+            let quiet = panic::catch_unwind(|| without_panic_output(|| panic!("{HOOK_MARK}")));
             assert!(quiet.is_err());
         });
     }
@@ -336,9 +350,10 @@ mod tests {
     #[test]
     fn a_hook_comes_back_when_its_run_panics() {
         assert_gives_the_hook_back(|| {
-            let run = panic::catch_unwind(|| with_panic_hook(Box::new(|_| {}), || panic!("x")));
-            let payload = run.err().and_then(|p| p.downcast::<&str>().ok());
-            assert_eq!(payload.as_deref(), Some(&"x"));
+            let run =
+                panic::catch_unwind(|| with_panic_hook(Box::new(|_| {}), || panic!("{HOOK_MARK}")));
+            let payload = run.err().and_then(|p| p.downcast::<String>().ok());
+            assert_eq!(payload.as_deref().map(String::as_str), Some(HOOK_MARK));
         });
     }
 

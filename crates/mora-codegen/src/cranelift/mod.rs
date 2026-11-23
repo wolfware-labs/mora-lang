@@ -337,7 +337,8 @@ impl Exit {
     /// With an internal error for an entry point with parameters, which
     /// M1.13 brings, one that returns a `Result`, whose exit codes M3.7
     /// brings, and one with another result that is neither `int` nor
-    /// zero-sized, which the front end reports (`MR0120`).
+    /// zero-sized, which the front end reports (`MR0120`): another type a
+    /// later milestone gives meaning to among them.
     fn of(entry: &Body, layouts: &Layouts<'_>) -> Exit {
         let result = &entry.locals[LocalId::RETURN.index()].ty;
         if entry.params != 0 {
@@ -345,12 +346,15 @@ impl Exit {
         }
         match result.ty() {
             Ty::Primitive(Primitive::Int) => Exit::Int,
-            // Of the types a later milestone gives meaning to, §4.6 lets an
-            // entry point return only a `Result`.
-            Ty::Unsupported(_) => {
+            // While the standard library is not loaded, a `Result` is one
+            // of its types, with its two type arguments or, written without
+            // them, none.
+            ty if matches!(ty.as_external(), Some([] | [_, _])) => {
                 function::fail(entry, "an entry point that returns a `Result`", "M3.7")
             }
-            _ if layouts.of_local(result).size == 0 => Exit::Zero,
+            ty if !matches!(ty, Ty::Unsupported(_)) && layouts.of_local(result).size == 0 => {
+                Exit::Zero
+            }
             _ => function::broken(
                 entry,
                 "an entry point that returns a type other than `()`, `int` or a `Result`",
@@ -383,11 +387,13 @@ fn unsupported_host(error: mora_target::Error) -> CodegenError {
 #[cfg(test)]
 mod tests {
     use std::fmt::Write;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use cranelift_codegen::settings::{OptLevel, ProbestackStrategy};
     use mora_hir::test_support::TestDb;
+    use mora_hir::{Construct, Unsupported};
     use mora_mir::LocalTy;
     use mora_target::builtin_names;
     use object::{Object, ObjectSection, ObjectSymbol};
@@ -716,23 +722,71 @@ mod tests {
         let _ = Cranelift.jit(&program, Profile::Debug);
     }
 
-    #[test]
-    #[should_panic(expected = "internal error generating code for UsersApi.Main: \
-                               an entry point that returns a `Result` \
-                               is not lowered until M3.7")]
-    fn an_entry_returning_a_result_waits_for_results() {
-        // Lowering stops earlier while a `Result` is a type of the standard
-        // library, so the body is given its `Result<(), string>` here.
+    /// The panic message of compiling an entry point whose result is
+    /// `ty`. Lowering stops earlier on such a result, so the body of
+    /// `Main() {}` is given it here.
+    fn panic_of_an_entry_returning(ty: Ty) -> String {
         let db = TestDb::default();
         let project = app_of(&db, "Main() {}\n");
         let file = mora_hir::test_support::file_named(&db, project, "src/Program.mr");
         let item = mora_hir::test_support::item_named(&db, project, file, "Main");
         let mir = mora_mir::mir(&db, project, file, mora_hir::BodyOwner::Item(item.item));
         let mut body = mir.bodies[0].clone();
-        body.locals[LocalId::RETURN.index()].ty =
-            LocalTy::Value(mora_hir::test_support::result_of(Ty::UNIT, Ty::String));
+        body.locals[LocalId::RETURN.index()].ty = LocalTy::Value(ty);
         let program = Program::from_body(&db, project, file, &body);
-        let _ = Cranelift.jit(&program, Profile::Debug);
+        let payload = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = Cranelift.jit(&program, Profile::Debug);
+        }))
+        .expect_err("the entry point compiled");
+        payload.downcast::<String>().map(|text| *text).unwrap()
+    }
+
+    /// A type a later milestone gives meaning to, made with `construct`.
+    fn unsupported(construct: Construct, parts: Vec<Ty>) -> Ty {
+        Ty::Unsupported(Unsupported {
+            construct,
+            item: None,
+            parts,
+        })
+    }
+
+    #[test]
+    fn an_entry_returning_a_result_waits_for_results() {
+        // A `Result` is a type of the standard library, with its two type
+        // arguments or, written without them, none.
+        let int = Ty::Primitive(Primitive::Int);
+        for ty in [
+            mora_hir::test_support::result_of(Ty::UNIT, Ty::String),
+            mora_hir::test_support::result_of(int, Ty::String),
+            unsupported(Construct::External, Vec::new()),
+        ] {
+            assert_eq!(
+                panic_of_an_entry_returning(ty),
+                "internal error generating code for UsersApi.Main: an entry point that \
+                 returns a `Result` is not lowered until M3.7"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_returning_another_unsupported_type_is_broken_mir() {
+        // The front end reports these (`MR0120`).
+        let int = || Ty::Primitive(Primitive::Int);
+        for ty in [
+            unsupported(Construct::External, vec![int()]),
+            unsupported(Construct::External, vec![int(), int(), int()]),
+            unsupported(Construct::Optional, vec![int()]),
+            unsupported(Construct::Function, vec![int()]),
+            unsupported(Construct::Class, Vec::new()),
+            unsupported(Construct::Generic, vec![int(), Ty::String]),
+        ] {
+            assert_eq!(
+                panic_of_an_entry_returning(ty.clone()),
+                "internal error generating code for UsersApi.Main: invalid MIR: an entry \
+                 point that returns a type other than `()`, `int` or a `Result`",
+                "{ty:?}"
+            );
+        }
     }
 
     #[test]
