@@ -270,7 +270,9 @@ impl<'t> Input<'t> {
             line_break |= all.line_start[start..at].iter().any(|&starts| starts);
             // A comment before the run may belong to the declaration after
             // it ([`Parser::rejected_in_place`]).
-            let after = start.checked_sub(1).map_or(0, |before| all.raw[before] + 1);
+            // The slice starts at the token before the run, which is no
+            // comment: `all` holds no trivia.
+            let after = start.checked_sub(1).map_or(0, |before| all.raw[before]);
             let commented = lexed.tokens[after..first]
                 .iter()
                 .any(|token| token.kind.is_comment());
@@ -283,11 +285,11 @@ impl<'t> Input<'t> {
             // no trivia comes between them and the run, nor inside the run
             // (it spans no more tokens of `lexed` than it holds), they are
             // joined, or one token when they lex as one, as `.` and `.` make
-            // `..`.
+            // `..`. A token of `lexed` that touches the run's last is not
+            // trivia, so `all` holds it, at `at`.
             let touches = input.joined.last().copied().unwrap_or(false)
                 && last - first == at - 1 - start
-                && lexed.is_joined(last)
-                && at < all.len();
+                && lexed.is_joined(last);
             if touches && input.merge(&all, at) {
                 (rejected, line_break) = (None, false);
                 at += 1;

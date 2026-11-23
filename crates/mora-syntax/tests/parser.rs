@@ -957,6 +957,8 @@ fn a_using_without_its_name_leaves_the_declaration_on_the_next_line() {
     for text in [
         "using\nF() {}\n",
         "using \\\nF() {}\n",
+        // Rejected text counts as nothing: `F` starts the line.
+        "using\n\\F() {}\n",
         "using static\npublic struct S {}\n",
     ] {
         let kinds = top_level_kinds(text);

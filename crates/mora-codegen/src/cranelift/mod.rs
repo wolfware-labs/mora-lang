@@ -854,15 +854,104 @@ mod tests {
             let program = jit(&text, profile);
             assert_eq!(func::<extern "C" fn() -> i64>(&program, "F")(), 7);
         }
-        // x86_64 touches each 4 KiB page as it moves the stack pointer down:
-        // `sub rsp, 0x1000` then `mov dword [rsp], 0`.
-        const PROBE: [u8; 14] = [
-            0x48, 0x81, 0xEC, 0x00, 0x10, 0x00, 0x00, 0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00,
-        ];
-        let bytes = object_of(&text, &x86_64(), Profile::Release);
+    }
+
+    /// The code of the function `F()` in the object of `text` built for
+    /// `target`.
+    fn code_of_f(text: &str, target: &Target) -> Vec<u8> {
+        let bytes = object_of(text, target, Profile::Release);
         let file = object::File::parse(&*bytes).unwrap();
-        let code = file.section_by_name(".text").unwrap().data().unwrap();
-        assert!(code.windows(PROBE.len()).any(|w| w == PROBE));
+        let f = file
+            .symbols()
+            .find(|s| s.name() == Ok(symbol("F()").as_str()))
+            .unwrap();
+        let section = file.section_by_name(".text").unwrap();
+        let start = usize::try_from(f.address() - section.address()).unwrap();
+        let end = start + usize::try_from(f.size()).unwrap();
+        section.data().unwrap()[start..end].to_vec()
+    }
+
+    /// The little-endian 32-bit immediate at `at` in `code`.
+    fn imm32(code: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(code[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn x86_64_probes_each_page_of_a_large_frame_first() {
+        // After saving the frame pointer, and before any other access to
+        // the stack, `F` steps the stack pointer down a 4 KiB page at a
+        // time, from the top, and stores to each page; then it puts the
+        // stack pointer back and allocates the frame the pages cover:
+        //
+        //       push rbp ; mov rbp, rsp
+        //       mov r11, rsp ; sub r11, PROBED
+        //   L:  sub rsp, 0x1000 ; mov dword [rsp], 0
+        //       cmp r11, rsp ; jne L
+        //       add rsp, PROBED ; sub rsp, FRAME
+        // A local of `S19`, 4 MiB.
+        let code = code_of_f(&frame_of([19]), &x86_64());
+        assert_eq!(
+            code[..4],
+            [0x55, 0x48, 0x89, 0xE5],
+            "push rbp; mov rbp, rsp"
+        );
+        assert_eq!(
+            code[4..10],
+            [0x49, 0x89, 0xE3, 0x49, 0x81, 0xEB],
+            "mov r11, rsp; sub r11"
+        );
+        let probed = imm32(&code, 10);
+        const LOOP: [u8; 23] = [
+            0x48, 0x81, 0xEC, 0x00, 0x10, 0x00, 0x00, // sub rsp, 0x1000
+            0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00, // mov dword [rsp], 0
+            0x4C, 0x3B, 0xDC, // cmp r11, rsp
+            0x0F, 0x85, 0xE9, 0xFF, 0xFF, 0xFF, // jne back to the `sub`
+        ];
+        assert_eq!(code[14..37], LOOP);
+        assert_eq!(code[37..40], [0x48, 0x81, 0xC4], "add rsp");
+        assert_eq!(imm32(&code, 40), probed);
+        assert_eq!(code[44..47], [0x48, 0x81, 0xEC], "sub rsp");
+        let frame = imm32(&code, 47);
+        // Whole pages, every one the frame reaches into and no more.
+        assert_eq!(probed % 4096, 0);
+        assert!(
+            frame >= 4 << 20 && frame <= probed && probed - frame < 4096,
+            "{frame} {probed}"
+        );
+    }
+
+    #[test]
+    fn aarch64_probes_each_page_of_a_large_frame_first() {
+        // After saving the frame pointer and link register, and before any
+        // other access to the stack, `F` stores to each 4 KiB page below the
+        // stack pointer, from the top down, until it passes the frame:
+        //
+        //       stp x29, x30, [sp, #-16]! ; mov x29, sp
+        //       mov x16, #0 ; mov x17, #END (one or more instructions)
+        //   L:  sub x16, x16, #1, lsl #12 ; str wzr, [sp, x16]
+        //       cmn x16, x17 ; b.gt L
+        let code = code_of_f(&frame_of([19]), &Target::builtin("aarch64-linux").unwrap());
+        let words: Vec<u32> = code
+            .chunks(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect();
+        assert_eq!(words[..3], [0xA9BF_7BFD, 0x9100_03FD, 0xD280_0010]);
+        // A `movz` and `movk`s into w17 or x17 build the end.
+        let mut end = 0u64;
+        let mut at = 3;
+        while let Some(&word) = words.get(at)
+            && word & 0x1F == 17
+            && matches!(word & 0x7F80_0000, 0x5280_0000 | 0x7280_0000)
+        {
+            end |= u64::from((word >> 5) & 0xFFFF) << (16 * ((word >> 21) & 3));
+            at += 1;
+        }
+        assert_eq!(
+            words[at..at + 4],
+            [0xD140_0610, 0xB830_6BFF, 0xAB11_021F, 0x54FF_FFAC],
+            "sub x16, x16, #1, lsl #12; str wzr, [sp, x16]; cmn x16, x17; b.gt"
+        );
+        assert!(end >= 4 << 20, "{end}");
     }
 
     /// The structs of [`doubling`] up to `S28`, a function `F` with a local

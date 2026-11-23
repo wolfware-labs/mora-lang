@@ -46,6 +46,35 @@ mod tests {
         assert_eq!(name.ok().flatten().as_deref(), Some("compiler"));
     }
 
+    /// Recurses, 4 KiB at a time, until the stack below `top`, the address
+    /// of a local at the start, holds `need` bytes, and returns how many it
+    /// holds then. Measured, so that debug and release frames of different
+    /// sizes reach the same depth of stack.
+    fn deep(top: usize, need: usize) -> usize {
+        let frame = std::hint::black_box([1u8; 4096]);
+        let used = top.abs_diff(frame.as_ptr() as usize);
+        if used >= need {
+            return used;
+        }
+        // Used after the call, so the frame stays live through it.
+        deep(top, need).max(usize::from(std::hint::black_box(frame)[0]))
+    }
+
+    #[test]
+    fn the_compiler_stack_holds_what_a_thread_s_default_does_not() {
+        // 6 MiB is past the 2 MiB a spawned thread gets by default, the
+        // 1 MiB of a Windows main thread and the 8 MiB of a Linux one less
+        // what the harness uses, and well within 16 MiB. A smaller stack
+        // overflows, which aborts the test process.
+        const NEED: usize = 6 << 20;
+        let used = on_compiler_stack(|| {
+            let top = std::hint::black_box(0u8);
+            deep(std::ptr::addr_of!(top) as usize, NEED)
+        })
+        .unwrap();
+        assert!((NEED..NEED + (64 << 10)).contains(&used), "{used}");
+    }
+
     #[test]
     fn a_panic_continues_on_the_calling_thread() {
         let caught = panic::catch_unwind(|| on_compiler_stack(|| panic!("in the compiler")));
