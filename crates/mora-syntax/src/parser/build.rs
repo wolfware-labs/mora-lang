@@ -45,7 +45,12 @@ pub(super) fn build(
         .filter(|error| error.code == codes::MR0012 && !text[error.range].starts_with('\''))
         .map(|error| error.range.end())
         .collect();
-    let mut rejected_run_starts = vec![None; lexed.tokens.len()];
+    // With no rejected text, no run starts or ends anywhere.
+    let mut rejected_run_starts = if rejected_runs.is_empty() {
+        Vec::new()
+    } else {
+        vec![None; lexed.tokens.len()]
+    };
     for (start, end) in rejected_runs.iter().enumerate() {
         if let Some(end) = *end {
             rejected_run_starts[end - 1] = Some(start);
@@ -94,12 +99,14 @@ pub(super) fn build(
                 // when the parser took it in place right after opening it,
                 // or after opening nodes inside it before any token, as an
                 // `Arg` opens around the `Error` that stands for its value.
-                let in_place = matches!(
-                    events[i + 1..]
-                        .iter()
-                        .find(|event| !matches!(event, Event::Start { .. })),
-                    Some(Event::Rejected)
-                );
+                // With no rejected text, the parser took none in place.
+                let in_place = !sink.rejected_runs.is_empty()
+                    && matches!(
+                        events[i + 1..]
+                            .iter()
+                            .find(|event| !matches!(event, Event::Start { .. })),
+                        Some(Event::Rejected)
+                    );
                 // An `Error` node that would hold nothing but what it reports:
                 // one past the nesting limit that takes no token (its
                 // `TooDeep`), or one the parser opens for an error where
@@ -130,13 +137,17 @@ pub(super) fn build(
                 // start at go where they would without it: the run is parsed
                 // as if absent, and past the limit nothing is missing for it
                 // to stand for, since the left-out node is the operand.
-                let reported = events[i + 1..]
-                    .iter()
-                    .take_while(|event| matches!(event, Event::Error { .. } | Event::TooDeep))
-                    .count();
-                let alone =
-                    kind == K::Error && matches!(events.get(i + 1 + reported), Some(Event::Finish));
-                if alone {
+                let alone = (kind == K::Error)
+                    .then(|| {
+                        events[i + 1..]
+                            .iter()
+                            .take_while(|event| {
+                                matches!(event, Event::Error { .. } | Event::TooDeep)
+                            })
+                            .count()
+                    })
+                    .filter(|reported| matches!(events.get(i + 1 + reported), Some(Event::Finish)));
+                if let Some(reported) = alone {
                     chain.remove(0);
                     events[i + 1 + reported] = Event::Tombstone;
                 }
@@ -216,6 +227,12 @@ impl Sink<'_> {
     /// The first token of the run of rejected text whose last token is `i`.
     fn rejected_run_ending_at(&self, i: usize) -> Option<usize> {
         self.rejected_run_starts.get(i).copied().flatten()
+    }
+
+    /// Whether token `i` lies inside a quoted run, where a comment is
+    /// rejected text; never, when the text has no rejected text.
+    fn quoted(&self, i: usize) -> bool {
+        self.quoted.get(i).copied().unwrap_or(false)
     }
 
     /// The index after the run of rejected text that starts at token `i`.
@@ -391,7 +408,7 @@ impl Sink<'_> {
             }
             let kind = self.kind(i);
             match (run, kind) {
-                (_, Some(kind)) if kind.is_comment() && !self.quoted[i] => {
+                (_, Some(kind)) if kind.is_comment() && !self.quoted(i) => {
                     from = run.unwrap_or(i);
                     newline_seen = false;
                 }
