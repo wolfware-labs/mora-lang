@@ -625,7 +625,7 @@ pub fn is_known(ty: &Ty) -> bool {
 /// type, whose name the checker does not see: one with two arguments the
 /// first of which is `()` or `int`, or one whose arguments it does not see,
 /// may be a `Result`. Every other type is not one.
-pub(crate) fn is_entry_return(ty: &Ty) -> bool {
+pub fn is_entry_return(ty: &Ty) -> bool {
     match ty.as_external() {
         Some([]) => true,
         Some([ok, _]) => is_exit_value(ok),

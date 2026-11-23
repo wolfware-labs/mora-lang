@@ -297,7 +297,8 @@ pub(crate) const HOOK_MARK: &str = "hook-mark";
 /// [`HOOK_MARK`], on any thread, and checks that `run` lets none of them
 /// reach that hook and puts it back: a panic after `run` does reach it.
 /// `run` panics with the mark itself, so that a hook it fails to silence
-/// would see it.
+/// would see it. Other panics go on to the hook that was set before, so a
+/// failed check, or another test failing meanwhile, still prints why.
 ///
 /// # Panics
 ///
@@ -305,7 +306,7 @@ pub(crate) const HOOK_MARK: &str = "hook-mark";
 #[cfg(test)]
 pub(crate) fn assert_gives_the_hook_back(run: impl FnOnce()) {
     use std::sync::atomic::AtomicBool;
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::{Arc, Mutex, PoisonError};
 
     /// Held while the hook is set, which is global, so that one test does
     /// not take the hook another set as the one to put back.
@@ -316,19 +317,29 @@ pub(crate) fn assert_gives_the_hook_back(run: impl FnOnce()) {
     static CALLED: AtomicBool = AtomicBool::new(false);
     let _set = HOOK_SET.lock().unwrap_or_else(PoisonError::into_inner);
     CALLED.store(false, Ordering::SeqCst);
-    let record = |info: &panic::PanicHookInfo<'_>| {
+    let previous: Arc<PanicHook> = Arc::new(panic::take_hook());
+    let forward = Arc::clone(&previous);
+    let record = move |info: &panic::PanicHookInfo<'_>| {
         if info.to_string().contains(HOOK_MARK) {
             CALLED.store(true, Ordering::SeqCst);
+        } else {
+            forward(info);
         }
     };
-    with_panic_hook(Box::new(record), || {
-        run();
-        assert!(
-            !CALLED.load(Ordering::SeqCst),
-            "a panic in the run reached the hook"
-        );
-        let _ = panic::catch_unwind(|| panic!("{HOOK_MARK}: after the run"));
-    });
+    let checked = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_panic_hook(Box::new(record), || {
+            run();
+            assert!(
+                !CALLED.load(Ordering::SeqCst),
+                "a panic in the run reached the hook"
+            );
+            let _ = panic::catch_unwind(|| panic!("{HOOK_MARK}: after the run"));
+        });
+    }));
+    panic::set_hook(Box::new(move |info| previous(info)));
+    if let Err(payload) = checked {
+        panic::resume_unwind(payload);
+    }
     assert!(
         CALLED.load(Ordering::SeqCst),
         "the hook is not back after the run"

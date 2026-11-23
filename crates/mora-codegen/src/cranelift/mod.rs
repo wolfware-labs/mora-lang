@@ -347,9 +347,8 @@ impl Exit {
         match result.ty() {
             Ty::Primitive(Primitive::Int) => Exit::Int,
             // While the standard library is not loaded, a `Result` is one
-            // of its types, with its two type arguments or, written without
-            // them, none.
-            ty if matches!(ty.as_external(), Some([] | [_, _])) => {
+            // of its types: those the front end takes for a `Result` here.
+            ty if ty.as_external().is_some() && mora_hir::is_entry_return(ty) => {
                 function::fail(entry, "an entry point that returns a `Result`", "M3.7")
             }
             ty if !matches!(ty, Ty::Unsupported(_)) && layouts.of_local(result).size == 0 => {
@@ -770,9 +769,15 @@ mod tests {
 
     #[test]
     fn an_entry_returning_another_unsupported_type_is_broken_mir() {
-        // The front end reports these (`MR0120`).
+        // The front end reports these (`MR0120`). An external type with two
+        // arguments is a `Result` only when the first is `()` or `int`; its
+        // name is not kept, so another such type looks the same.
         let int = || Ty::Primitive(Primitive::Int);
+        let result_of = mora_hir::test_support::result_of;
         for ty in [
+            result_of(Ty::String, Ty::String),
+            result_of(Ty::Primitive(Primitive::Bool), int()),
+            result_of(result_of(int(), Ty::String), Ty::String),
             unsupported(Construct::External, vec![int()]),
             unsupported(Construct::External, vec![int(), int(), int()]),
             unsupported(Construct::Optional, vec![int()]),
