@@ -156,19 +156,19 @@ fn rule_breaks_are_errors() {
 const REJECTED: &[(&str, &str)] = &[
     (
         "aapcs-64-bit.toml",
-        "`call-conv` Aapcs needs a `pointer-width` of 32, not 64",
+        "`call-conv` aapcs needs a `pointer-width` of 32, not 64",
     ),
     (
         "aapcs-arch.toml",
-        "`call-conv` Aapcs is not a convention of `arch` `riscv32`",
+        "`call-conv` aapcs is not a convention of `arch` `riscv32`",
     ),
     (
         "call-conv-arch.toml",
-        "`call-conv` Sysv64 is not a convention of `arch` `aarch64`",
+        "`call-conv` sysv64 is not a convention of `arch` `aarch64`",
     ),
     (
         "pointer-width-x86_64-32.toml",
-        "`call-conv` Sysv64 needs a `pointer-width` of 64, not 32",
+        "`call-conv` sysv64 needs a `pointer-width` of 64, not 32",
     ),
     ("triple-control.toml", "`triple` must start with"),
     ("triple-dot-dot.toml", "`triple` must start with"),
@@ -245,10 +245,14 @@ fn each_convention_fits_one_pointer_width_and_its_arch() {
         let other = if width == 64 { 32 } else { 64 };
         let message = Target::parse(&with(conv, arch, other)).unwrap_err();
         assert!(
-            message.contains(&format!("needs a `pointer-width` of {width}, not {other}")),
+            message.contains(&format!(
+                "`call-conv` {conv} needs a `pointer-width` of {width}, not {other}"
+            )),
             "{conv}: {message}"
         );
-        for wrong in ["x86_64", "aarch64", "riscv64", "arm", "xarm", "wasm32"] {
+        for wrong in [
+            "x86_64", "aarch64", "riscv64", "riscv32", "arm", "arm64", "arm64_32", "xarm", "wasm32",
+        ] {
             let fits = wrong == arch || (conv == "aapcs" && wrong == "arm");
             let parsed = Target::parse(&with(conv, wrong, width));
             if fits {
@@ -256,7 +260,9 @@ fn each_convention_fits_one_pointer_width_and_its_arch() {
             } else {
                 let message = parsed.unwrap_err();
                 assert!(
-                    message.contains(&format!("is not a convention of `arch` `{wrong}`")),
+                    message.contains(&format!(
+                        "`call-conv` {conv} is not a convention of `arch` `{wrong}`"
+                    )),
                     "{conv} on {wrong}: {message}"
                 );
             }

@@ -84,6 +84,19 @@ pub enum CallConv {
 }
 
 impl CallConv {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            CallConv::Sysv64 => "sysv64",
+            CallConv::Aapcs64 => "aapcs64",
+            CallConv::AppleAapcs64 => "apple-aapcs64",
+            CallConv::Win64 => "win64",
+            CallConv::WinArm64 => "win-arm64",
+            CallConv::Lp64d => "lp64d",
+            CallConv::Aapcs => "aapcs",
+        }
+    }
+
     /// The width, in bits, of the pointers this convention passes.
     fn pointer_width(self) -> u32 {
         match self {
@@ -99,13 +112,15 @@ impl CallConv {
 
     /// Whether this is a convention of the instruction set `arch`: `x86_64`,
     /// `aarch64` and `riscv64` by name, and 32-bit Arm by an `arch` that
-    /// starts with `arm` or `thumb`.
+    /// starts with `arm`, but not `arm64`, or with `thumb`.
     fn fits_arch(self, arch: &str) -> bool {
         match self {
             CallConv::Sysv64 | CallConv::Win64 => arch == "x86_64",
             CallConv::Aapcs64 | CallConv::AppleAapcs64 | CallConv::WinArm64 => arch == "aarch64",
             CallConv::Lp64d => arch == "riscv64",
-            CallConv::Aapcs => arch.starts_with("arm") || arch.starts_with("thumb"),
+            CallConv::Aapcs => {
+                (arch.starts_with("arm") && !arch.starts_with("arm64")) || arch.starts_with("thumb")
+            }
         }
     }
 }
@@ -314,14 +329,16 @@ impl Target {
         let conv = self.call_conv;
         if conv.pointer_width() != self.pointer_width {
             return Err(format!(
-                "`call-conv` {conv:?} needs a `pointer-width` of {}, not {}",
+                "`call-conv` {} needs a `pointer-width` of {}, not {}",
+                conv.name(),
                 conv.pointer_width(),
                 self.pointer_width
             ));
         }
         if !conv.fits_arch(&self.arch) {
             return Err(format!(
-                "`call-conv` {conv:?} is not a convention of `arch` `{}`",
+                "`call-conv` {} is not a convention of `arch` `{}`",
+                conv.name(),
                 self.arch
             ));
         }
@@ -357,8 +374,9 @@ impl Target {
 }
 
 /// Whether `triple` starts with a lowercase ASCII letter or a digit and is made
-/// of those, `_`, `.` and `-`: it can then be read neither as an option nor as
-/// a path other than one file name.
+/// of those, `_`, `.` and `-`: it then never reads as an option and holds no
+/// path separator. Names a file system reserves, such as `nul`, are the
+/// concern of whatever builds a path from it.
 fn is_triple(triple: &str) -> bool {
     triple.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
         && is_name(triple, &['_', '.', '-'])
