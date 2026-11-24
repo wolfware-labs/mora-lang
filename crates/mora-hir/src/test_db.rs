@@ -3,7 +3,9 @@
 use mora_span::Project;
 
 use crate::resolve::item_data;
-pub(crate) use crate::test_support::{TestDb, app, codes, file_named, item_named, messages};
+pub(crate) use crate::test_support::{
+    TestDb, app, codes, file_named, item_named, messages, result_of,
+};
 use crate::*;
 
 /// What `src/Program.mr` alone in an app reports.

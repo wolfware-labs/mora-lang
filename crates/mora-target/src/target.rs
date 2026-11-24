@@ -192,6 +192,22 @@ impl Target {
         Target::parse_from(text, || format!("built-in target `{name}`"))
     }
 
+    /// The built-in target whose `arch` and `os` are the arguments.
+    pub fn for_platform(arch: &str, os: &str) -> Result<Target, Error> {
+        for name in builtin::builtin_names() {
+            let target = Target::builtin(name)?;
+            if target.arch == arch && target.os == os {
+                return Ok(target);
+            }
+        }
+        Err(Error::Unknown(format!("{arch}-{os}")))
+    }
+
+    /// The built-in target of the machine this process runs on.
+    pub fn host() -> Result<Target, Error> {
+        Target::for_platform(std::env::consts::ARCH, std::env::consts::OS)
+    }
+
     /// Reads a description from a file.
     pub fn load(path: &Path) -> Result<Target, Error> {
         let text = std::fs::read_to_string(path).map_err(|source| Error::Read {

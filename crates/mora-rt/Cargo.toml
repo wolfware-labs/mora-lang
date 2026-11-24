@@ -18,5 +18,8 @@ workspace = true
 mora-rt-core.workspace = true
 
 [features]
+# `main`, the process entry point, built into the static libraries only
+# (§13.2); a process that runs code through the JIT links without it.
+start = []
 # The debug runtime (§13.2).
 debug = ["mora-rt-core/debug"]

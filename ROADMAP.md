@@ -350,9 +350,9 @@ A `Backend` trait taking optimized MIR and a target description, and its Craneli
 
 Done when:
 
-- The run harness executes every M1 run test through the JIT and through an object file linked by M1.14, and compares outputs.
+- The run harness executes every M1 run test through the JIT and compares outputs; the object file is checked by inspection.
 - Overflow in a debug build panics with the message of §11.4.
-- Run tests in both profiles, through the JIT and the object file: division and remainder by zero panic with the message of §11.4 and exit code 101; `int.MinValue / -1` and `int.MinValue % -1` panic with exit code 101 (§7.12), and their message is checked once §11.4 gives it; none of the four ends in a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
+- Run tests in both profiles through the JIT: division and remainder by zero panic with the message of §11.4 and exit code 101; `int.MinValue / -1` and `int.MinValue % -1` panic with exit code 101 (§7.12), and their message is checked once §11.4 gives it; none of the four ends in a CPU fault; a shift count of the type's width or more is masked (§7.12); a float-to-int cast of NaN, an infinity and an out-of-range value saturates (§5.10).
 - A function whose frame is larger than the guard page probes it on entry as §13.10 then states: a unit test on the generated code for a function with a multi-megabyte struct local shows the probes that rule requires, before any other access to the frame; the run test that shows `stack overflow` is in M1.14.
 - Layout arithmetic is checked: a struct or tuple whose size does not fit the target's address space is reported as an error, never wrapped (unit test against the 32-bit test description).
 
@@ -379,6 +379,7 @@ The linker driver of §14.14: `ld.lld` with musl for a fully static Linux execut
 Done when:
 
 - Hello world links and runs on every Tier 1 runner.
+- The run harness executes every M1 run test through an object file linked by this work, and compares outputs with the JIT's.
 - On Linux, `file` reports the executable as statically linked.
 - With a test hook that replaces the `/usr/bin/xcrun` path with one that does not exist, or makes it report no developer tools, the missing-tool error on macOS carries the `xcode-select --install` hint.
 - On Linux and Windows the linker, the start files and the libraries are taken from the toolchain directory by absolute path. A test puts a decoy `ld.lld` (`lld-link.exe` on Windows) first on `PATH` and in the project directory and shows it is not run; on macOS `xcrun` is started as `/usr/bin/xcrun`.
@@ -820,7 +821,7 @@ Done when:
 
 ### M3.7 Results and `?` propagation
 
-Spec: [§4.6](docs/design/mora.md#46-entry-point), [§5.7](docs/design/mora.md#57-result-types), [§7.4](docs/design/mora.md#74-propagation-), [§11.1](docs/design/mora.md#111-two-kinds-of-failure), [§11.2](docs/design/mora.md#112-error-types), [§11.3](docs/design/mora.md#113-conversions-in-). Crates: `mora-hir`, `mora-mir`, `std`. Blocked by: M3.5, M3.6.
+Spec: [§4.6](docs/design/mora.md#46-entry-point), [§5.7](docs/design/mora.md#57-result-types), [§7.4](docs/design/mora.md#74-propagation-), [§11.1](docs/design/mora.md#111-two-kinds-of-failure), [§11.2](docs/design/mora.md#112-error-types), [§11.3](docs/design/mora.md#113-conversions-in-). Crates: `mora-hir`, `mora-mir`, `mora-codegen`, `std`. Blocked by: M3.5, M3.6.
 
 `Result<T, E>`, `@MustUse` and `MR2002`, `IError` with `Code`, `PublicMessage` and `HttpStatus` (D-108), the `?` operator with identity and `IFrom` conversions (`MR0201`, `MR0202`, `MR0161`), `@From` and `MR0151` (D-100), the implicit `Ok` conversion and `MR0132`, and return-type inference for top-level statements with the exit codes of §4.6.
 
@@ -828,6 +829,7 @@ Done when:
 
 - §2.4's `Total` runs.
 - A top-level `?` that fails prints `error: ...` and exits with 1.
+- Run tests for each `Result` outcome of §4.6, from a declared `Main` and from top-level statements: `Ok(())` exits with 0, `Ok(n)` of a `Result<int, E>` exits with `n`, and `Err(e)` prints `error: {e}` on stderr and exits with 1.
 - UI tests for the `T` to `Result<T, E>` and `@From` rows of §5.10.
 - Drop-order run tests for the `?` exit under the debug runtime: locals with destructors are dropped in reverse order when `?` returns early, a local moved before the `?` is not dropped, a temporary of the statement that holds the `?` is dropped once, and the error value converted through `IFrom` (§11.3) is dropped once. The tests are added to `tests/memory` (M2.15).
 - The exhaustiveness property test of M3.4 also generates results: for every arm list the checker accepts as exhaustive, every generated value of a result type matches an arm, and for every arm it reports as unreachable (`MR2010`) no generated value reaches it first.

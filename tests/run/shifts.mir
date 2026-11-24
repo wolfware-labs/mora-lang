@@ -1,0 +1,187 @@
+fn top-level() -> () {
+    let _0: ();
+    let _1: int;
+    let _2: in int;
+    let _3: int;
+    let _4: in int;
+    let _5: int;
+    let _6: int;
+    let _7: in int;
+    let _8: int;
+    let _9: in int;
+    let _10: int;
+    let _11: int;
+    let _12: in int;
+    let _13: int;
+    let _14: in int;
+    let _15: int;
+    let _16: long;
+    let _17: in long;
+    let _18: int;
+    let _19: in int;
+    let _20: long;
+    let _21: ulong;
+    let _22: in ulong;
+    let _23: int;
+    let _24: in int;
+    let _25: ulong;
+
+    bb0: {
+        storage_live(_1); // 10:23
+        _1 = 1; // 10:23
+        storage_live(_2); // 10:23
+        _2 = &in _1; // 10:23
+        storage_live(_3); // 10:26
+        _3 = 32; // 10:26
+        storage_live(_4); // 10:26
+        _4 = &in _3; // 10:26
+        storage_live(_5); // 10:19
+        _5 = call App.Shl{fn App.Shl}(copy _2, copy _4) -> bb1; // 10:19
+    }
+
+    bb1: {
+        call Console.WriteLine{external}(copy _5) -> bb2; // 10:1
+    }
+
+    bb2: {
+        storage_dead(_5); // 10:1
+        storage_dead(_4); // 10:1
+        storage_dead(_3); // 10:1
+        storage_dead(_2); // 10:1
+        storage_dead(_1); // 10:1
+        storage_live(_6); // 11:23
+        _6 = 1; // 11:23
+        storage_live(_7); // 11:23
+        _7 = &in _6; // 11:23
+        storage_live(_8); // 11:26
+        _8 = 33; // 11:26
+        storage_live(_9); // 11:26
+        _9 = &in _8; // 11:26
+        storage_live(_10); // 11:19
+        _10 = call App.Shl{fn App.Shl}(copy _7, copy _9) -> bb3; // 11:19
+    }
+
+    bb3: {
+        call Console.WriteLine{external}(copy _10) -> bb4; // 11:1
+    }
+
+    bb4: {
+        storage_dead(_10); // 11:1
+        storage_dead(_9); // 11:1
+        storage_dead(_8); // 11:1
+        storage_dead(_7); // 11:1
+        storage_dead(_6); // 11:1
+        storage_live(_11); // 12:23
+        _11 = -8; // 12:23
+        storage_live(_12); // 12:23
+        _12 = &in _11; // 12:23
+        storage_live(_13); // 12:27
+        _13 = 34; // 12:27
+        storage_live(_14); // 12:27
+        _14 = &in _13; // 12:27
+        storage_live(_15); // 12:19
+        _15 = call App.Shr{fn App.Shr}(copy _12, copy _14) -> bb5; // 12:19
+    }
+
+    bb5: {
+        call Console.WriteLine{external}(copy _15) -> bb6; // 12:1
+    }
+
+    bb6: {
+        storage_dead(_15); // 12:1
+        storage_dead(_14); // 12:1
+        storage_dead(_13); // 12:1
+        storage_dead(_12); // 12:1
+        storage_dead(_11); // 12:1
+        storage_live(_16); // 13:27
+        _16 = 1; // 13:27
+        storage_live(_17); // 13:27
+        _17 = &in _16; // 13:27
+        storage_live(_18); // 13:31
+        _18 = 66; // 13:31
+        storage_live(_19); // 13:31
+        _19 = &in _18; // 13:31
+        storage_live(_20); // 13:19
+        _20 = call App.ShlLong{fn App.ShlLong}(copy _17, copy _19) -> bb7; // 13:19
+    }
+
+    bb7: {
+        call Console.WriteLine{external}(copy _20) -> bb8; // 13:1
+    }
+
+    bb8: {
+        storage_dead(_20); // 13:1
+        storage_dead(_19); // 13:1
+        storage_dead(_18); // 13:1
+        storage_dead(_17); // 13:1
+        storage_dead(_16); // 13:1
+        storage_live(_21); // 14:28
+        _21 = 2; // 14:28
+        storage_live(_22); // 14:28
+        _22 = &in _21; // 14:28
+        storage_live(_23); // 14:33
+        _23 = 65; // 14:33
+        storage_live(_24); // 14:33
+        _24 = &in _23; // 14:33
+        storage_live(_25); // 14:19
+        _25 = call App.ShrULong{fn App.ShrULong}(copy _22, copy _24) -> bb9; // 14:19
+    }
+
+    bb9: {
+        call Console.WriteLine{external}(copy _25) -> bb10; // 14:1
+    }
+
+    bb10: {
+        storage_dead(_25); // 14:1
+        storage_dead(_24); // 14:1
+        storage_dead(_23); // 14:1
+        storage_dead(_22); // 14:1
+        storage_dead(_21); // 14:1
+        _0 = (); // 14:38
+        return; // 14:38
+    }
+}
+
+fn App.Shl(a#0: in int, n#1: in int) -> int {
+    let _0: int;
+    let a#0: in int;
+    let n#1: in int;
+
+    bb0: {
+        _0 = copy (*a#0) << copy (*n#1); // 6:29
+        return; // 6:29
+    }
+}
+
+fn App.Shr(a#0: in int, n#1: in int) -> int {
+    let _0: int;
+    let a#0: in int;
+    let n#1: in int;
+
+    bb0: {
+        _0 = copy (*a#0) >> copy (*n#1); // 7:29
+        return; // 7:29
+    }
+}
+
+fn App.ShlLong(a#0: in long, n#1: in int) -> long {
+    let _0: long;
+    let a#0: in long;
+    let n#1: in int;
+
+    bb0: {
+        _0 = copy (*a#0) << copy (*n#1); // 8:35
+        return; // 8:35
+    }
+}
+
+fn App.ShrULong(a#0: in ulong, n#1: in int) -> ulong {
+    let _0: ulong;
+    let a#0: in ulong;
+    let n#1: in int;
+
+    bb0: {
+        _0 = copy (*a#0) >>> copy (*n#1); // 9:38
+        return; // 9:38
+    }
+}

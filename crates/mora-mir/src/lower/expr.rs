@@ -359,11 +359,51 @@ impl Lowerer<'_> {
     // Operators and assignments.
 
     fn binary(&mut self, expr: ExprId, op: BinaryOp, lhs: ExprId, rhs: ExprId) -> Lowered<Rvalue> {
+        if op == BinaryOp::Add && self.joins_strings(&self.ty(expr)) {
+            let parts = self.concat_parts(expr);
+            return Ok(Rvalue::Concat(self.operands(&parts)?));
+        }
         let op = self.expect(bin_op(op), expr, OPERATOR_NOT_LOWERED);
         let left = self.operand(lhs)?;
         let left = self.stable(left, &[rhs], self.span(lhs));
         let right = self.operand(rhs)?;
         Ok(Rvalue::Binary(op, left, right))
+    }
+
+    /// Whether a `+` whose result has the type `ty` is a concatenation that
+    /// lowers to a [`Rvalue::Concat`]: it is a string, in a body that is not
+    /// lowered for evaluation, whose interpreter joins two strings itself. A
+    /// string never converts to another type (§5.10), and no string `+` is a
+    /// constant outside evaluation, so neither needs a check here.
+    fn joins_strings(&self, ty: &Ty) -> bool {
+        !self.owner.evaluation && *ty == Ty::String
+    }
+
+    /// The expressions that `expr`, a string, joins, in order: the parts of
+    /// a `+`, parentheses and nested `+` included, and `expr` itself when it
+    /// is no `+`. A `+` that gives a string takes two strings (§5.3), or a
+    /// string and a value of the never type, which takes the other
+    /// operand's type; a `+` of the never type inside one diverges at its
+    /// first operand, so taking its operands as parts changes nothing.
+    fn concat_parts(&self, expr: ExprId) -> Vec<ExprId> {
+        let mut parts = Vec::new();
+        self.add_concat_parts(expr, &mut parts);
+        parts
+    }
+
+    /// Adds the parts of `expr` ([`Lowerer::concat_parts`]) to `parts`.
+    fn add_concat_parts(&self, expr: ExprId, parts: &mut Vec<ExprId>) {
+        match &self.owner.hir.exprs[expr] {
+            Expr::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            } => {
+                self.add_concat_parts(*lhs, parts);
+                self.add_concat_parts(*rhs, parts);
+            }
+            _ => parts.push(expr),
+        }
     }
 
     /// `lhs = rhs`, or `lhs op= rhs`: `lhs = (T)(lhs op rhs)`, its place
@@ -394,8 +434,15 @@ impl Lowerer<'_> {
         };
         let read = self.converted(conversion, Operand::Copy(place.clone()), self.span(lhs));
         let read = self.stable(read, &[rhs], self.span(lhs));
-        let right = self.operand(rhs)?;
-        let value = Rvalue::Binary(op, read, right);
+        let value = if op == BinOp::Add && self.joins_strings(&result_ty) {
+            // `s += a + b` joins `s`, `a` and `b`.
+            let mut parts = vec![read];
+            parts.extend(self.operands(&self.concat_parts(rhs))?);
+            Rvalue::Concat(parts)
+        } else {
+            let right = self.operand(rhs)?;
+            Rvalue::Binary(op, read, right)
+        };
         let span = self.span(expr);
         match self.owner.inference.conversion(expr) {
             Some(back) => {

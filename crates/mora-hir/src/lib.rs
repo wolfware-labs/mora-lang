@@ -47,8 +47,8 @@ pub use bodies::{
     Arg, ArgMode, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, Capture,
     CaptureTarget, Expr, ExprId, InitRanges, InterpPart, Lambda, Literal, Local, LocalFunction,
     LocalId, LocalKind, MatchArm, Pat, PatId, Path, PathResolution, RefDefaultRanges, ScopeData,
-    ScopeId, Stmt, StmtId, Target, TypeId, UnaryOp, ValueRef, body, body_owners, body_resolution,
-    body_source_map, escape_char, hir_dump, item_text, owner_name,
+    ScopeId, Stmt, StmtId, TOP_LEVEL, Target, TypeId, UnaryOp, ValueRef, body, body_owners,
+    body_resolution, body_source_map, escape_char, hir_dump, item_text, owner_name,
 };
 pub use captures::{Captured, LocalFunctionCaptures, local_functions};
 pub use defs::{
@@ -56,15 +56,15 @@ pub use defs::{
 };
 pub use diverging::{calls_diverging, is_literal_bool};
 pub use inference::{
-    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer, is_known,
-    literal_constant, real_text, same, ty_name,
+    Callee, Constant, Conversion, ConversionKind, Inference, converts_implicitly, infer,
+    is_entry_return, is_known, literal_constant, real_text, same, ty_name,
 };
 pub use items::{
     Item, ItemIdx, ItemKind, ItemSource, ItemSourceMap, ItemTree, Using, UsingSource, ValueKind,
     ValueMember, ValueSource, Visibility, item_source_map, item_tree, parse,
 };
 pub use name::pascal_case;
-pub use report::diagnostics;
+pub use report::{diagnostics, item_name_span};
 pub use resolve::{
     ResolveError, ResolveErrorKind, Resolved, STD, Scope, effective_visibility, enclosing_types,
     is_visible, resolve_path,

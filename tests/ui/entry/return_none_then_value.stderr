@@ -1,0 +1,5 @@
+error[MR0203]: mismatched types: expected `()`, found `int`
+ --> tests/ui/entry/return_none_then_value.mr:7:8
+  |
+7 | return 3; //~ ERROR MR0203
+  |        ^ this is `int`

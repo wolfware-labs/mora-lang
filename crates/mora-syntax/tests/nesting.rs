@@ -5,8 +5,12 @@
 //! up to the limit, reported once just past it, and parsed without running
 //! out of stack far past it.
 
-use mora_diag::codes;
+use mora_diag::{Code, codes};
 use mora_syntax::{SyntaxKind as K, parse};
+
+mod common;
+
+use common::assert_errors_hold_tokens;
 
 /// A construct nested `n` times, and the largest `n` the limit accepts. The
 /// largest `n` is below 256 where the statement around the construct, or a
@@ -131,6 +135,7 @@ const SHAPES: &[Shape] = &[
 fn too_deep(text: &str) -> usize {
     let parse = parse(text);
     assert_eq!(parse.syntax().text(), text);
+    assert_errors_hold_tokens(text);
     let others: Vec<_> = parse
         .errors()
         .iter()
@@ -503,4 +508,276 @@ fn a_type_past_the_limit_is_still_a_type() {
     // A short type ends where it ends: `u` is a binding.
     let text = "let ok = s is any IShape u;";
     assert_eq!((too_deep(text), count(text, K::DeclarationPattern)), (0, 1));
+}
+
+#[test]
+fn a_range_with_no_end_is_as_deep_as_its_text() {
+    // The statement is the first level and each `(` one more, so the range
+    // inside 254 of them is the 256th level, and its start, `a`, the 257th.
+    // A range with no end has nothing inside it to go past the limit.
+    let range = |depth: usize, start: &str| {
+        let text = format!(
+            "let r = {}{start}..{};",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        coded_ranges(&text)
+    };
+    let at = |depth: usize| "let r = ".len() + depth;
+    assert_eq!(range(254, ""), []);
+    assert_eq!(range(254, "a"), [(codes::MR0018, at(254), at(254) + 1)]);
+    // One level more: the range itself is past the limit, from its first
+    // token.
+    assert_eq!(range(255, ""), [(codes::MR0018, at(255), at(255) + 2)]);
+    assert_eq!(range(255, "a"), [(codes::MR0018, at(255), at(255) + 1)]);
+}
+
+/// A place the parser stops at the limit: its name, the text up to where
+/// the node past it would start, what ends the text there, the kind of node
+/// it would have been in, and each error's code and range.
+type Site = (
+    &'static str,
+    String,
+    &'static str,
+    &'static str,
+    Vec<(Code, usize, usize)>,
+);
+
+#[test]
+fn a_node_past_the_limit_that_takes_no_token_is_left_out() {
+    // Each place the parser stops at the limit, with the text ending where
+    // the node past it would start: `MR0018` where it is reported, and no
+    // `Error` node for the nothing it would hold. The node it would have been
+    // in ends at the last token instead, as it does when an operand is
+    // missing.
+    let repeat = |s: &str, n: usize| s.repeat(n);
+    let sites: Vec<Site> = vec![
+        (
+            "prefix operand",
+            format!("let x = {}", repeat("- ", 255)),
+            ";",
+            "PrefixExpr",
+            vec![(codes::MR0018, 517, 517)],
+        ),
+        (
+            "awaited value",
+            format!("let x = {}", repeat("await ", 255)),
+            ";",
+            "AwaitExpr",
+            vec![(codes::MR0018, 1537, 1537)],
+        ),
+        (
+            "lambda body",
+            format!("let x = {}", repeat("() => ", 255)),
+            ";",
+            "LambdaExpr",
+            vec![(codes::MR0018, 1537, 1537)],
+        ),
+        (
+            "parenthesized",
+            format!("let x = {}", repeat("(", 255)),
+            ";",
+            "ParenExpr",
+            vec![(codes::MR0018, 263, 263)],
+        ),
+        (
+            "tuple element",
+            format!("let x = {}", repeat("(", 255)),
+            ",",
+            "TupleElem",
+            vec![(codes::MR0018, 263, 263)],
+        ),
+        (
+            "index",
+            format!("let x = a{}", repeat("[", 255)),
+            ";",
+            "CollectionElem",
+            vec![(codes::MR0018, 264, 264)],
+        ),
+        (
+            "conditional branch",
+            format!("let x = {}", repeat("a ? b : ", 255)),
+            ";",
+            "ConditionalExpr",
+            vec![(codes::MR0018, 2040, 2041)],
+        ),
+        (
+            "match arm",
+            format!("let x = {}", repeat("match (a) { _ => ", 255)),
+            ";",
+            "MatchArm",
+            vec![(codes::MR0018, 4333, 4334)],
+        ),
+        (
+            "generic argument",
+            format!("let x: {}", repeat("List<", 255)),
+            ";",
+            "GenericArgList",
+            vec![(codes::MR0018, 1282, 1282)],
+        ),
+        (
+            "tuple type element",
+            format!("let x: {}", repeat("(int, ", 255)),
+            ";",
+            "TupleTypeElem",
+            vec![(codes::MR0018, 1532, 1535)],
+        ),
+        (
+            "function type result",
+            format!("let x: {}", repeat("(int) => ", 255)),
+            ";",
+            "FnType",
+            vec![(codes::MR0018, 2285, 2288)],
+        ),
+        (
+            "constant pattern",
+            format!("let b = x is {}", repeat("not ", 253)),
+            ";",
+            "ConstantPattern",
+            vec![(codes::MR0018, 1024, 1024)],
+        ),
+        (
+            "negated pattern",
+            format!("let b = x is {}", repeat("not ", 254)),
+            ";",
+            "NotPattern",
+            vec![(codes::MR0018, 1028, 1028)],
+        ),
+        (
+            "pattern field",
+            format!("let b = x is {}", repeat("(", 254)),
+            ";",
+            "PatternField",
+            vec![(codes::MR0018, 267, 267)],
+        ),
+        (
+            "interpolation hole",
+            format!("let x = {}", repeat("$\"{", 255)),
+            "",
+            "InterpHole",
+            vec![(codes::MR0012, 8, 10), (codes::MR0018, 773, 773)],
+        ),
+    ];
+    for (name, body, stop, holder, errors) in sites {
+        let text = format!("{body}{stop}\n");
+        assert_eq!(coded_ranges(&text), errors, "{name}");
+        let parse = parse(&text);
+        assert_errors_hold_tokens(&text);
+        // The node the empty one was in ends before the stop, with no
+        // `Error` node last in it; a tuple element that held only that node
+        // is empty.
+        let at = body.trim_end().len();
+        let node = parse
+            .syntax()
+            .descendants()
+            .find(|node| {
+                format!("{:?}", node.kind()) == holder
+                    && (at..=body.len()).contains(&usize::from(node.text_range().end()))
+            })
+            .unwrap_or_else(|| panic!("{name}: no {holder} ending at {at}"));
+        let last = node
+            .children_with_tokens()
+            .rfind(|child| !child.kind().is_trivia());
+        assert_ne!(last.map(|child| child.kind()), Some(K::Error), "{name}");
+    }
+}
+
+/// Each error of `text` as its code and range.
+fn coded_ranges(text: &str) -> Vec<(Code, usize, usize)> {
+    parse(text)
+        .errors()
+        .iter()
+        .map(|error| {
+            (
+                error.code,
+                usize::from(error.range.start()),
+                usize::from(error.range.end()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_statement_past_the_limit_at_the_end_of_the_text_reports_once() {
+    // The statement after the attributes is past the limit and the text
+    // ends there: one `MR0018`, at the end, and no `Error` node.
+    for text in [
+        format!("{}@A", "{ ".repeat(255)),
+        format!("{}@A \u{201c}", "{ ".repeat(255)),
+    ] {
+        let errors = coded_ranges(&text);
+        let too_deep: Vec<_> = errors
+            .iter()
+            .filter(|error| error.0 == codes::MR0018)
+            .collect();
+        assert_eq!(too_deep, [&(codes::MR0018, 512, 512)], "{text:?}");
+        assert_errors_hold_tokens(&text);
+    }
+}
+
+#[test]
+fn the_statement_after_one_past_the_limit_reports_its_own_errors() {
+    // Muting ends with the statement that went past the limit, though its
+    // node was left out.
+    let text = format!("let x = {};\nlet z = ;\n", "- ".repeat(255));
+    assert_eq!(
+        coded_ranges(&text),
+        [(codes::MR0018, 517, 517), (codes::MR0110, 527, 527)]
+    );
+}
+
+/// The kind of the node that holds the first token of `text` that is `what`.
+fn holder_of(text: &str, what: &str) -> K {
+    let parse = parse(text);
+    parse
+        .syntax()
+        .descendants()
+        .find(|node| {
+            node.children_with_tokens()
+                .any(|child| child.into_token().is_some_and(|token| token.text() == what))
+                || node
+                    .children()
+                    .any(|child| child.kind() == K::Error && child.text() == what)
+        })
+        .map(|node| node.kind())
+        .unwrap()
+}
+
+#[test]
+fn what_comes_before_a_node_left_out_goes_where_it_would_without_it() {
+    // Past the limit the node left out is the operand, so nothing is missing
+    // for rejected text there to stand for: it is parsed as if absent and
+    // goes where its whitespace does, in the statement, as the comment does.
+    // Without the limit it stands for the missing operand, in the
+    // parentheses.
+    let deep = |inner: &str| format!("let x = {} {inner} ;\nlet z = ;\n", "(".repeat(255));
+    let bare = deep("");
+    assert_eq!(coded_ranges(&bare)[0], (codes::MR0018, 263, 263));
+    let run = deep("\u{201c}");
+    assert_eq!(holder_of(&run, "\u{201c}"), K::LocalDeclStmt);
+    assert_errors_hold_tokens(&run);
+    let comment = deep("/* c */");
+    assert_eq!(holder_of(&comment, "/* c */"), K::LocalDeclStmt);
+    assert_eq!(
+        holder_of("let x = ( /* c */ ;\n", "/* c */"),
+        K::LocalDeclStmt
+    );
+    assert_eq!(
+        holder_of("let x = ( \u{201c} ;\n", "\u{201c}"),
+        K::ParenExpr
+    );
+    // The errors are those of the text without them, past the rejected
+    // token, and the statement after it reports its own.
+    let shifted = |text: &str, by: usize| {
+        coded_ranges(text)
+            .into_iter()
+            .filter(|error| error.0 != codes::MR0017)
+            .map(|(code, start, end)| {
+                let by = if start > 263 { by } else { 0 };
+                (code, start - by, end - by)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shifted(&run, "\u{201c}".len()), coded_ranges(&bare));
+    assert_eq!(shifted(&comment, "/* c */".len()), coded_ranges(&bare));
 }

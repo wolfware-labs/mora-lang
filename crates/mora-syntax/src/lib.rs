@@ -4,6 +4,8 @@ pub mod ast;
 mod generated;
 pub mod lexer;
 mod parser;
+#[cfg(test)]
+mod test_files;
 mod tree;
 
 pub use generated::SyntaxKind;

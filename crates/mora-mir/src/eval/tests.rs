@@ -1270,6 +1270,10 @@ fn unsupported_forms() -> Vec<(StatementKind, TerminatorKind, &'static str)> {
             "an interpolated string",
         ),
         (
+            to_return(Rvalue::Concat(vec![int_operand(1), int_operand(2)])),
+            "a concatenation",
+        ),
+        (
             to_return(Rvalue::Cast(CastKind::Implicit, int_operand(1), Ty::String)),
             "a cast to string",
         ),

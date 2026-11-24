@@ -29,7 +29,7 @@ use crate::items::{ItemIdx, Visibility, item_tree, parse};
 use crate::ty::ParamMode;
 use crate::type_ref::TypeRef;
 
-pub use dump::{escape_char, hir_dump, item_text, owner_name};
+pub use dump::{TOP_LEVEL, escape_char, hir_dump, item_text, owner_name};
 pub(crate) use resolve::{BodyError, body_scope};
 pub use resolve::{BodyResolution, PathResolution, Target, ValueRef, body_resolution};
 
@@ -1332,6 +1332,47 @@ mod tests {
     #[test]
     fn a_capture_without_a_name_reports_only_the_syntax_error() {
         assert_eq!(reported("let f = [move] () => 1;\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_rejected_character_in_an_argument_reports_no_unknown_name() {
+        assert_eq!(
+            reported("Console.WriteLine(\u{201c}Hello\u{201d});\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_rejected_run_anywhere_in_an_expression_reports_no_unknown_name() {
+        assert_eq!(
+            reported("let a = \"x\" + \u{201c}y\u{201d};\n"),
+            Vec::<String>::new()
+        );
+        // An unclosed character literal takes only its first character: the
+        // rest is code, so `b` is a name.
+        assert_eq!(reported("Console.WriteLine('ab);\n"), ["MR0127"]);
+    }
+
+    #[test]
+    fn names_around_a_rejected_run_are_still_resolved() {
+        for text in [
+            "let a = nope \u{201c}y\u{201d};\n",
+            "let a = nope(1, 2) \u{201c}y\u{201d};\n",
+            "let a = \u{201c}x\u{201d}\nnope(1);\nlet b = 2;\n",
+            // What follows the closing quote is checked.
+            "let a = \u{201c}x\u{201d} + + nope;\n",
+            // A quoted run ends at its closing quote, brackets included.
+            "let a = \u{201c}see (note\u{201d};\nnope();\n",
+            "F() {\n    let a = \u{201c}x [y\u{201d};\n    nope();\n}\n",
+            "Console.WriteLine(\u{201c}Done :)\u{201d});\nnope();\n",
+            "Console.WriteLine(\u{201e}a, b\u{201c}, nope);\n",
+            "Console.WriteLine(\u{201d}a, b\u{201d}, nope);\n",
+            // Only the rejected token is text: the name after a quote that
+            // is not closed is code.
+            "let b = (1\u{201c}nope);\n",
+        ] {
+            assert_eq!(reported(text), ["MR0127"], "{text:?}");
+        }
     }
 
     #[test]

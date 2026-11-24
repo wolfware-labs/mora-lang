@@ -1,0 +1,34 @@
+// S29 takes 2^32 bytes, twice what a value may take; S30 holds it, and only
+// the first struct past the limit is reported.
+struct S0 { public A: long; }
+struct S1 { public A: S0; public B: S0; }
+struct S2 { public A: S1; public B: S1; }
+struct S3 { public A: S2; public B: S2; }
+struct S4 { public A: S3; public B: S3; }
+struct S5 { public A: S4; public B: S4; }
+struct S6 { public A: S5; public B: S5; }
+struct S7 { public A: S6; public B: S6; }
+struct S8 { public A: S7; public B: S7; }
+struct S9 { public A: S8; public B: S8; }
+struct S10 { public A: S9; public B: S9; }
+struct S11 { public A: S10; public B: S10; }
+struct S12 { public A: S11; public B: S11; }
+struct S13 { public A: S12; public B: S12; }
+struct S14 { public A: S13; public B: S13; }
+struct S15 { public A: S14; public B: S14; }
+struct S16 { public A: S15; public B: S15; }
+struct S17 { public A: S16; public B: S16; }
+struct S18 { public A: S17; public B: S17; }
+struct S19 { public A: S18; public B: S18; }
+struct S20 { public A: S19; public B: S19; }
+struct S21 { public A: S20; public B: S20; }
+struct S22 { public A: S21; public B: S21; }
+struct S23 { public A: S22; public B: S22; }
+struct S24 { public A: S23; public B: S23; }
+struct S25 { public A: S24; public B: S24; }
+struct S26 { public A: S25; public B: S25; }
+struct S27 { public A: S26; public B: S26; }
+struct S28 { public A: S27; public B: S27; }
+struct S29 { public A: S28; public B: S28; } //~ ERROR MR0156
+struct S30 { public A: S29; public B: S29; }
+return 0;

@@ -537,6 +537,18 @@ impl Checker<'_> {
                 }
                 fine.then_some(Ty::Struct(*item))
             }
+            Rvalue::Concat(operands) => {
+                let tys = self.operands(at, operands)?;
+                if operands.len() < 2 {
+                    self.error(at, "a concatenation of fewer than two strings");
+                    return None;
+                }
+                if let Some(ty) = tys.iter().find(|ty| **ty != Ty::String) {
+                    self.error(at, format!("a concatenation of {ty:?}, not a string"));
+                    return None;
+                }
+                Some(Ty::String)
+            }
             Rvalue::Interpolate(pieces) => {
                 if self.std_loaded {
                     self.error(at, "interpolation is not lowered once std is loaded");
@@ -597,6 +609,16 @@ impl Checker<'_> {
                     return Some(Ty::Primitive(Primitive::Bool));
                 }
                 false
+            }
+            // A program joins strings with one `Concat`; only constant
+            // evaluation adds two of them.
+            BinOp::Add if left == Ty::String && self.lowered == LoweredFor::Program => {
+                self.error(
+                    at,
+                    "an addition of strings outside constant evaluation, \
+                     where a concatenation joins them",
+                );
+                return None;
             }
             BinOp::Add => is_numeric(&left) || left == Ty::String,
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
@@ -917,8 +939,8 @@ fn is_integer(ty: &Ty) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use mora_hir::test_support::{TestDb, app, file_named, item_named};
-    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty, Unsupported};
+    use mora_hir::test_support::{TestDb, app, file_named, item_named, unsupported_of};
+    use mora_hir::{Construct, ItemId, Primitive, TupleElem, Ty};
     use mora_span::{FileId, Span, TextRange, TextSize};
 
     use super::{Checker, LoweredFor, check, debug_validate, debug_validate_evaluation, validate};
@@ -1673,11 +1695,7 @@ mod tests {
     #[test]
     fn rejects_a_local_of_no_concrete_type() {
         let fx = fx();
-        let array = Ty::Unsupported(Unsupported {
-            construct: Construct::Array,
-            item: None,
-            parts: vec![int()],
-        });
+        let array = unsupported_of(Construct::Array, vec![int()]);
         let pair = |ty: Ty| {
             Ty::Tuple(vec![
                 TupleElem {
@@ -1926,6 +1944,65 @@ mod tests {
         let fx = fx();
         rejects(&fx, &external(), true, "external call");
         assert_eq!(validate(&fx.db, &external(), false), Ok(()));
+    }
+
+    #[test]
+    fn adds_strings_only_for_constant_evaluation() {
+        let fx = fx();
+        let mut mir = with_stmt(assign(
+            place(2),
+            Rvalue::Binary(BinOp::Add, copy(1), copy(1)),
+        ));
+        mir.bodies[0].locals[1] = val(Ty::String);
+        mir.bodies[0].locals[2] = val(Ty::String);
+        assert_eq!(
+            errors(&fx, &mir, true),
+            [
+                "fn F bb0[0]: an addition of strings outside constant evaluation, where a \
+              concatenation joins them"
+            ]
+        );
+        assert_eq!(check(&fx.db, &mir, true, LoweredFor::Evaluation), Ok(()));
+    }
+
+    #[test]
+    fn a_concatenation_of_strings_is_a_string() {
+        let fx = fx();
+        let text = Operand::Const(Const::String("x".into()));
+        let mut mir = with_stmt(assign(
+            place(2),
+            Rvalue::Concat(vec![copy(1), text.clone(), copy(1)]),
+        ));
+        mir.bodies[0].locals[1] = val(Ty::String);
+        mir.bodies[0].locals[2] = val(Ty::String);
+        assert_eq!(validate(&fx.db, &mir, true), Ok(()));
+        // An int destination does not hold a string.
+        mir.bodies[0].locals[2] = val(int());
+        assert!(validate(&fx.db, &mir, true).is_err());
+        // Fewer than two parts, and a part that is not a string.
+        let mut one = with_stmt(assign(place(2), Rvalue::Concat(vec![copy(1)])));
+        one.bodies[0].locals[1] = val(Ty::String);
+        one.bodies[0].locals[2] = val(Ty::String);
+        rejects(&fx, &one, true, "fewer than two strings");
+        let mut number = with_stmt(assign(
+            place(2),
+            Rvalue::Concat(vec![text.clone(), int_const(1)]),
+        ));
+        number.bodies[0].locals[2] = val(Ty::String);
+        rejects(
+            &fx,
+            &number,
+            true,
+            "a concatenation of Primitive(Int), not a string",
+        );
+        // A bad operand is the one problem.
+        let mut bad = with_stmt(assign(place(2), Rvalue::Concat(vec![text, copy(9)])));
+        bad.bodies[0].locals[2] = val(Ty::String);
+        rejects(&fx, &bad, true, "no local _9");
+        assert_eq!(
+            validate(&fx.db, &bad, true).map_err(|problems| problems.len()),
+            Err(1)
+        );
     }
 
     #[test]
@@ -2593,8 +2670,10 @@ mod tests {
             validate(&fx.db, &into(ty, Rvalue::Binary(op, l, r)), true)
         };
         let double = Ty::Primitive(Primitive::Double);
-        // Arithmetic: numeric, and string only for Add.
-        assert_eq!(bin(BinOp::Add, s(), s(), Ty::String), Ok(()));
+        // Arithmetic: numeric, and string only for Add, in constant
+        // evaluation.
+        let add = into(Ty::String, Rvalue::Binary(BinOp::Add, s(), s()));
+        assert_eq!(check(&fx.db, &add, true, LoweredFor::Evaluation), Ok(()));
         assert_eq!(bin(BinOp::Mul, f(), f(), double.clone()), Ok(()));
         for op in [
             BinOp::Sub,

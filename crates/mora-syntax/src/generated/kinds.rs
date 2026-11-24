@@ -1550,6 +1550,11 @@ impl SyntaxKind {
         )
     }
 
+    /// Whether this is a comment of any form.
+    pub fn is_comment(self) -> bool {
+        matches!(self, LineComment | DocComment | BlockComment)
+    }
+
     /// Whether this is a node kind rather than a token kind.
     pub fn is_node(self) -> bool {
         self >= Error

@@ -32,6 +32,31 @@ impl Ty {
             _ => None,
         }
     }
+
+    /// A type of the standard library while that is not loaded
+    /// ([`Construct::External`]), with the generic arguments `parts`, as
+    /// [`Ty::as_external`] gives them back.
+    pub(crate) fn external(parts: Vec<Ty>) -> Ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::External,
+            item: None,
+            parts,
+        })
+    }
+
+    /// The parts of this type when it is a type of the standard library
+    /// while that is not loaded ([`Construct::External`]); `None` for
+    /// another type.
+    pub fn as_external(&self) -> Option<&[Ty]> {
+        match self {
+            Ty::Unsupported(Unsupported {
+                construct: Construct::External,
+                parts,
+                ..
+            }) => Some(parts),
+            _ => None,
+        }
+    }
 }
 
 /// The primitive types of §5.2, by keyword.

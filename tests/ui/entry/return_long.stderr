@@ -1,0 +1,7 @@
+error[MR0120]: an entry point cannot return `long`
+ --> tests/ui/entry/return_long.mr:4:1
+  |
+4 | return total; //~ ERROR MR0120
+  | ^^^^^^^^^^^^^ this gives the generated `Main` its return type
+  |
+  = note: an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`

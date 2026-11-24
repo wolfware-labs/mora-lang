@@ -239,7 +239,7 @@ fn statement_inner(p: &mut Parser<'_>) {
         _ if at_expr_start(p) => {
             let m = p.start();
             exprs::expr(p);
-            p.expect(K::Semicolon);
+            semicolon(p);
             m.complete(p, K::ExprStmt);
         }
         _ => {}
@@ -261,7 +261,7 @@ fn at_local_function(p: &Parser<'_>) -> bool {
 fn local_decl_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     local_decl(p);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::LocalDeclStmt);
 }
 
@@ -280,14 +280,14 @@ fn deconstruct_stmt(p: &mut Parser<'_>) {
     patterns::tuple_designation(p, true);
     p.expect(K::Eq);
     exprs::expr(p);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::DeconstructStmt);
 }
 
 fn keyword_stmt(p: &mut Parser<'_>, keyword: SyntaxKind, kind: SyntaxKind) {
     let m = p.start();
     p.bump(keyword);
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, kind);
 }
 
@@ -297,8 +297,13 @@ fn return_stmt(p: &mut Parser<'_>) {
     if !p.at(K::Semicolon) && at_expr_start(p) {
         exprs::expr(p);
     }
-    p.expect(K::Semicolon);
+    semicolon(p);
     m.complete(p, K::ReturnStmt);
+}
+
+/// The `;` that ends a statement.
+fn semicolon(p: &mut Parser<'_>) {
+    p.expect(K::Semicolon);
 }
 
 /// `( condition )` after `if`, `while` and `match`.
@@ -308,15 +313,28 @@ pub(crate) fn parenthesized(p: &mut Parser<'_>) {
     p.expect(K::RParen);
 }
 
+/// The body of an `if`, an `else` or a loop: one statement. A `}` or the
+/// end of the file where the body should start means it is missing, which
+/// is reported here; the `}` is left to the block around the statement.
+/// Returns whether the body is there.
+fn body(p: &mut Parser<'_>) -> bool {
+    if p.at(K::RBrace) || p.at_end() {
+        p.error("expected a statement");
+        return false;
+    }
+    statement(p);
+    true
+}
+
 fn if_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::IfKw);
     parenthesized(p);
-    statement(p);
+    body(p);
     if p.at(K::ElseKw) {
         let e = p.start();
         p.bump(K::ElseKw);
-        statement(p);
+        body(p);
         e.complete(p, K::ElseClause);
     }
     m.complete(p, K::IfStmt);
@@ -326,18 +344,38 @@ fn while_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::WhileKw);
     parenthesized(p);
-    statement(p);
+    body(p);
     m.complete(p, K::WhileStmt);
 }
 
 fn do_while_stmt(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::DoKw);
-    statement(p);
-    p.expect(K::WhileKw);
-    parenthesized(p);
-    p.expect(K::Semicolon);
+    // Without its body, the `while` is not looked for either: the `}` that
+    // follows closes the block around the statement.
+    let has_end = if at_do_end(p) {
+        p.error("expected a statement");
+        true
+    } else {
+        body(p)
+    };
+    if has_end {
+        p.expect(K::WhileKw);
+        parenthesized(p);
+        semicolon(p);
+    }
     m.complete(p, K::DoWhileStmt);
+}
+
+/// Whether `while (c);` follows `do` and no `while` comes after it: then
+/// it ends the `do`, whose body is missing. As the body, a `while` loop
+/// with an empty body would leave the `do` without its own `while`.
+fn at_do_end(p: &Parser<'_>) -> bool {
+    let input = p.input();
+    p.at(K::WhileKw)
+        && input.after_parens(p.pos() + 1).is_some_and(|after| {
+            input.kind(after) == K::Semicolon && input.kind(after + 1) != K::WhileKw
+        })
 }
 
 /// `for (init; condition; update) body`.
@@ -365,7 +403,7 @@ fn for_stmt(p: &mut Parser<'_>) {
         update.complete(p, K::ForUpdate);
     }
     p.expect(K::RParen);
-    statement(p);
+    body(p);
     m.complete(p, K::ForStmt);
 }
 
@@ -390,6 +428,6 @@ fn foreach_stmt(p: &mut Parser<'_>) {
     p.expect(K::InKw);
     exprs::expr(p);
     p.expect(K::RParen);
-    statement(p);
+    body(p);
     m.complete(p, K::ForeachStmt);
 }

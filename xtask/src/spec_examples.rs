@@ -116,10 +116,12 @@ fn section_number(line: &str) -> Option<&str> {
     numbered.then_some(number)
 }
 
-/// What an example's first line says it does, if it is an example.
+/// What an example's first line says it does, if it is an example: a run
+/// expectation of §20.1, plain or marked for a profile, makes it a program
+/// to run.
 pub fn expects(first: &str) -> Option<Expects> {
     let first = first.trim();
-    if first.starts_with("// expect:") {
+    if run::is_expectation(first) {
         return Some(Expects::Output);
     }
     let markers = [
@@ -350,7 +352,7 @@ pub fn load(root: &Path) -> io::Result<Repo> {
 mod tests {
     use mora_diag::{Diagnostic, Files, Label};
     use mora_span::{Span, TextRange};
-    use mora_testkit::{Backend, Checked, Output, Unbuilt};
+    use mora_testkit::{Backend, Checked, FrontEnd, Output, Profile, Unbuilt};
 
     use super::*;
 
@@ -428,6 +430,21 @@ F();
     }
 
     #[test]
+    fn any_run_expectation_starts_a_program_example() {
+        for first in [
+            "// expect: a",
+            "// stderr: a",
+            "// exit: 3",
+            "// exit[debug]: 101",
+            "// expect[release]: a",
+        ] {
+            assert_eq!(expects(first), Some(Expects::Output), "{first}");
+        }
+        assert_eq!(expects("// expected: a"), None);
+        assert_eq!(expects("let x = 1;"), None);
+    }
+
+    #[test]
     fn pages_name_examples_after_their_code() {
         let page = "# MR0300: x\n\n## 1. Failing example\n\n```mora\n// error: MR0300\n```\n\n## 2. Fixed example\n\n```mora\n// expect: ok\n```\n";
         let examples = extract("docs/errors/MR0300.md", Some("MR0300"), page);
@@ -474,10 +491,17 @@ F();
             &[Backend::Jit]
         }
 
-        fn run(&self, _: &str, text: &str, _: Backend) -> Result<Output, Checked> {
-            let expected = run::expected(text).unwrap();
+        fn run(
+            &self,
+            _: &str,
+            text: &str,
+            _: Backend,
+            profile: Profile,
+        ) -> Result<Output, Checked> {
+            let expected = run::expected(text, profile).unwrap();
             Ok(Output {
                 stdout: expected.stdout,
+                stderr: expected.stderr,
                 exit: expected.exit,
             })
         }
@@ -565,7 +589,7 @@ F();
             fn backends(&self) -> &[Backend] {
                 &[]
             }
-            fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
+            fn run(&self, _: &str, _: &str, _: Backend, _: Profile) -> Result<Output, Checked> {
                 unreachable!()
             }
         }
@@ -588,7 +612,7 @@ F();
             fn backends(&self) -> &[Backend] {
                 &[]
             }
-            fn run(&self, _: &str, _: &str, _: Backend) -> Result<Output, Checked> {
+            fn run(&self, _: &str, _: &str, _: Backend, _: Profile) -> Result<Output, Checked> {
                 unreachable!()
             }
         }
@@ -609,7 +633,8 @@ F();
         let repo = load(&crate::paths::root()).unwrap();
         assert!(repo.examples.len() > 1);
         assert!(repo.deliverables.contains(&"M1.4".to_owned()));
-        let outcome = check(&repo, mora_testkit::compiler());
+        let runner = crate::runner::build(&crate::paths::root()).unwrap();
+        let outcome = check(&repo, &FrontEnd::with_runner(runner));
         assert_eq!(outcome.problems, []);
     }
 }

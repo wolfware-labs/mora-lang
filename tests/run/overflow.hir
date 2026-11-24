@@ -1,0 +1,7 @@
+top-level {
+    Console{external}.WriteLine{external}("before");
+    let max#0: int = 2147483647;
+    let one#1: int = 1;
+    let sum#2: int = max#0 + one#1;
+    Console{external}.WriteLine{external}(sum#2);
+}

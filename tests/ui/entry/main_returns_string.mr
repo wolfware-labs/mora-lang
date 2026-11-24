@@ -1,0 +1,4 @@
+// A `Main` returns `()`, `int` or a `Result` of these.
+Main(): string { //~ ERROR MR0120
+    return "done";
+}

@@ -1,0 +1,9 @@
+// expect: before
+// exit[debug]: 101
+// stderr[debug]: panic at src/Program.mr:8:11: arithmetic overflow: 2147483647 + 1
+// expect[release]: -2147483648
+Console.WriteLine("before");
+let max = 2147483647;
+let one = 1;
+let sum = max + one;
+Console.WriteLine(sum);

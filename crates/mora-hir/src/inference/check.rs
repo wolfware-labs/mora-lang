@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use super::constant::Value;
 use super::{
     Callee, Constant, Context, Conversion, ConversionKind, Inference, NewTarget, NotAField,
-    TypeError, constant, converts, is_known, numeric, same,
+    Propagated, TypeError, constant, converts, is_entry_return, is_known, numeric, same,
 };
 use crate::arena::arena_index;
 use crate::bodies::{
@@ -154,6 +154,10 @@ pub(super) fn infer_body(
         block_stmt: None,
         ret: None,
         ret_later: false,
+        entry: owner == BodyOwner::TopLevel,
+        entry_ret: None,
+        entry_value: None,
+        entry_propagate: None,
         scope: body_scope(project, file, owner),
         item: None,
         tree: Cell::new(None),
@@ -230,6 +234,7 @@ pub(super) fn infer_body(
         );
         check.function_body(root, expected, statement);
     }
+    check.entry_return();
     check.instance_uses(owner);
     check.types_as_values();
     Inference {
@@ -242,6 +247,7 @@ pub(super) fn infer_body(
         conversions: check.conversions,
         element_conversions: check.element_conversions,
         errors: check.errors,
+        entry_ret: check.entry_ret,
     }
 }
 
@@ -289,6 +295,17 @@ struct Check<'a> {
     /// whose target type gives no result type here, as one passed to a
     /// call that is not checked yet.
     ret_later: bool,
+    /// Whether a `return` here ends the generated `Main` of top-level
+    /// statements, whose return type is inferred from its `return`s (§4.6):
+    /// false inside a local function or a lambda.
+    entry: bool,
+    /// The type the generated `Main` returns, once a `return` gives it; a
+    /// `?` makes it a `Result` after the walk.
+    entry_ret: Option<Ty>,
+    /// The first `return` with a value of the top-level statements.
+    entry_value: Option<StmtId>,
+    /// The first `?` of the top-level statements.
+    entry_propagate: Option<Propagated>,
     /// Where the body's names are looked up from, which decides what is
     /// visible from it.
     scope: Scope,
@@ -511,7 +528,20 @@ impl Check<'_> {
     fn stmt(&mut self, stmt: StmtId) {
         let body = self.body;
         match &body.stmts[stmt] {
-            Stmt::Missing | Stmt::Break | Stmt::Continue | Stmt::Return(None) => {}
+            Stmt::Missing | Stmt::Break | Stmt::Continue => {}
+            // In the top-level statements, `return;` gives the generated
+            // `Main` the type `()`, as a `return` with a value gives it
+            // that value's type (§4.6).
+            Stmt::Return(None) if self.entry && self.ret.is_none() => {
+                match self.entry_ret.clone() {
+                    None => self.entry_ret = Some(Ty::UNIT),
+                    Some(expected) if is_known(&expected) && !same(&expected, &Ty::UNIT) => {
+                        self.errors.push(TypeError::MissingValue { stmt, expected });
+                    }
+                    Some(_) => {}
+                }
+            }
+            Stmt::Return(None) => {}
             Stmt::Expr(expr) => self.statement(*expr, self.block_stmt == Some(stmt)),
             Stmt::Local { local, init } => {
                 let Some(init) = *init else { return };
@@ -529,7 +559,9 @@ impl Check<'_> {
                 self.defaults(&function.defaults);
                 let ret = self.resolution.return_type(function.ret);
                 if let Some(root) = function.body {
+                    let entry = std::mem::replace(&mut self.entry, false);
                     self.function_body(root, Some(ret), true);
+                    self.entry = entry;
                 }
             }
             Stmt::Block(stmts) => self.block(stmts),
@@ -582,6 +614,16 @@ impl Check<'_> {
                 let ret = self.ret.take();
                 match &ret {
                     Some(ret) => self.check(*expr, ret),
+                    // The first `return` of the top-level statements gives
+                    // the type of the generated `Main`; the others check
+                    // against it.
+                    None if self.entry => match self.entry_ret.clone() {
+                        Some(ty) => self.check(*expr, &ty),
+                        None => {
+                            self.entry_ret = self.infer(*expr);
+                            self.entry_value = Some(stmt);
+                        }
+                    },
                     None => {
                         let expect = self.unknown_ret();
                         self.expr(*expr, expect);
@@ -591,6 +633,62 @@ impl Check<'_> {
             }
             Stmt::Match { scrutinee, arms } => self.r#match(*scrutinee, arms, None),
             Stmt::Unsafe(stmt) => self.stmt(*stmt),
+        }
+    }
+
+    /// The return type of the generated `Main`, once its statements are
+    /// checked: with a `?` in them it returns a `Result` of what its
+    /// `return` statements give, `()` when none gives a value, with the
+    /// error type of the first `?` (§4.6). A value of a type of the standard
+    /// library, which may be a `Result` already, is the return type itself.
+    fn entry_return(&mut self) {
+        self.entry_value_check();
+        let Some(propagate) = &self.entry_propagate else {
+            return;
+        };
+        let value = match (self.entry_ret.take(), self.entry_value) {
+            (Some(value), _) => value,
+            (None, None) => Ty::UNIT,
+            // A value whose type the checker does not know.
+            (None, Some(_)) => Ty::Error,
+        };
+        self.entry_ret = Some(if value.as_external().is_some() {
+            value
+        } else {
+            let error = propagate.error.clone().unwrap_or(Ty::Error);
+            Ty::external(vec![value, error])
+        });
+    }
+
+    /// `MR0120` when the first `return` with a value of the top-level
+    /// statements gives the generated `Main` a type an entry point cannot
+    /// return (§4.6). With a `?` in the statements the generated `Main`
+    /// returns a `Result` of the value, unless the value is one already.
+    fn entry_value_check(&mut self) {
+        let Some(stmt) = self.entry_value else {
+            return;
+        };
+        let Stmt::Return(Some(value)) = self.body.stmts[stmt] else {
+            return;
+        };
+        let ty = match (&self.body.exprs[value], &self.entry_ret) {
+            // A lambda has no type of its own here, and is a function value
+            // whichever it would get.
+            (Expr::Lambda(_), _) => None,
+            (_, Some(ty)) => Some(ty.clone()),
+            (_, None) => return,
+        };
+        // The `?` changes what the generated `Main` returns, not which values
+        // it accepts: a `Result<T, E>` whose `T` is the value's type takes
+        // the values an entry point returns by themselves (a call that does
+        // not return gives none), and a value that is a `Result` already is
+        // the return type either way.
+        if !ty.as_ref().is_some_and(is_entry_return) {
+            self.errors.push(TypeError::EntryReturn {
+                stmt,
+                ty,
+                propagate: self.entry_propagate.clone(),
+            });
         }
     }
 
@@ -818,7 +916,20 @@ impl Check<'_> {
                 self.assign(expr, *op, *lhs, *rhs);
                 None
             }
-            Expr::Propagate(inner) | Expr::Await(inner) | Expr::As { expr: inner, .. } => {
+            Expr::Propagate(inner) => {
+                let operand = self.infer(*inner);
+                if self.entry && self.entry_propagate.is_none() {
+                    // The error type of a `Result`, the second of the two
+                    // arguments the checker sees of it.
+                    let error = match operand.as_ref().and_then(Ty::as_external) {
+                        Some([_, error]) => Some(error.clone()),
+                        _ => None,
+                    };
+                    self.entry_propagate = Some(Propagated { expr, error });
+                }
+                None
+            }
+            Expr::Await(inner) | Expr::As { expr: inner, .. } => {
                 self.infer(*inner);
                 None
             }
@@ -871,7 +982,9 @@ impl Check<'_> {
                 // result type then.
                 let later = matches!(expect, Expect::Later);
                 let outer = std::mem::replace(&mut self.ret_later, later);
+                let entry = std::mem::replace(&mut self.entry, false);
                 self.function_body(lambda.body, ret, false);
+                self.entry = entry;
                 self.ret_later = outer;
                 None
             }

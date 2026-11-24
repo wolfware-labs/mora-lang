@@ -25,7 +25,7 @@ use mora_span::{Db, Project, SourceFile};
 use rustc_hash::FxHashMap;
 
 use crate::arena::arena_index;
-use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, TypeId, UnaryOp};
+use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeId, UnaryOp};
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
@@ -59,6 +59,10 @@ pub struct Inference {
     element_conversions: FxHashMap<(ExprId, u32), Conversion>,
     /// The type errors, in the order they were found.
     pub(crate) errors: Vec<TypeError>,
+    /// For top-level statements, the type the generated `Main` returns: the
+    /// type of its first `return` value, as a `Result` with a `?` in the
+    /// statements (§4.6).
+    entry_ret: Option<Ty>,
 }
 
 /// The value of an operation made only of literals that takes its target
@@ -125,6 +129,13 @@ pub struct Conversion {
 }
 
 impl Inference {
+    /// The return type of the generated `Main` of top-level statements, as
+    /// their `return` statements and `?` operators give it; `None` when
+    /// they have neither.
+    pub fn entry_return(&self) -> Option<&Ty> {
+        self.entry_ret.as_ref()
+    }
+
     /// The conversion applied to the value of `expr`, when it changes type:
     /// to the type its context expects, to the promoted type of its
     /// operation, or by a cast. A compound assignment carries the cast
@@ -295,6 +306,16 @@ pub(crate) enum NewTarget {
     Written(Ty),
 }
 
+/// The first `?` of the top-level statements, which makes the generated
+/// `Main` return a `Result` (§4.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Propagated {
+    /// The `?` expression.
+    pub(crate) expr: ExprId,
+    /// The error type of its operand, when the checker sees it.
+    pub(crate) error: Option<Ty>,
+}
+
 /// A type error in a body, by the expression it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TypeError {
@@ -305,6 +326,21 @@ pub(crate) enum TypeError {
         expected: Ty,
         found: Ty,
         context: Context,
+    },
+    /// The `return;` statement `stmt` gives no value where the generated
+    /// `Main` of top-level statements returns `expected`, which an earlier
+    /// `return` gave it (`MR0203`).
+    MissingValue { stmt: StmtId, expected: Ty },
+    /// The `return` statement `stmt`, the first of the top-level statements
+    /// with a value, gives the generated `Main` a type that an entry point
+    /// cannot return (`MR0120`): `ty`, the value's type, or with a `?` in
+    /// the statements, `propagate`, a `Result` of it, unless the value is a
+    /// `Result` already. `ty` is `None` for a lambda, whose type is a
+    /// function's.
+    EntryReturn {
+        stmt: StmtId,
+        ty: Option<Ty>,
+        propagate: Option<Propagated>,
     },
     /// The literal `expr`, a negated literal or an expression made only of
     /// literals, does not fit `ty`, or no integer type when `ty` is `None`
@@ -581,6 +617,30 @@ pub fn is_known(ty: &Ty) -> bool {
     }
 }
 
+/// Whether an entry point may return `ty` (§4.6): `()`, `int`, or
+/// `Result<(), E>` or `Result<int, E>`. A call that does not return gives
+/// no value to check, and a type with an error has been reported already.
+///
+/// While the standard library is not loaded, a `Result` is an external
+/// type, whose name the checker does not see: one with two arguments the
+/// first of which is `()` or `int`, or one whose arguments it does not see,
+/// may be a `Result`. Every other type is not one.
+pub fn is_entry_return(ty: &Ty) -> bool {
+    match ty.as_external() {
+        Some([]) => true,
+        Some([ok, _]) => is_exit_value(ok),
+        Some(_) => false,
+        None => matches!(ty, Ty::Never) || is_exit_value(ty),
+    }
+}
+
+/// Whether an entry point may return a value of `ty`, by itself or as the
+/// value of its `Result` (§4.6): `()` or `int`, or a type with an error,
+/// reported already.
+fn is_exit_value(ty: &Ty) -> bool {
+    matches!(ty, Ty::Error | Ty::Primitive(Primitive::Int)) || same(ty, &Ty::UNIT)
+}
+
 /// Whether two types are the same, the names of tuple elements aside: the
 /// names only label the elements, so `(Left: int, Right: int)` holds
 /// `(1, 2)` (§5.5).
@@ -644,7 +704,7 @@ mod tests {
     use mora_span::{Project, SourceFile};
     use salsa::Setter;
 
-    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages};
+    use crate::test_db::{TestDb, app, codes, diagnostics_of, file_named, messages, result_of};
     use crate::*;
 
     /// The codes `src/Program.mr` alone in an app reports.
@@ -695,6 +755,156 @@ mod tests {
             .iter()
             .filter_map(|(id, _)| inference.literal(id))
             .collect()
+    }
+
+    /// The return type of the generated `Main` of the top-level statements
+    /// of `text`, as inference names it.
+    fn entry_return(text: &str) -> Option<String> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        inference.entry_return().map(|ty| super::ty_name(&db, ty))
+    }
+
+    #[test]
+    fn the_return_of_top_level_statements_types_the_generated_main() {
+        assert_eq!(entry_return("return 3;\n"), Some("int".to_owned()));
+        assert_eq!(entry_return("let x = 1;\n"), None);
+        assert_eq!(
+            entry_return("let x: long = 1;\nif (x > 0) { return 1; }\nreturn 2;\n"),
+            Some("int".to_owned())
+        );
+    }
+
+    /// The return type of the generated `Main` of the top-level statements
+    /// of `text`, as inference records it.
+    fn entry_return_ty(text: &str) -> Option<Ty> {
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        infer(&db, project, file, BodyOwner::TopLevel)
+            .entry_return()
+            .cloned()
+    }
+
+    #[test]
+    fn a_question_mark_makes_the_generated_main_return_a_result() {
+        let f = "F(): Result<long, string> => Ok(1);\nlet x = F()?;\n";
+        let string = Ty::String;
+        assert_eq!(
+            entry_return_ty(f),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
+        assert_eq!(
+            entry_return_ty(&format!("{f}return 3;\n")),
+            Some(result_of(Ty::Primitive(Primitive::Int), string.clone()))
+        );
+        assert_eq!(
+            entry_return_ty(&format!("{f}return;\n")),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
+        // A value whose type the checker does not know (`MR0120`).
+        assert_eq!(
+            entry_return_ty(&format!("{f}return (y: int) => y;\n")),
+            Some(result_of(Ty::Error, string.clone()))
+        );
+        // A value that is a `Result` already is the return type.
+        let g = "G(): Result<int, bool> => Ok(2);\nreturn G();\n";
+        assert_eq!(
+            entry_return_ty(&format!("{f}{g}")),
+            Some(result_of(
+                Ty::Primitive(Primitive::Int),
+                Ty::Primitive(Primitive::Bool)
+            ))
+        );
+        // The first `?` gives the error type, whatever the later ones give.
+        let h = "H(): Result<long, bool> => Ok(2);\nlet y = H()?;\n";
+        assert_eq!(
+            entry_return_ty(&format!("{f}{h}")),
+            Some(result_of(Ty::UNIT, string.clone()))
+        );
+        // An operand the checker does not see as a `Result` gives no error
+        // type.
+        assert_eq!(
+            entry_return_ty("let x = 1?;\n"),
+            Some(result_of(Ty::UNIT, Ty::Error))
+        );
+    }
+
+    #[test]
+    fn a_question_mark_in_a_local_function_does_not_type_the_generated_main() {
+        let f = "F(): Result<int, string> => Ok(1);\n";
+        assert_eq!(
+            entry_return_ty(&format!(
+                "{f}G(): Result<int, string> {{ let x = F()?; return Ok(x); }}\n"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn a_return_in_a_local_function_does_not_type_the_generated_main() {
+        assert_eq!(entry_return("F(): int { return 3; }\nlet x = F();\n"), None);
+    }
+
+    #[test]
+    fn a_return_in_a_lambda_does_not_type_the_generated_main() {
+        assert_eq!(
+            entry_return("let f = (a: int) => { return a + 1; };\n"),
+            None
+        );
+        // Nor does a `return;` there, which would give it `()`.
+        assert_eq!(
+            entry_return("let f = (a: int) => { return; };\nreturn 3;\n"),
+            Some("int".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_return_without_a_value_types_the_generated_main_as_unit() {
+        assert_eq!(entry_return("return;\n"), Some("()".to_owned()));
+        assert_eq!(
+            reported("let x = 1;\nif (x == 1) { return; }\nreturn;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_return_with_and_one_without_a_value_mismatch_in_either_order() {
+        let unit_first = diagnostics_of("let x = 1;\nif (x == 1) { return; }\nreturn 3;\n");
+        assert_eq!(codes(&unit_first), ["MR0203"]);
+        assert_eq!(
+            messages(&unit_first),
+            ["mismatched types: expected `()`, found `int`"]
+        );
+        let int_first = diagnostics_of("let x = 1;\nif (x == 1) { return 3; }\nreturn;\n");
+        assert_eq!(codes(&int_first), ["MR0203"]);
+        assert_eq!(
+            messages(&int_first),
+            ["mismatched types: expected `int`, found `()`"]
+        );
+        assert_eq!(
+            int_first[0].primary.span.range,
+            mora_span::TextRange::new(37.into(), 44.into())
+        );
+        // A local function's `return;` is checked against its own type.
+        assert_eq!(
+            reported("F() { return; }\nF();\nreturn 3;\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_second_return_checks_against_the_first() {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", "if (true) { return 1; }\nreturn \"a\";\n")],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        assert_eq!(inference.errors.len(), 1);
     }
 
     #[test]

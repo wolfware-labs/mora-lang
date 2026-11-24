@@ -1,0 +1,7 @@
+// A `return;` first gives the generated `Main` the return type `()`, which a
+// later `return` with a value does not fit.
+let x = 1;
+if (x == 1) {
+    return;
+}
+return 3; //~ ERROR MR0203

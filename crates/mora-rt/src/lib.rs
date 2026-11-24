@@ -2,9 +2,19 @@
 // One of the crates allowed to contain `unsafe` code (CONTRIBUTING.md).
 #![allow(unsafe_code)]
 
+mod entry;
 mod pal;
+pub mod panic;
+pub mod standin;
+pub mod string;
 // Left out of this crate's unit tests, whose harness has its own `main`.
-#[cfg(not(test))]
+#[cfg(all(feature = "start", not(test)))]
 mod start;
 
+mod symbols;
+#[cfg(test)]
+mod test_util;
+
+pub use entry::run_entry;
 pub use mora_rt_core::DEBUG;
+pub use symbols::jit_symbols;

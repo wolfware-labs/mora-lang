@@ -1,0 +1,7 @@
+error[MR0120]: an entry point cannot return `string`
+ --> tests/ui/entry/main_returns_string.mr:2:9
+  |
+2 | Main(): string { //~ ERROR MR0120
+  |         ^^^^^^ the return type of `Main`
+  |
+  = note: an entry point returns `()`, `int`, `Result<(), E>` or `Result<int, E>`

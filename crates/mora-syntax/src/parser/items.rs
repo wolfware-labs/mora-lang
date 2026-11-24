@@ -61,13 +61,14 @@ pub(crate) fn source_file(p: &mut Parser<'_>) {
             e.complete(p, K::Error);
         }
     }
+    p.finish_stopped();
     m.complete(p, K::SourceFile);
 }
 
 /// Parses one top-level element and returns whether it was an item or a
 /// statement. A `using` directive after one is still parsed, with an error.
 fn top_level(p: &mut Parser<'_>, seen_item: bool) -> bool {
-    if p.at(K::UsingKw) || (p.at_contextual("global") && p.nth(1) == K::UsingKw) {
+    if at_using_directive(p) {
         if seen_item {
             p.error("`using` directives come before the declarations");
         }
@@ -80,6 +81,19 @@ fn top_level(p: &mut Parser<'_>, seen_item: bool) -> bool {
     true
 }
 
+/// Whether a `using` directive starts here.
+fn at_using_directive(p: &Parser<'_>) -> bool {
+    p.at(K::UsingKw) || (p.at_contextual("global") && p.nth(1) == K::UsingKw)
+}
+
+/// Whether a declaration that takes the comments above it can start here,
+/// in some context: a `using` directive, a top-level declaration, or an
+/// operator, which only a member list holds. Every other member starts
+/// with a name, `~`, `this` or `$`, which start an expression too.
+pub(crate) fn at_item_start(p: &Parser<'_>) -> bool {
+    at_using_directive(p) || at_declaration_start(p) || p.at(K::OperatorKw)
+}
+
 /// `using X;`, `using static X;`, `using A = X;`, `global using X;` (§4.3).
 fn using_directive(p: &mut Parser<'_>) {
     let m = p.start();
@@ -88,6 +102,12 @@ fn using_directive(p: &mut Parser<'_>) {
     }
     p.bump(K::UsingKw);
     p.eat(K::StaticKw);
+    // A declaration on the next line is not the name: the name is missing.
+    if p.at_line_start() && at_declaration_start(p) {
+        p.error(format!("expected {}", super::describe(K::Ident)));
+        m.complete(p, K::UsingDirective);
+        return;
+    }
     if p.at(K::Ident) && p.nth(1) == K::Eq {
         let alias = p.start();
         name(p);
@@ -277,22 +297,34 @@ fn modifiers(p: &mut Parser<'_>) -> Vec<SyntaxKind> {
     }
 }
 
-/// One word in parentheses after `mut`: a write scope (§6.9).
+/// One word in parentheses after `mut`, or none: a write scope (§6.9).
 fn at_write_scope(p: &Parser<'_>) -> bool {
-    p.at(K::LParen) && p.nth(2) == K::RParen
+    if !p.at(K::LParen) {
+        return false;
+    }
+    p.nth(1) == K::RParen || p.nth(2) == K::RParen
 }
 
-/// `(private)`, `(ns)` or `(internal)`; any other word is reported.
+/// What a write scope reports when its word is missing or another one.
+const EXPECTED_WRITE_SCOPE: &str = "expected `private`, `ns` or `internal`";
+
+/// `(private)`, `(ns)` or `(internal)`; any other word is reported, and so
+/// is a missing one, unless rejected text stands for it.
 fn write_scope(p: &mut Parser<'_>) {
     let m = p.start();
     p.bump(K::LParen);
+    // Rejected text in place of the word stands for it.
+    if p.at(K::RParen) && p.rejected_in_place().is_none() {
+        p.error(EXPECTED_WRITE_SCOPE);
+    }
+    // [`at_write_scope`] found the `)`.
     if p.at_any(&[K::PrivateKw, K::InternalKw]) {
         p.bump_any();
     } else if p.at_contextual("ns") {
         p.bump_remap(K::NsKw);
-    } else {
+    } else if !p.at(K::RParen) {
         let e = p.start();
-        p.error("expected `private`, `ns` or `internal`");
+        p.error(EXPECTED_WRITE_SCOPE);
         p.bump_any();
         e.complete(p, K::Error);
     }

@@ -1,0 +1,14 @@
+top-level {
+    Console{external}.WriteLine{external}(ToInt{fn App.ToInt}(Div{fn App.Div}(0.0, 0.0)));
+    Console{external}.WriteLine{external}(ToInt{fn App.ToInt}(Div{fn App.Div}(1.0, 0.0)));
+    Console{external}.WriteLine{external}(ToInt{fn App.ToInt}(Div{fn App.Div}(-1.0, 0.0)));
+    Console{external}.WriteLine{external}(ToInt{fn App.ToInt}(3e10));
+    Console{external}.WriteLine{external}(ToByte{fn App.ToByte}(-5.0));
+    Console{external}.WriteLine{external}(ToByte{fn App.ToByte}(300.0));
+}
+
+fn App.Div(a#0, b#1) => a#0 / b#1;
+
+fn App.ToInt(x#0) => (int)x#0;
+
+fn App.ToByte(x#0) => (byte)x#0;

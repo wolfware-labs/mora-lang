@@ -1,0 +1,176 @@
+//! The `jit-runner` process and the front end that starts it.
+#![allow(clippy::unwrap_used)]
+// Helpers below unwrap too, and `allow-unwrap-in-tests` covers only test functions.
+
+use std::time::Duration;
+
+use mora_testkit::{Backend, Compiler, FrontEnd, Profile};
+
+fn front_end() -> FrontEnd {
+    FrontEnd::with_runner(env!("CARGO_BIN_EXE_jit-runner").into())
+}
+
+/// What the runner gives for the program `input` as `a.mr`.
+fn runner_with(input: &[u8]) -> std::process::Output {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jit-runner"))
+        .args(["a.mr", "debug"])
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// A program with a local tuple of two 1 GiB structs, too large, which
+/// only code generation sees.
+fn tuple_too_large() -> String {
+    use std::fmt::Write;
+
+    // Writing to a `String` cannot fail.
+    let mut text = "struct S0 { public A: long; }\n".to_owned();
+    for i in 1..=28 {
+        let before = i - 1;
+        let _ = writeln!(
+            text,
+            "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
+        );
+    }
+    text.push_str("var t: (S28, S28);\n");
+    text
+}
+
+#[test]
+fn the_runner_runs_a_program_and_returns_its_output() {
+    let output = front_end()
+        .run(
+            "a.mr",
+            "Console.WriteLine(1);\nreturn 3;\n",
+            Backend::Jit,
+            Profile::Debug,
+        )
+        .unwrap();
+    assert_eq!(output.stdout, "1\n");
+    assert_eq!(output.stderr, "");
+    assert_eq!(output.exit, 3);
+}
+
+#[test]
+fn a_panic_reaches_stderr_with_exit_101() {
+    let text = "Console.WriteLine(\"before\");\nlet max = 2147483647;\nlet one = 1;\nlet sum = max + one;\nConsole.WriteLine(sum);\n";
+    let output = front_end()
+        .run("a.mr", text, Backend::Jit, Profile::Debug)
+        .unwrap();
+    assert_eq!(output.stdout, "before\n");
+    assert!(
+        output
+            .stderr
+            .starts_with("panic at src/Program.mr:4:11: arithmetic overflow"),
+        "{}",
+        output.stderr
+    );
+    assert_eq!(output.exit, 101);
+}
+
+#[test]
+fn a_program_with_errors_is_not_run() {
+    let checked = front_end()
+        .run("a.mr", "let x = y;\n", Backend::Jit, Profile::Debug)
+        .unwrap_err();
+    assert_eq!(checked.diagnostics.len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "ran longer than")]
+fn a_program_that_runs_too_long_fails_its_case() {
+    let _ = front_end().with_timeout(Duration::from_millis(500)).run(
+        "a.mr",
+        "while (true) {}\n",
+        Backend::Jit,
+        Profile::Debug,
+    );
+}
+
+#[test]
+#[should_panic(expected = "cannot start")]
+fn a_missing_runner_fails_the_case() {
+    let _ = FrontEnd::with_runner("/nonexistent/jit-runner".into()).run(
+        "a.mr",
+        "return 0;\n",
+        Backend::Jit,
+        Profile::Debug,
+    );
+}
+
+#[test]
+#[should_panic(expected = "internal error")]
+fn a_program_the_runner_cannot_build_fails_the_case() {
+    // The parent only analyzes; a program with no entry point passes that and
+    // the runner reports it.
+    let _ = front_end().run("a.mr", "", Backend::Jit, Profile::Debug);
+}
+
+#[test]
+fn input_that_is_not_text_is_an_internal_error() {
+    let output = runner_with(&[0xff, 0xfe]);
+    assert_eq!(output.status.code(), Some(70));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with("jit-runner: internal error: cannot read the program"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_runner_without_a_path_is_a_usage_error() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_jit-runner"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(70));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "jit-runner: internal error: usage: jit-runner <path> <debug|release>, with the program on \
+         standard input\n"
+    );
+}
+
+#[test]
+fn an_error_only_code_generation_finds_is_a_compile_error() {
+    let text = tuple_too_large();
+    // The runner reports it as a build that fails, not as its own error.
+    let out = runner_with(text.as_bytes());
+    assert_eq!(
+        out.status.code(),
+        Some(mora_testkit::runner::COMPILE_ERROR_EXIT)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("jit-runner: the program has errors\nerror[MR0156]"),
+        "{stderr}"
+    );
+    let checked = front_end()
+        .run("a.mr", &text, Backend::Jit, Profile::Debug)
+        .unwrap_err();
+    let codes: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.to_string())
+        .collect();
+    assert_eq!(codes, ["MR0156"]);
+}
+
+#[test]
+fn a_tuple_too_large_is_shown_as_its_diagnostic() {
+    let checked = front_end()
+        .run("a.mr", &tuple_too_large(), Backend::Jit, Profile::Debug)
+        .unwrap_err();
+    let shown = mora_testkit::ui::rendered(&checked);
+    assert!(
+        shown.starts_with("error[MR0156]: a value of `(S28, S28)` would take more than"),
+        "{shown}"
+    );
+}

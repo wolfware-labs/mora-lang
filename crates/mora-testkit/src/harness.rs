@@ -230,8 +230,10 @@ fn suite(
 
 /// The problems `case` returns, or the message of its panic as the only one.
 pub fn guarded(case: impl FnOnce() -> Vec<String>) -> Vec<String> {
-    panic::catch_unwind(AssertUnwindSafe(case))
-        .unwrap_or_else(|payload| vec![format!("panicked: {}", message(&*payload))])
+    panic::catch_unwind(AssertUnwindSafe(case)).unwrap_or_else(|payload| {
+        let message = panic_text(&*payload).unwrap_or_else(|| "a non-string payload".to_owned());
+        vec![format!("panicked: {message}")]
+    })
 }
 
 /// Every `.mr` file below `dir`. A missing directory is an error, so a
@@ -256,17 +258,136 @@ fn shown(root: &Path, file: &Path) -> String {
     parts.join("/")
 }
 
-fn message(payload: &(dyn Any + Send)) -> String {
+/// The text of a panic's payload, when it is a string.
+pub(crate) fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a non-string payload".to_owned())
+}
+
+/// Runs `f` with a silent panic hook, and puts the hook back after, also
+/// when `f` panics: a panic that `f` catches and reports itself is not
+/// printed a second time by the default hook.
+pub fn without_panic_output<T>(f: impl FnOnce() -> T) -> T {
+    with_panic_hook(Box::new(|_| {}), f)
+}
+
+/// A panic hook, as [`panic::set_hook`] takes it.
+pub type PanicHook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// Runs `f` with `hook` as the panic hook, and puts the hook it replaced
+/// back after, also when `f` panics; the panic then continues.
+pub fn with_panic_hook<T>(hook: PanicHook, f: impl FnOnce() -> T) -> T {
+    let previous = panic::take_hook();
+    panic::set_hook(hook);
+    // The hook cannot be set while the thread unwinds, so the panic is
+    // caught first and continued once the hook is back.
+    let result = panic::catch_unwind(AssertUnwindSafe(f));
+    panic::set_hook(previous);
+    result.unwrap_or_else(|payload| panic::resume_unwind(payload))
+}
+
+/// The text the panics of [`assert_gives_the_hook_back`] carry, so that its
+/// hook tells them from the panics of other tests.
+#[cfg(test)]
+pub(crate) const HOOK_MARK: &str = "hook-mark";
+
+/// Runs `run` under a hook that records the panics whose message holds
+/// [`HOOK_MARK`], on any thread, and checks that `run` lets none of them
+/// reach that hook and puts it back: a panic after `run` does reach it.
+/// `run` panics with the mark itself, so that a hook it fails to silence
+/// would see it. Other panics go on to the hook that was set before, so a
+/// failed check, or another test failing meanwhile, still prints why.
+///
+/// # Panics
+///
+/// When a check fails.
+#[cfg(test)]
+pub(crate) fn assert_gives_the_hook_back(run: impl FnOnce()) {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    /// Held while the hook is set, which is global, so that one test does
+    /// not take the hook another set as the one to put back.
+    static HOOK_SET: Mutex<()> = Mutex::new(());
+    // The hook runs on the thread that panics, which may be one `run`
+    // starts, such as the compiler's; the mark keeps out the panics of
+    // other tests.
+    static CALLED: AtomicBool = AtomicBool::new(false);
+    let _set = HOOK_SET.lock().unwrap_or_else(PoisonError::into_inner);
+    CALLED.store(false, Ordering::SeqCst);
+    let previous: Arc<PanicHook> = Arc::new(panic::take_hook());
+    let forward = Arc::clone(&previous);
+    let record = move |info: &panic::PanicHookInfo<'_>| {
+        if info.to_string().contains(HOOK_MARK) {
+            CALLED.store(true, Ordering::SeqCst);
+        } else {
+            forward(info);
+        }
+    };
+    let checked = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_panic_hook(Box::new(record), || {
+            run();
+            assert!(
+                !CALLED.load(Ordering::SeqCst),
+                "a panic in the run reached the hook"
+            );
+            let _ = panic::catch_unwind(|| panic!("{HOOK_MARK}: after the run"));
+        });
+    }));
+    panic::set_hook(Box::new(move |info| previous(info)));
+    if let Err(payload) = checked {
+        panic::resume_unwind(payload);
+    }
+    assert!(
+        CALLED.load(Ordering::SeqCst),
+        "the hook is not back after the run"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_in_a_quiet_run_gives_the_hook_back() {
+        assert_gives_the_hook_back(|| {
+            let quiet = panic::catch_unwind(|| without_panic_output(|| panic!("{HOOK_MARK}")));
+            assert!(quiet.is_err());
+        });
+    }
+
+    #[test]
+    fn a_hook_comes_back_when_its_run_panics() {
+        assert_gives_the_hook_back(|| {
+            let run =
+                panic::catch_unwind(|| with_panic_hook(Box::new(|_| {}), || panic!("{HOOK_MARK}")));
+            let payload = run.err().and_then(|p| p.downcast::<String>().ok());
+            assert_eq!(payload.as_deref().map(String::as_str), Some(HOOK_MARK));
+        });
+    }
+
+    #[test]
+    fn a_panic_without_the_mark_goes_to_the_earlier_hook() {
+        // The earlier hook reports it, and it does not count as one that
+        // reached the hook under test.
+        assert_gives_the_hook_back(|| {
+            let other = panic::catch_unwind(|| panic!("another test's panic"));
+            assert!(other.is_err());
+        });
+    }
+
+    #[test]
+    fn the_text_of_a_panic_is_its_string_payload() {
+        assert_eq!(panic_text(&"a"), Some("a".to_owned()));
+        assert_eq!(panic_text(&String::from("b")), Some("b".to_owned()));
+        assert_eq!(panic_text(&1), None);
+        assert_eq!(
+            guarded(|| std::panic::panic_any(1)),
+            ["panicked: a non-string payload"]
+        );
+    }
 
     #[test]
     fn options_keep_bless_and_filters_and_skip_other_flags() {

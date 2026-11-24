@@ -1,0 +1,4 @@
+top-level {
+    Console{external}.WriteLine{external}("before");
+    return 3;
+}

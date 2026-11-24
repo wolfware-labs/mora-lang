@@ -1,0 +1,2 @@
+// A function value is no exit code.
+return () => 3; //~ ERROR MR0120

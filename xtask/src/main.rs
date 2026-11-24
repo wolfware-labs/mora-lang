@@ -12,6 +12,7 @@ mod error_codes;
 mod fuzz_lock;
 mod layers;
 mod paths;
+mod runner;
 mod runtime;
 mod spec_examples;
 mod sysroot;
@@ -23,6 +24,8 @@ use std::process::ExitCode;
 
 use cargo_metadata::MetadataCommand;
 use mora_diag::registry;
+use mora_testkit::FrontEnd;
+use mora_testkit::harness::without_panic_output;
 
 use crate::paths::root;
 
@@ -88,7 +91,11 @@ fn run_error_codes() -> CommandResult {
 
 fn run_spec_examples() -> CommandResult {
     let repo = spec_examples::load(&root()).map_err(|err| err.to_string())?;
-    let outcome = spec_examples::check(&repo, mora_testkit::compiler());
+    let front_end = FrontEnd::with_runner(runner::build(&root())?);
+    // An example that panics, as a pending one whose construct is not lowered
+    // yet does, reports the message in its problem; the default hook would
+    // print it as well, on every run.
+    let outcome = without_panic_output(|| spec_examples::check(&repo, &front_end));
     for problem in &outcome.problems {
         eprintln!("{problem}");
     }

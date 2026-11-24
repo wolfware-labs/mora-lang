@@ -14,13 +14,14 @@ use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_span::{Db, SourceFile, Span};
 
 use super::{
-    Context, InstanceMember, InstanceUse, NotAPlace, TypeError, constant, numeric, ty_name,
+    Context, InstanceMember, InstanceUse, NotAPlace, Propagated, TypeError, constant, is_known,
+    numeric, ty_name,
 };
-use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, UnaryOp};
+use crate::bodies::{BinaryOp, Body, BodySourceMap, Expr, ExprId, Literal, StmtId, UnaryOp};
 use crate::items::ItemKind;
-use crate::report::{Declared, full_name, kind_name};
+use crate::report::{Declared, entry_return_error, full_name, kind_name};
 use crate::resolve::{Resolved, item_data};
-use crate::ty::{Primitive, Ty};
+use crate::ty::{Construct, Primitive, Ty, Unsupported};
 
 /// Where the parts of a body are, for the diagnostics of its type errors.
 pub(crate) struct Source<'a> {
@@ -145,6 +146,12 @@ pub(crate) fn type_error(source: &Source<'_>, error: &TypeError) -> Diagnostic {
             found,
             context,
         } => mismatch(source, *expr, expected, found, *context),
+        TypeError::MissingValue { stmt, expected } => missing_value(source, *stmt, expected),
+        TypeError::EntryReturn {
+            stmt,
+            ty,
+            propagate,
+        } => entry_return(source, *stmt, ty.as_ref(), propagate.as_ref()),
         TypeError::Literal { expr, ty } => literal(source, *expr, *ty),
         TypeError::Binary {
             expr,
@@ -438,6 +445,101 @@ fn logical(source: &Source<'_>, op: BinaryOp, operand_expr: ExprId, operand: &Ty
     match numeric::as_numeric(operand) {
         Some(_) => diagnostic.with_fix(source.compare_with_zero(operand_expr)),
         None => diagnostic,
+    }
+}
+
+/// `MR0203`: the `return;` statement `stmt` gives no value where the
+/// generated `Main` returns `expected`.
+///
+/// # Panics
+///
+/// When the source map has no range for `stmt`: every statement but a local
+/// declaration has one.
+fn missing_value(source: &Source<'_>, stmt: StmtId, expected: &Ty) -> Diagnostic {
+    let e = source.name(expected);
+    let Some(&range) = source.map.stmts.get(&stmt) else {
+        panic!("inference: the statement {stmt:?} has no range in the source map");
+    };
+    Diagnostic::error(
+        codes::MR0203,
+        format!("mismatched types: expected `{e}`, found `()`"),
+        Label::new(
+            Span::new(source.file.id(source.db), range),
+            "this returns no value",
+        ),
+    )
+    .with_note(format!(
+        "an earlier `return` of the top-level statements gives the generated `Main` the return type `{e}`"
+    ))
+}
+
+/// `MR0120`: the first `return` with a value of the top-level statements
+/// gives the generated `Main` a type an entry point cannot return.
+fn entry_return(
+    source: &Source<'_>,
+    stmt: StmtId,
+    ty: Option<&Ty>,
+    propagate: Option<&Propagated>,
+) -> Diagnostic {
+    let Some(&range) = source.map.stmts.get(&stmt) else {
+        panic!("inference: the statement {stmt:?} has no range in the source map");
+    };
+    let span = Span::new(source.file.id(source.db), range);
+    let label = "this gives the generated `Main` its return type";
+    let (Some(ty), Some(propagate)) = (ty, propagate) else {
+        let what = ty.map_or_else(|| "a function".to_owned(), |ty| describe(source, ty));
+        return entry_return_error(&what, span, label);
+    };
+    let question = || {
+        Label::new(
+            source.span(propagate.expr),
+            "this `?` makes the generated `Main` return a `Result`",
+        )
+    };
+    // A value of a type of the standard library, which may be a `Result`
+    // already, is the type itself; the checker does not see its name, so it
+    // is named by what it is.
+    if ty.as_external().is_some() {
+        return entry_return_error(&describe(source, ty), span, label).with_secondary(question());
+    }
+    let error = propagate
+        .error
+        .as_ref()
+        .filter(|error| is_known(error))
+        .map_or_else(|| "E".to_owned(), |error| source.name(error));
+    let result = format!("`Result<{}, {error}>`", plain(source, ty));
+    entry_return_error(
+        &result,
+        span,
+        &format!("with the `?`, this gives the generated `Main` the return type {result}"),
+    )
+    .with_secondary(question())
+}
+
+/// How a message names the type `ty` an entry point returns: in backticks
+/// when the checker knows it, as `` `int?` ``, or by what kind of type it
+/// is, as "a type of the standard library".
+fn describe(source: &Source<'_>, ty: &Ty) -> String {
+    match ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::Optional,
+            parts,
+            ..
+        }) if parts.iter().all(is_known) => format!("`{}`", plain(source, ty)),
+        Ty::Unsupported(unsupported) => unsupported.construct.description().to_owned(),
+        ty => format!("`{}`", source.name(ty)),
+    }
+}
+
+/// The name of `ty`, an option of a known type written `T?`.
+fn plain(source: &Source<'_>, ty: &Ty) -> String {
+    match ty {
+        Ty::Unsupported(Unsupported {
+            construct: Construct::Optional,
+            parts,
+            ..
+        }) if let [inner] = parts.as_slice() => format!("{}?", source.name(inner)),
+        ty => source.name(ty),
     }
 }
 
@@ -777,6 +879,16 @@ mod tests {
             map,
         };
         f(&source, inits);
+    }
+
+    #[test]
+    #[should_panic(expected = "has no range in the source map")]
+    fn a_missing_value_without_a_statement_range_is_an_internal_error() {
+        with_inits("let a = 1;\n", |source, _| {
+            // A local declaration has no range of its own in the map.
+            let (stmt, _) = source.body.stmts.iter().next().unwrap();
+            missing_value(source, stmt, &Ty::Primitive(Primitive::Int));
+        });
     }
 
     #[test]
