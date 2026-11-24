@@ -83,6 +83,33 @@ pub enum CallConv {
     Aapcs,
 }
 
+impl CallConv {
+    /// The width, in bits, of the pointers this convention passes.
+    fn pointer_width(self) -> u32 {
+        match self {
+            CallConv::Aapcs => 32,
+            CallConv::Sysv64
+            | CallConv::Aapcs64
+            | CallConv::AppleAapcs64
+            | CallConv::Win64
+            | CallConv::WinArm64
+            | CallConv::Lp64d => 64,
+        }
+    }
+
+    /// Whether this is a convention of the instruction set `arch`: `x86_64`,
+    /// `aarch64` and `riscv64` by name, and 32-bit Arm by an `arch` that
+    /// starts with `arm` or `thumb`.
+    fn fits_arch(self, arch: &str) -> bool {
+        match self {
+            CallConv::Sysv64 | CallConv::Win64 => arch == "x86_64",
+            CallConv::Aapcs64 | CallConv::AppleAapcs64 | CallConv::WinArm64 => arch == "aarch64",
+            CallConv::Lp64d => arch == "riscv64",
+            CallConv::Aapcs => arch.starts_with("arm") || arch.starts_with("thumb"),
+        }
+    }
+}
+
 /// A code generator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -271,13 +298,31 @@ impl Target {
                 ));
             }
         }
-        if self.triple.is_empty() {
-            return Err("`triple` is empty".to_owned());
+        if !is_triple(&self.triple) {
+            return Err(format!(
+                "`triple` must start with a lowercase letter or a digit and hold only lowercase \
+                 letters, digits, `_`, `.` and `-`, not {:?}",
+                self.triple
+            ));
         }
         if !matches!(self.pointer_width, 32 | 64) {
             return Err(format!(
                 "`pointer-width` must be 32 or 64, not {}",
                 self.pointer_width
+            ));
+        }
+        let conv = self.call_conv;
+        if conv.pointer_width() != self.pointer_width {
+            return Err(format!(
+                "`call-conv` {conv:?} needs a `pointer-width` of {}, not {}",
+                conv.pointer_width(),
+                self.pointer_width
+            ));
+        }
+        if !conv.fits_arch(&self.arch) {
+            return Err(format!(
+                "`call-conv` {conv:?} is not a convention of `arch` `{}`",
+                self.arch
             ));
         }
         let align = &self.align;
@@ -309,6 +354,14 @@ impl Target {
         }
         Ok(())
     }
+}
+
+/// Whether `triple` starts with a lowercase ASCII letter or a digit and is made
+/// of those, `_`, `.` and `-`: it can then be read neither as an option nor as
+/// a path other than one file name.
+fn is_triple(triple: &str) -> bool {
+    triple.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && is_name(triple, &['_', '.', '-'])
 }
 
 /// Whether `s` is non-empty and made of lowercase ASCII letters, digits and `extra`.

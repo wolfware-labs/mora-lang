@@ -131,7 +131,7 @@ fn rule_breaks_are_errors() {
         (
             "triple = \"x86_64-unknown-linux-musl\"",
             "triple = \"\"",
-            "`triple` is empty",
+            "`triple` must start with",
         ),
         ("os = \"linux\"", "os = \"Linux\"", "`os` must be lowercase"),
         ("name = \"x86_64-linux\"", "name = \"\"", "`name` must be"),
@@ -143,6 +143,131 @@ fn rule_breaks_are_errors() {
         let message = Target::parse(&text).unwrap_err();
         assert!(message.contains(expected), "{to}: {message}");
     }
+}
+
+/// The descriptions in `tests/targets/rejected/`, by file name, and a part of
+/// the error each one gets.
+const REJECTED: &[(&str, &str)] = &[
+    (
+        "aapcs-64-bit.toml",
+        "`call-conv` Aapcs needs a `pointer-width` of 32, not 64",
+    ),
+    (
+        "aapcs-arch.toml",
+        "`call-conv` Aapcs is not a convention of `arch` `riscv32`",
+    ),
+    (
+        "call-conv-arch.toml",
+        "`call-conv` Sysv64 is not a convention of `arch` `aarch64`",
+    ),
+    (
+        "pointer-width-x86_64-32.toml",
+        "`call-conv` Sysv64 needs a `pointer-width` of 64, not 32",
+    ),
+    ("triple-control.toml", "`triple` must start with"),
+    ("triple-dot-dot.toml", "`triple` must start with"),
+    ("triple-leading-dash.toml", "`triple` must start with"),
+    ("triple-slash.toml", "`triple` must start with"),
+    ("triple-space.toml", "`triple` must start with"),
+    ("triple-uppercase.toml", "`triple` must start with"),
+];
+
+#[test]
+fn every_rejected_description_names_its_rule() {
+    let dir = repo().join("tests/targets/rejected");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    let listed: Vec<&str> = REJECTED.iter().map(|(file, _)| *file).collect();
+    assert_eq!(files, listed);
+    for (file, expected) in REJECTED {
+        let err = Target::load(&dir.join(file)).unwrap_err();
+        assert!(matches!(err, Error::Invalid { .. }), "{file}: {err}");
+        let message = err.to_string();
+        assert!(message.contains(expected), "{file}: {message}");
+    }
+}
+
+#[test]
+fn a_triple_is_lowercase_letters_digits_and_separators() {
+    for triple in ["x86_64-unknown-linux-musl", "thumbv8m.main-none-eabi", "0x"] {
+        let text = x86_64_linux().replacen("x86_64-unknown-linux-musl", triple, 1);
+        assert_eq!(Target::parse(&text).unwrap().triple, triple);
+    }
+    let delete = format!("x{}", char::from(0x7f));
+    for triple in ["", ".", "_x", "x/y", "x y", &delete, "xé"] {
+        let text = x86_64_linux().replacen(
+            "\"x86_64-unknown-linux-musl\"",
+            &toml::Value::String(triple.to_owned()).to_string(),
+            1,
+        );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(
+                "`triple` must start with a lowercase letter or a digit and hold only \
+                 lowercase letters, digits, `_`, `.` and `-`"
+            ),
+            "{triple:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn each_convention_fits_one_pointer_width_and_its_arch() {
+    let cases = [
+        ("sysv64", "x86_64", 64),
+        ("win64", "x86_64", 64),
+        ("aapcs64", "aarch64", 64),
+        ("apple-aapcs64", "aarch64", 64),
+        ("win-arm64", "aarch64", 64),
+        ("lp64d", "riscv64", 64),
+        ("aapcs", "arm", 32),
+        ("aapcs", "armv7", 32),
+        ("aapcs", "thumbv7em", 32),
+    ];
+    let with = |conv: &str, arch: &str, width: u32| {
+        x86_64_linux()
+            .replacen(
+                "call-conv = \"sysv64\"",
+                &format!("call-conv = \"{conv}\""),
+                1,
+            )
+            .replacen("arch = \"x86_64\"", &format!("arch = \"{arch}\""), 1)
+            .replacen("pointer-width = 64", &format!("pointer-width = {width}"), 1)
+            .replacen("pointer = 8", &format!("pointer = {}", width / 8), 1)
+    };
+    for (conv, arch, width) in cases {
+        Target::parse(&with(conv, arch, width)).unwrap();
+        let other = 96 - width;
+        let message = Target::parse(&with(conv, arch, other)).unwrap_err();
+        assert!(
+            message.contains(&format!("needs a `pointer-width` of {width}, not {other}")),
+            "{conv}: {message}"
+        );
+        for wrong in ["x86_64", "aarch64", "riscv64", "arm", "xarm", "wasm32"] {
+            let fits = wrong == arch || (conv == "aapcs" && wrong == "arm");
+            let parsed = Target::parse(&with(conv, wrong, width));
+            if fits {
+                parsed.unwrap();
+            } else {
+                let message = parsed.unwrap_err();
+                assert!(
+                    message.contains(&format!("is not a convention of `arch` `{wrong}`")),
+                    "{conv} on {wrong}: {message}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_core_runtime_may_list_hosted_capabilities() {
+    let text = test32().replacen("[\"heap\"]", "[\"heap\", \"fs\", \"net\", \"threads\"]", 1);
+    let target = Target::parse(&text).unwrap();
+    assert!(target.has(Capability::Fs));
+    assert!(target.has(Capability::Threads));
 }
 
 #[test]
