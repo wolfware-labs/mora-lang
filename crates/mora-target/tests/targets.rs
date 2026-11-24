@@ -20,13 +20,19 @@ fn x86_64_linux() -> String {
     std::fs::read_to_string(repo().join("targets/x86_64-linux.toml")).unwrap()
 }
 
-#[test]
-fn every_file_in_targets_is_built_in() {
-    let mut files: Vec<String> = std::fs::read_dir(repo().join("targets"))
+/// The names of the files in `dir`, sorted.
+fn file_names(dir: &Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     files.sort();
+    files
+}
+
+#[test]
+fn every_file_in_targets_is_built_in() {
+    let files = file_names(&repo().join("targets"));
     let mut names: Vec<String> = builtin_names().map(|name| format!("{name}.toml")).collect();
     names.sort();
     assert_eq!(files, names);
@@ -175,11 +181,7 @@ const REJECTED: &[(&str, &str)] = &[
 #[test]
 fn every_rejected_description_names_its_rule() {
     let dir = repo().join("tests/targets/rejected");
-    let mut files: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    files.sort();
+    let files = file_names(&dir);
     let listed: Vec<&str> = REJECTED.iter().map(|(file, _)| *file).collect();
     assert_eq!(files, listed);
     for (file, expected) in REJECTED {
@@ -240,7 +242,7 @@ fn each_convention_fits_one_pointer_width_and_its_arch() {
     };
     for (conv, arch, width) in cases {
         Target::parse(&with(conv, arch, width)).unwrap();
-        let other = 96 - width;
+        let other = if width == 64 { 32 } else { 64 };
         let message = Target::parse(&with(conv, arch, other)).unwrap_err();
         assert!(
             message.contains(&format!("needs a `pointer-width` of {width}, not {other}")),
