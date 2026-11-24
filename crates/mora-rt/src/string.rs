@@ -243,7 +243,9 @@ mod tests {
     #[test]
     fn a_heap_string_takes_its_header_and_its_bytes() {
         let string = new_string(&[b'a'; 40]);
-        assert_eq!(last_allocation(), BYTES_OFFSET + 40);
+        // The debug runtime's record comes on top of the object.
+        let (prefix, _) = crate::pal::block(BYTES_OFFSET + 40, OBJECT_ALIGN).unwrap();
+        assert_eq!(last_allocation(), prefix + BYTES_OFFSET + 40);
         assert_eq!(string.len(), 40);
     }
 
