@@ -507,13 +507,6 @@ mod tests {
         (block as usize - block_prefix(align), bytes, memory_align)
     }
 
-    /// `block`, which the recorded path returned, after checking that the
-    /// allocator did not refuse it.
-    fn handed_out(block: *mut u8) -> *mut u8 {
-        assert!(!block.is_null(), "the allocator refused the block");
-        block
-    }
-
     #[test]
     fn a_record_takes_a_prefix_padded_to_the_alignment() {
         let expect = |prefix, size, align| (prefix, Layout::from_size_align(size, align).unwrap());
@@ -587,14 +580,16 @@ mod tests {
             // is used only within its size and freed with the size and
             // alignment of its last resize.
             unsafe {
-                let block = handed_out(alloc_recorded(24, align));
+                let block = alloc_recorded(24, align);
+                assert!(!block.is_null());
                 let prefix = record_prefix(align);
                 assert_eq!(last_allocation(), (prefix + 24, prefix));
                 assert_eq!(block as usize % align, 0);
                 assert_eq!(record(block).read(), [24, align]);
                 block.write_bytes(7, 24);
                 let old = block;
-                let block = handed_out(realloc_recorded(block, 24, align, 3000));
+                let block = realloc_recorded(block, 24, align, 3000);
+                assert!(!block.is_null());
                 assert_eq!(last_resize(), (old as usize - prefix, prefix + 24, prefix));
                 assert_eq!(last_allocation(), (prefix + 3000, prefix));
                 assert_eq!(block as usize % align, 0);
@@ -602,7 +597,8 @@ mod tests {
                 assert_eq!(*block.add(23), 7);
                 block.add(24).write_bytes(9, 3000 - 24);
                 let old = block;
-                let block = handed_out(realloc_recorded(block, 3000, align, 40));
+                let block = realloc_recorded(block, 3000, align, 40);
+                assert!(!block.is_null());
                 assert_eq!(
                     last_resize(),
                     (old as usize - prefix, prefix + 3000, prefix)
@@ -621,7 +617,8 @@ mod tests {
         // the block is kept when the resize fails and freed with its layout.
         unsafe {
             assert!(alloc_recorded(16, 3).is_null());
-            let block = handed_out(alloc_recorded(16, 8));
+            let block = alloc_recorded(16, 8);
+            assert!(!block.is_null());
             block.write_bytes(7, 16);
             assert!(realloc_recorded(block, 16, 8, usize::MAX - 4).is_null());
             assert_eq!((record(block).read(), *block.add(15)), ([16, 8], 7));
@@ -645,7 +642,11 @@ mod tests {
     #[ignore = "runs in a child process"]
     fn child_free_recorded_with_another_size() {
         // SAFETY: the check ends the process before the free.
-        only_in_child(|| unsafe { free_recorded(handed_out(alloc_recorded(16, 8)), 24, 8) });
+        only_in_child(|| unsafe {
+            let block = alloc_recorded(16, 8);
+            assert!(!block.is_null());
+            free_recorded(block, 24, 8);
+        });
     }
 
     #[test]
@@ -653,7 +654,9 @@ mod tests {
     fn child_realloc_recorded_with_another_alignment() {
         // SAFETY: the check ends the process before the resize.
         only_in_child(|| unsafe {
-            let _ = realloc_recorded(handed_out(alloc_recorded(16, 8)), 16, 64, 32);
+            let block = alloc_recorded(16, 8);
+            assert!(!block.is_null());
+            let _ = realloc_recorded(block, 16, 64, 32);
         });
     }
 
