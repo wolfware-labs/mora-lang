@@ -9,6 +9,7 @@ mod runtime;
 mod standin;
 mod strings;
 
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
@@ -21,8 +22,8 @@ use cranelift_module::{FuncId, Linkage, Module, ModuleError, default_libcall_nam
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, TerminatorKind};
-use mora_target::{CallConv, ObjectFormat, Target};
-use target_lexicon::Triple;
+use mora_target::{CallConv, Endian, ObjectFormat, Target};
+use target_lexicon::{Architecture, Endianness, Triple};
 
 use self::runtime::{Call, Runtime};
 use crate::abi::FnAbi;
@@ -113,6 +114,69 @@ fn call_conv(target: &Target) -> Result<IsaCallConv, CodegenError> {
     }
 }
 
+/// Checks, before Cranelift sees `triple`, that it has the pointer width and
+/// the byte order of `target` and names the instruction set of its `arch`:
+/// Cranelift generates code from the triple, while layouts follow the
+/// description (§19.4 rule 2).
+///
+/// # Errors
+///
+/// [`CodegenError::UnsupportedTarget`], naming the triple's value and the
+/// description's, for the first of the three that differs. A triple whose
+/// architecture has no known pointer width or byte order is left to the
+/// instruction-set check.
+fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
+    if let Ok(width) = triple.pointer_width()
+        && u32::from(width.bits()) != target.pointer_width
+    {
+        return Err(unsupported(
+            target,
+            format!(
+                "the triple `{}` has {}-bit pointers, but `pointer-width` is {}",
+                target.triple,
+                width.bits(),
+                target.pointer_width
+            ),
+        ));
+    }
+    if let Ok(order) = triple.endianness() {
+        let big = order == Endianness::Big;
+        if big != (target.endian == Endian::Big) {
+            let name = |big: bool| if big { "big" } else { "little" };
+            return Err(unsupported(
+                target,
+                format!(
+                    "the triple `{}` is {}-endian, but `endian` is {}",
+                    target.triple,
+                    name(big),
+                    name(!big)
+                ),
+            ));
+        }
+    }
+    let set = instruction_set(triple.architecture);
+    if set != target.arch {
+        return Err(unsupported(
+            target,
+            format!(
+                "the triple `{}` names the instruction set {set}, but `arch` is {}",
+                target.triple, target.arch
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The instruction set `architecture` belongs to, spelled as a description's
+/// `arch`: the architecture's own name, except that a 64-bit RISC-V triple
+/// such as `riscv64gc` names its extensions on top of `riscv64`.
+fn instruction_set(architecture: Architecture) -> Cow<'static, str> {
+    match architecture {
+        Architecture::Riscv64(_) => Cow::Borrowed("riscv64"),
+        other => other.into_str(),
+    }
+}
+
 /// Cranelift's `opt_level` setting for `profile`.
 fn opt_level(profile: Profile) -> &'static str {
     match profile {
@@ -127,8 +191,9 @@ fn opt_level(profile: Profile) -> &'static str {
 /// # Errors
 ///
 /// [`CodegenError::UnsupportedTarget`] when Cranelift cannot generate for
-/// the target, or when the convention its triple implies is not the one the
-/// description names.
+/// the target, when the triple's pointer width, byte order or instruction
+/// set is not the description's (see [`check_triple`]), or when the
+/// convention its triple implies is not the one the description names.
 fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, CodegenError> {
     let call_conv = call_conv(target)?;
     let mut flags = settings::builder();
@@ -156,6 +221,7 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
             format!("`{}` is not a target triple: {error}", target.triple),
         )
     })?;
+    check_triple(target, &triple)?;
     let isa = isa::lookup(triple)
         .map_err(|error| unsupported(target, error))?
         .finish(settings::Flags::new(flags))
@@ -630,6 +696,8 @@ mod tests {
         );
         let mut disabled = x86_64();
         disabled.triple = "s390x-unknown-linux-gnu".into();
+        disabled.arch = "s390x".into();
+        disabled.endian = Endian::Big;
         is_unsupported(
             isa(&disabled, Profile::Debug, true),
             "Support for this target is disabled",
@@ -653,6 +721,79 @@ mod tests {
             Cranelift.object(&program, &wasm, Profile::Debug),
             Err(CodegenError::UnsupportedTarget { .. })
         ));
+    }
+
+    /// Asserts that `isa` rejects the built-in target `name`, once `change`
+    /// has edited it, for `reason`.
+    fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
+        let mut target = Target::builtin(name).unwrap();
+        change(&mut target);
+        assert_eq!(
+            isa(&target, Profile::Debug, true).err().unwrap(),
+            CodegenError::UnsupportedTarget {
+                target: name.into(),
+                reason: reason.into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_triple_with_other_pointers_is_rejected() {
+        rejects_changed(
+            "aarch64-linux",
+            |target| target.triple = "aarch64-unknown-linux-gnu_ilp32".into(),
+            "the triple `aarch64-unknown-linux-gnu_ilp32` has 32-bit pointers, \
+             but `pointer-width` is 64",
+        );
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "x86_64-unknown-linux-gnux32".into(),
+            "the triple `x86_64-unknown-linux-gnux32` has 32-bit pointers, \
+             but `pointer-width` is 64",
+        );
+    }
+
+    #[test]
+    fn a_triple_of_the_other_byte_order_is_rejected() {
+        // Cranelift asserts, rather than reports, that an aarch64 triple is
+        // little-endian.
+        rejects_changed(
+            "aarch64-linux",
+            |target| target.triple = "aarch64_be-unknown-linux-gnu".into(),
+            "the triple `aarch64_be-unknown-linux-gnu` is big-endian, but `endian` is little",
+        );
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.endian = Endian::Big,
+            "the triple `x86_64-unknown-linux-musl` is little-endian, but `endian` is big",
+        );
+    }
+
+    #[test]
+    fn a_triple_of_another_instruction_set_is_rejected() {
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "aarch64-unknown-linux-musl".into(),
+            "the triple `aarch64-unknown-linux-musl` names the instruction set aarch64, \
+             but `arch` is x86_64",
+        );
+        // An architecture with no known pointer width or byte order.
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "unknown-unknown-linux-musl".into(),
+            "the triple `unknown-unknown-linux-musl` names the instruction set unknown, \
+             but `arch` is x86_64",
+        );
+        // Big-endian on both sides still never reaches Cranelift's assertion.
+        rejects_changed(
+            "aarch64-linux",
+            |target| {
+                target.triple = "aarch64_be-unknown-linux-gnu".into();
+                target.endian = Endian::Big;
+            },
+            "the triple `aarch64_be-unknown-linux-gnu` names the instruction set aarch64_be, \
+             but `arch` is aarch64",
+        );
     }
 
     #[test]
