@@ -805,7 +805,7 @@ mod tests {
 
     /// The triples the backend accepts, each with the built-in target whose
     /// description it agrees with.
-    const ACCEPTED: [(&str, &str); 26] = [
+    const ACCEPTED: [(&str, &str); 29] = [
         ("x86_64-linux", "x86_64-unknown-linux-musl"),
         ("x86_64-linux", "x86_64-unknown-linux-gnu"),
         ("x86_64-linux", "x86_64-pc-linux-gnu"),
@@ -822,6 +822,10 @@ mod tests {
         ("aarch64-macos", "aarch64-unknown-darwin"),
         ("aarch64-macos", "aarch64-apple-macosx"),
         ("aarch64-macos", "aarch64-apple-macosx14.0"),
+        // target-lexicon reads `arm64` as aarch64 and `unknown` as no
+        // environment.
+        ("aarch64-macos", "arm64-apple-darwin"),
+        ("aarch64-macos", "aarch64-apple-macosx-unknown"),
         ("x86_64-windows", "x86_64-pc-windows-gnullvm"),
         ("x86_64-windows", "x86_64-pc-windows-gnu"),
         ("x86_64-windows", "x86_64-pc-windows-msvc"),
@@ -829,6 +833,7 @@ mod tests {
         ("aarch64-windows", "aarch64-pc-windows-gnullvm"),
         ("aarch64-windows", "aarch64-pc-windows-gnu"),
         ("aarch64-windows", "aarch64-pc-windows-msvc"),
+        ("aarch64-linux", "arm64-unknown-linux-gnu"),
         ("x86_64-linux", "x86_64-unknown-linux-musl-elf"),
         ("aarch64-macos", "aarch64-apple-darwin-macho"),
         ("x86_64-windows", "x86_64-pc-windows-msvc-coff"),
@@ -977,6 +982,8 @@ mod tests {
                 ("aarch64-macos", "aarch64-apple-ios-sim"),
                 ("aarch64-macos", "aarch64-apple-ios-macabi"),
                 ("aarch64-macos", "aarch64-apple-tvos"),
+                ("aarch64-macos", "aarch64-apple-watchos"),
+                ("aarch64-macos", "aarch64-apple-visionos"),
                 ("aarch64-macos", "aarch64-apple-xros1.0"),
                 // Darwin's version is the kernel's, which Cranelift would
                 // write as the minimum macOS version.
@@ -997,6 +1004,8 @@ mod tests {
             &[
                 ("riscv64gc-linux", "riscv64gc-apple-darwin"),
                 ("riscv64gc-linux", "riscv64gc-pc-windows-msvc"),
+                ("riscv64gc-linux", "riscv64a23-apple-macosx"),
+                ("riscv64gc-linux", "riscv64a23-pc-windows-gnu"),
             ],
             |triple| {
                 let os = Triple::from_str(triple).unwrap().operating_system;
