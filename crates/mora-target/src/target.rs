@@ -49,6 +49,16 @@ pub enum Endian {
     Big,
 }
 
+impl Endian {
+    /// The value's spelling in a description file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Endian::Little => "little",
+            Endian::Big => "big",
+        }
+    }
+}
+
 /// An object file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

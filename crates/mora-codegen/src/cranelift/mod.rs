@@ -140,16 +140,18 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
         ));
     }
     if let Ok(order) = triple.endianness() {
-        let big = order == Endianness::Big;
-        if big != (target.endian == Endian::Big) {
-            let name = |big: bool| if big { "big" } else { "little" };
+        let endian = match order {
+            Endianness::Little => Endian::Little,
+            Endianness::Big => Endian::Big,
+        };
+        if endian != target.endian {
             return Err(unsupported(
                 target,
                 format!(
                     "the triple `{}` is {}-endian, but `endian` is {}",
                     target.triple,
-                    name(big),
-                    name(!big)
+                    endian.name(),
+                    target.endian.name()
                 ),
             ));
         }
@@ -469,11 +471,15 @@ mod tests {
     use super::*;
     use crate::test_util::{app_of, doubling, func, jit, object_of, symbol, x86_64};
 
-    fn is_unsupported(result: Result<OwnedTargetIsa, CodegenError>, reason: &str) {
+    /// Asserts that `isa` rejects the built-in target `name`, once `change`
+    /// has edited it, for `reason`.
+    fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
+        let mut target = Target::builtin(name).unwrap();
+        change(&mut target);
         assert_eq!(
-            result.err().unwrap(),
+            isa(&target, Profile::Debug, true).err().unwrap(),
             CodegenError::UnsupportedTarget {
-                target: "x86_64-linux".into(),
+                target: name.into(),
                 reason: reason.into(),
             }
         );
@@ -676,65 +682,50 @@ mod tests {
 
     #[test]
     fn unsupported_targets_are_errors() {
-        let mut wasm = x86_64();
-        wasm.object_format = ObjectFormat::Wasm;
-        is_unsupported(
-            isa(&wasm, Profile::Debug, true),
+        let wasm = |target: &mut Target| target.object_format = ObjectFormat::Wasm;
+        rejects_changed(
+            "x86_64-linux",
+            wasm,
             "Cranelift writes no WebAssembly objects",
         );
-        let mut arm = x86_64();
-        arm.call_conv = CallConv::Aapcs;
-        is_unsupported(
-            isa(&arm, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.call_conv = CallConv::Aapcs,
             "Cranelift generates no 32-bit Arm code",
         );
-        let mut narrow = x86_64();
-        narrow.pointer_width = 32;
-        is_unsupported(
-            isa(&narrow, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.pointer_width = 32,
             "pointers must be 64 bits wide",
         );
-        let mut disabled = x86_64();
-        disabled.triple = "s390x-unknown-linux-gnu".into();
-        disabled.arch = "s390x".into();
-        disabled.endian = Endian::Big;
-        is_unsupported(
-            isa(&disabled, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| {
+                target.triple = "s390x-unknown-linux-gnu".into();
+                target.arch = "s390x".into();
+                target.endian = Endian::Big;
+            },
             "Support for this target is disabled",
         );
-        let mut garbage = x86_64();
-        garbage.triple = "not a triple".into();
-        is_unsupported(
-            isa(&garbage, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "not a triple".into(),
             "`not a triple` is not a target triple: Unrecognized architecture: not a triple",
         );
-        let mut mismatch = x86_64();
-        mismatch.call_conv = CallConv::Win64;
-        is_unsupported(
-            isa(&mismatch, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.call_conv = CallConv::Win64,
             "the triple implies the system_v convention, not windows_fastcall",
         );
         let db = TestDb::default();
         let project = app_of(&db, "Main(): int { return 7; }\n");
         let program = Program::collect(&db, project).unwrap();
+        let mut target = x86_64();
+        wasm(&mut target);
         assert!(matches!(
-            Cranelift.object(&program, &wasm, Profile::Debug),
+            Cranelift.object(&program, &target, Profile::Debug),
             Err(CodegenError::UnsupportedTarget { .. })
         ));
-    }
-
-    /// Asserts that `isa` rejects the built-in target `name`, once `change`
-    /// has edited it, for `reason`.
-    fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
-        let mut target = Target::builtin(name).unwrap();
-        change(&mut target);
-        assert_eq!(
-            isa(&target, Profile::Debug, true).err().unwrap(),
-            CodegenError::UnsupportedTarget {
-                target: name.into(),
-                reason: reason.into(),
-            }
-        );
     }
 
     #[test]

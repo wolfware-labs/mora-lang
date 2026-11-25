@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mora_target::{Capability, Error, Target, builtin_names};
+use mora_target::{Capability, Endian, Error, Target, builtin_names};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -315,6 +315,18 @@ fn errors_spell_values_as_the_file_does() {
             message.contains(&format!("capability {capability} is listed twice")),
             "{capability}: {message}"
         );
+    }
+}
+
+#[test]
+fn a_byte_order_is_named_as_the_file_spells_it() {
+    for endian in [Endian::Little, Endian::Big] {
+        let text = x86_64_linux().replacen(
+            "endian = \"little\"",
+            &format!("endian = \"{}\"", endian.name()),
+            1,
+        );
+        assert_eq!(Target::parse(&text).unwrap().endian, endian);
     }
 }
 
