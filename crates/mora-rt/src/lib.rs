@@ -18,4 +18,8 @@ mod test_util;
 pub use entry::run_entry;
 pub use mora_rt_core::DEBUG;
 pub use pal::block_prefix;
+// The debug runtime's allocation path, for the benchmarks, which build the
+// release runtime.
+#[doc(hidden)]
+pub use pal::{alloc_recorded, free_recorded};
 pub use symbols::jit_symbols;

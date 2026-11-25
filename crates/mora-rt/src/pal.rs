@@ -41,17 +41,6 @@ pub const fn block_prefix(align: usize) -> usize {
     if DEBUG { record_prefix(align) } else { 0 }
 }
 
-/// Where a block of `size` bytes aligned to `align` starts in the memory the
-/// global allocator hands out, and the layout of that memory; `None` when no
-/// such layout exists. The release runtime asks for the block alone, and the
-/// debug runtime for the block with its record in front ([`recorded`]).
-fn block(size: usize, align: usize) -> Option<(usize, Layout)> {
-    if DEBUG {
-        return recorded(size, align);
-    }
-    Some((0, Layout::from_size_align(size, align).ok()?))
-}
-
 /// Where a block of `size` bytes aligned to `align` starts in memory that
 /// holds its [`Record`] in front of it, in a prefix of [`record_prefix`]
 /// bytes, and the layout of that memory; `None` when no such layout exists.
@@ -133,24 +122,68 @@ fn refuses_zero(size: usize, what: &str) -> bool {
 /// Reports a misuse of the platform interface, a compiler or runtime bug
 /// (§10.11): writes `internal error: <message>` to the diagnostic stream and
 /// aborts. A user panic would run the panic path, where a test that expects
-/// a panic would take the bug for it. The message is written as it is
-/// formatted, building nothing on the heap.
+/// a panic would take the bug for it. The line is formatted into a [`Line`]
+/// on the stack, since this runs inside the allocator, and written at once,
+/// so that no other output lands inside it.
 fn misuse(message: fmt::Arguments<'_>) -> ! {
-    // `DiagnosticStream` never fails.
-    let _ = fmt::Write::write_fmt(
-        &mut DiagnosticStream,
-        format_args!("internal error: {message}\n"),
-    );
+    let mut line = Line::new();
+    // A message too long for the line is cut, which `finish` marks.
+    let _ = fmt::Write::write_fmt(&mut line, format_args!("internal error: {message}"));
+    mora_rt_core::pal::write_diagnostic(line.finish());
     mora_pal_abort()
 }
 
-/// The diagnostic stream of the platform interface, as a formatting target.
-struct DiagnosticStream;
+/// The bytes of a [`Line`], its newline included.
+const LINE: usize = 256;
 
-impl fmt::Write for DiagnosticStream {
+/// What ends a [`Line`] whose text did not fit, in place of the newline.
+const CUT: &str = "...\n";
+
+/// A line of text formatted into a fixed buffer, with no heap. Text that
+/// does not fit is cut between two characters, and nothing is added after
+/// the cut.
+struct Line {
+    /// The text, then room for [`CUT`].
+    bytes: [u8; LINE],
+    /// The bytes of text written.
+    len: usize,
+    /// Whether some text did not fit.
+    cut: bool,
+}
+
+impl Line {
+    /// An empty line.
+    const fn new() -> Self {
+        Self {
+            bytes: [0; LINE],
+            len: 0,
+            cut: false,
+        }
+    }
+
+    /// The text, ended by a newline, or by [`CUT`] when some text did not
+    /// fit.
+    fn finish(&mut self) -> &[u8] {
+        let end: &[u8] = if self.cut { CUT.as_bytes() } else { b"\n" };
+        let len = self.len + end.len();
+        self.bytes[self.len..len].copy_from_slice(end);
+        &self.bytes[..len]
+    }
+}
+
+impl fmt::Write for Line {
+    /// Adds what fits of `text`; an error once some of it does not, which
+    /// stops the formatting.
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        mora_rt_core::pal::write_diagnostic(text.as_bytes());
-        Ok(())
+        if self.cut {
+            return Err(fmt::Error);
+        }
+        let room = LINE - CUT.len() - self.len;
+        let fits = text.floor_char_boundary(room);
+        self.bytes[self.len..self.len + fits].copy_from_slice(&text.as_bytes()[..fits]);
+        self.len += fits;
+        self.cut = fits < text.len();
+        if self.cut { Err(fmt::Error) } else { Ok(()) }
     }
 }
 
@@ -163,19 +196,101 @@ impl fmt::Write for DiagnosticStream {
 /// `size` is not zero and `align` is a power of two.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
+    // SAFETY: the caller's contract is the same.
+    unsafe { alloc_block(size, align) }
+}
+
+/// The body of [`mora_pal_alloc`]. Each `mora_pal_*` function only calls a
+/// body under a name of its own: every test binary links the unmangled
+/// symbol, and a coverage report keeps the counts of one binary for it, but
+/// adds up those of a mangled function across binaries. Inlined into the
+/// exported function, so the export costs no extra call.
+///
+/// # Safety
+///
+/// As for [`mora_pal_alloc`].
+#[inline]
+unsafe fn alloc_block(size: usize, align: usize) -> *mut u8 {
     if refuses_zero(size, "allocated") {
         return ptr::null_mut();
     }
-    let Some((prefix, layout)) = block(size, align) else {
+    if DEBUG {
+        // SAFETY: the caller's contract is the same.
+        return unsafe { alloc_recorded(size, align) };
+    }
+    let Ok(layout) = Layout::from_size_align(size, align) else {
         return ptr::null_mut();
     };
     // SAFETY: the layout is not zero-sized.
-    let start = unsafe { alloc::alloc(layout) };
-    if DEBUG {
-        // SAFETY: the memory has the layout `recorded` gives.
-        return unsafe { hand_out(start, prefix, size, align) };
+    unsafe { alloc::alloc(layout) }
+}
+
+/// The debug runtime's `mora_pal_alloc` past the zero-size check: allocates
+/// a block of `size` bytes aligned to `align` with its [`Record`] in front;
+/// null when the global allocator refuses or no such layout exists. Public,
+/// and hidden, for the benchmarks, which build the release runtime.
+///
+/// # Safety
+///
+/// `size` is not zero.
+#[doc(hidden)]
+pub unsafe fn alloc_recorded(size: usize, align: usize) -> *mut u8 {
+    let Some((prefix, layout)) = recorded(size, align) else {
+        return ptr::null_mut();
+    };
+    // SAFETY: the layout is not zero-sized, and the memory it gets has the
+    // layout `recorded` gives.
+    unsafe { hand_out(alloc::alloc(layout), prefix, size, align) }
+}
+
+/// The debug runtime's `mora_pal_realloc` past the zero-size check: checks
+/// the block's record, then resizes it with its record in front; null, with
+/// the block untouched, when the global allocator refuses or no layout of
+/// `new_size` exists.
+///
+/// # Safety
+///
+/// `ptr` came from [`alloc_recorded`] or `realloc_recorded`, and `new_size`
+/// is not zero.
+unsafe fn realloc_recorded(
+    ptr: *mut u8,
+    old_size: usize,
+    align: usize,
+    new_size: usize,
+) -> *mut u8 {
+    // SAFETY: the caller guarantees where the block came from.
+    unsafe { check(ptr, old_size, align, "resized") };
+    // Both layouts have the same prefix, which depends on the alignment
+    // alone.
+    let (Some((prefix, old)), Some((_, new))) =
+        (recorded(old_size, align), recorded(new_size, align))
+    else {
+        return ptr::null_mut();
+    };
+    // SAFETY: the record matched, so the block's memory starts `prefix`
+    // bytes before it with the old layout; the new layout is valid and not
+    // zero-sized, and the memory it gets has the layout `recorded` gives.
+    unsafe {
+        let start = alloc::realloc(ptr.sub(prefix), old, new.size());
+        hand_out(start, prefix, new_size, align)
     }
-    start
+}
+
+/// The debug runtime's `mora_pal_free`: checks the block's record, then
+/// frees the block with it. Public, and hidden, for the benchmarks.
+///
+/// # Safety
+///
+/// `ptr` came from [`alloc_recorded`] or `realloc_recorded`.
+#[doc(hidden)]
+pub unsafe fn free_recorded(ptr: *mut u8, size: usize, align: usize) {
+    // SAFETY: the caller guarantees where the block came from.
+    unsafe { check(ptr, size, align, "freed") };
+    if let Some((prefix, layout)) = recorded(size, align) {
+        // SAFETY: the record matched, so the block's memory starts `prefix`
+        // bytes before it with this layout.
+        unsafe { alloc::dealloc(ptr.sub(prefix), layout) }
+    }
 }
 
 /// Resizes through the global allocator; see [`mora_rt_core::pal::realloc`].
@@ -194,29 +309,36 @@ pub unsafe extern "C" fn mora_pal_realloc(
     align: usize,
     new_size: usize,
 ) -> *mut u8 {
+    // SAFETY: the caller's contract is the same.
+    unsafe { realloc_block(ptr, old_size, align, new_size) }
+}
+
+/// The body of [`mora_pal_realloc`]; see [`alloc_block`] for why it is
+/// apart.
+///
+/// # Safety
+///
+/// As for [`mora_pal_realloc`].
+#[inline]
+unsafe fn realloc_block(ptr: *mut u8, old_size: usize, align: usize, new_size: usize) -> *mut u8 {
     if refuses_zero(new_size, "resized a block to") {
         return ptr::null_mut();
     }
     if DEBUG {
-        // SAFETY: the caller guarantees where the block came from.
-        unsafe { check(ptr, old_size, align, "resized") };
+        // SAFETY: the caller's contract is the same.
+        return unsafe { realloc_recorded(ptr, old_size, align, new_size) };
     }
     // `realloc` needs the new size to form a valid layout with the same
-    // alignment; a size too large for one is out of memory. Both layouts
-    // have the same prefix, which depends on the alignment alone.
-    let (Some((prefix, old)), Some((_, new))) = (block(old_size, align), block(new_size, align))
-    else {
+    // alignment; a size too large for one is out of memory.
+    let (Ok(old), Ok(_)) = (
+        Layout::from_size_align(old_size, align),
+        Layout::from_size_align(new_size, align),
+    ) else {
         return ptr::null_mut();
     };
-    // SAFETY: the caller guarantees the block's size and alignment, so its
-    // memory starts `prefix` bytes before it with the old layout; the new
-    // layout is valid and not zero-sized.
-    let start = unsafe { alloc::realloc(ptr.sub(prefix), old, new.size()) };
-    if DEBUG {
-        // SAFETY: the memory has the layout `recorded` gives.
-        return unsafe { hand_out(start, prefix, new_size, align) };
-    }
-    start
+    // SAFETY: the caller guarantees the block's layout; the new one is valid
+    // and not zero-sized.
+    unsafe { alloc::realloc(ptr, old, new_size) }
 }
 
 /// Frees through the global allocator; see [`mora_rt_core::pal::free`].
@@ -228,14 +350,24 @@ pub unsafe extern "C" fn mora_pal_realloc(
 /// `align`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mora_pal_free(ptr: *mut u8, size: usize, align: usize) {
+    // SAFETY: the caller's contract is the same.
+    unsafe { free_block(ptr, size, align) }
+}
+
+/// The body of [`mora_pal_free`]; see [`alloc_block`] for why it is apart.
+///
+/// # Safety
+///
+/// As for [`mora_pal_free`].
+#[inline]
+unsafe fn free_block(ptr: *mut u8, size: usize, align: usize) {
     if DEBUG {
-        // SAFETY: the caller guarantees where the block came from.
-        unsafe { check(ptr, size, align, "freed") };
+        // SAFETY: the caller's contract is the same.
+        return unsafe { free_recorded(ptr, size, align) };
     }
-    if let Some((prefix, layout)) = block(size, align) {
-        // SAFETY: the caller guarantees the block's size and alignment, so
-        // its memory starts `prefix` bytes before it with this layout.
-        unsafe { alloc::dealloc(ptr.sub(prefix), layout) }
+    if let Ok(layout) = Layout::from_size_align(size, align) {
+        // SAFETY: the caller guarantees the block's layout.
+        unsafe { alloc::dealloc(ptr, layout) }
     }
 }
 
@@ -244,13 +376,26 @@ pub unsafe extern "C" fn mora_pal_free(ptr: *mut u8, size: usize, align: usize) 
 /// §19.4 gives a platform that does not know. The bundled allocator of §13.1,
 /// which arrives in M2.3, answers with the size class it hands out.
 #[unsafe(no_mangle)]
-pub extern "C" fn mora_pal_good_size(size: usize, _align: usize) -> usize {
+pub extern "C" fn mora_pal_good_size(size: usize, align: usize) -> usize {
+    good_size(size, align)
+}
+
+/// The body of [`mora_pal_good_size`]; see [`alloc_block`] for why it is
+/// apart.
+#[inline]
+fn good_size(size: usize, _align: usize) -> usize {
     size
 }
 
 /// Aborts the process; see [`mora_rt_core::pal::abort`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_abort() -> ! {
+    abort()
+}
+
+/// The body of [`mora_pal_abort`]; see [`alloc_block`] for why it is apart.
+#[inline]
+fn abort() -> ! {
     // A build instrumented for coverage writes its counts at exit, which an
     // abort skips: write them first, since the tests of the paths that
     // abort run them in a child process. Kept inside this function, which
@@ -276,6 +421,18 @@ pub extern "C" fn mora_pal_abort() -> ! {
 /// `ptr` and `len` describe readable memory.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
+    // SAFETY: the caller's contract is the same.
+    unsafe { write_diagnostic(ptr, len) }
+}
+
+/// The body of [`mora_pal_write_diagnostic`]; see [`alloc_block`] for why it
+/// is apart.
+///
+/// # Safety
+///
+/// As for [`mora_pal_write_diagnostic`].
+#[inline]
+unsafe fn write_diagnostic(ptr: *const u8, len: usize) {
     // SAFETY: the caller guarantees the bytes are readable.
     let text = unsafe { std::slice::from_raw_parts(ptr, len) };
     // Nothing useful can be done when stderr is gone.
@@ -285,6 +442,12 @@ pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
 /// Nanoseconds since the first call; see [`mora_rt_core::pal::now`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_now() -> u64 {
+    now()
+}
+
+/// The body of [`mora_pal_now`]; see [`alloc_block`] for why it is apart.
+#[inline]
+fn now() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     nanos(START.get_or_init(Instant::now).elapsed())
 }
@@ -301,6 +464,12 @@ fn nanos(elapsed: Duration) -> u64 {
 /// else to wait for.
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_wait(timeout_ns: u64) {
+    wait(timeout_ns)
+}
+
+/// The body of [`mora_pal_wait`]; see [`alloc_block`] for why it is apart.
+#[inline]
+fn wait(timeout_ns: u64) {
     if timeout_ns == FOREVER {
         thread::park();
     } else {
@@ -329,17 +498,17 @@ mod tests {
 
     #[test]
     fn only_the_debug_runtime_asks_for_the_record() {
-        let plain = |size, align| Some((0, Layout::from_size_align(size, align).unwrap()));
         for align in [1, 8, 64] {
-            if DEBUG {
-                assert_eq!(block(24, align), recorded(24, align));
-                assert_eq!(block_prefix(align), record_prefix(align));
-            } else {
-                assert_eq!(block(24, align), plain(24, align));
-                assert_eq!(block_prefix(align), 0);
+            let expected = if DEBUG { record_prefix(align) } else { 0 };
+            assert_eq!(block_prefix(align), expected);
+            // SAFETY: the size is not zero and the alignment a power of two;
+            // the block is freed with them.
+            unsafe {
+                let block = pal::alloc(24, align).unwrap();
+                assert_eq!(last_allocation(), expected + 24);
+                pal::free(block, 24, align);
             }
         }
-        assert_eq!(block(24, 3), None);
     }
 
     /// Hands out a recorded block of `size` bytes aligned to `align` from
@@ -378,6 +547,74 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[test]
+    fn the_record_path_round_trips_in_every_build() {
+        for align in [8, 32, 64, 4096] {
+            // SAFETY: non-zero sizes and a power-of-two alignment; the block
+            // is used only within its size and freed with the size and
+            // alignment of its last resize.
+            unsafe {
+                let block = alloc_recorded(24, align);
+                assert_eq!(last_allocation(), record_prefix(align) + 24);
+                assert_eq!(block as usize % align, 0);
+                assert_eq!(record(block).read(), [24, align]);
+                block.write_bytes(7, 24);
+                let block = realloc_recorded(block, 24, align, 3000);
+                assert_eq!(last_allocation(), record_prefix(align) + 3000);
+                assert_eq!(block as usize % align, 0);
+                assert_eq!(record(block).read(), [3000, align]);
+                assert_eq!(*block.add(23), 7);
+                block.add(24).write_bytes(9, 3000 - 24);
+                let block = realloc_recorded(block, 3000, align, 40);
+                assert_eq!(record(block).read(), [40, align]);
+                assert_eq!((*block.add(23), *block.add(39)), (7, 9));
+                free_recorded(block, 40, align);
+            }
+        }
+    }
+
+    #[test]
+    fn the_record_path_refuses_what_it_cannot_lay_out() {
+        // SAFETY: the alignment and the new size are the cases under test;
+        // the block is kept when the resize fails and freed with its layout.
+        unsafe {
+            assert!(alloc_recorded(16, 3).is_null());
+            let block = alloc_recorded(16, 8);
+            block.write_bytes(7, 16);
+            assert!(realloc_recorded(block, 16, 8, usize::MAX - 4).is_null());
+            assert_eq!((record(block).read(), *block.add(15)), ([16, 8], 7));
+            free_recorded(block, 16, 8);
+        }
+    }
+
+    #[test]
+    fn the_record_path_checks_each_free_and_resize() {
+        aborts_with(
+            "pal::tests::child_free_recorded_with_another_size",
+            "internal error: freed a block of 16 bytes aligned to 8 as 24 bytes aligned to 8",
+        );
+        aborts_with(
+            "pal::tests::child_realloc_recorded_with_another_alignment",
+            "internal error: resized a block of 16 bytes aligned to 8 as 16 bytes aligned to 64",
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in a child process"]
+    fn child_free_recorded_with_another_size() {
+        // SAFETY: the check ends the process before the free.
+        only_in_child(|| unsafe { free_recorded(alloc_recorded(16, 8), 24, 8) });
+    }
+
+    #[test]
+    #[ignore = "runs in a child process"]
+    fn child_realloc_recorded_with_another_alignment() {
+        // SAFETY: the check ends the process before the resize.
+        only_in_child(|| unsafe {
+            let _ = realloc_recorded(alloc_recorded(16, 8), 16, 64, 32);
+        });
     }
 
     #[test]
@@ -434,6 +671,72 @@ mod tests {
     #[ignore = "runs in a child process"]
     fn child_misuse() {
         only_in_child(|| misuse(format_args!("misused {} times", 3)));
+    }
+
+    /// The text of `line` once finished.
+    fn finished(mut line: Line) -> String {
+        String::from_utf8(line.finish().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_line_that_fits_ends_with_a_newline() {
+        let mut line = Line::new();
+        fmt::Write::write_fmt(&mut line, format_args!("misused {} times", 3)).unwrap();
+        assert_eq!(finished(line), "misused 3 times\n");
+    }
+
+    #[test]
+    fn a_line_that_fills_the_buffer_exactly_is_not_cut() {
+        let text = "x".repeat(LINE - CUT.len());
+        let mut line = Line::new();
+        fmt::Write::write_str(&mut line, &text).unwrap();
+        assert_eq!(finished(line), format!("{text}\n"));
+    }
+
+    #[test]
+    fn a_line_too_long_is_cut_and_marked() {
+        let room = LINE - CUT.len();
+        let mut line = Line::new();
+        assert!(fmt::Write::write_str(&mut line, &"x".repeat(room + 1)).is_err());
+        assert_eq!(finished(line), format!("{}{CUT}", "x".repeat(room)));
+    }
+
+    #[test]
+    fn nothing_is_added_to_a_line_once_it_is_cut() {
+        let room = LINE - CUT.len();
+        let mut line = Line::new();
+        let _ = fmt::Write::write_str(&mut line, &"x".repeat(room - 2));
+        assert!(fmt::Write::write_str(&mut line, "yyy").is_err());
+        assert!(fmt::Write::write_str(&mut line, "z").is_err());
+        assert_eq!(finished(line), format!("{}yy{CUT}", "x".repeat(room - 2)));
+    }
+
+    #[test]
+    fn a_line_is_cut_between_characters() {
+        // A three-byte character that would straddle the end of the room.
+        let room = LINE - CUT.len();
+        let mut line = Line::new();
+        let _ = fmt::Write::write_str(&mut line, &"x".repeat(room - 2));
+        assert!(fmt::Write::write_str(&mut line, "\u{20ac}").is_err());
+        // The two bytes left would hold this, but the line is cut.
+        assert!(fmt::Write::write_str(&mut line, "z").is_err());
+        assert_eq!(finished(line), format!("{}{CUT}", "x".repeat(room - 2)));
+    }
+
+    #[test]
+    fn a_misuse_too_long_for_a_line_is_cut() {
+        let room = LINE - CUT.len();
+        let head = "internal error: ";
+        aborts_with(
+            "pal::tests::child_misuse_too_long",
+            &format!("{head}{}{}", "m".repeat(room - head.len()), CUT.trim_end()),
+        );
+    }
+
+    #[test]
+    #[ignore = "runs in a child process"]
+    fn child_misuse_too_long() {
+        only_in_child(|| misuse(format_args!("{}", "m".repeat(LINE))));
     }
 
     #[test]
@@ -639,14 +942,34 @@ mod tests {
     #[test]
     fn the_clock_moves_forward() {
         let first = pal::now().unwrap();
+        // A wait that parked instead would return at once.
+        thread::current().unpark();
         pal::wait(Some(1_000_000));
         assert!(pal::now().unwrap() > first);
     }
 
     #[test]
     fn a_timed_wait_sleeps_for_the_timeout() {
+        // A wait that parked instead would return at once.
+        thread::current().unpark();
         let start = std::time::Instant::now();
         pal::wait(Some(20_000_000));
         assert!(start.elapsed() >= std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn a_wait_without_a_timeout_parks_until_unparked() {
+        let (done, finished) = std::sync::mpsc::channel();
+        let waiter = thread::spawn(move || {
+            pal::wait(None);
+            done.send(()).unwrap();
+        });
+        waiter.thread().unpark();
+        // A wait that slept instead would never end; the test then fails
+        // here, and the process ends with the thread still asleep.
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the wait ended");
+        waiter.join().unwrap();
     }
 }
