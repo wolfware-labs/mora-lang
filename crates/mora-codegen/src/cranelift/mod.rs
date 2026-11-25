@@ -153,6 +153,12 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
             ),
         )
     };
+    let disagrees = |what: String, field: &str, value: &str| {
+        unsupported(
+            target,
+            format!("the triple `{text}` {what}, but `{field}` is {value}"),
+        )
+    };
     let riscv64 = matches!(triple.architecture, Architecture::Riscv64(_));
     let set = match triple.architecture {
         Architecture::X86_64 => "x86_64",
@@ -168,21 +174,17 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
         }
     };
     if set != target.arch {
-        return Err(unsupported(
-            target,
-            format!(
-                "the triple `{text}` names the instruction set {set}, but `arch` is {}",
-                target.arch
-            ),
+        return Err(disagrees(
+            format!("names the instruction set {set}"),
+            "arch",
+            &target.arch,
         ));
     }
     if target.endian != Endian::Little {
-        return Err(unsupported(
-            target,
-            format!(
-                "the triple `{text}` is little-endian, but `endian` is {}",
-                target.endian.name()
-            ),
+        return Err(disagrees(
+            "is little-endian".to_owned(),
+            "endian",
+            target.endian.name(),
         ));
     }
     let (os, format, object_format, environments, accepted) = match triple.operating_system {
@@ -222,10 +224,7 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
         }
     };
     if os != target.os {
-        return Err(unsupported(
-            target,
-            format!("the triple `{text}` is for {os}, but `os` is {}", target.os),
-        ));
+        return Err(disagrees(format!("is for {os}"), "os", &target.os));
     }
     if !environments.contains(&triple.environment) {
         let named = match triple.environment {
@@ -244,12 +243,10 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
         ));
     }
     if object_format != target.object_format {
-        return Err(unsupported(
-            target,
-            format!(
-                "the triple `{text}` gives {format} objects, but `object-format` is {}",
-                target.object_format.name()
-            ),
+        return Err(disagrees(
+            format!("gives {format} objects"),
+            "object-format",
+            target.object_format.name(),
         ));
     }
     Ok(())
@@ -269,9 +266,10 @@ fn opt_level(profile: Profile) -> &'static str {
 /// # Errors
 ///
 /// [`CodegenError::UnsupportedTarget`] when Cranelift cannot generate for
-/// the target or its triple, when the triple does not match the
-/// description (see [`check_triple`]), or when the convention the triple
-/// implies is not the one the description names.
+/// the target, when the triple does not parse, holds a value the backend
+/// does not accept or does not match the description (see
+/// [`check_triple`]), or when the convention the triple implies is not the
+/// one the description names.
 fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, CodegenError> {
     let call_conv = call_conv(target)?;
     let mut flags = settings::builder();
@@ -864,7 +862,8 @@ mod tests {
         // A `macosx` triple with a version writes it as the object's minimum
         // macOS version, so only the ones without a version are the same.
         for (name, triple) in ACCEPTED {
-            if triple.contains("macosx1") {
+            let os = Triple::from_str(triple).unwrap().operating_system;
+            if matches!(os, OperatingSystem::MacOSX(Some(_))) {
                 continue;
             }
             let builtin = Target::builtin(name).unwrap();
