@@ -204,10 +204,13 @@ pub unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
 }
 
 /// The body of [`mora_pal_alloc`]. Each `mora_pal_*` function only calls a
-/// body under a name of its own: every test binary links the unmangled
-/// symbol, and a coverage report keeps the counts of one binary for it, but
-/// adds up those of a mangled function across binaries. Inlined into the
-/// exported function, so the export costs no extra call.
+/// body under a name of its own. A coverage report adds up the counts of a
+/// mangled function across the test binaries, but keeps those of the first
+/// binary it reads for an unmangled symbol. The unit tests of this crate
+/// build the symbol apart from every binary that links the crate, so
+/// `tests/exports.rs` calls each export from such a binary, and its one line
+/// counts whichever binary comes first. Inlined into the exported function,
+/// so the export costs no extra call.
 ///
 /// # Safety
 ///
@@ -400,6 +403,8 @@ pub extern "C" fn mora_pal_abort() -> ! {
 /// The body of [`mora_pal_abort`]; see [`alloc_block`] for why it is apart.
 #[inline]
 fn abort_process() -> ! {
+    #[cfg(test)]
+    crate::test_util::print_diagnostic_writes();
     // A build instrumented for coverage writes its counts at exit, which an
     // abort skips: write them first, since the tests of the paths that
     // abort run them in a child process. Kept inside this function, which
@@ -437,6 +442,9 @@ pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
 /// As for [`mora_pal_write_diagnostic`].
 #[inline]
 unsafe fn write_stderr(ptr: *const u8, len: usize) {
+    // The tests check that an internal error takes one write.
+    #[cfg(test)]
+    crate::test_util::count_diagnostic_write();
     // SAFETY: the caller guarantees the bytes are readable.
     let text = unsafe { std::slice::from_raw_parts(ptr, len) };
     // Nothing useful can be done when stderr is gone.
@@ -486,7 +494,7 @@ mod tests {
     use mora_rt_core::pal;
 
     use super::*;
-    use crate::test_util::{aborts_with, last_allocation, only_in_child};
+    use crate::test_util::{aborts_with, last_allocation, last_free, only_in_child};
 
     #[test]
     fn a_record_takes_a_prefix_padded_to_the_alignment() {
@@ -575,6 +583,8 @@ mod tests {
                 assert_eq!(record(block).read(), [40, align]);
                 assert_eq!((*block.add(23), *block.add(39)), (7, 9));
                 free_recorded(block, 40, align);
+                let prefix = record_prefix(align);
+                assert_eq!(last_free(), (block as usize - prefix, prefix + 40));
             }
         }
     }

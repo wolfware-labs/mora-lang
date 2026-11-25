@@ -1,20 +1,26 @@
 //! Helpers shared by the tests of this crate: a test whose entry point ends
 //! the process, as a panic does, or writes to stdout, runs in a child
 //! process that re-executes the test binary. The test binary's allocator
-//! records the size of the last block each thread asked for.
+//! records the size of the last block each thread asked for, and the last
+//! block it freed.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::io::Write;
 use std::process::{Command, ExitStatus, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::panic::PANIC_EXIT_CODE;
 
 std::thread_local! {
     /// The size of the last block this thread asked the allocator for.
     static LAST_ALLOCATION: Cell<usize> = const { Cell::new(0) };
+    /// The address and size of the last block this thread freed.
+    static LAST_FREE: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
-/// The system allocator, recording the size of each block it hands out.
+/// The system allocator, recording the size of each block it hands out and
+/// each block it takes back.
 struct Recording;
 
 // SAFETY: every call goes to `System` as it came.
@@ -40,6 +46,7 @@ unsafe impl GlobalAlloc for Recording {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _ = LAST_FREE.try_with(|last| last.set((ptr as usize, layout.size())));
         // SAFETY: the block came from `System` with this layout.
         unsafe { System.dealloc(ptr, layout) }
     }
@@ -51,6 +58,11 @@ static ALLOCATOR: Recording = Recording;
 /// The size of the last block this thread asked the allocator for.
 pub(crate) fn last_allocation() -> usize {
     LAST_ALLOCATION.get()
+}
+
+/// The address and size of the last block this thread freed.
+pub(crate) fn last_free() -> (usize, usize) {
+    LAST_FREE.get()
 }
 
 /// Set in the child process of a test.
@@ -85,9 +97,31 @@ pub(crate) fn panics_with(test: &str, message: &str) {
     );
 }
 
+/// The writes to the diagnostic stream so far in this process.
+static DIAGNOSTIC_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+/// What a child process prints on stdout, before the count of its writes to
+/// the diagnostic stream, when it aborts.
+const WRITES_LINE: &str = "diagnostic writes: ";
+
+/// Counts a write to the diagnostic stream.
+pub(crate) fn count_diagnostic_write() {
+    DIAGNOSTIC_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Prints the writes to the diagnostic stream so far on stdout, as the
+/// process is about to abort, for [`aborts_with`] to read.
+pub(crate) fn print_diagnostic_writes() {
+    let mut stdout = std::io::stdout();
+    let writes = DIAGNOSTIC_WRITES.load(Ordering::Relaxed);
+    let _ = writeln!(stdout, "{WRITES_LINE}{writes}");
+    let _ = stdout.flush();
+}
+
 /// Runs the ignored test `test` of this crate in a child process, and
-/// checks that it aborts after printing `message` and nothing else, as the
-/// runtime reports its own bugs (§10.11).
+/// checks that it aborts after printing `message` and nothing else, in a
+/// single write so that no other output lands inside it, as the runtime
+/// reports its own bugs (§10.11).
 pub(crate) fn aborts_with(test: &str, message: &str) {
     let out = child(test);
     assert!(aborted(out.status), "{test}: {}", out.status);
@@ -96,6 +130,11 @@ pub(crate) fn aborts_with(test: &str, message: &str) {
         format!("{message}\n"),
         "{test}"
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let writes = stdout
+        .rsplit_once(WRITES_LINE)
+        .map(|(_, count)| count.trim_end());
+    assert_eq!(writes, Some("1"), "{test}: {stdout}");
 }
 
 /// Whether a process ended in an abort: `SIGABRT`, signal 6 on Linux and
