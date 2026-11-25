@@ -14,3 +14,10 @@ workspace = true
 [dependencies]
 serde.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "targets"
+harness = false

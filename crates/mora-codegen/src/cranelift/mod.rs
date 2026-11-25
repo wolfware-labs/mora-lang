@@ -24,7 +24,7 @@ use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, TerminatorKind};
 use mora_target::{CallConv, Endian, ObjectFormat, Target};
 use target_lexicon::{
-    Aarch64Architecture, Architecture, BinaryFormat, Endianness, OperatingSystem,
+    Aarch64Architecture, Architecture, BinaryFormat, Endianness, Environment, OperatingSystem,
     Riscv64Architecture, Triple,
 };
 
@@ -119,10 +119,13 @@ fn call_conv(target: &Target) -> Result<IsaCallConv, CodegenError> {
 
 /// Checks, before Cranelift sees `triple`, that it has the pointer width and
 /// the byte order of `target`, names the instruction set of its `arch`, is
-/// one Cranelift generates for (see [`cranelift_refuses`]), and gives the
-/// object format and the operating system of its `object-format` and `os`:
-/// Cranelift generates code and writes objects from the triple, while
-/// layouts and `@Cfg` follow the description (§19.4 rule 2).
+/// one Cranelift generates for (see [`cranelift_refuses`]), gives the object
+/// format and the operating system of its `object-format` and `os`, and
+/// names no environment that changes the object while a description cannot
+/// name it (see [`apple_platform_environment`]): Cranelift generates code
+/// and writes objects from the triple, while layouts and `@Cfg` follow the
+/// description (§19.4 rule 2). The triple's vendor and any other
+/// environment change no byte of the object, so they are not compared.
 ///
 /// # Errors
 ///
@@ -171,7 +174,7 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
             ),
         ));
     }
-    if let Some(reason) = cranelift_refuses(triple.architecture, &target.triple) {
+    if let Some(reason) = cranelift_refuses(triple, &target.triple) {
         return Err(unsupported(target, reason));
     }
     if object_format(triple.binary_format) != Some(target.object_format) {
@@ -195,28 +198,67 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
             ),
         ));
     }
+    if apple_platform_environment(triple.environment) {
+        return Err(unsupported(
+            target,
+            format!(
+                "the triple `{}` names the environment {}, which gives Apple objects \
+                 another platform and which a description cannot name",
+                target.triple, triple.environment
+            ),
+        ));
+    }
     Ok(())
 }
 
-/// Why Cranelift cannot generate for `architecture`, the architecture of
-/// `triple`: an instruction set that `isa::lookup` accepts and then asserts
-/// on, or one Cranelift generates another variant of than the one named.
-fn cranelift_refuses(architecture: Architecture, triple: &str) -> Option<String> {
-    match architecture {
+/// Why Cranelift cannot generate for `triple`, spelled `text`: an
+/// instruction set that `isa::lookup` accepts and then asserts on, one
+/// Cranelift generates another variant of than the one named, an object
+/// format `ObjectBuilder::new` refuses for the instruction set, or soft
+/// floats, which Cranelift ignores.
+fn cranelift_refuses(triple: &Triple, text: &str) -> Option<String> {
+    match triple.architecture {
         // The aarch64 backend asserts that the triple is little-endian.
         Architecture::Aarch64(Aarch64Architecture::Aarch64be) => Some(format!(
-            "Cranelift generates no big-endian aarch64 code, which the triple `{triple}` asks for"
+            "Cranelift generates no big-endian aarch64 code, which the triple `{text}` asks for"
         )),
         // The riscv64 backend needs G and passes floats in registers (LP64D),
         // whatever the triple says.
         Architecture::Riscv64(Riscv64Architecture::Riscv64 | Riscv64Architecture::Riscv64imac) => {
             Some(format!(
                 "Cranelift generates riscv64 code only for the G extensions (IMAFD) with \
-                 hardware floats, which the triple `{triple}` does not name"
+                 hardware floats, which the triple `{text}` does not name"
             ))
         }
+        // `ObjectBuilder::new` writes riscv64 code only in ELF objects.
+        Architecture::Riscv64(_)
+            if matches!(
+                triple.binary_format,
+                BinaryFormat::Coff | BinaryFormat::Macho
+            ) =>
+        {
+            Some(format!(
+                "Cranelift writes riscv64 code only in ELF objects, not in the {} objects \
+                 the triple `{text}` asks for",
+                triple.binary_format
+            ))
+        }
+        // Every backend passes floats in float registers, whatever the
+        // triple says.
+        _ if triple.environment == Environment::Softfloat => Some(format!(
+            "Cranelift generates code with hardware floats, while the triple `{text}` asks \
+             for soft floats"
+        )),
         _ => None,
     }
+}
+
+/// Whether `environment` is one that makes Cranelift write another Mach-O
+/// build platform for an Apple operating system (the simulator and Mac
+/// Catalyst ones), which a description has no field for, so that `@Cfg`
+/// could not tell the two objects apart.
+fn apple_platform_environment(environment: Environment) -> bool {
+    matches!(environment, Environment::Sim | Environment::Macabi)
 }
 
 /// The description's `object-format` of the objects Cranelift writes for
@@ -230,12 +272,18 @@ fn object_format(format: BinaryFormat) -> Option<ObjectFormat> {
     }
 }
 
-/// The operating system `os` spelled as a description's `os`: `macos` for
-/// both Darwin and macOS, which a triple may name either way, and the
-/// triple's own spelling for any other.
+/// The operating system `os` spelled as a description's `os`: an Apple
+/// operating system by its name without the version the triple may give
+/// (which reaches the object as its minimum version), `macos` for both
+/// Darwin and macOS and `visionos` for both visionOS and xrOS, which a
+/// triple may name either way, and the triple's own spelling for any other.
 fn operating_system(os: OperatingSystem) -> Cow<'static, str> {
     match os {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => Cow::Borrowed("macos"),
+        OperatingSystem::IOS(_) => Cow::Borrowed("ios"),
+        OperatingSystem::TvOS(_) => Cow::Borrowed("tvos"),
+        OperatingSystem::WatchOS(_) => Cow::Borrowed("watchos"),
+        OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => Cow::Borrowed("visionos"),
         other => other.into_str(),
     }
 }
@@ -536,7 +584,7 @@ mod tests {
     use mora_hir::Construct;
     use mora_hir::test_support::{TestDb, unsupported_of};
     use mora_mir::LocalTy;
-    use mora_target::builtin_names;
+    use mora_target::{LinkerFlavor, builtin_names};
     use object::{Object, ObjectSection, ObjectSymbol};
 
     use super::*;
@@ -960,6 +1008,149 @@ mod tests {
         let mut macos = Target::builtin("x86_64-macos").unwrap();
         macos.triple = "x86_64-apple-macosx10.12.0".into();
         assert!(isa(&macos, Profile::Debug, true).is_ok());
+    }
+
+    #[test]
+    fn an_apple_triple_names_its_operating_system_without_the_version() {
+        let cases = [
+            ("aarch64-apple-macosx14.0", "macos"),
+            ("aarch64-apple-darwin23.1", "macos"),
+            ("aarch64-apple-ios17.0", "ios"),
+            ("aarch64-apple-ios", "ios"),
+            ("aarch64-apple-tvos17.0", "tvos"),
+            ("aarch64-apple-watchos10.0", "watchos"),
+            ("aarch64-apple-visionos1.0", "visionos"),
+            ("aarch64-apple-xros1.0", "visionos"),
+        ];
+        let text =
+            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
+        for (triple, os) in cases {
+            let mut target = Target::builtin("aarch64-macos").unwrap();
+            target.triple = triple.into();
+            target.os = os.into();
+            assert!(
+                build_object(text, &target, Profile::Debug).is_ok(),
+                "{triple}"
+            );
+        }
+        rejects_changed(
+            "aarch64-macos",
+            |target| target.triple = "aarch64-apple-ios17.0".into(),
+            "the triple `aarch64-apple-ios17.0` names the operating system ios, \
+             but `os` is macos",
+        );
+    }
+
+    #[test]
+    fn the_vendor_and_other_environments_change_no_byte_of_the_object() {
+        let text =
+            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
+        let cases = [
+            ("x86_64-linux", "x86_64-pc-linux-gnu"),
+            ("x86_64-linux", "x86_64-unknown-linux-android"),
+            ("x86_64-windows", "x86_64-pc-windows-gnu"),
+            ("x86_64-windows", "x86_64-unknown-windows-gnullvm"),
+            ("aarch64-macos", "aarch64-unknown-darwin"),
+            ("riscv64gc-linux", "riscv64gc-unknown-linux-gnu"),
+        ];
+        for (name, triple) in cases {
+            let builtin = Target::builtin(name).unwrap();
+            let mut changed = builtin.clone();
+            changed.triple = triple.into();
+            assert_eq!(
+                build_object(text, &changed, Profile::Debug).unwrap(),
+                build_object(text, &builtin, Profile::Debug).unwrap(),
+                "{triple}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_simulator_or_mac_catalyst_triple_is_rejected() {
+        let cases = [
+            ("aarch64-apple-ios-sim", "ios", "sim"),
+            ("aarch64-apple-ios17.0-sim", "ios", "sim"),
+            ("aarch64-apple-tvos-sim", "tvos", "sim"),
+            ("aarch64-apple-watchos-sim", "watchos", "sim"),
+            ("aarch64-apple-visionos-sim", "visionos", "sim"),
+            ("aarch64-apple-ios-macabi", "ios", "macabi"),
+        ];
+        for (triple, os, environment) in cases {
+            rejects_changed(
+                "aarch64-macos",
+                |target| {
+                    target.triple = triple.into();
+                    target.os = os.into();
+                },
+                &format!(
+                    "the triple `{triple}` names the environment {environment}, which gives \
+                     Apple objects another platform and which a description cannot name"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_soft_float_triple_is_rejected() {
+        let cases = [
+            ("aarch64-linux", "aarch64-unknown-linux-softfloat", "linux"),
+            (
+                "aarch64-linux",
+                "aarch64-unknown-none-softfloat-elf",
+                "none",
+            ),
+            (
+                "riscv64gc-linux",
+                "riscv64gc-unknown-linux-softfloat",
+                "linux",
+            ),
+            ("x86_64-linux", "x86_64-unknown-linux-softfloat", "linux"),
+        ];
+        for (name, triple, os) in cases {
+            rejects_changed(
+                name,
+                |target| {
+                    target.triple = triple.into();
+                    target.os = os.into();
+                },
+                &format!(
+                    "Cranelift generates code with hardware floats, while the triple \
+                     `{triple}` asks for soft floats"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_riscv64_triple_of_another_object_format_than_elf_is_rejected() {
+        let cases = [
+            (
+                "riscv64gc-unknown-linux-musl-coff",
+                ObjectFormat::Coff,
+                LinkerFlavor::LldLink,
+                "coff",
+            ),
+            (
+                "riscv64gc-unknown-linux-musl-macho",
+                ObjectFormat::Macho,
+                LinkerFlavor::Ld64,
+                "macho",
+            ),
+        ];
+        for (triple, format, linker, spelling) in cases {
+            rejects_changed(
+                "riscv64gc-linux",
+                |target| {
+                    target.triple = triple.into();
+                    target.object_format = format;
+                    target.linker.flavor = linker;
+                },
+                &format!(
+                    "Cranelift writes riscv64 code only in ELF objects, not in the {spelling} \
+                     objects the triple `{triple}` asks for"
+                ),
+            );
+        }
     }
 
     #[test]
