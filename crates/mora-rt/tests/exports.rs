@@ -3,9 +3,10 @@
 //!
 //! The unit tests of `mora-rt` call the same functions from a build of the
 //! crate of their own. A coverage report keeps, for each exported function,
-//! the counts of the first binary it reads that holds it, and every binary
-//! that links `mora-rt` as a dependency holds the functions of that build.
-//! Calling each one here counts its line whichever binary comes first.
+//! the record of the first binary whose build the profile holds, and every
+//! binary that links `mora-rt` as a dependency holds the functions of that
+//! build. Calling each one here counts its line whichever build's record is
+//! kept.
 
 // Test code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]

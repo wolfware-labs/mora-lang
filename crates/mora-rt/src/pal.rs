@@ -205,12 +205,12 @@ pub unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
 
 /// The body of [`mora_pal_alloc`]. Each `mora_pal_*` function only calls a
 /// body under a name of its own. A coverage report adds up the counts of a
-/// mangled function across the test binaries, but keeps those of the first
-/// binary it reads for an unmangled symbol. The unit tests of this crate
-/// build the symbol apart from every binary that links the crate, so
-/// `tests/exports.rs` calls each export from such a binary, and its one line
-/// counts whichever binary comes first. Inlined into the exported function,
-/// so the export costs no extra call.
+/// mangled function across the test binaries, but for an unmangled symbol
+/// keeps the record of the first binary whose build the profile holds. The
+/// unit tests of this crate build the symbol apart from every binary that
+/// links the crate, so `tests/exports.rs` calls each export from such a
+/// binary, and its one line is counted whichever build's record is kept.
+/// Inlined into the exported function, so the export costs no extra call.
 ///
 /// # Safety
 ///
@@ -495,7 +495,14 @@ mod tests {
     use mora_rt_core::pal;
 
     use super::*;
-    use crate::test_util::{aborts_with, last_allocation, last_free, only_in_child};
+    use crate::test_util::{aborts_with, last_allocation, last_free, last_resize, only_in_child};
+
+    /// Where the memory of `block`, aligned to `align`, starts, and its size
+    /// when the block holds `size` bytes: what the global allocator sees.
+    fn memory_of(block: *mut u8, size: usize, align: usize) -> (usize, usize) {
+        let prefix = block_prefix(align);
+        (block as usize - prefix, prefix + size)
+    }
 
     #[test]
     fn a_record_takes_a_prefix_padded_to_the_alignment() {
@@ -520,6 +527,7 @@ mod tests {
                 let block = pal::alloc(24, align).unwrap();
                 assert_eq!(last_allocation(), expected + 24);
                 pal::free(block, 24, align);
+                assert_eq!(last_free(), memory_of(block.as_ptr(), 24, align));
             }
         }
     }
@@ -574,17 +582,21 @@ mod tests {
                 assert_eq!(block as usize % align, 0);
                 assert_eq!(record(block).read(), [24, align]);
                 block.write_bytes(7, 24);
+                let old = block;
                 let block = realloc_recorded(block, 24, align, 3000);
-                assert_eq!(last_allocation(), record_prefix(align) + 3000);
+                let prefix = record_prefix(align);
+                assert_eq!(last_resize(), (old as usize - prefix, prefix + 24));
+                assert_eq!(last_allocation(), prefix + 3000);
                 assert_eq!(block as usize % align, 0);
                 assert_eq!(record(block).read(), [3000, align]);
                 assert_eq!(*block.add(23), 7);
                 block.add(24).write_bytes(9, 3000 - 24);
+                let old = block;
                 let block = realloc_recorded(block, 3000, align, 40);
+                assert_eq!(last_resize(), (old as usize - prefix, prefix + 3000));
                 assert_eq!(record(block).read(), [40, align]);
                 assert_eq!((*block.add(23), *block.add(39)), (7, 9));
                 free_recorded(block, 40, align);
-                let prefix = record_prefix(align);
                 assert_eq!(last_free(), (block as usize - prefix, prefix + 40));
             }
         }
@@ -900,9 +912,13 @@ mod tests {
             let block = pal::alloc(16, 8).unwrap();
             assert_eq!(block.as_ptr() as usize % 8, 0);
             block.as_ptr().write_bytes(7, 16);
+            let old = block.as_ptr();
             let block = pal::realloc(block, 16, 8, 64).unwrap();
+            assert_eq!(last_resize(), memory_of(old, 16, 8));
+            assert_eq!(last_allocation(), block_prefix(8) + 64);
             assert_eq!(*block.as_ptr().add(15), 7);
             pal::free(block, 64, 8);
+            assert_eq!(last_free(), memory_of(block.as_ptr(), 64, 8));
         }
     }
 
@@ -916,14 +932,21 @@ mod tests {
                 let block = pal::alloc(24, align).unwrap();
                 assert_eq!(block.as_ptr() as usize % align, 0);
                 block.as_ptr().write_bytes(7, 24);
+                let old = block.as_ptr();
                 let block = pal::realloc(block, 24, align, 3000).unwrap();
+                assert_eq!(last_resize(), memory_of(old, 24, align));
+                assert_eq!(last_allocation(), block_prefix(align) + 3000);
                 assert_eq!(block.as_ptr() as usize % align, 0);
                 assert_eq!(*block.as_ptr().add(23), 7);
                 block.as_ptr().add(24).write_bytes(9, 3000 - 24);
+                let old = block.as_ptr();
                 let block = pal::realloc(block, 3000, align, 40).unwrap();
+                assert_eq!(last_resize(), memory_of(old, 3000, align));
+                assert_eq!(last_allocation(), block_prefix(align) + 40);
                 assert_eq!(block.as_ptr() as usize % align, 0);
                 assert_eq!((*block.as_ptr().add(23), *block.as_ptr().add(39)), (7, 9));
                 pal::free(block, 40, align);
+                assert_eq!(last_free(), memory_of(block.as_ptr(), 40, align));
             }
         }
     }
