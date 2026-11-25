@@ -148,6 +148,9 @@ jobs:
       - name: test
         if: ${{ !cancelled() }}
         run: cargo test --workspace --locked
+      - name: clippy (debug runtime)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p mora-rt -p mora-rt-core --all-targets --features mora-rt/debug --locked -- -D warnings
       - name: test (debug runtime)
         if: ${{ !cancelled() }}
         run: cargo test -p mora-rt -p mora-rt-core --features mora-rt/debug --locked
