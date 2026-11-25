@@ -127,12 +127,12 @@ fn rule_breaks_are_errors() {
         (
             "flavor = \"ld.lld\"",
             "flavor = \"lld-link\"",
-            "`object-format` is Elf",
+            "`object-format` is elf",
         ),
         (
             "flavor = \"ld.lld\"",
             "flavor = \"wasm-ld\"",
-            "reads Wasm objects",
+            "reads wasm objects",
         ),
         (
             "triple = \"x86_64-unknown-linux-musl\"",
@@ -140,7 +140,16 @@ fn rule_breaks_are_errors() {
             "`triple` must start with",
         ),
         ("os = \"linux\"", "os = \"Linux\"", "`os` must be lowercase"),
-        ("name = \"x86_64-linux\"", "name = \"\"", "`name` must be"),
+        (
+            "name = \"x86_64-linux\"",
+            "name = \"\"",
+            "`name` must start with",
+        ),
+        (
+            "name = \"x86_64-linux\"",
+            "name = \"-x86_64-linux\"",
+            "`name` must start with a lowercase letter or a digit",
+        ),
         ("backend = \"cranelift\"", "backend = \"llvm\"", "llvm"),
     ];
     for (from, to, expected) in cases {
@@ -267,6 +276,45 @@ fn each_convention_fits_one_pointer_width_and_its_arch() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn errors_spell_values_as_the_file_does() {
+    for (flavor, reads, format) in [
+        ("ld.lld", "elf", "macho"),
+        ("ld64", "macho", "coff"),
+        ("lld-link", "coff", "wasm"),
+        ("wasm-ld", "wasm", "elf"),
+    ] {
+        let text = x86_64_linux()
+            .replacen("flavor = \"ld.lld\"", &format!("flavor = \"{flavor}\""), 1)
+            .replacen(
+                "object-format = \"elf\"",
+                &format!("object-format = \"{format}\""),
+                1,
+            );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(&format!(
+                "linker {flavor} reads {reads} objects, but `object-format` is {format}"
+            )),
+            "{flavor}: {message}"
+        );
+    }
+    for capability in [
+        "heap", "threads", "fs", "net", "stdio", "clock", "random", "process", "env",
+    ] {
+        let text = x86_64_linux().replacen(
+            "capabilities = [",
+            &format!("capabilities = [\"{capability}\", "),
+            1,
+        );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(&format!("capability {capability} is listed twice")),
+            "{capability}: {message}"
+        );
     }
 }
 

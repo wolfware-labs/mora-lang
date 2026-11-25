@@ -63,6 +63,18 @@ pub enum ObjectFormat {
     Wasm,
 }
 
+impl ObjectFormat {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            ObjectFormat::Elf => "elf",
+            ObjectFormat::Macho => "macho",
+            ObjectFormat::Coff => "coff",
+            ObjectFormat::Wasm => "wasm",
+        }
+    }
+}
+
 /// A C calling convention (§13.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -167,6 +179,23 @@ pub enum Capability {
     Env,
 }
 
+impl Capability {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            Capability::Heap => "heap",
+            Capability::Threads => "threads",
+            Capability::Fs => "fs",
+            Capability::Net => "net",
+            Capability::Stdio => "stdio",
+            Capability::Clock => "clock",
+            Capability::Random => "random",
+            Capability::Process => "process",
+            Capability::Env => "env",
+        }
+    }
+}
+
 /// Alignments of the primitive types, in bytes. One-byte types are always
 /// aligned to one byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +243,16 @@ pub enum LinkerFlavor {
 }
 
 impl LinkerFlavor {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            LinkerFlavor::LdLld => "ld.lld",
+            LinkerFlavor::Ld64 => "ld64",
+            LinkerFlavor::LldLink => "lld-link",
+            LinkerFlavor::WasmLd => "wasm-ld",
+        }
+    }
+
     /// The object format this linker reads.
     pub fn object_format(self) -> ObjectFormat {
         match self {
@@ -300,9 +339,13 @@ impl Target {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !is_name(&self.name, &['-', '_']) {
+        // Neither `name` nor `triple` ever reads as an option, and neither holds
+        // a path separator. Names a file system reserves, such as `nul`, are the
+        // concern of whatever builds a path from one.
+        if !is_component(&self.name, &['-', '_']) {
             return Err(format!(
-                "`name` must be lowercase letters, digits, `-` and `_`, not `{}`",
+                "`name` must start with a lowercase letter or a digit and hold only lowercase \
+                 letters, digits, `-` and `_`, not {:?}",
                 self.name
             ));
         }
@@ -313,7 +356,7 @@ impl Target {
                 ));
             }
         }
-        if !is_triple(&self.triple) {
+        if !is_component(&self.triple, &['_', '.', '-']) {
             return Err(format!(
                 "`triple` must start with a lowercase letter or a digit and hold only lowercase \
                  letters, digits, `_`, `.` and `-`, not {:?}",
@@ -359,27 +402,27 @@ impl Target {
         }
         for (i, capability) in self.capabilities.iter().enumerate() {
             if self.capabilities[..i].contains(capability) {
-                return Err(format!("capability {capability:?} is listed twice"));
+                return Err(format!("capability {} is listed twice", capability.name()));
             }
         }
         let reads = self.linker.flavor.object_format();
         if reads != self.object_format {
             return Err(format!(
-                "linker {:?} reads {reads:?} objects, but `object-format` is {:?}",
-                self.linker.flavor, self.object_format
+                "linker {} reads {} objects, but `object-format` is {}",
+                self.linker.flavor.name(),
+                reads.name(),
+                self.object_format.name()
             ));
         }
         Ok(())
     }
 }
 
-/// Whether `triple` starts with a lowercase ASCII letter or a digit and is made
-/// of those, `_`, `.` and `-`: it then never reads as an option and holds no
-/// path separator. Names a file system reserves, such as `nul`, are the
-/// concern of whatever builds a path from it.
-fn is_triple(triple: &str) -> bool {
-    triple.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && is_name(triple, &['_', '.', '-'])
+/// Whether `s` starts with a lowercase ASCII letter or a digit and is made of
+/// those and `extra`: as a path component or an argument, it never reads as
+/// an option.
+fn is_component(s: &str, extra: &[char]) -> bool {
+    s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) && is_name(s, extra)
 }
 
 /// Whether `s` is non-empty and made of lowercase ASCII letters, digits and `extra`.
