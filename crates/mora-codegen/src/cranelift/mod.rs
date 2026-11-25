@@ -133,9 +133,10 @@ fn call_conv(target: &Target) -> Result<IsaCallConv, CodegenError> {
 /// - the object format, stated or implied, is the operating system's own
 ///   (ELF, Mach-O or COFF) and the description's `object-format`.
 ///
-/// Any other value is refused, so that one no one has checked Cranelift
-/// against never reaches it. Pointers are 64 bits wide on all four
-/// architectures, which [`call_conv`] requires of the description already.
+/// Any other value is refused here, before Cranelift sees the triple, so
+/// Cranelift never gets a value whose output nobody has checked. Pointers
+/// are 64 bits wide on all four architectures, which [`call_conv`] requires
+/// of the description already.
 ///
 /// # Errors
 ///
