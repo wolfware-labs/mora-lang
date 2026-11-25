@@ -134,17 +134,20 @@ fn misuse(message: fmt::Arguments<'_>) -> ! {
 }
 
 /// The bytes of a [`Line`], its newline included.
-const LINE: usize = 256;
+const LINE_BYTES: usize = 256;
 
 /// What ends a [`Line`] whose text did not fit, in place of the newline.
 const CUT: &str = "...\n";
+
+/// The bytes of text a [`Line`] holds, which leaves room for [`CUT`].
+const LINE_TEXT: usize = LINE_BYTES - CUT.len();
 
 /// A line of text formatted into a fixed buffer, with no heap. Text that
 /// does not fit is cut between two characters, and nothing is added after
 /// the cut.
 struct Line {
     /// The text, then room for [`CUT`].
-    bytes: [u8; LINE],
+    bytes: [u8; LINE_BYTES],
     /// The bytes of text written.
     len: usize,
     /// Whether some text did not fit.
@@ -155,7 +158,7 @@ impl Line {
     /// An empty line.
     const fn new() -> Self {
         Self {
-            bytes: [0; LINE],
+            bytes: [0; LINE_BYTES],
             len: 0,
             cut: false,
         }
@@ -178,7 +181,7 @@ impl fmt::Write for Line {
         if self.cut {
             return Err(fmt::Error);
         }
-        let room = LINE - CUT.len() - self.len;
+        let room = LINE_TEXT - self.len;
         let fits = text.floor_char_boundary(room);
         self.bytes[self.len..self.len + fits].copy_from_slice(&text.as_bytes()[..fits]);
         self.len += fits;
@@ -246,13 +249,14 @@ pub unsafe fn alloc_recorded(size: usize, align: usize) -> *mut u8 {
 /// The debug runtime's `mora_pal_realloc` past the zero-size check: checks
 /// the block's record, then resizes it with its record in front; null, with
 /// the block untouched, when the global allocator refuses or no layout of
-/// `new_size` exists.
+/// `new_size` exists. Public, and hidden, for the benchmarks.
 ///
 /// # Safety
 ///
 /// `ptr` came from [`alloc_recorded`] or `realloc_recorded`, and `new_size`
 /// is not zero.
-unsafe fn realloc_recorded(
+#[doc(hidden)]
+pub unsafe fn realloc_recorded(
     ptr: *mut u8,
     old_size: usize,
     align: usize,
@@ -377,25 +381,25 @@ unsafe fn free_block(ptr: *mut u8, size: usize, align: usize) {
 /// which arrives in M2.3, answers with the size class it hands out.
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_good_size(size: usize, align: usize) -> usize {
-    good_size(size, align)
+    usable_size(size, align)
 }
 
 /// The body of [`mora_pal_good_size`]; see [`alloc_block`] for why it is
 /// apart.
 #[inline]
-fn good_size(size: usize, _align: usize) -> usize {
+fn usable_size(size: usize, _align: usize) -> usize {
     size
 }
 
 /// Aborts the process; see [`mora_rt_core::pal::abort`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_abort() -> ! {
-    abort()
+    abort_process()
 }
 
 /// The body of [`mora_pal_abort`]; see [`alloc_block`] for why it is apart.
 #[inline]
-fn abort() -> ! {
+fn abort_process() -> ! {
     // A build instrumented for coverage writes its counts at exit, which an
     // abort skips: write them first, since the tests of the paths that
     // abort run them in a child process. Kept inside this function, which
@@ -422,7 +426,7 @@ fn abort() -> ! {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
     // SAFETY: the caller's contract is the same.
-    unsafe { write_diagnostic(ptr, len) }
+    unsafe { write_stderr(ptr, len) }
 }
 
 /// The body of [`mora_pal_write_diagnostic`]; see [`alloc_block`] for why it
@@ -432,7 +436,7 @@ pub unsafe extern "C" fn mora_pal_write_diagnostic(ptr: *const u8, len: usize) {
 ///
 /// As for [`mora_pal_write_diagnostic`].
 #[inline]
-unsafe fn write_diagnostic(ptr: *const u8, len: usize) {
+unsafe fn write_stderr(ptr: *const u8, len: usize) {
     // SAFETY: the caller guarantees the bytes are readable.
     let text = unsafe { std::slice::from_raw_parts(ptr, len) };
     // Nothing useful can be done when stderr is gone.
@@ -442,12 +446,12 @@ unsafe fn write_diagnostic(ptr: *const u8, len: usize) {
 /// Nanoseconds since the first call; see [`mora_rt_core::pal::now`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_now() -> u64 {
-    now()
+    nanos_since_first_call()
 }
 
 /// The body of [`mora_pal_now`]; see [`alloc_block`] for why it is apart.
 #[inline]
-fn now() -> u64 {
+fn nanos_since_first_call() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     nanos(START.get_or_init(Instant::now).elapsed())
 }
@@ -464,12 +468,12 @@ fn nanos(elapsed: Duration) -> u64 {
 /// else to wait for.
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_wait(timeout_ns: u64) {
-    wait(timeout_ns)
+    park_or_sleep(timeout_ns)
 }
 
 /// The body of [`mora_pal_wait`]; see [`alloc_block`] for why it is apart.
 #[inline]
-fn wait(timeout_ns: u64) {
+fn park_or_sleep(timeout_ns: u64) {
     if timeout_ns == FOREVER {
         thread::park();
     } else {
@@ -687,7 +691,7 @@ mod tests {
 
     #[test]
     fn a_line_that_fills_the_buffer_exactly_is_not_cut() {
-        let text = "x".repeat(LINE - CUT.len());
+        let text = "x".repeat(LINE_TEXT);
         let mut line = Line::new();
         fmt::Write::write_str(&mut line, &text).unwrap();
         assert_eq!(finished(line), format!("{text}\n"));
@@ -695,48 +699,54 @@ mod tests {
 
     #[test]
     fn a_line_too_long_is_cut_and_marked() {
-        let room = LINE - CUT.len();
         let mut line = Line::new();
-        assert!(fmt::Write::write_str(&mut line, &"x".repeat(room + 1)).is_err());
-        assert_eq!(finished(line), format!("{}{CUT}", "x".repeat(room)));
+        assert!(fmt::Write::write_str(&mut line, &"x".repeat(LINE_TEXT + 1)).is_err());
+        assert_eq!(finished(line), format!("{}{CUT}", "x".repeat(LINE_TEXT)));
     }
 
     #[test]
     fn nothing_is_added_to_a_line_once_it_is_cut() {
-        let room = LINE - CUT.len();
         let mut line = Line::new();
-        let _ = fmt::Write::write_str(&mut line, &"x".repeat(room - 2));
+        let _ = fmt::Write::write_str(&mut line, &"x".repeat(LINE_TEXT - 2));
         assert!(fmt::Write::write_str(&mut line, "yyy").is_err());
         assert!(fmt::Write::write_str(&mut line, "z").is_err());
-        assert_eq!(finished(line), format!("{}yy{CUT}", "x".repeat(room - 2)));
+        assert_eq!(
+            finished(line),
+            format!("{}yy{CUT}", "x".repeat(LINE_TEXT - 2))
+        );
     }
 
     #[test]
     fn a_line_is_cut_between_characters() {
         // A three-byte character that would straddle the end of the room.
-        let room = LINE - CUT.len();
         let mut line = Line::new();
-        let _ = fmt::Write::write_str(&mut line, &"x".repeat(room - 2));
+        let _ = fmt::Write::write_str(&mut line, &"x".repeat(LINE_TEXT - 2));
         assert!(fmt::Write::write_str(&mut line, "\u{20ac}").is_err());
         // The two bytes left would hold this, but the line is cut.
         assert!(fmt::Write::write_str(&mut line, "z").is_err());
-        assert_eq!(finished(line), format!("{}{CUT}", "x".repeat(room - 2)));
+        assert_eq!(
+            finished(line),
+            format!("{}{CUT}", "x".repeat(LINE_TEXT - 2))
+        );
     }
 
     #[test]
     fn a_misuse_too_long_for_a_line_is_cut() {
-        let room = LINE - CUT.len();
         let head = "internal error: ";
         aborts_with(
             "pal::tests::child_misuse_too_long",
-            &format!("{head}{}{}", "m".repeat(room - head.len()), CUT.trim_end()),
+            &format!(
+                "{head}{}{}",
+                "m".repeat(LINE_TEXT - head.len()),
+                CUT.trim_end()
+            ),
         );
     }
 
     #[test]
     #[ignore = "runs in a child process"]
     fn child_misuse_too_long() {
-        only_in_child(|| misuse(format_args!("{}", "m".repeat(LINE))));
+        only_in_child(|| misuse(format_args!("{}", "m".repeat(LINE_BYTES))));
     }
 
     #[test]
