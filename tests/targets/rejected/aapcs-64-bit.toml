@@ -1,0 +1,24 @@
+# test32 with 8-byte pointers: the 32-bit Arm AAPCS passes 4-byte ones.
+name = "aapcs-64-bit"
+triple = "thumbv7em-none-eabihf"
+os = "none"
+arch = "thumbv7em"
+pointer-width = 64
+endian = "little"
+object-format = "elf"
+call-conv = "aapcs"
+backend = "cranelift"
+runtime = "core"
+capabilities = ["heap"]
+
+[align]
+i16 = 2
+i32 = 4
+i64 = 8
+f32 = 4
+f64 = 8
+pointer = 8
+
+[linker]
+flavor = "ld.lld"
+args = []

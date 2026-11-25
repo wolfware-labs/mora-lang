@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mora_target::{Capability, Error, Target, builtin_names};
+use mora_target::{Capability, Endian, Error, Target, builtin_names};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -20,13 +20,19 @@ fn x86_64_linux() -> String {
     std::fs::read_to_string(repo().join("targets/x86_64-linux.toml")).unwrap()
 }
 
-#[test]
-fn every_file_in_targets_is_built_in() {
-    let mut files: Vec<String> = std::fs::read_dir(repo().join("targets"))
+/// The names of the files in `dir`, sorted.
+fn file_names(dir: &Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     files.sort();
+    files
+}
+
+#[test]
+fn every_file_in_targets_is_built_in() {
+    let files = file_names(&repo().join("targets"));
     let mut names: Vec<String> = builtin_names().map(|name| format!("{name}.toml")).collect();
     names.sort();
     assert_eq!(files, names);
@@ -121,20 +127,29 @@ fn rule_breaks_are_errors() {
         (
             "flavor = \"ld.lld\"",
             "flavor = \"lld-link\"",
-            "`object-format` is Elf",
+            "`object-format` is elf",
         ),
         (
             "flavor = \"ld.lld\"",
             "flavor = \"wasm-ld\"",
-            "reads Wasm objects",
+            "reads wasm objects",
         ),
         (
             "triple = \"x86_64-unknown-linux-musl\"",
             "triple = \"\"",
-            "`triple` is empty",
+            "`triple` must start with",
         ),
         ("os = \"linux\"", "os = \"Linux\"", "`os` must be lowercase"),
-        ("name = \"x86_64-linux\"", "name = \"\"", "`name` must be"),
+        (
+            "name = \"x86_64-linux\"",
+            "name = \"\"",
+            "`name` must start with",
+        ),
+        (
+            "name = \"x86_64-linux\"",
+            "name = \"-x86_64-linux\"",
+            "`name` must start with a lowercase letter or a digit",
+        ),
         ("backend = \"cranelift\"", "backend = \"llvm\"", "llvm"),
     ];
     for (from, to, expected) in cases {
@@ -143,6 +158,184 @@ fn rule_breaks_are_errors() {
         let message = Target::parse(&text).unwrap_err();
         assert!(message.contains(expected), "{to}: {message}");
     }
+}
+
+/// The descriptions in `tests/targets/rejected/`, by file name, and a part of
+/// the error each one gets.
+const REJECTED: &[(&str, &str)] = &[
+    (
+        "aapcs-64-bit.toml",
+        "`call-conv` aapcs needs a `pointer-width` of 32, not 64",
+    ),
+    (
+        "aapcs-arch.toml",
+        "`call-conv` aapcs is not a convention of `arch` `riscv32`",
+    ),
+    (
+        "call-conv-arch.toml",
+        "`call-conv` sysv64 is not a convention of `arch` `aarch64`",
+    ),
+    (
+        "pointer-width-x86_64-32.toml",
+        "`call-conv` sysv64 needs a `pointer-width` of 64, not 32",
+    ),
+    ("triple-control.toml", "`triple` must start with"),
+    ("triple-dot-dot.toml", "`triple` must start with"),
+    ("triple-leading-dash.toml", "`triple` must start with"),
+    ("triple-slash.toml", "`triple` must start with"),
+    ("triple-space.toml", "`triple` must start with"),
+    ("triple-uppercase.toml", "`triple` must start with"),
+];
+
+#[test]
+fn every_rejected_description_names_its_rule() {
+    let dir = repo().join("tests/targets/rejected");
+    let files = file_names(&dir);
+    let listed: Vec<&str> = REJECTED.iter().map(|(file, _)| *file).collect();
+    assert_eq!(files, listed);
+    for (file, expected) in REJECTED {
+        let err = Target::load(&dir.join(file)).unwrap_err();
+        assert!(matches!(err, Error::Invalid { .. }), "{file}: {err}");
+        let message = err.to_string();
+        assert!(message.contains(expected), "{file}: {message}");
+    }
+}
+
+#[test]
+fn a_triple_is_lowercase_letters_digits_and_separators() {
+    for triple in ["x86_64-unknown-linux-musl", "thumbv8m.main-none-eabi", "0x"] {
+        let text = x86_64_linux().replacen("x86_64-unknown-linux-musl", triple, 1);
+        assert_eq!(Target::parse(&text).unwrap().triple, triple);
+    }
+    let delete = format!("x{}", char::from(0x7f));
+    for triple in ["", ".", "_x", "x/y", "x y", &delete, "xé"] {
+        let text = x86_64_linux().replacen(
+            "\"x86_64-unknown-linux-musl\"",
+            &toml::Value::String(triple.to_owned()).to_string(),
+            1,
+        );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(
+                "`triple` must start with a lowercase letter or a digit and hold only \
+                 lowercase letters, digits, `_`, `.` and `-`"
+            ),
+            "{triple:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn each_convention_fits_one_pointer_width_and_its_arch() {
+    let cases = [
+        ("sysv64", "x86_64", 64),
+        ("win64", "x86_64", 64),
+        ("aapcs64", "aarch64", 64),
+        ("apple-aapcs64", "aarch64", 64),
+        ("win-arm64", "aarch64", 64),
+        ("lp64d", "riscv64", 64),
+        ("aapcs", "arm", 32),
+        ("aapcs", "armv7", 32),
+        ("aapcs", "thumbv7em", 32),
+    ];
+    let with = |conv: &str, arch: &str, width: u32| {
+        x86_64_linux()
+            .replacen(
+                "call-conv = \"sysv64\"",
+                &format!("call-conv = \"{conv}\""),
+                1,
+            )
+            .replacen("arch = \"x86_64\"", &format!("arch = \"{arch}\""), 1)
+            .replacen("pointer-width = 64", &format!("pointer-width = {width}"), 1)
+            .replacen("pointer = 8", &format!("pointer = {}", width / 8), 1)
+    };
+    for (conv, arch, width) in cases {
+        Target::parse(&with(conv, arch, width)).unwrap();
+        let other = if width == 64 { 32 } else { 64 };
+        let message = Target::parse(&with(conv, arch, other)).unwrap_err();
+        assert!(
+            message.contains(&format!(
+                "`call-conv` {conv} needs a `pointer-width` of {width}, not {other}"
+            )),
+            "{conv}: {message}"
+        );
+        for wrong in [
+            "x86_64", "aarch64", "riscv64", "riscv32", "arm", "arm64", "arm64_32", "xarm", "wasm32",
+        ] {
+            let fits = wrong == arch || (conv == "aapcs" && wrong == "arm");
+            let parsed = Target::parse(&with(conv, wrong, width));
+            if fits {
+                parsed.unwrap();
+            } else {
+                let message = parsed.unwrap_err();
+                assert!(
+                    message.contains(&format!(
+                        "`call-conv` {conv} is not a convention of `arch` `{wrong}`"
+                    )),
+                    "{conv} on {wrong}: {message}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn errors_spell_values_as_the_file_does() {
+    for (flavor, reads, format) in [
+        ("ld.lld", "elf", "macho"),
+        ("ld64", "macho", "coff"),
+        ("lld-link", "coff", "wasm"),
+        ("wasm-ld", "wasm", "elf"),
+    ] {
+        let text = x86_64_linux()
+            .replacen("flavor = \"ld.lld\"", &format!("flavor = \"{flavor}\""), 1)
+            .replacen(
+                "object-format = \"elf\"",
+                &format!("object-format = \"{format}\""),
+                1,
+            );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(&format!(
+                "linker {flavor} reads {reads} objects, but `object-format` is {format}"
+            )),
+            "{flavor}: {message}"
+        );
+    }
+    for capability in [
+        "heap", "threads", "fs", "net", "stdio", "clock", "random", "process", "env",
+    ] {
+        let text = x86_64_linux().replacen(
+            "capabilities = [",
+            &format!("capabilities = [\"{capability}\", "),
+            1,
+        );
+        let message = Target::parse(&text).unwrap_err();
+        assert!(
+            message.contains(&format!("capability {capability} is listed twice")),
+            "{capability}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_byte_order_is_named_as_the_file_spells_it() {
+    for endian in [Endian::Little, Endian::Big] {
+        let text = x86_64_linux().replacen(
+            "endian = \"little\"",
+            &format!("endian = \"{}\"", endian.name()),
+            1,
+        );
+        assert_eq!(Target::parse(&text).unwrap().endian, endian);
+    }
+}
+
+#[test]
+fn a_core_runtime_may_list_hosted_capabilities() {
+    let text = test32().replacen("[\"heap\"]", "[\"heap\", \"fs\", \"net\", \"threads\"]", 1);
+    let target = Target::parse(&text).unwrap();
+    assert!(target.has(Capability::Fs));
+    assert!(target.has(Capability::Threads));
 }
 
 #[test]

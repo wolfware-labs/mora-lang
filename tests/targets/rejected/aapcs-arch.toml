@@ -1,0 +1,24 @@
+# The 32-bit Arm AAPCS on a 32-bit RISC-V description.
+name = "aapcs-arch"
+triple = "riscv32imac-unknown-none-elf"
+os = "none"
+arch = "riscv32"
+pointer-width = 32
+endian = "little"
+object-format = "elf"
+call-conv = "aapcs"
+backend = "cranelift"
+runtime = "core"
+capabilities = ["heap"]
+
+[align]
+i16 = 2
+i32 = 4
+i64 = 8
+f32 = 4
+f64 = 8
+pointer = 4
+
+[linker]
+flavor = "ld.lld"
+args = []
