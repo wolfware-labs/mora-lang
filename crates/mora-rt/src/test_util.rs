@@ -1,8 +1,8 @@
 //! Helpers shared by the tests of this crate: a test whose entry point ends
 //! the process, as a panic does, or writes to stdout, runs in a child
 //! process that re-executes the test binary. The test binary's allocator
-//! records the size of the last block each thread asked for, the last block
-//! it resized and the last block it freed.
+//! records the layout of the last block each thread asked for, the last
+//! block it resized and the last block it freed.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -11,70 +11,89 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::panic::PANIC_EXIT_CODE;
+use crate::{DEBUG, block_prefix};
 
 mod abort_status;
 
 use abort_status::aborted;
 
 std::thread_local! {
-    /// The size of the last block this thread asked the allocator for.
-    static LAST_ALLOCATION: Cell<usize> = const { Cell::new(0) };
-    /// The address and old size of the last block this thread resized.
-    static LAST_RESIZE: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-    /// The address and size of the last block this thread freed.
-    static LAST_FREE: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    /// The size and alignment of the last block this thread asked the
+    /// allocator for.
+    static LAST_ALLOCATION: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    /// The address, old size and alignment of the last block this thread
+    /// resized.
+    static LAST_RESIZE: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
+    /// The address, size and alignment of the last block this thread freed.
+    static LAST_FREE: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
 }
 
-/// The system allocator, recording the size of each block it hands out, the
-/// old layout of each block it resizes and each block it takes back.
+/// The system allocator, recording the layout of each block it hands out,
+/// the old layout of each block it resizes and of each block it takes back.
 struct Recording;
 
 // SAFETY: every call goes to `System` as it came.
 unsafe impl GlobalAlloc for Recording {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // A thread being torn down has no record to keep.
-        let _ = LAST_ALLOCATION.try_with(|last| last.set(layout.size()));
+        let _ = LAST_ALLOCATION.try_with(|last| last.set((layout.size(), layout.align())));
         // SAFETY: the caller's contract for `alloc` is `System`'s.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let _ = LAST_ALLOCATION.try_with(|last| last.set(layout.size()));
+        let _ = LAST_ALLOCATION.try_with(|last| last.set((layout.size(), layout.align())));
         // SAFETY: the caller's contract for `alloc_zeroed` is `System`'s.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let _ = LAST_ALLOCATION.try_with(|last| last.set(new_size));
-        let _ = LAST_RESIZE.try_with(|last| last.set((ptr as usize, layout.size())));
+        let _ = LAST_ALLOCATION.try_with(|last| last.set((new_size, layout.align())));
+        let _ = LAST_RESIZE.try_with(|last| last.set(memory(ptr, layout)));
         // SAFETY: the block came from `System` with this layout, and the
         // caller's contract for `realloc` is `System`'s.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = LAST_FREE.try_with(|last| last.set((ptr as usize, layout.size())));
+        let _ = LAST_FREE.try_with(|last| last.set(memory(ptr, layout)));
         // SAFETY: the block came from `System` with this layout.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
 
+/// The address, size and alignment of the memory at `ptr` with `layout`.
+fn memory(ptr: *mut u8, layout: Layout) -> (usize, usize, usize) {
+    (ptr as usize, layout.size(), layout.align())
+}
+
 #[global_allocator]
 static ALLOCATOR: Recording = Recording;
 
-/// The size of the last block this thread asked the allocator for.
-pub(crate) fn last_allocation() -> usize {
+/// The size and alignment of the last block this thread asked the
+/// allocator for.
+pub(crate) fn last_allocation() -> (usize, usize) {
     LAST_ALLOCATION.get()
 }
 
-/// The address and old size of the last block this thread resized.
-pub(crate) fn last_resize() -> (usize, usize) {
+/// The address, old size and alignment of the last block this thread
+/// resized.
+pub(crate) fn last_resize() -> (usize, usize, usize) {
     LAST_RESIZE.get()
 }
 
-/// The address and size of the last block this thread freed.
-pub(crate) fn last_free() -> (usize, usize) {
+/// The address, size and alignment of the last block this thread freed.
+pub(crate) fn last_free() -> (usize, usize, usize) {
     LAST_FREE.get()
+}
+
+/// The size and alignment of the memory the platform layer asks the global
+/// allocator for to hold a block of `size` bytes aligned to `align`: the
+/// block alone in the release runtime, and the block behind the prefix of
+/// its record, aligned to the prefix, in the debug runtime.
+pub(crate) fn memory_layout(size: usize, align: usize) -> (usize, usize) {
+    let prefix = block_prefix(align);
+    (prefix + size, if DEBUG { prefix } else { align })
 }
 
 /// Set in the child process of a test.

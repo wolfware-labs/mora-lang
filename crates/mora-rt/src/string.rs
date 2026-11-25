@@ -120,7 +120,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_util::{last_allocation, only_in_child, panics_with};
+    use crate::test_util::{last_allocation, memory_layout, only_in_child, panics_with};
 
     /// `a + b`, built by the entry point generated code calls.
     fn concat(parts: &[MoraString]) -> MoraString {
@@ -235,7 +235,7 @@ mod tests {
         // The debug runtime's record comes on top of the object.
         assert_eq!(
             last_allocation(),
-            crate::block_prefix(OBJECT_ALIGN) + BYTES_OFFSET + 40
+            memory_layout(BYTES_OFFSET + 40, OBJECT_ALIGN)
         );
         assert_eq!(string.len(), 40);
     }
