@@ -1,6 +1,7 @@
 version: 2
-# Each update waits 14 days after a release is published, so a release
-# that is yanked or found bad in its first days is never proposed.
+# Each version update waits 14 days after a release is published, so a
+# release that is yanked or found bad in its first days is never proposed
+# as one. Security updates do not wait.
 updates:
   - package-ecosystem: cargo
     directory: /
