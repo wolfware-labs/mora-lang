@@ -7,10 +7,14 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::io::Write;
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::panic::PANIC_EXIT_CODE;
+
+mod abort_status;
+
+use abort_status::aborted;
 
 std::thread_local! {
     /// The size of the last block this thread asked the allocator for.
@@ -135,22 +139,6 @@ pub(crate) fn aborts_with(test: &str, message: &str) {
         .rsplit_once(WRITES_LINE)
         .map(|(_, count)| count.trim_end());
     assert_eq!(writes, Some("1"), "{test}: {stdout}");
-}
-
-/// Whether a process ended in an abort: `SIGABRT`, signal 6 on Linux and
-/// macOS.
-#[cfg(unix)]
-fn aborted(status: ExitStatus) -> bool {
-    use std::os::unix::process::ExitStatusExt;
-
-    status.signal() == Some(6)
-}
-
-/// Whether a process ended in an abort: a fast fail, whose exit code is
-/// `STATUS_STACK_BUFFER_OVERRUN`.
-#[cfg(windows)]
-fn aborted(status: ExitStatus) -> bool {
-    status.code() == Some(0xC000_0409_u32 as i32)
 }
 
 /// Runs `body` in the child process of [`child`] only, so that the ignored

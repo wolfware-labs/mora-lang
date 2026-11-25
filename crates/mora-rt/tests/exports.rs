@@ -12,11 +12,16 @@
 // Calls into `mora-rt`, a crate allowed `unsafe` code (CONTRIBUTING.md).
 #![allow(unsafe_code)]
 
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
 use mora_rt_core::pal;
 // Defines the `mora_pal_*` functions the core calls.
 use mora_rt as _;
+
+#[path = "../src/test_util/abort_status.rs"]
+mod abort_status;
+
+use abort_status::aborted;
 
 /// Set in the child process of [`a_diagnostic_then_an_abort_end_the_process`].
 const CHILD_ENV: &str = "MORA_RT_EXPORTS_CHILD";
@@ -66,20 +71,4 @@ fn child_writes_and_aborts() {
         pal::write_diagnostic(b"written\n");
         pal::abort();
     }
-}
-
-/// Whether a process ended in an abort: `SIGABRT`, signal 6 on Linux and
-/// macOS.
-#[cfg(unix)]
-fn aborted(status: ExitStatus) -> bool {
-    use std::os::unix::process::ExitStatusExt;
-
-    status.signal() == Some(6)
-}
-
-/// Whether a process ended in an abort: a fast fail, whose exit code is
-/// `STATUS_STACK_BUFFER_OVERRUN`.
-#[cfg(windows)]
-fn aborted(status: ExitStatus) -> bool {
-    status.code() == Some(0xC000_0409_u32 as i32)
 }

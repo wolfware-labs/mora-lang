@@ -403,6 +403,7 @@ pub extern "C" fn mora_pal_abort() -> ! {
 /// The body of [`mora_pal_abort`]; see [`alloc_block`] for why it is apart.
 #[inline]
 fn abort_process() -> ! {
+    // The tests read how many writes came before the abort.
     #[cfg(test)]
     crate::test_util::print_diagnostic_writes();
     // A build instrumented for coverage writes its counts at exit, which an
