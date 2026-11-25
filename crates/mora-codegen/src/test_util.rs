@@ -9,7 +9,7 @@ use mora_rt_core::string::{BYTES_OFFSET, CAPACITY_OFFSET, MoraString};
 use mora_span::Project;
 use mora_target::Target;
 
-use crate::{Backend, Cranelift, JitBackend, JitProgram, Profile, Program};
+use crate::{Backend, CodegenError, Cranelift, JitBackend, JitProgram, Profile, Program};
 
 /// `text` as `src/Program.mr`, alone in an app. The front end and MIR lowering
 /// must report no error for it.
@@ -145,10 +145,19 @@ pub(crate) fn func<F: Copy>(jit: &JitProgram, name: &str) -> F {
 
 /// The object file of the app of `text` for `target`.
 pub(crate) fn object_of(text: &str, target: &Target, profile: Profile) -> Vec<u8> {
+    build_object(text, target, profile).unwrap()
+}
+
+/// What building the object file of the app of `text` for `target` gives.
+pub(crate) fn build_object(
+    text: &str,
+    target: &Target,
+    profile: Profile,
+) -> Result<Vec<u8>, CodegenError> {
     let db = TestDb::default();
     let project = app_of(&db, text);
     let program = Program::collect(&db, project).unwrap();
-    Cranelift.object(&program, target, profile).unwrap()
+    Cranelift.object(&program, target, profile)
 }
 
 /// The first `len` bytes of the object of the heap string `string`, which a

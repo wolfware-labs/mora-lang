@@ -264,9 +264,9 @@ fn opt_level(profile: Profile) -> &'static str {
 /// # Errors
 ///
 /// [`CodegenError::UnsupportedTarget`] when Cranelift cannot generate for
-/// the target, when the triple's pointer width, byte order or instruction
-/// set is not the description's (see [`check_triple`]), or when the
-/// convention its triple implies is not the one the description names.
+/// the target or its triple, when the triple does not match the
+/// description (see [`check_triple`]), or when the convention the triple
+/// implies is not the one the description names.
 fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, CodegenError> {
     let call_conv = call_conv(target)?;
     let mut flags = settings::builder();
@@ -540,11 +540,12 @@ mod tests {
     use object::{Object, ObjectSection, ObjectSymbol};
 
     use super::*;
-    use crate::test_util::{app_of, doubling, func, jit, object_of, symbol, x86_64};
+    use crate::test_util::{app_of, build_object, doubling, func, jit, object_of, symbol, x86_64};
 
     /// Asserts that `isa`, and an object of a program with a string literal
     /// on the heap, reject the built-in target `name`, once `change` has
-    /// edited it, for `reason`.
+    /// edited it, for `reason`. The literal's data symbol reaches the
+    /// relocations that differ by object format (see `data_symbol`).
     fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
         let mut target = Target::builtin(name).unwrap();
         change(&mut target);
@@ -553,17 +554,10 @@ mod tests {
             reason: reason.into(),
         };
         assert_eq!(isa(&target, Profile::Debug, true).err().unwrap(), error);
-        let db = TestDb::default();
-        let project = app_of(
-            &db,
-            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n",
-        );
-        let program = Program::collect(&db, project).unwrap();
+        let text =
+            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
         assert_eq!(
-            Cranelift
-                .object(&program, &target, Profile::Debug)
-                .err()
-                .unwrap(),
+            build_object(text, &target, Profile::Debug).err().unwrap(),
             error
         );
     }
@@ -765,10 +759,9 @@ mod tests {
 
     #[test]
     fn unsupported_targets_are_errors() {
-        let wasm = |target: &mut Target| target.object_format = ObjectFormat::Wasm;
         rejects_changed(
             "x86_64-linux",
-            wasm,
+            |target| target.object_format = ObjectFormat::Wasm,
             "Cranelift writes no WebAssembly objects",
         );
         rejects_changed(
@@ -800,15 +793,6 @@ mod tests {
             |target| target.call_conv = CallConv::Win64,
             "the triple implies the system_v convention, not windows_fastcall",
         );
-        let db = TestDb::default();
-        let project = app_of(&db, "Main(): int { return 7; }\n");
-        let program = Program::collect(&db, project).unwrap();
-        let mut target = x86_64();
-        wasm(&mut target);
-        assert!(matches!(
-            Cranelift.object(&program, &target, Profile::Debug),
-            Err(CodegenError::UnsupportedTarget { .. })
-        ));
     }
 
     #[test]
@@ -902,9 +886,9 @@ mod tests {
                 ),
             );
         }
-        let mut profile = Target::builtin("riscv64gc-linux").unwrap();
-        profile.triple = "riscv64a23-unknown-linux-musl".into();
-        assert!(isa(&profile, Profile::Debug, true).is_ok());
+        let mut a23 = Target::builtin("riscv64gc-linux").unwrap();
+        a23.triple = "riscv64a23-unknown-linux-musl".into();
+        assert!(isa(&a23, Profile::Debug, true).is_ok());
     }
 
     #[test]
@@ -1340,10 +1324,7 @@ mod tests {
 
     /// What building the app of `text` for x86_64 gives.
     fn build(text: &str) -> Result<Vec<u8>, CodegenError> {
-        let db = TestDb::default();
-        let project = app_of(&db, text);
-        let program = Program::collect(&db, project).unwrap();
-        Cranelift.object(&program, &x86_64(), Profile::Debug)
+        build_object(text, &x86_64(), Profile::Debug)
     }
 
     #[test]
