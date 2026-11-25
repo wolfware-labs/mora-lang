@@ -23,7 +23,10 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, TerminatorKind};
 use mora_target::{CallConv, Endian, ObjectFormat, Target};
-use target_lexicon::{Architecture, Endianness, Triple};
+use target_lexicon::{
+    Aarch64Architecture, Architecture, BinaryFormat, Endianness, OperatingSystem,
+    Riscv64Architecture, Triple,
+};
 
 use self::runtime::{Call, Runtime};
 use crate::abi::FnAbi;
@@ -115,16 +118,18 @@ fn call_conv(target: &Target) -> Result<IsaCallConv, CodegenError> {
 }
 
 /// Checks, before Cranelift sees `triple`, that it has the pointer width and
-/// the byte order of `target` and names the instruction set of its `arch`:
-/// Cranelift generates code from the triple, while layouts follow the
-/// description (§19.4 rule 2).
+/// the byte order of `target`, names the instruction set of its `arch`, is
+/// one Cranelift generates for (see [`cranelift_refuses`]), and gives the
+/// object format and the operating system of its `object-format` and `os`:
+/// Cranelift generates code and writes objects from the triple, while
+/// layouts and `@Cfg` follow the description (§19.4 rule 2).
 ///
 /// # Errors
 ///
-/// [`CodegenError::UnsupportedTarget`], naming the triple's value and the
-/// description's, for the first of the three that differs. A triple whose
-/// architecture has no known pointer width or byte order is left to the
-/// instruction-set check.
+/// [`CodegenError::UnsupportedTarget`] for the first check that fails,
+/// naming the triple and, where the description has the value, the
+/// description's. A triple whose architecture has no known pointer width or
+/// byte order is left to the instruction-set check.
 fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
     if let Ok(width) = triple.pointer_width()
         && u32::from(width.bits()) != target.pointer_width
@@ -166,7 +171,73 @@ fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
             ),
         ));
     }
+    if let Some(reason) = cranelift_refuses(triple.architecture, &target.triple) {
+        return Err(unsupported(target, reason));
+    }
+    if object_format(triple.binary_format) != Some(target.object_format) {
+        return Err(unsupported(
+            target,
+            format!(
+                "the triple `{}` gives the object format {}, but `object-format` is {}",
+                target.triple,
+                triple.binary_format,
+                target.object_format.name()
+            ),
+        ));
+    }
+    let os = operating_system(triple.operating_system);
+    if os != target.os {
+        return Err(unsupported(
+            target,
+            format!(
+                "the triple `{}` names the operating system {os}, but `os` is {}",
+                target.triple, target.os
+            ),
+        ));
+    }
     Ok(())
+}
+
+/// Why Cranelift cannot generate for `architecture`, the architecture of
+/// `triple`: an instruction set that `isa::lookup` accepts and then asserts
+/// on, or one Cranelift generates another variant of than the one named.
+fn cranelift_refuses(architecture: Architecture, triple: &str) -> Option<String> {
+    match architecture {
+        // The aarch64 backend asserts that the triple is little-endian.
+        Architecture::Aarch64(Aarch64Architecture::Aarch64be) => Some(format!(
+            "Cranelift generates no big-endian aarch64 code, which the triple `{triple}` asks for"
+        )),
+        // The riscv64 backend needs G and passes floats in registers (LP64D),
+        // whatever the triple says.
+        Architecture::Riscv64(Riscv64Architecture::Riscv64 | Riscv64Architecture::Riscv64imac) => {
+            Some(format!(
+                "Cranelift generates riscv64 code only for the G extensions (IMAFD) with \
+                 hardware floats, which the triple `{triple}` does not name"
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The description's `object-format` of the objects Cranelift writes for
+/// `format`, or `None` for a format it writes no objects in.
+fn object_format(format: BinaryFormat) -> Option<ObjectFormat> {
+    match format {
+        BinaryFormat::Elf => Some(ObjectFormat::Elf),
+        BinaryFormat::Macho => Some(ObjectFormat::Macho),
+        BinaryFormat::Coff => Some(ObjectFormat::Coff),
+        _ => None,
+    }
+}
+
+/// The operating system `os` spelled as a description's `os`: `macos` for
+/// both Darwin and macOS, which a triple may name either way, and the
+/// triple's own spelling for any other.
+fn operating_system(os: OperatingSystem) -> Cow<'static, str> {
+    match os {
+        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => Cow::Borrowed("macos"),
+        other => other.into_str(),
+    }
 }
 
 /// The instruction set `architecture` belongs to, spelled as a description's
@@ -471,17 +542,29 @@ mod tests {
     use super::*;
     use crate::test_util::{app_of, doubling, func, jit, object_of, symbol, x86_64};
 
-    /// Asserts that `isa` rejects the built-in target `name`, once `change`
-    /// has edited it, for `reason`.
+    /// Asserts that `isa`, and an object of a program with a string literal
+    /// on the heap, reject the built-in target `name`, once `change` has
+    /// edited it, for `reason`.
     fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
         let mut target = Target::builtin(name).unwrap();
         change(&mut target);
+        let error = CodegenError::UnsupportedTarget {
+            target: name.into(),
+            reason: reason.into(),
+        };
+        assert_eq!(isa(&target, Profile::Debug, true).err().unwrap(), error);
+        let db = TestDb::default();
+        let project = app_of(
+            &db,
+            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n",
+        );
+        let program = Program::collect(&db, project).unwrap();
         assert_eq!(
-            isa(&target, Profile::Debug, true).err().unwrap(),
-            CodegenError::UnsupportedTarget {
-                target: name.into(),
-                reason: reason.into(),
-            }
+            Cranelift
+                .object(&program, &target, Profile::Debug)
+                .err()
+                .unwrap(),
+            error
         );
     }
 
@@ -775,7 +858,8 @@ mod tests {
             "the triple `unknown-unknown-linux-musl` names the instruction set unknown, \
              but `arch` is x86_64",
         );
-        // Big-endian on both sides still never reaches Cranelift's assertion.
+        // Big-endian on both sides, with `arch` left at `aarch64`, fails this
+        // check; with `arch` changed too, see the test below.
         rejects_changed(
             "aarch64-linux",
             |target| {
@@ -785,6 +869,113 @@ mod tests {
             "the triple `aarch64_be-unknown-linux-gnu` names the instruction set aarch64_be, \
              but `arch` is aarch64",
         );
+    }
+
+    #[test]
+    fn a_big_endian_aarch64_triple_is_rejected_whatever_the_arch() {
+        // Cranelift asserts, rather than reports, that an aarch64 triple is
+        // little-endian.
+        rejects_changed(
+            "aarch64-linux",
+            |target| {
+                target.triple = "aarch64_be-unknown-linux-gnu".into();
+                target.arch = "aarch64_be".into();
+                target.endian = Endian::Big;
+            },
+            "Cranelift generates no big-endian aarch64 code, which the triple \
+             `aarch64_be-unknown-linux-gnu` asks for",
+        );
+    }
+
+    #[test]
+    fn a_riscv64_triple_without_the_g_extensions_is_rejected() {
+        for triple in [
+            "riscv64imac-unknown-linux-musl",
+            "riscv64-unknown-linux-musl",
+        ] {
+            rejects_changed(
+                "riscv64gc-linux",
+                |target| target.triple = triple.into(),
+                &format!(
+                    "Cranelift generates riscv64 code only for the G extensions (IMAFD) with \
+                     hardware floats, which the triple `{triple}` does not name"
+                ),
+            );
+        }
+        let mut profile = Target::builtin("riscv64gc-linux").unwrap();
+        profile.triple = "riscv64a23-unknown-linux-musl".into();
+        assert!(isa(&profile, Profile::Debug, true).is_ok());
+    }
+
+    #[test]
+    fn a_triple_of_another_object_format_is_rejected() {
+        let cases = [
+            (
+                "aarch64-linux",
+                "aarch64-unknown-linux-musl-coff",
+                "coff",
+                "elf",
+            ),
+            ("x86_64-linux", "x86_64-apple-darwin", "macho", "elf"),
+            ("x86_64-macos", "x86_64-unknown-linux-musl", "elf", "macho"),
+            (
+                "x86_64-windows",
+                "x86_64-pc-windows-gnullvm-elf",
+                "elf",
+                "coff",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-musl-xcoff",
+                "xcoff",
+                "elf",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-musl-unknown",
+                "unknown",
+                "elf",
+            ),
+        ];
+        for (name, triple, format, object_format) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` gives the object format {format}, \
+                     but `object-format` is {object_format}"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_of_another_operating_system_is_rejected() {
+        let cases = [
+            ("x86_64-linux", "x86_64-unknown-freebsd", "freebsd", "linux"),
+            ("x86_64-linux", "x86_64-unknown-uefi", "uefi", "linux"),
+            ("aarch64-macos", "aarch64-apple-ios", "ios", "macos"),
+            (
+                "x86_64-windows",
+                "x86_64-pc-cygwin-coff",
+                "cygwin",
+                "windows",
+            ),
+        ];
+        for (name, triple, os, expected) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` names the operating system {os}, \
+                     but `os` is {expected}"
+                ),
+            );
+        }
+        // Darwin and macOS both spell `macos`.
+        let mut macos = Target::builtin("x86_64-macos").unwrap();
+        macos.triple = "x86_64-apple-macosx10.12.0".into();
+        assert!(isa(&macos, Profile::Debug, true).is_ok());
     }
 
     #[test]

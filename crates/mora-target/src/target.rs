@@ -75,7 +75,7 @@ pub enum ObjectFormat {
 
 impl ObjectFormat {
     /// The value's spelling in a description file.
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             ObjectFormat::Elf => "elf",
             ObjectFormat::Macho => "macho",
