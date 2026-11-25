@@ -590,10 +590,14 @@ mod tests {
     use super::*;
     use crate::test_util::{app_of, build_object, doubling, func, jit, object_of, symbol, x86_64};
 
-    /// Asserts that `isa`, and an object of a program with a string literal
-    /// on the heap, reject the built-in target `name`, once `change` has
-    /// edited it, for `reason`. The literal's data symbol reaches the
-    /// relocations that differ by object format (see `data_symbol`).
+    /// A program with a string literal on the heap, whose data symbol
+    /// reaches the relocations that differ by object format (see
+    /// `data_symbol`).
+    const HEAP_LITERAL: &str =
+        "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
+
+    /// Asserts that `isa`, and an object of [`HEAP_LITERAL`], reject the
+    /// built-in target `name`, once `change` has edited it, for `reason`.
     fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
         let mut target = Target::builtin(name).unwrap();
         change(&mut target);
@@ -602,10 +606,10 @@ mod tests {
             reason: reason.into(),
         };
         assert_eq!(isa(&target, Profile::Debug, true).err().unwrap(), error);
-        let text =
-            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
         assert_eq!(
-            build_object(text, &target, Profile::Debug).err().unwrap(),
+            build_object(HEAP_LITERAL, &target, Profile::Debug)
+                .err()
+                .unwrap(),
             error
         );
     }
@@ -1022,16 +1026,11 @@ mod tests {
             ("aarch64-apple-visionos1.0", "visionos"),
             ("aarch64-apple-xros1.0", "visionos"),
         ];
-        let text =
-            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
         for (triple, os) in cases {
             let mut target = Target::builtin("aarch64-macos").unwrap();
             target.triple = triple.into();
             target.os = os.into();
-            assert!(
-                build_object(text, &target, Profile::Debug).is_ok(),
-                "{triple}"
-            );
+            object_of(HEAP_LITERAL, &target, Profile::Debug);
         }
         rejects_changed(
             "aarch64-macos",
@@ -1043,12 +1042,11 @@ mod tests {
 
     #[test]
     fn the_vendor_and_other_environments_change_no_byte_of_the_object() {
-        let text =
-            "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
         let cases = [
             ("x86_64-linux", "x86_64-pc-linux-gnu"),
             ("x86_64-linux", "x86_64-unknown-linux-android"),
             ("x86_64-windows", "x86_64-pc-windows-gnu"),
+            ("x86_64-windows", "x86_64-pc-windows-msvc"),
             ("x86_64-windows", "x86_64-unknown-windows-gnullvm"),
             ("aarch64-macos", "aarch64-unknown-darwin"),
             ("riscv64gc-linux", "riscv64gc-unknown-linux-gnu"),
@@ -1058,8 +1056,8 @@ mod tests {
             let mut changed = builtin.clone();
             changed.triple = triple.into();
             assert_eq!(
-                build_object(text, &changed, Profile::Debug).unwrap(),
-                build_object(text, &builtin, Profile::Debug).unwrap(),
+                object_of(HEAP_LITERAL, &changed, Profile::Debug),
+                object_of(HEAP_LITERAL, &builtin, Profile::Debug),
                 "{triple}"
             );
         }
