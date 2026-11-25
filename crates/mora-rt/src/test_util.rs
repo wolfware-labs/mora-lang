@@ -5,7 +5,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::process::{Command, Output};
+use std::process::{Command, ExitStatus, Output};
 
 use crate::panic::PANIC_EXIT_CODE;
 
@@ -83,6 +83,35 @@ pub(crate) fn panics_with(test: &str, message: &str) {
         format!("panic: {message}\n"),
         "{test}"
     );
+}
+
+/// Runs the ignored test `test` of this crate in a child process, and
+/// checks that it aborts after printing `message` and nothing else, as the
+/// runtime reports its own bugs (§10.11).
+pub(crate) fn aborts_with(test: &str, message: &str) {
+    let out = child(test);
+    assert!(aborted(out.status), "{test}: {}", out.status);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("{message}\n"),
+        "{test}"
+    );
+}
+
+/// Whether a process ended in an abort: `SIGABRT`, signal 6 on Linux and
+/// macOS.
+#[cfg(unix)]
+fn aborted(status: ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal() == Some(6)
+}
+
+/// Whether a process ended in an abort: a fast fail, whose exit code is
+/// `STATUS_STACK_BUFFER_OVERRUN`.
+#[cfg(windows)]
+fn aborted(status: ExitStatus) -> bool {
+    status.code() == Some(0xC000_0409_u32 as i32)
 }
 
 /// Runs `body` in the child process of [`child`] only, so that the ignored

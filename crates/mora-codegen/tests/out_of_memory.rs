@@ -29,14 +29,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mora_codegen::{Cranelift, JitBackend, Profile, Program};
 use mora_hir::test_support::{TestDb, app};
-use mora_rt_core::string::BYTES_OFFSET;
+use mora_rt_core::string::{BYTES_OFFSET, OBJECT_ALIGN};
 
 /// The length of the string each case builds, too long to be inline.
 const LEN: usize = 1200;
 
-/// The size of the heap object of that string, the block the allocator
-/// refuses.
-const REFUSED: usize = BYTES_OFFSET + LEN;
+/// The size of the heap object of that string, which the panic names.
+const OBJECT: usize = BYTES_OFFSET + LEN;
+
+/// The block the allocator refuses: the object, after the bytes the
+/// runtime's platform layer puts in front of it.
+const REFUSED: usize = mora_rt::block_prefix(OBJECT_ALIGN) + OBJECT;
 
 /// How the child's line for a refused block starts.
 const REFUSED_LINE: &str = "out_of_memory: refused ";
@@ -178,7 +181,7 @@ fn main() -> ExitCode {
             .split_inclusive('\n')
             .partition(|line| line.starts_with(REFUSED_LINE));
         let rest: String = rest.concat();
-        let expected = format!("panic: out of memory allocating {REFUSED} bytes\n");
+        let expected = format!("panic: out of memory allocating {OBJECT} bytes\n");
         let only_the_string = refused == [format!("{REFUSED_LINE}{REFUSED} bytes\n")];
         if output.status.code() == Some(101)
             && rest == expected

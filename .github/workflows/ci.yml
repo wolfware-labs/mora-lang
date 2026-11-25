@@ -269,19 +269,23 @@ jobs:
         with:
           tool: cargo-llvm-cov
       # The debug runtime's own paths count too: its tests run in a second
-      # pass, and the report merges both.
+      # pass, with a report of its own. The two builds compile some functions
+      # differently, and one report over both passes would keep the counts of
+      # only one build for each of those; Codecov adds the uploads up line by
+      # line instead.
       - name: coverage
         run: |
-          cargo llvm-cov --no-report --workspace --locked
-          cargo llvm-cov --no-report -p mora-rt -p mora-rt-core --features mora-rt/debug --locked
-          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          cargo llvm-cov -p mora-rt -p mora-rt-core --features mora-rt/debug --locked --lcov --output-path lcov-debug.info
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lcov
-          path: lcov.info
+          path: |
+            lcov.info
+            lcov-debug.info
           retention-days: 1
 
-  # Uploads the report to Codecov through GitHub OIDC, so no token is stored.
+  # Uploads the reports to Codecov through GitHub OIDC, so no token is stored.
   # It runs no code from the repository, only the pinned upload action, so
   # the OIDC permission never meets pull request code. Pull requests from
   # forks cannot mint a token, so their upload is best effort.
@@ -304,7 +308,7 @@ jobs:
       - name: upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          files: lcov.info
+          files: lcov.info,lcov-debug.info
           use_oidc: true
           # A Codecov outage must not fail a pull request; the tests are the gate.
           fail_ci_if_error: false
