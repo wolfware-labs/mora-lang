@@ -45,7 +45,7 @@ pub const fn block_prefix(align: usize) -> usize {
 /// global allocator hands out, and the layout of that memory; `None` when no
 /// such layout exists. The release runtime asks for the block alone, and the
 /// debug runtime for the block with its record in front ([`recorded`]).
-pub(crate) fn block(size: usize, align: usize) -> Option<(usize, Layout)> {
+fn block(size: usize, align: usize) -> Option<(usize, Layout)> {
     if DEBUG {
         return recorded(size, align);
     }
@@ -136,15 +136,18 @@ fn refuses_zero(size: usize, what: &str) -> bool {
 /// a panic would take the bug for it. The message is written as it is
 /// formatted, building nothing on the heap.
 fn misuse(message: fmt::Arguments<'_>) -> ! {
-    // `Diagnostic` never fails.
-    let _ = fmt::Write::write_fmt(&mut Diagnostic, format_args!("internal error: {message}\n"));
+    // `DiagnosticStream` never fails.
+    let _ = fmt::Write::write_fmt(
+        &mut DiagnosticStream,
+        format_args!("internal error: {message}\n"),
+    );
     mora_pal_abort()
 }
 
 /// The diagnostic stream of the platform interface, as a formatting target.
-struct Diagnostic;
+struct DiagnosticStream;
 
-impl fmt::Write for Diagnostic {
+impl fmt::Write for DiagnosticStream {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         mora_rt_core::pal::write_diagnostic(text.as_bytes());
         Ok(())
@@ -248,23 +251,22 @@ pub extern "C" fn mora_pal_good_size(size: usize, _align: usize) -> usize {
 /// Aborts the process; see [`mora_rt_core::pal::abort`].
 #[unsafe(no_mangle)]
 pub extern "C" fn mora_pal_abort() -> ! {
+    // A build instrumented for coverage writes its counts at exit, which an
+    // abort skips: write them first, since the tests of the paths that
+    // abort run them in a child process. Kept inside this function, which
+    // cargo-mutants leaves alone, as no `cargo test` build compiles it.
     #[cfg(coverage)]
-    write_coverage();
-    process::abort()
-}
-
-/// Writes the counts of a build instrumented for coverage, which are
-/// otherwise written at exit, and so lost when the process aborts: the
-/// tests of the paths that abort run them in a child process.
-#[cfg(coverage)]
-fn write_coverage() {
-    unsafe extern "C" {
-        /// The profiler runtime's writer of the counts, linked into every
-        /// instrumented build.
-        fn __llvm_profile_write_file() -> i32;
+    {
+        unsafe extern "C" {
+            /// The profiler runtime's writer of the counts, linked into
+            /// every instrumented build.
+            fn __llvm_profile_write_file() -> i32;
+        }
+        // SAFETY: the writer has no preconditions; a failure loses only
+        // counts.
+        let _ = unsafe { __llvm_profile_write_file() };
     }
-    // SAFETY: the writer has no preconditions; a failure loses only counts.
-    let _ = unsafe { __llvm_profile_write_file() };
+    process::abort()
 }
 
 /// Writes to stderr; see [`mora_rt_core::pal::write_diagnostic`].
@@ -455,8 +457,7 @@ mod tests {
         // alignment it was allocated with, recomputed from the capacity.
         unsafe {
             let buffer = pal::alloc(capacity * ELEMENT, ALIGN).unwrap();
-            let (_, layout) = block(capacity * ELEMENT, ALIGN).unwrap();
-            assert_eq!(last_allocation(), layout.size());
+            assert_eq!(last_allocation(), block_prefix(ALIGN) + capacity * ELEMENT);
             buffer.as_ptr().write_bytes(1, capacity * ELEMENT);
             pal::free(buffer, capacity * ELEMENT, ALIGN);
         }

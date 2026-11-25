@@ -51,6 +51,8 @@ exclude_re = [
     '^crates/mora-testkit/src/diff\.rs:34:87: replace \+ with \* in diff$',
     # `ALLOW` is empty, so the comparison never runs.
     '^xtask/src/target_names\.rs:344:62: replace == with != in check$',
+    # At an alignment of `RECORD` both arms are `RECORD`.
+    '^crates/mora-rt/src/pal\.rs:33:14: replace > with >= in record_prefix$',
 
     # Not equivalent, but checked outside `cargo test`, which is all that
     # cargo-mutants runs. CI's `runtime` job covers both:
@@ -62,4 +64,8 @@ exclude_re = [
     #   which installs llvm-mingw and checks the linker it copied.
     '^xtask/src/sysroot\.rs:291:18: replace == with != in install_llvm_mingw$',
     '^xtask/src/sysroot\.rs:291:34: replace \|\| with && in install_llvm_mingw$',
+    # The release runtime puts no prefix in front of a block, so only the
+    # debug runtime's tests, which CI's `linux` and `platforms` jobs run
+    # (`test (debug runtime)`), tell a prefix of 0 from the record's.
+    '^crates/mora-rt/src/pal\.rs:41:5: replace block_prefix -> usize with 0$',
 ]
