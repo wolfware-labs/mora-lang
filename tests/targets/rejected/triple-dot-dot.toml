@@ -1,0 +1,24 @@
+# A triple that is `..`, the parent folder as a path.
+name = "triple-dot-dot"
+triple = ".."
+os = "linux"
+arch = "x86_64"
+pointer-width = 64
+endian = "little"
+object-format = "elf"
+call-conv = "sysv64"
+backend = "cranelift"
+runtime = "hosted"
+capabilities = ["heap", "threads", "fs", "net", "stdio", "clock", "random", "process", "env"]
+
+[align]
+i16 = 2
+i32 = 4
+i64 = 8
+f32 = 4
+f64 = 8
+pointer = 8
+
+[linker]
+flavor = "ld.lld"
+args = ["-static"]

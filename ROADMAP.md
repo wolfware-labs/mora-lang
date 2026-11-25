@@ -385,6 +385,7 @@ Done when:
 - On Linux and Windows the linker, the start files and the libraries are taken from the toolchain directory by absolute path. A test puts a decoy `ld.lld` (`lld-link.exe` on Windows) first on `PATH` and in the project directory and shows it is not run; on macOS `xcrun` is started as `/usr/bin/xcrun`.
 - Every linker argument is passed as one argument, never through a shell, and each path or name taken from the project is passed so that it cannot be read as an option or split in a response file: a test links a project whose folder name starts with `-` and contains a space and a quote.
 - A run test calls a function whose frame is larger than the guard page (a multi-megabyte struct local) near the stack limit and prints `stack overflow` (§13.10) on every Tier 1 target, since M1.12 probes such a frame on entry as §13.10 then states.
+- A path the linker driver builds from a target description's `name` or `triple` (`lib/rt/<target>/`, `lib/sysroot/<target>/`) is refused, with a diagnostic, when its component is a name Windows reserves (`nul`, `con`, `aux`, `com1` and the like, with or without an extension), ends in `.`, or is longer than a limit §19.4 then states; `mora-target` already allows no separator and no leading `-`. A test for each.
 
 ### M1.15 Standard library bootstrap and console output
 
@@ -416,6 +417,7 @@ Done when:
 - CLI tests: a `[project] name` outside lowercase letters, digits and `-`, or one that starts with `-`, and an `entry` that is absolute or leaves the project folder through `..`, are errors before any file is written; nothing is ever written outside the project's `target/`.
 - Source discovery reads only regular files below `src/`: a special file such as a FIFO named `X.mr` is never opened and is reported with a diagnostic. Tests with such a FIFO and with a link cycle end without hanging, and a symbolic link that leaves the project follows the rule the spec gives (§17.3); the 4 GiB check of `MR0003` reads the size before the content.
 - A text that is not valid UTF-8 is `MR0001` and a text of 4 GiB or more is `MR0003`, both reported before any lexing, through one checked entry point that the driver, the language server and the test kit all use; `LineIndex::new` returns an error instead of panicking on an oversized text.
+- The `args` of a target description's `[linker]` table never decide where the linker writes or what it loads: the driver passes them first and its own output path, objects and libraries last, and rejects, before running the linker, an argument that names an output, a response file or a plugin (§14.14 then states it). CLI tests build with a description whose `args` hold each of these, for every linker flavor, and nothing is written outside the project's `target/`.
 
 ### M1.17 Debug information and symbol names
 

@@ -1,9 +1,14 @@
 version: 2
+# Each version update waits 14 days after a release is published, so a
+# release that is yanked or found bad in its first days is never proposed
+# as one. Security updates do not wait.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
     groups:
       cargo:
         patterns: ["*"]
@@ -14,6 +19,8 @@ updates:
     directory: /fuzz
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14
     allow:
       - dependency-name: libfuzzer-sys
     groups:
@@ -23,3 +30,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 14

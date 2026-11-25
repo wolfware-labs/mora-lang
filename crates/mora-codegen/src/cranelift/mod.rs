@@ -21,8 +21,11 @@ use cranelift_module::{FuncId, Linkage, Module, ModuleError, default_libcall_nam
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mora_hir::{Primitive, Ty};
 use mora_mir::{Body, LocalId, TerminatorKind};
-use mora_target::{CallConv, ObjectFormat, Target};
-use target_lexicon::Triple;
+use mora_target::{CallConv, Endian, ObjectFormat, Target};
+use target_lexicon::{
+    Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem,
+    Riscv64Architecture, Triple,
+};
 
 use self::runtime::{Call, Runtime};
 use crate::abi::FnAbi;
@@ -113,6 +116,143 @@ fn call_conv(target: &Target) -> Result<IsaCallConv, CodegenError> {
     }
 }
 
+/// Checks, before Cranelift sees `triple`, that every field of it is one the
+/// backend accepts and agrees with `target` (§13.7): Cranelift generates code
+/// and writes objects from the triple, while layouts and `@Cfg` follow the
+/// description (§19.4 rule 2). The fields are checked in order:
+///
+/// - the architecture is `x86_64`, `aarch64`, `riscv64gc` or `riscv64a23`,
+///   its instruction set is the description's `arch`, and the description's
+///   `endian` is `little`, as all four are;
+/// - the vendor is any, since Cranelift never reads it;
+/// - the operating system is `linux`, `darwin` without a version, `macosx`
+///   with or without one, or `windows` (only `linux` for riscv64), and is
+///   the description's `os`, with `darwin` and `macosx` both `macos`;
+/// - the environment is `gnu` or `musl` on Linux, `msvc`, `gnu` or
+///   `gnullvm` on Windows, and none on macOS;
+/// - the object format, stated or implied, is the operating system's own
+///   (ELF, Mach-O or COFF) and the description's `object-format`.
+///
+/// Any other value is refused here, before Cranelift sees the triple, so
+/// Cranelift never gets a value whose output nobody has checked. Pointers
+/// are 64 bits wide on all four architectures, which [`call_conv`] requires
+/// of the description already.
+///
+/// # Errors
+///
+/// [`CodegenError::UnsupportedTarget`] for the first field that fails,
+/// naming the triple's value and either what the backend accepts or the
+/// description's value.
+fn check_triple(target: &Target, triple: &Triple) -> Result<(), CodegenError> {
+    let text = &target.triple;
+    let refused = |what: String, accepted: &str| {
+        unsupported(
+            target,
+            format!(
+                "the triple `{text}` {what}, which the backend does not accept; it accepts \
+                 {accepted}"
+            ),
+        )
+    };
+    let disagrees = |what: String, field: &str, value: &str| {
+        unsupported(
+            target,
+            format!("the triple `{text}` {what}, but `{field}` is {value}"),
+        )
+    };
+    let riscv64 = matches!(triple.architecture, Architecture::Riscv64(_));
+    let set = match triple.architecture {
+        Architecture::X86_64 => "x86_64",
+        Architecture::Aarch64(Aarch64Architecture::Aarch64) => "aarch64",
+        Architecture::Riscv64(Riscv64Architecture::Riscv64gc | Riscv64Architecture::Riscv64a23) => {
+            "riscv64"
+        }
+        other => {
+            return Err(refused(
+                format!("names the architecture {other}"),
+                "x86_64, aarch64, riscv64gc and riscv64a23",
+            ));
+        }
+    };
+    if set != target.arch {
+        return Err(disagrees(
+            format!("names the instruction set {set}"),
+            "arch",
+            &target.arch,
+        ));
+    }
+    if target.endian != Endian::Little {
+        return Err(disagrees(
+            "is little-endian".to_owned(),
+            "endian",
+            target.endian.name(),
+        ));
+    }
+    let (os, format, object_format, environments, accepted) = match triple.operating_system {
+        OperatingSystem::Linux => (
+            "linux",
+            BinaryFormat::Elf,
+            ObjectFormat::Elf,
+            &[Environment::Gnu, Environment::Musl][..],
+            "gnu and musl",
+        ),
+        // Cranelift writes a `darwin` version, the kernel's, as the minimum
+        // macOS version, and a `macosx` one as it is.
+        OperatingSystem::Darwin(None) | OperatingSystem::MacOSX(_) if !riscv64 => (
+            "macos",
+            BinaryFormat::Macho,
+            ObjectFormat::Macho,
+            &[Environment::Unknown][..],
+            "no environment",
+        ),
+        OperatingSystem::Windows if !riscv64 => (
+            "windows",
+            BinaryFormat::Coff,
+            ObjectFormat::Coff,
+            &[Environment::Msvc, Environment::Gnu, Environment::GnuLlvm][..],
+            "msvc, gnu and gnullvm",
+        ),
+        // Cranelift writes riscv64 code only in ELF objects.
+        other => {
+            return Err(refused(
+                format!("names the operating system {other}"),
+                if riscv64 {
+                    "only linux for riscv64"
+                } else {
+                    "linux, darwin without a version, macosx with or without one, and windows"
+                },
+            ));
+        }
+    };
+    if os != target.os {
+        return Err(disagrees(format!("is for {os}"), "os", &target.os));
+    }
+    if !environments.contains(&triple.environment) {
+        let named = match triple.environment {
+            Environment::Unknown => "no environment".to_owned(),
+            other => format!("the environment {other}"),
+        };
+        return Err(refused(
+            format!("names {named}"),
+            &format!("{accepted} on {os}"),
+        ));
+    }
+    if triple.binary_format != format {
+        return Err(refused(
+            format!("gives {} objects", triple.binary_format),
+            &format!("{format} on {os}"),
+        ));
+    }
+    if object_format != target.object_format {
+        return Err(disagrees(
+            format!("gives {format} objects"),
+            "object-format",
+            target.object_format.name(),
+        ));
+    }
+    Ok(())
+}
+
 /// Cranelift's `opt_level` setting for `profile`.
 fn opt_level(profile: Profile) -> &'static str {
     match profile {
@@ -127,8 +267,10 @@ fn opt_level(profile: Profile) -> &'static str {
 /// # Errors
 ///
 /// [`CodegenError::UnsupportedTarget`] when Cranelift cannot generate for
-/// the target, or when the convention its triple implies is not the one the
-/// description names.
+/// the target, when the triple does not parse, holds a value the backend
+/// does not accept or does not match the description (see
+/// [`check_triple`]), or when the convention the triple implies is not the
+/// one the description names.
 fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, CodegenError> {
     let call_conv = call_conv(target)?;
     let mut flags = settings::builder();
@@ -156,6 +298,7 @@ fn isa(target: &Target, profile: Profile, pic: bool) -> Result<OwnedTargetIsa, C
             format!("`{}` is not a target triple: {error}", target.triple),
         )
     })?;
+    check_triple(target, &triple)?;
     let isa = isa::lookup(triple)
         .map_err(|error| unsupported(target, error))?
         .finish(settings::Flags::new(flags))
@@ -397,19 +540,33 @@ mod tests {
     use mora_hir::Construct;
     use mora_hir::test_support::{TestDb, unsupported_of};
     use mora_mir::LocalTy;
-    use mora_target::builtin_names;
+    use mora_target::{LinkerFlavor, builtin_names};
     use object::{Object, ObjectSection, ObjectSymbol};
 
     use super::*;
-    use crate::test_util::{app_of, doubling, func, jit, object_of, symbol, x86_64};
+    use crate::test_util::{app_of, build_object, doubling, func, jit, object_of, symbol, x86_64};
 
-    fn is_unsupported(result: Result<OwnedTargetIsa, CodegenError>, reason: &str) {
+    /// A program with a string literal on the heap, whose data symbol
+    /// reaches the relocations that differ by object format (see
+    /// `data_symbol`).
+    const HEAP_LITERAL: &str =
+        "F(a: string): string => a + \"a literal of more than fifteen bytes\";\nF(\"\");\n";
+
+    /// Asserts that `isa`, and an object of [`HEAP_LITERAL`], reject the
+    /// built-in target `name`, once `change` has edited it, for `reason`.
+    fn rejects_changed(name: &str, change: impl FnOnce(&mut Target), reason: &str) {
+        let mut target = Target::builtin(name).unwrap();
+        change(&mut target);
+        let error = CodegenError::UnsupportedTarget {
+            target: name.into(),
+            reason: reason.into(),
+        };
+        assert_eq!(isa(&target, Profile::Debug, true).err().unwrap(), error);
         assert_eq!(
-            result.err().unwrap(),
-            CodegenError::UnsupportedTarget {
-                target: "x86_64-linux".into(),
-                reason: reason.into(),
-            }
+            build_object(HEAP_LITERAL, &target, Profile::Debug)
+                .err()
+                .unwrap(),
+            error
         );
     }
 
@@ -610,49 +767,501 @@ mod tests {
 
     #[test]
     fn unsupported_targets_are_errors() {
-        let mut wasm = x86_64();
-        wasm.object_format = ObjectFormat::Wasm;
-        is_unsupported(
-            isa(&wasm, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.object_format = ObjectFormat::Wasm,
             "Cranelift writes no WebAssembly objects",
         );
-        let mut arm = x86_64();
-        arm.call_conv = CallConv::Aapcs;
-        is_unsupported(
-            isa(&arm, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.call_conv = CallConv::Aapcs,
             "Cranelift generates no 32-bit Arm code",
         );
-        let mut narrow = x86_64();
-        narrow.pointer_width = 32;
-        is_unsupported(
-            isa(&narrow, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.pointer_width = 32,
             "pointers must be 64 bits wide",
         );
-        let mut disabled = x86_64();
-        disabled.triple = "s390x-unknown-linux-gnu".into();
-        is_unsupported(
-            isa(&disabled, Profile::Debug, true),
-            "Support for this target is disabled",
+        rejects_changed(
+            "x86_64-linux",
+            |target| {
+                target.triple = "s390x-unknown-linux-gnu".into();
+                target.arch = "s390x".into();
+                target.endian = Endian::Big;
+            },
+            "the triple `s390x-unknown-linux-gnu` names the architecture s390x, which the \
+             backend does not accept; it accepts x86_64, aarch64, riscv64gc and riscv64a23",
         );
-        let mut garbage = x86_64();
-        garbage.triple = "not a triple".into();
-        is_unsupported(
-            isa(&garbage, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "not a triple".into(),
             "`not a triple` is not a target triple: Unrecognized architecture: not a triple",
         );
-        let mut mismatch = x86_64();
-        mismatch.call_conv = CallConv::Win64;
-        is_unsupported(
-            isa(&mismatch, Profile::Debug, true),
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.call_conv = CallConv::Win64,
             "the triple implies the system_v convention, not windows_fastcall",
         );
-        let db = TestDb::default();
-        let project = app_of(&db, "Main(): int { return 7; }\n");
-        let program = Program::collect(&db, project).unwrap();
-        assert!(matches!(
-            Cranelift.object(&program, &wasm, Profile::Debug),
-            Err(CodegenError::UnsupportedTarget { .. })
-        ));
+    }
+
+    /// The triples the backend accepts, each with the built-in target whose
+    /// description it agrees with.
+    const ACCEPTED: [(&str, &str); 29] = [
+        ("x86_64-linux", "x86_64-unknown-linux-musl"),
+        ("x86_64-linux", "x86_64-unknown-linux-gnu"),
+        ("x86_64-linux", "x86_64-pc-linux-gnu"),
+        ("aarch64-linux", "aarch64-unknown-linux-musl"),
+        ("aarch64-linux", "aarch64-unknown-linux-gnu"),
+        ("riscv64gc-linux", "riscv64gc-unknown-linux-musl"),
+        ("riscv64gc-linux", "riscv64gc-unknown-linux-gnu"),
+        ("riscv64gc-linux", "riscv64a23-unknown-linux-musl"),
+        ("riscv64gc-linux", "riscv64a23-unknown-linux-gnu"),
+        ("x86_64-macos", "x86_64-apple-darwin"),
+        ("x86_64-macos", "x86_64-apple-macosx"),
+        ("x86_64-macos", "x86_64-apple-macosx10.12.0"),
+        ("aarch64-macos", "aarch64-apple-darwin"),
+        ("aarch64-macos", "aarch64-unknown-darwin"),
+        ("aarch64-macos", "aarch64-apple-macosx"),
+        ("aarch64-macos", "aarch64-apple-macosx14.0"),
+        // target-lexicon reads `arm64` as aarch64 and `unknown` as no
+        // environment.
+        ("aarch64-macos", "arm64-apple-darwin"),
+        ("aarch64-macos", "aarch64-apple-macosx-unknown"),
+        ("x86_64-windows", "x86_64-pc-windows-gnullvm"),
+        ("x86_64-windows", "x86_64-pc-windows-gnu"),
+        ("x86_64-windows", "x86_64-pc-windows-msvc"),
+        ("x86_64-windows", "x86_64-unknown-windows-gnullvm"),
+        ("aarch64-windows", "aarch64-pc-windows-gnullvm"),
+        ("aarch64-windows", "aarch64-pc-windows-gnu"),
+        ("aarch64-windows", "aarch64-pc-windows-msvc"),
+        ("aarch64-linux", "arm64-unknown-linux-gnu"),
+        ("x86_64-linux", "x86_64-unknown-linux-musl-elf"),
+        ("aarch64-macos", "aarch64-apple-darwin-macho"),
+        ("x86_64-windows", "x86_64-pc-windows-msvc-coff"),
+    ];
+
+    #[test]
+    fn every_accepted_triple_builds_an_object_for_its_description() {
+        use object::{Architecture, BinaryFormat};
+        for (name, triple) in ACCEPTED {
+            let mut target = Target::builtin(name).unwrap();
+            target.triple = triple.into();
+            let bytes = object_of(HEAP_LITERAL, &target, Profile::Debug);
+            let file = object::File::parse(&*bytes).unwrap();
+            let format = match target.object_format {
+                ObjectFormat::Elf => BinaryFormat::Elf,
+                ObjectFormat::Macho => BinaryFormat::MachO,
+                _ => BinaryFormat::Coff,
+            };
+            let architecture = match target.arch.as_str() {
+                "x86_64" => Architecture::X86_64,
+                "aarch64" => Architecture::Aarch64,
+                _ => Architecture::Riscv64,
+            };
+            assert_eq!(file.format(), format, "{triple}");
+            assert_eq!(file.architecture(), architecture, "{triple}");
+        }
+    }
+
+    #[test]
+    fn the_vendor_and_the_accepted_environments_change_no_byte_of_the_object() {
+        // A `macosx` triple with a version writes it as the object's minimum
+        // macOS version, so only the ones without a version are the same.
+        for (name, triple) in ACCEPTED {
+            let os = Triple::from_str(triple).unwrap().operating_system;
+            if matches!(os, OperatingSystem::MacOSX(Some(_))) {
+                continue;
+            }
+            let builtin = Target::builtin(name).unwrap();
+            let mut changed = builtin.clone();
+            changed.triple = triple.into();
+            assert_eq!(
+                object_of(HEAP_LITERAL, &changed, Profile::Debug),
+                object_of(HEAP_LITERAL, &builtin, Profile::Debug),
+                "{triple}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_macosx_triple_gives_its_version_as_the_minimum_macos() {
+        use object::read::macho::MachOFile64;
+        let minos = |triple: &str| {
+            let mut target = Target::builtin("aarch64-macos").unwrap();
+            target.triple = triple.into();
+            let bytes = object_of(HEAP_LITERAL, &target, Profile::Debug);
+            let file = MachOFile64::<object::Endianness>::parse(&*bytes).unwrap();
+            let (command, _) = file.build_version().unwrap().unwrap();
+            command.minos.get(object::Endianness::Little)
+        };
+        assert_eq!(
+            minos("aarch64-apple-macosx14.2"),
+            object::macho::Version::new(14, 2, 0)
+        );
+        assert_eq!(
+            minos("aarch64-apple-darwin"),
+            object::macho::Version::new(0, 0, 0)
+        );
+    }
+
+    /// Asserts that each of `cases`, a built-in target and a triple, is
+    /// rejected for `reason(triple)`.
+    fn rejects_triples(cases: &[(&str, &str)], reason: impl Fn(&str) -> String) {
+        for &(name, triple) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &reason(triple),
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_of_another_architecture_is_rejected() {
+        rejects_triples(
+            &[
+                ("aarch64-linux", "aarch64_be-unknown-linux-gnu"),
+                ("riscv64gc-linux", "riscv64imac-unknown-linux-musl"),
+                ("riscv64gc-linux", "riscv64-unknown-linux-musl"),
+                ("x86_64-linux", "unknown-unknown-linux-musl"),
+                ("x86_64-linux", "i686-unknown-linux-gnu"),
+                ("x86_64-linux", "s390x-unknown-linux-gnu"),
+            ],
+            |triple| {
+                let architecture = triple.split('-').next().unwrap();
+                format!(
+                    "the triple `{triple}` names the architecture {architecture}, which the \
+                     backend does not accept; it accepts x86_64, aarch64, riscv64gc and riscv64a23"
+                )
+            },
+        );
+        // The big-endian one with a description that says so is rejected
+        // all the same, before Cranelift asserts that aarch64 is little-endian.
+        rejects_changed(
+            "aarch64-linux",
+            |target| {
+                target.triple = "aarch64_be-unknown-linux-gnu".into();
+                target.arch = "aarch64_be".into();
+                target.endian = Endian::Big;
+            },
+            "the triple `aarch64_be-unknown-linux-gnu` names the architecture aarch64_be, which \
+             the backend does not accept; it accepts x86_64, aarch64, riscv64gc and riscv64a23",
+        );
+    }
+
+    #[test]
+    fn a_triple_of_another_instruction_set_than_arch_is_rejected() {
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.triple = "aarch64-unknown-linux-musl".into(),
+            "the triple `aarch64-unknown-linux-musl` names the instruction set aarch64, \
+             but `arch` is x86_64",
+        );
+        rejects_changed(
+            "riscv64gc-linux",
+            |target| target.arch = "riscv64gc".into(),
+            "the triple `riscv64gc-unknown-linux-musl` names the instruction set riscv64, \
+             but `arch` is riscv64gc",
+        );
+        rejects_changed(
+            "x86_64-linux",
+            |target| target.endian = Endian::Big,
+            "the triple `x86_64-unknown-linux-musl` is little-endian, but `endian` is big",
+        );
+    }
+
+    #[test]
+    fn a_triple_of_another_operating_system_is_rejected() {
+        rejects_triples(
+            &[
+                ("x86_64-linux", "x86_64-unknown-freebsd"),
+                ("x86_64-linux", "x86_64-unknown-uefi"),
+                ("aarch64-linux", "aarch64-unknown-none-softfloat-elf"),
+                ("x86_64-windows", "x86_64-pc-cygwin-coff"),
+                ("aarch64-macos", "aarch64-apple-ios"),
+                ("aarch64-macos", "aarch64-apple-ios17.0"),
+                ("aarch64-macos", "aarch64-apple-ios-sim"),
+                ("aarch64-macos", "aarch64-apple-ios-macabi"),
+                ("aarch64-macos", "aarch64-apple-tvos"),
+                ("aarch64-macos", "aarch64-apple-watchos"),
+                ("aarch64-macos", "aarch64-apple-visionos"),
+                ("aarch64-macos", "aarch64-apple-xros1.0"),
+                // Darwin's version is the kernel's, which Cranelift would
+                // write as the minimum macOS version.
+                ("aarch64-macos", "aarch64-apple-darwin23.1"),
+                ("x86_64-macos", "x86_64-apple-darwin19"),
+            ],
+            |triple| {
+                let os = Triple::from_str(triple).unwrap().operating_system;
+                format!(
+                    "the triple `{triple}` names the operating system {os}, which the backend \
+                     does not accept; it accepts linux, darwin without a version, macosx with or \
+                     without one, and windows"
+                )
+            },
+        );
+        // Cranelift writes riscv64 code only in ELF objects.
+        rejects_triples(
+            &[
+                ("riscv64gc-linux", "riscv64gc-apple-darwin"),
+                ("riscv64gc-linux", "riscv64gc-pc-windows-msvc"),
+                ("riscv64gc-linux", "riscv64a23-apple-macosx"),
+                ("riscv64gc-linux", "riscv64a23-pc-windows-gnu"),
+            ],
+            |triple| {
+                let os = Triple::from_str(triple).unwrap().operating_system;
+                format!(
+                    "the triple `{triple}` names the operating system {os}, which the backend \
+                     does not accept; it accepts only linux for riscv64"
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn a_triple_of_another_os_than_the_description_is_rejected() {
+        let cases = [
+            ("x86_64-linux", "x86_64-apple-darwin", "macos", "linux"),
+            (
+                "x86_64-linux",
+                "x86_64-pc-windows-gnullvm",
+                "windows",
+                "linux",
+            ),
+            (
+                "x86_64-macos",
+                "x86_64-unknown-linux-musl",
+                "linux",
+                "macos",
+            ),
+            (
+                "aarch64-windows",
+                "aarch64-apple-macosx14.0",
+                "macos",
+                "windows",
+            ),
+        ];
+        for (name, triple, os, expected) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!("the triple `{triple}` is for {os}, but `os` is {expected}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_of_another_environment_is_rejected() {
+        let cases = [
+            (
+                "aarch64-linux",
+                "aarch64-unknown-linux-gnu_ilp32",
+                "the environment gnu_ilp32",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-gnux32",
+                "the environment gnux32",
+            ),
+            (
+                "aarch64-linux",
+                "aarch64-unknown-linux-softfloat",
+                "the environment softfloat",
+            ),
+            (
+                "riscv64gc-linux",
+                "riscv64gc-unknown-linux-softfloat",
+                "the environment softfloat",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-softfloat",
+                "the environment softfloat",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-android",
+                "the environment android",
+            ),
+            ("x86_64-linux", "x86_64-unknown-linux", "no environment"),
+        ];
+        for (name, triple, environment) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` names {environment}, which the backend does not \
+                     accept; it accepts gnu and musl on linux"
+                ),
+            );
+        }
+        let cases = [
+            ("x86_64-windows", "x86_64-pc-windows", "no environment"),
+            (
+                "aarch64-windows",
+                "aarch64-pc-windows-softfloat",
+                "the environment softfloat",
+            ),
+        ];
+        for (name, triple, environment) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` names {environment}, which the backend does not \
+                     accept; it accepts msvc, gnu and gnullvm on windows"
+                ),
+            );
+        }
+        let cases = [
+            (
+                "aarch64-macos",
+                "aarch64-apple-macosx-sim",
+                "the environment sim",
+            ),
+            (
+                "aarch64-macos",
+                "aarch64-apple-macosx14.0-macabi",
+                "the environment macabi",
+            ),
+            (
+                "aarch64-macos",
+                "aarch64-apple-darwin-gnu",
+                "the environment gnu",
+            ),
+        ];
+        for (name, triple, environment) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` names {environment}, which the backend does not \
+                     accept; it accepts no environment on macos"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_of_another_object_format_is_rejected() {
+        let cases = [
+            (
+                "aarch64-linux",
+                "aarch64-unknown-linux-musl-coff",
+                "coff",
+                "elf on linux",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-musl-xcoff",
+                "xcoff",
+                "elf on linux",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-musl-unknown",
+                "unknown",
+                "elf on linux",
+            ),
+            (
+                "x86_64-linux",
+                "x86_64-unknown-linux-musl-macho",
+                "macho",
+                "elf on linux",
+            ),
+            (
+                "x86_64-macos",
+                "x86_64-apple-darwin-elf",
+                "elf",
+                "macho on macos",
+            ),
+            (
+                "x86_64-windows",
+                "x86_64-pc-windows-gnullvm-elf",
+                "elf",
+                "coff on windows",
+            ),
+        ];
+        for (name, triple, format, accepted) in cases {
+            rejects_changed(
+                name,
+                |target| target.triple = triple.into(),
+                &format!(
+                    "the triple `{triple}` gives {format} objects, which the backend does not \
+                     accept; it accepts {accepted}"
+                ),
+            );
+        }
+        // A description of riscv64 in another format than ELF, which
+        // Cranelift does not write riscv64 code in.
+        let cases = [
+            (
+                "riscv64gc-unknown-linux-musl-coff",
+                ObjectFormat::Coff,
+                LinkerFlavor::LldLink,
+            ),
+            (
+                "riscv64gc-unknown-linux-musl-macho",
+                ObjectFormat::Macho,
+                LinkerFlavor::Ld64,
+            ),
+        ];
+        for (triple, format, linker) in cases {
+            rejects_changed(
+                "riscv64gc-linux",
+                |target| {
+                    target.triple = triple.into();
+                    target.object_format = format;
+                    target.linker.flavor = linker;
+                },
+                &format!(
+                    "the triple `{triple}` gives {} objects, which the backend does not \
+                     accept; it accepts elf on linux",
+                    format.name()
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_of_another_object_format_than_the_description_is_rejected() {
+        let cases = [
+            (
+                "x86_64-linux",
+                ObjectFormat::Coff,
+                LinkerFlavor::LldLink,
+                "elf",
+                "coff",
+            ),
+            (
+                "x86_64-windows",
+                ObjectFormat::Elf,
+                LinkerFlavor::LdLld,
+                "coff",
+                "elf",
+            ),
+            (
+                "aarch64-macos",
+                ObjectFormat::Elf,
+                LinkerFlavor::LdLld,
+                "macho",
+                "elf",
+            ),
+        ];
+        for (name, format, linker, given, expected) in cases {
+            let triple = Target::builtin(name).unwrap().triple;
+            rejects_changed(
+                name,
+                |target| {
+                    target.object_format = format;
+                    target.linker.flavor = linker;
+                },
+                &format!(
+                    "the triple `{triple}` gives {given} objects, but `object-format` is \
+                     {expected}"
+                ),
+            );
+        }
     }
 
     #[test]
@@ -1017,10 +1626,7 @@ mod tests {
 
     /// What building the app of `text` for x86_64 gives.
     fn build(text: &str) -> Result<Vec<u8>, CodegenError> {
-        let db = TestDb::default();
-        let project = app_of(&db, text);
-        let program = Program::collect(&db, project).unwrap();
-        Cranelift.object(&program, &x86_64(), Profile::Debug)
+        build_object(text, &x86_64(), Profile::Debug)
     }
 
     #[test]

@@ -49,6 +49,16 @@ pub enum Endian {
     Big,
 }
 
+impl Endian {
+    /// The value's spelling in a description file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Endian::Little => "little",
+            Endian::Big => "big",
+        }
+    }
+}
+
 /// An object file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,6 +71,18 @@ pub enum ObjectFormat {
     Coff,
     /// WebAssembly.
     Wasm,
+}
+
+impl ObjectFormat {
+    /// The value's spelling in a description file.
+    pub fn name(self) -> &'static str {
+        match self {
+            ObjectFormat::Elf => "elf",
+            ObjectFormat::Macho => "macho",
+            ObjectFormat::Coff => "coff",
+            ObjectFormat::Wasm => "wasm",
+        }
+    }
 }
 
 /// A C calling convention (§13.7).
@@ -81,6 +103,48 @@ pub enum CallConv {
     Lp64d,
     /// The 32-bit Arm AAPCS.
     Aapcs,
+}
+
+impl CallConv {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            CallConv::Sysv64 => "sysv64",
+            CallConv::Aapcs64 => "aapcs64",
+            CallConv::AppleAapcs64 => "apple-aapcs64",
+            CallConv::Win64 => "win64",
+            CallConv::WinArm64 => "win-arm64",
+            CallConv::Lp64d => "lp64d",
+            CallConv::Aapcs => "aapcs",
+        }
+    }
+
+    /// The width, in bits, of the pointers this convention passes.
+    fn pointer_width(self) -> u32 {
+        match self {
+            CallConv::Aapcs => 32,
+            CallConv::Sysv64
+            | CallConv::Aapcs64
+            | CallConv::AppleAapcs64
+            | CallConv::Win64
+            | CallConv::WinArm64
+            | CallConv::Lp64d => 64,
+        }
+    }
+
+    /// Whether this is a convention of the instruction set `arch`: `x86_64`,
+    /// `aarch64` and `riscv64` by name, and 32-bit Arm by an `arch` that
+    /// starts with `arm`, but not `arm64`, or with `thumb`.
+    fn fits_arch(self, arch: &str) -> bool {
+        match self {
+            CallConv::Sysv64 | CallConv::Win64 => arch == "x86_64",
+            CallConv::Aapcs64 | CallConv::AppleAapcs64 | CallConv::WinArm64 => arch == "aarch64",
+            CallConv::Lp64d => arch == "riscv64",
+            CallConv::Aapcs => {
+                (arch.starts_with("arm") && !arch.starts_with("arm64")) || arch.starts_with("thumb")
+            }
+        }
+    }
 }
 
 /// A code generator.
@@ -123,6 +187,23 @@ pub enum Capability {
     Process,
     /// Environment variables and arguments.
     Env,
+}
+
+impl Capability {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            Capability::Heap => "heap",
+            Capability::Threads => "threads",
+            Capability::Fs => "fs",
+            Capability::Net => "net",
+            Capability::Stdio => "stdio",
+            Capability::Clock => "clock",
+            Capability::Random => "random",
+            Capability::Process => "process",
+            Capability::Env => "env",
+        }
+    }
 }
 
 /// Alignments of the primitive types, in bytes. One-byte types are always
@@ -172,6 +253,16 @@ pub enum LinkerFlavor {
 }
 
 impl LinkerFlavor {
+    /// The value's spelling in a description file.
+    fn name(self) -> &'static str {
+        match self {
+            LinkerFlavor::LdLld => "ld.lld",
+            LinkerFlavor::Ld64 => "ld64",
+            LinkerFlavor::LldLink => "lld-link",
+            LinkerFlavor::WasmLd => "wasm-ld",
+        }
+    }
+
     /// The object format this linker reads.
     pub fn object_format(self) -> ObjectFormat {
         match self {
@@ -258,9 +349,13 @@ impl Target {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if !is_name(&self.name, &['-', '_']) {
+        // Neither `name` nor `triple` ever reads as an option, and neither holds
+        // a path separator. Names a file system reserves, such as `nul`, are the
+        // concern of whatever builds a path from one.
+        if !is_component(&self.name, &['-', '_']) {
             return Err(format!(
-                "`name` must be lowercase letters, digits, `-` and `_`, not `{}`",
+                "`name` must start with a lowercase letter or a digit and hold only lowercase \
+                 letters, digits, `-` and `_`, not {:?}",
                 self.name
             ));
         }
@@ -271,13 +366,33 @@ impl Target {
                 ));
             }
         }
-        if self.triple.is_empty() {
-            return Err("`triple` is empty".to_owned());
+        if !is_component(&self.triple, &['_', '.', '-']) {
+            return Err(format!(
+                "`triple` must start with a lowercase letter or a digit and hold only lowercase \
+                 letters, digits, `_`, `.` and `-`, not {:?}",
+                self.triple
+            ));
         }
         if !matches!(self.pointer_width, 32 | 64) {
             return Err(format!(
                 "`pointer-width` must be 32 or 64, not {}",
                 self.pointer_width
+            ));
+        }
+        let conv = self.call_conv;
+        if conv.pointer_width() != self.pointer_width {
+            return Err(format!(
+                "`call-conv` {} needs a `pointer-width` of {}, not {}",
+                conv.name(),
+                conv.pointer_width(),
+                self.pointer_width
+            ));
+        }
+        if !conv.fits_arch(&self.arch) {
+            return Err(format!(
+                "`call-conv` {} is not a convention of `arch` `{}`",
+                conv.name(),
+                self.arch
             ));
         }
         let align = &self.align;
@@ -297,18 +412,27 @@ impl Target {
         }
         for (i, capability) in self.capabilities.iter().enumerate() {
             if self.capabilities[..i].contains(capability) {
-                return Err(format!("capability {capability:?} is listed twice"));
+                return Err(format!("capability {} is listed twice", capability.name()));
             }
         }
         let reads = self.linker.flavor.object_format();
         if reads != self.object_format {
             return Err(format!(
-                "linker {:?} reads {reads:?} objects, but `object-format` is {:?}",
-                self.linker.flavor, self.object_format
+                "linker {} reads {} objects, but `object-format` is {}",
+                self.linker.flavor.name(),
+                reads.name(),
+                self.object_format.name()
             ));
         }
         Ok(())
     }
+}
+
+/// Whether `s` starts with a lowercase ASCII letter or a digit and is made of
+/// those and `extra`: as a path component or an argument, it never reads as
+/// an option.
+fn is_component(s: &str, extra: &[char]) -> bool {
+    s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) && is_name(s, extra)
 }
 
 /// Whether `s` is non-empty and made of lowercase ASCII letters, digits and `extra`.
