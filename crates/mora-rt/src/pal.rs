@@ -21,9 +21,12 @@ const _: signatures::WriteDiagnostic = mora_pal_write_diagnostic;
 const _: signatures::Now = mora_pal_now;
 const _: signatures::Wait = mora_pal_wait;
 
-/// The bytes the debug runtime keeps right before each block it hands out:
-/// the block's size, then its alignment.
-const RECORD: usize = 2 * mem::size_of::<usize>();
+/// What the debug runtime keeps right before each block it hands out: the
+/// block's size, then its alignment.
+type Record = [usize; 2];
+
+/// The bytes of a [`Record`].
+const RECORD: usize = mem::size_of::<Record>();
 
 /// Where a block of `size` bytes aligned to `align` starts in the memory the
 /// global allocator hands out, and the layout of that memory; `None` when no
@@ -54,15 +57,24 @@ unsafe fn hand_out(start: *mut u8, prefix: usize, size: usize, align: usize) -> 
         return start;
     }
     // SAFETY: the prefix is at least `RECORD` bytes and a multiple of the
-    // word size, and `start` is aligned to it, so the record's two words
-    // are in the memory and aligned.
+    // word size, and `start` is aligned to it, so the record is in the
+    // memory and aligned.
     unsafe {
         let block = start.add(prefix);
-        let record = block.cast::<usize>().sub(2);
-        record.write(size);
-        record.add(1).write(align);
+        record(block).write([size, align]);
         block
     }
+}
+
+/// Where the debug runtime keeps the record of the block at `block`.
+///
+/// # Safety
+///
+/// `block` is preceded by at least [`RECORD`] bytes of its own memory, as
+/// every block the debug runtime hands out is.
+unsafe fn record(block: *mut u8) -> *mut Record {
+    // SAFETY: the caller guarantees the bytes before the block.
+    unsafe { block.cast::<Record>().sub(1) }
 }
 
 /// In the debug runtime, checks that the block at `ptr` was allocated with
@@ -79,10 +91,7 @@ unsafe fn check(ptr: *mut u8, size: usize, align: usize, what: &str) {
         return;
     }
     // SAFETY: the debug runtime keeps the record right before each block.
-    let (kept_size, kept_align) = unsafe {
-        let record = ptr.cast::<usize>().sub(2);
-        (record.read(), record.add(1).read())
-    };
+    let [kept_size, kept_align] = unsafe { record(ptr).read() };
     if (kept_size, kept_align) != (size, align) {
         misuse(format_args!(
             "{what} a block of {kept_size} bytes aligned to {kept_align} as \
@@ -91,16 +100,18 @@ unsafe fn check(ptr: *mut u8, size: usize, align: usize, what: &str) {
     }
 }
 
-/// In the debug runtime, ends the process when `size` is zero, which the
-/// contract of `mora_pal_alloc` and `mora_pal_realloc` rules out. `what` is
-/// what the caller was about to do.
-fn check_not_zero(size: usize, what: &str) {
-    if !DEBUG {
-        return;
+/// Whether `size` is zero, which the contract of `mora_pal_alloc` and
+/// `mora_pal_realloc` rules out: the release runtime then answers null, and
+/// the debug runtime ends the process. `what` is what the caller was about to
+/// do.
+fn refuses_zero(size: usize, what: &str) -> bool {
+    if size != 0 {
+        return false;
     }
-    if size == 0 {
+    if DEBUG {
         misuse(format_args!("{what} 0 bytes"));
     }
+    true
 }
 
 /// Reports a misuse of the platform interface, a compiler or runtime bug
@@ -119,8 +130,7 @@ fn misuse(message: fmt::Arguments<'_>) -> ! {
 /// `size` is not zero and `align` is a power of two.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mora_pal_alloc(size: usize, align: usize) -> *mut u8 {
-    check_not_zero(size, "allocated");
-    if size == 0 {
+    if refuses_zero(size, "allocated") {
         return ptr::null_mut();
     }
     match block(size, align) {
@@ -146,8 +156,7 @@ pub unsafe extern "C" fn mora_pal_realloc(
     align: usize,
     new_size: usize,
 ) -> *mut u8 {
-    check_not_zero(new_size, "resized a block to");
-    if new_size == 0 {
+    if refuses_zero(new_size, "resized a block to") {
         return ptr::null_mut();
     }
     // SAFETY: the caller guarantees where the block came from.
@@ -244,20 +253,7 @@ mod tests {
     use mora_rt_core::pal;
 
     use super::*;
-    use crate::panic::PANIC_EXIT_CODE;
-    use crate::test_util::{child, last_allocation, only_in_child};
-
-    /// Runs the child test `test`, which must end the process with the
-    /// debug runtime's report `message`.
-    fn panics_with(test: &str, message: &str) {
-        let out = child(&format!("pal::tests::{test}"));
-        assert_eq!(out.status.code(), Some(PANIC_EXIT_CODE), "{test}");
-        assert_eq!(
-            String::from_utf8_lossy(&out.stderr),
-            format!("panic: internal error: {message}\n"),
-            "{test}"
-        );
-    }
+    use crate::test_util::{last_allocation, only_in_child, panics_with};
 
     #[test]
     fn the_debug_runtime_keeps_a_record_in_front_of_each_block() {
@@ -307,16 +303,16 @@ mod tests {
             return;
         }
         panics_with(
-            "child_free_with_another_size",
-            "freed a block of 16 bytes aligned to 8 as 24 bytes aligned to 8",
+            "pal::tests::child_free_with_another_size",
+            "internal error: freed a block of 16 bytes aligned to 8 as 24 bytes aligned to 8",
         );
         panics_with(
-            "child_free_with_another_alignment",
-            "freed a block of 16 bytes aligned to 8 as 16 bytes aligned to 16",
+            "pal::tests::child_free_with_another_alignment",
+            "internal error: freed a block of 16 bytes aligned to 8 as 16 bytes aligned to 16",
         );
         panics_with(
-            "child_realloc_with_another_size",
-            "resized a block of 16 bytes aligned to 8 as 32 bytes aligned to 8",
+            "pal::tests::child_realloc_with_another_size",
+            "internal error: resized a block of 16 bytes aligned to 8 as 32 bytes aligned to 8",
         );
     }
 
@@ -346,8 +342,14 @@ mod tests {
     #[test]
     fn a_zero_size_is_null_in_release_and_panics_in_debug() {
         if DEBUG {
-            panics_with("child_alloc_zero", "allocated 0 bytes");
-            panics_with("child_realloc_to_zero", "resized a block to 0 bytes");
+            panics_with(
+                "pal::tests::child_alloc_zero",
+                "internal error: allocated 0 bytes",
+            );
+            panics_with(
+                "pal::tests::child_realloc_to_zero",
+                "internal error: resized a block to 0 bytes",
+            );
             return;
         }
         // SAFETY: the zero sizes are the case under test; the block is kept

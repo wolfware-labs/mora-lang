@@ -120,18 +120,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::test_util::{child, last_allocation, only_in_child};
-
-    /// What a process that ends in the panic `test` runs prints.
-    fn panics_with(test: &str, message: &str) {
-        let out = child(&format!("string::tests::{test}"));
-        assert_eq!(out.status.code(), Some(101), "{test}");
-        assert_eq!(
-            String::from_utf8_lossy(&out.stderr),
-            format!("panic: {message}\n"),
-            "{test}"
-        );
-    }
+    use crate::test_util::{last_allocation, only_in_child, panics_with};
 
     /// `a + b`, built by the entry point generated code calls.
     fn concat(parts: &[MoraString]) -> MoraString {
@@ -244,14 +233,14 @@ mod tests {
     fn a_heap_string_takes_its_header_and_its_bytes() {
         let string = new_string(&[b'a'; 40]);
         // The debug runtime's record comes on top of the object.
-        let (prefix, _) = crate::pal::block(BYTES_OFFSET + 40, OBJECT_ALIGN).unwrap();
-        assert_eq!(last_allocation(), prefix + BYTES_OFFSET + 40);
+        let (_, memory) = crate::pal::block(BYTES_OFFSET + 40, OBJECT_ALIGN).unwrap();
+        assert_eq!(last_allocation(), memory.size());
         assert_eq!(string.len(), 40);
     }
 
     #[test]
     fn a_concatenation_too_long_panics() {
-        panics_with("child_too_long", "string too long");
+        panics_with("string::tests::child_too_long", "string too long");
     }
 
     #[test]
@@ -270,7 +259,10 @@ mod tests {
 
     #[test]
     fn an_allocation_that_fails_panics_with_its_size() {
-        panics_with("child_out_of_memory", "out of memory allocating 52 bytes");
+        panics_with(
+            "string::tests::child_out_of_memory",
+            "out of memory allocating 52 bytes",
+        );
     }
 
     #[test]

@@ -149,7 +149,7 @@ pub unsafe extern "C" fn mora_rt_panic_overflow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{child, only_in_child};
+    use crate::test_util::{child, only_in_child, panics_with};
 
     #[test]
     fn panic_text_names_the_location() {
@@ -237,9 +237,7 @@ mod tests {
 
     #[test]
     fn a_panic_without_a_location_prints_only_the_message() {
-        let out = child("panic::tests::child_panics_without_location");
-        assert_eq!(out.status.code(), Some(101));
-        assert_eq!(String::from_utf8_lossy(&out.stderr), "panic: boom\n");
+        panics_with("panic::tests::child_panics_without_location", "boom");
     }
 
     #[test]

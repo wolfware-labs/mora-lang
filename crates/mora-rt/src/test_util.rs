@@ -7,6 +7,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::process::{Command, Output};
 
+use crate::panic::PANIC_EXIT_CODE;
+
 std::thread_local! {
     /// The size of the last block this thread asked the allocator for.
     static LAST_ALLOCATION: Cell<usize> = const { Cell::new(0) };
@@ -68,6 +70,19 @@ pub(crate) fn child(test: &str) -> Output {
         .env(CHILD_ENV, "1")
         .output()
         .unwrap()
+}
+
+/// Runs the ignored test `test` of this crate in a child process, and
+/// checks that it ends in a panic with no source location that prints
+/// `message`.
+pub(crate) fn panics_with(test: &str, message: &str) {
+    let out = child(test);
+    assert_eq!(out.status.code(), Some(PANIC_EXIT_CODE), "{test}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("panic: {message}\n"),
+        "{test}"
+    );
 }
 
 /// Runs `body` in the child process of [`child`] only, so that the ignored
