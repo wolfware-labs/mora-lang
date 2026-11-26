@@ -15,6 +15,7 @@ pub mod signatures {
         new_size: usize,
     ) -> *mut u8;
     pub type Free = unsafe extern "C" fn(ptr: *mut u8, size: usize, align: usize);
+    pub type GoodSize = extern "C" fn(size: usize, align: usize) -> usize;
     pub type Abort = extern "C" fn() -> !;
     pub type WriteDiagnostic = unsafe extern "C" fn(ptr: *const u8, len: usize);
     pub type Now = extern "C" fn() -> u64;
@@ -31,6 +32,7 @@ unsafe extern "C" {
     fn mora_pal_alloc(size: usize, align: usize) -> *mut u8;
     fn mora_pal_realloc(ptr: *mut u8, old_size: usize, align: usize, new_size: usize) -> *mut u8;
     fn mora_pal_free(ptr: *mut u8, size: usize, align: usize);
+    fn mora_pal_good_size(size: usize, align: usize) -> usize;
     fn mora_pal_abort() -> !;
     fn mora_pal_write_diagnostic(ptr: *const u8, len: usize);
     fn mora_pal_now() -> u64;
@@ -74,6 +76,15 @@ pub unsafe fn realloc(
 pub unsafe fn free(ptr: NonNull<u8>, size: usize, align: usize) {
     // SAFETY: the caller upholds the platform's preconditions.
     unsafe { mora_pal_free(ptr.as_ptr(), size, align) }
+}
+
+/// The usable size of the block [`alloc`] would return for `size` and
+/// `align`: at least `size`, and `size` itself on a platform that does not
+/// know. A growable buffer sizes its capacity to it, then allocates and frees
+/// exactly the size of that capacity (§13.1).
+pub fn good_size(size: usize, align: usize) -> usize {
+    // SAFETY: the platform's size query has no preconditions.
+    unsafe { mora_pal_good_size(size, align) }
 }
 
 /// Ends the process at once, without running destructors or flushing output.
@@ -150,6 +161,13 @@ mod tests {
         }
     }
 
+    /// Rounds up to a multiple of 16, as an allocator with size classes
+    /// would, so that a test can tell the answer from the request.
+    #[unsafe(no_mangle)]
+    extern "C" fn mora_pal_good_size(size: usize, _: usize) -> usize {
+        size.next_multiple_of(16)
+    }
+
     #[unsafe(no_mangle)]
     extern "C" fn mora_pal_abort() -> ! {
         std::process::abort()
@@ -180,6 +198,13 @@ mod tests {
         write_diagnostic(b"panicked: ");
         write_diagnostic(b"boom\n");
         assert_eq!(WRITTEN.take(), b"panicked: boom\n");
+    }
+
+    #[test]
+    fn good_size_passes_the_platform_answer_through() {
+        assert_eq!(good_size(1, 1), 16);
+        assert_eq!(good_size(48, 8), 48);
+        assert_eq!(good_size(49, 8), 64);
     }
 
     #[test]

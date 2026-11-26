@@ -36,6 +36,8 @@ homepage = "https://github.com/wolfware-labs/mora-lang"
 [workspace.lints.rust]
 # `deny`, not `forbid`, so that the crates CONTRIBUTING.md names can allow it.
 unsafe_code = "deny"
+# `coverage` is set by `cargo llvm-cov` (ci.yml, `coverage`).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
