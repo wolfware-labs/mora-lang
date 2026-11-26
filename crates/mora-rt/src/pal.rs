@@ -542,9 +542,7 @@ mod tests {
         // SAFETY: the layout is not zero-sized; the memory is freed with it.
         unsafe {
             let start = alloc::alloc(layout);
-            if start.is_null() {
-                panic!("the allocator refused the block");
-            }
+            assert!(!start.is_null());
             start.write_bytes(0xAA, layout.size());
             let block = hand_out(start, prefix, size, align);
             body(start, block);
@@ -583,9 +581,7 @@ mod tests {
             // alignment of its last resize.
             unsafe {
                 let block = alloc_recorded(24, align);
-                if block.is_null() {
-                    panic!("the allocator refused the block");
-                }
+                assert!(!block.is_null());
                 let prefix = record_prefix(align);
                 assert_eq!(last_allocation(), (prefix + 24, prefix));
                 assert_eq!(block as usize % align, 0);
@@ -593,9 +589,7 @@ mod tests {
                 block.write_bytes(7, 24);
                 let old = block;
                 let block = realloc_recorded(block, 24, align, 3000);
-                if block.is_null() {
-                    panic!("the allocator refused the block");
-                }
+                assert!(!block.is_null());
                 assert_eq!(last_resize(), (old as usize - prefix, prefix + 24, prefix));
                 assert_eq!(last_allocation(), (prefix + 3000, prefix));
                 assert_eq!(block as usize % align, 0);
@@ -604,9 +598,7 @@ mod tests {
                 block.add(24).write_bytes(9, 3000 - 24);
                 let old = block;
                 let block = realloc_recorded(block, 3000, align, 40);
-                if block.is_null() {
-                    panic!("the allocator refused the block");
-                }
+                assert!(!block.is_null());
                 assert_eq!(
                     last_resize(),
                     (old as usize - prefix, prefix + 3000, prefix)
@@ -626,9 +618,7 @@ mod tests {
         unsafe {
             assert!(alloc_recorded(16, 3).is_null());
             let block = alloc_recorded(16, 8);
-            if block.is_null() {
-                panic!("the allocator refused the block");
-            }
+            assert!(!block.is_null());
             block.write_bytes(7, 16);
             assert!(realloc_recorded(block, 16, 8, usize::MAX - 4).is_null());
             assert_eq!((record(block).read(), *block.add(15)), ([16, 8], 7));
@@ -654,9 +644,7 @@ mod tests {
         // SAFETY: the check ends the process before the free.
         only_in_child(|| unsafe {
             let block = alloc_recorded(16, 8);
-            if block.is_null() {
-                panic!("the allocator refused the block");
-            }
+            assert!(!block.is_null());
             free_recorded(block, 24, 8);
         });
     }
@@ -667,9 +655,7 @@ mod tests {
         // SAFETY: the check ends the process before the resize.
         only_in_child(|| unsafe {
             let block = alloc_recorded(16, 8);
-            if block.is_null() {
-                panic!("the allocator refused the block");
-            }
+            assert!(!block.is_null());
             let _ = realloc_recorded(block, 16, 64, 32);
         });
     }
