@@ -997,6 +997,15 @@ dependencies = [
 [[package]]
 name = "mora-driver"
 version = "0.0.0"
+dependencies = [
+ "codspeed-criterion-compat",
+ "mora-check",
+ "mora-codegen",
+ "mora-diag",
+ "mora-hir",
+ "mora-mir",
+ "mora-span",
+]
 
 [[package]]
 name = "mora-fmt"
@@ -1094,7 +1103,6 @@ dependencies = [
 name = "mora-testkit"
 version = "0.0.0"
 dependencies = [
- "mora-check",
  "mora-codegen",
  "mora-diag",
  "mora-driver",

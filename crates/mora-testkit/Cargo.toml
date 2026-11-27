@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 mora-codegen.workspace = true
-mora-check.workspace = true
 mora-diag.workspace = true
 mora-driver.workspace = true
 mora-hir.workspace = true

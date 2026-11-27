@@ -74,14 +74,9 @@ impl Compiler for Unbuilt {
     }
 }
 
-/// Stands in for the driver until it can compile: checking a case reports
-/// its lexical and syntax errors and the errors of name resolution,
-/// signatures, types, control flow and entry points, and, when none of those
-/// is an error, the errors of constant evaluation, then those of the sizes of
-/// the types it declares (`MR0156`). A case may describe several files (see
-/// [`crate::case`]); the standard library is not loaded, so names under
-/// `Std`, the names of the prelude and names in a file with a `using`
-/// directive of `Std` are not checked when nothing else declares them. It
+/// Stands in for the driver until it can compile: checking a case loads its
+/// files into a project and reports what [`mora_driver::check`] reports for
+/// it. A case may describe several files (see [`crate::case`]). It
 /// has no backend, unless it was given a `jit-runner` executable with
 /// [`FrontEnd::with_runner`]: then it runs programs through the JIT in a
 /// child process of it.
@@ -174,12 +169,9 @@ impl FrontEnd {
         let mut sources = Vec::new();
         let mut inputs = Vec::new();
         let mut shown = Vec::new();
-        let mut diagnostics = Vec::new();
         for file in case.files {
             let id = files.add(&file.shown, &file.text);
             let input = SourceFile::new(&db, id, file.path, file.text);
-            let parse = mora_hir::parse(&db, input);
-            diagnostics.extend(parse.errors().iter().map(|error| error.to_diagnostic(id)));
             sources.push(id);
             inputs.push(input);
             shown.push(file.shown);
@@ -193,16 +185,7 @@ impl FrontEnd {
             case.entry,
             Vec::new(),
         );
-        diagnostics.extend(mora_hir::diagnostics(&db, project).iter().cloned());
-        diagnostics.extend(mora_check::diagnostics(&db, project).iter().cloned());
-        if !has_error(&diagnostics) {
-            diagnostics.extend(mora_mir::diagnostics(&db, project).iter().cloned());
-        }
-        if !has_error(&diagnostics)
-            && let Err(error) = mora_codegen::check_sizes_on_host(&db, project)
-        {
-            diagnostics.extend(error.diagnostic());
-        }
+        let diagnostics = mora_driver::check(&db, project);
         Analysis {
             shown,
             db,

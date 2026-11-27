@@ -10,3 +10,19 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+mora-check.workspace = true
+mora-codegen.workspace = true
+mora-diag.workspace = true
+mora-hir.workspace = true
+mora-mir.workspace = true
+mora-span.workspace = true
+
+[dev-dependencies]
+mora-hir = { workspace = true, features = ["test-support"] }
+criterion.workspace = true
+
+[[bench]]
+name = "compile"
+harness = false
