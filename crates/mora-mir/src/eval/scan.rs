@@ -230,37 +230,26 @@ pub(super) fn children(node: &Expr) -> Vec<ExprId> {
         | Expr::Match { .. }
         | Expr::Block(_)
         | Expr::Lambda(_) => Vec::new(),
-        Expr::Tuple(elements) => elements.iter().map(|&(_, element)| element).collect(),
-        Expr::Collection(elements) => elements.iter().map(|&(_, element)| element).collect(),
-        Expr::Member { receiver, .. } => vec![*receiver],
-        Expr::Call { callee, args } => std::iter::once(*callee)
-            .chain(args.iter().map(|arg| arg.expr))
-            .collect(),
-        Expr::Index { base, args, .. } => std::iter::once(*base)
-            .chain(args.iter().map(|arg| arg.expr))
-            .collect(),
-        Expr::Unary { expr, .. }
-        | Expr::Propagate(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::Await(expr)
-        | Expr::Is { expr, .. }
-        | Expr::As { expr, .. } => vec![*expr],
-        Expr::NewArray { size, .. } => vec![*size],
-        Expr::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
-        Expr::Range { start, end } => start.iter().chain(end).copied().collect(),
-        Expr::With { expr, inits } => std::iter::once(*expr)
-            .chain(inits.iter().map(|&(_, value)| value))
-            .collect(),
-        Expr::Conditional {
-            condition,
-            then,
-            r#else,
-        } => vec![*condition, *then, *r#else],
-        Expr::New { args, inits, .. } => args
-            .iter()
-            .flatten()
-            .map(|arg| arg.expr)
-            .chain(inits.iter().flatten().map(|&(_, value)| value))
-            .collect(),
+        Expr::Tuple(_)
+        | Expr::Collection(_)
+        | Expr::Member { .. }
+        | Expr::Call { .. }
+        | Expr::Index { .. }
+        | Expr::Unary { .. }
+        | Expr::Propagate(_)
+        | Expr::Cast { .. }
+        | Expr::Await(_)
+        | Expr::Is { .. }
+        | Expr::As { .. }
+        | Expr::NewArray { .. }
+        | Expr::Binary { .. }
+        | Expr::Range { .. }
+        | Expr::With { .. }
+        | Expr::Conditional { .. }
+        | Expr::New { .. } => {
+            let mut children = Vec::new();
+            node.for_each_child(|child| children.push(child));
+            children
+        }
     }
 }

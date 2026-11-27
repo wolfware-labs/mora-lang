@@ -9,8 +9,8 @@
 use mora_diag::{Diagnostic, Fix, Label, TextEdit, codes};
 use mora_hir::{
     Arg, BinaryOp, Body, BodyKind, BodyOwner, BodyResolution, BodySourceMap, CaptureTarget, Expr,
-    ExprId, InterpPart, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Ty,
-    UnaryOp, arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree, signature,
+    ExprId, ItemId, LocalId, LocalKind, MatchArm, Pat, PatId, Stmt, StmtId, Ty, UnaryOp,
+    arena_index, body_resolution, calls_diverging, is_literal_bool, item_tree, signature,
 };
 use mora_span::{Db, Project, SourceFile, Span, TextRange};
 
@@ -709,7 +709,8 @@ impl Flow<'_> {
 
     fn expr(&mut self, expr: ExprId) {
         let body = self.body;
-        match &body.exprs[expr] {
+        let node = &body.exprs[expr];
+        match node {
             Expr::Missing
             | Expr::Discard
             | Expr::Literal(_)
@@ -721,40 +722,12 @@ impl Flow<'_> {
             | Expr::Nameof(_)
             | Expr::Macro => {}
             Expr::Local(local) => self.read(expr, *local),
-            Expr::Interpolated(parts) => {
-                for part in parts {
-                    if let InterpPart::Hole {
-                        value, alignment, ..
-                    } = part
-                    {
-                        self.expr(*value);
-                        if let Some(alignment) = alignment {
-                            self.expr(*alignment);
-                        }
-                    }
-                }
-            }
-            Expr::Tuple(elems) => {
-                for &(_, elem) in elems {
-                    self.expr(elem);
-                }
-            }
-            Expr::Collection(elems) => {
-                for &(_, elem) in elems {
-                    self.expr(elem);
-                }
-            }
-            Expr::Member { receiver, .. } => self.expr(*receiver),
             Expr::Call { callee, args } => {
                 self.expr(*callee);
                 self.args(args);
                 if self.diverges(*callee) {
                     self.state = self.unreachable();
                 }
-            }
-            Expr::Index { base, args, .. } => {
-                self.expr(*base);
-                self.args(args);
             }
             Expr::Unary {
                 op: UnaryOp::PreIncrement | UnaryOp::PreDecrement,
@@ -764,11 +737,20 @@ impl Flow<'_> {
                 self.expr(*place);
                 self.assign(*place);
             }
-            Expr::Unary { expr: operand, .. }
-            | Expr::Propagate(operand)
-            | Expr::Await(operand)
-            | Expr::Cast { expr: operand, .. }
-            | Expr::As { expr: operand, .. } => self.expr(*operand),
+            Expr::Interpolated(_)
+            | Expr::Tuple(_)
+            | Expr::Collection(_)
+            | Expr::Member { .. }
+            | Expr::Index { .. }
+            | Expr::Unary { .. }
+            | Expr::Propagate(_)
+            | Expr::Await(_)
+            | Expr::Cast { .. }
+            | Expr::As { .. }
+            | Expr::Range { .. }
+            | Expr::With { .. }
+            | Expr::New { .. }
+            | Expr::NewArray { .. } => node.for_each_child(|child| self.expr(child)),
             // The paths where a condition holds and where it does not meet.
             Expr::Binary {
                 op: BinaryOp::And | BinaryOp::Or,
@@ -803,18 +785,7 @@ impl Flow<'_> {
                     self.store(*lhs);
                 }
             }
-            Expr::Range { start, end } => {
-                for &part in start.iter().chain(end) {
-                    self.expr(part);
-                }
-            }
             Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms),
-            Expr::With { expr: value, inits } => {
-                self.expr(*value);
-                for &(_, init) in inits {
-                    self.expr(init);
-                }
-            }
             Expr::Conditional {
                 condition,
                 then,
@@ -837,15 +808,6 @@ impl Flow<'_> {
                 }
                 self.closure(&lambda.params, lambda.body, Function::default());
             }
-            Expr::New { args, inits, .. } => {
-                for arg in args.iter().flatten() {
-                    self.expr(arg.expr);
-                }
-                for &(_, init) in inits.iter().flatten() {
-                    self.expr(init);
-                }
-            }
-            Expr::NewArray { size, .. } => self.expr(*size),
             Expr::Block(stmts) => self.block(stmts),
         }
     }
