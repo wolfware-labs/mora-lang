@@ -5,6 +5,10 @@
 //! - `cold/jit-debug` runs [`mora_driver::jit`] on a fresh database: the
 //!   same passes, then code generation for this process in the debug
 //!   profile.
+//! - `cold/jit-error` runs [`mora_driver::jit`] on a fresh database on the
+//!   same project plus a function, called from the top-level statements,
+//!   whose frame is too large: the same passes, then code generation, whose
+//!   failure on that function becomes the program's error.
 //!
 //! Each file of the project declares two constants, one read from the
 //! other, that the struct methods and the helpers read; structs with
@@ -26,7 +30,8 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mora_codegen::Profile;
-use mora_hir::test_support::{TestDb, app};
+use mora_driver::BuildError;
+use mora_hir::test_support::{TestDb, app, codes};
 use mora_span::Project;
 
 /// Files of structs, constants and functions in the generated project.
@@ -101,23 +106,59 @@ fn file_text(file: usize) -> String {
 }
 
 /// The top-level statements: a call of every helper of every file, so that
-/// code generation reaches all of them.
-fn entry_text() -> String {
+/// code generation reaches all of them, and of `TooLarge` when `too_large`.
+fn entry_text(too_large: bool) -> String {
     let mut text = "var total = 0;\n".to_owned();
     for file in 0..FILES {
         for f in 0..FUNCTIONS {
             writeln!(text, "total = total + Helper{file}_{f}({f}, true);").unwrap();
         }
     }
+    if too_large {
+        text.push_str("total = total + TooLarge();\n");
+    }
     text.push_str("return total % 100;\n");
     text
 }
 
-/// The project in a fresh database: an entry point and `FILES` files.
-fn generate() -> (TestDb, Project) {
-    let mut texts = vec![("src/Program.mr".to_owned(), entry_text())];
+/// The last of the structs in [`too_large_text`], and the first whose size
+/// passes the frame limit of 2^31 bytes once a local holds one.
+const TOO_LARGE: usize = 28;
+
+/// Structs `S0` to `S{TOO_LARGE}`, where `S0` holds a `long` and each
+/// other `S{i}` two of the one before it, so `S{i}` takes `8 << i` bytes;
+/// and a function `TooLarge` whose local of the last one makes its frame
+/// too large for code generation.
+fn too_large_text() -> String {
+    let mut text = "struct S0 { public A: long; }\n".to_owned();
+    for i in 1..=TOO_LARGE {
+        let before = i - 1;
+        writeln!(
+            text,
+            "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
+        )
+        .unwrap();
+    }
+    writeln!(
+        text,
+        "public TooLarge(): int {{\n\
+         \x20   var t: S{TOO_LARGE};\n\
+         \x20   return 0;\n\
+         }}"
+    )
+    .unwrap();
+    text
+}
+
+/// The project in a fresh database: an entry point and `FILES` files, plus
+/// the file of [`too_large_text`] when `too_large`.
+fn generate(too_large: bool) -> (TestDb, Project) {
+    let mut texts = vec![("src/Program.mr".to_owned(), entry_text(too_large))];
     for file in 0..FILES {
         texts.push((format!("src/File{file}.mr"), file_text(file)));
+    }
+    if too_large {
+        texts.push(("src/TooLarge.mr".to_owned(), too_large_text()));
     }
     let files: Vec<(&str, &str)> = texts
         .iter()
@@ -132,7 +173,7 @@ fn cold(c: &mut Criterion) {
     let mut group = c.benchmark_group("cold");
     group.bench_function("check", |b| {
         b.iter_batched(
-            generate,
+            || generate(false),
             |(db, project)| {
                 black_box(mora_driver::check(&db, black_box(project)).len());
                 (db, project)
@@ -142,9 +183,19 @@ fn cold(c: &mut Criterion) {
     });
     group.bench_function("jit-debug", |b| {
         b.iter_batched(
-            generate,
+            || generate(false),
             |(db, project)| {
                 black_box(mora_driver::jit(&db, black_box(project), Profile::Debug).is_ok());
+                (db, project)
+            },
+            BatchSize::LargeInput,
+        );
+    });
+    group.bench_function("jit-error", |b| {
+        b.iter_batched(
+            || generate(true),
+            |(db, project)| {
+                black_box(mora_driver::jit(&db, black_box(project), Profile::Debug).is_err());
                 (db, project)
             },
             BatchSize::LargeInput,
@@ -156,12 +207,18 @@ fn cold(c: &mut Criterion) {
 /// The generated project must be valid and build, or the benchmarks
 /// measure error recovery instead of the common path.
 fn check_generated(_: &mut Criterion) {
-    let (db, project) = generate();
+    let (db, project) = generate(false);
     let found = mora_driver::check(&db, project);
     assert!(found.is_empty(), "{found:#?}");
     if let Err(error) = mora_driver::jit(&db, project, Profile::Debug) {
         panic!("the generated project does not build: {error:?}");
     }
+    let (db, project) = generate(true);
+    let error = mora_driver::jit(&db, project, Profile::Debug).err();
+    assert!(
+        matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0156"]),
+        "the project with a frame too large must fail in code generation: {error:?}"
+    );
 }
 
 criterion_group! {
