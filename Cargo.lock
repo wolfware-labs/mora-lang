@@ -1846,7 +1846,6 @@ dependencies = [
  "mora-diag",
  "mora-span",
  "mora-target",
- "mora-testkit",
  "serde_json",
  "sha2",
  "toml",

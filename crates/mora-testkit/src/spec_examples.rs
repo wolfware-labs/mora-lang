@@ -1,5 +1,5 @@
-//! `cargo xtask spec-examples`: runs the executable examples of the spec and
-//! of the error pages (§20.4).
+//! The executable examples of the spec and of the error pages (§20.4): the
+//! check that `tests/spec_examples.rs` runs for `cargo xtask spec-examples`.
 //!
 //! [`mora_diag::expectations`] reads the examples. Examples that cannot pass
 //! until a roadmap deliverable lands are listed in
@@ -12,19 +12,25 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use crate::Compiler;
+use crate::harness::guarded;
+use crate::run;
 use mora_diag::Severity;
 use mora_diag::expectations::{Example, Expects, extract};
-use mora_testkit::Compiler;
-use mora_testkit::harness::guarded;
-use mora_testkit::run;
-
-use crate::error_codes;
-use crate::paths::{PAGE_TEMPLATE, PAGES, SPEC};
 
 /// The list of examples that may fail, relative to the repository root.
 pub const PENDING: &str = "tests/spec-examples.pending";
 
 const ROADMAP: &str = "ROADMAP.md";
+
+/// The spec, relative to the repository root.
+const SPEC: &str = "docs/design/mora.md";
+
+/// The error pages, relative to the repository root.
+const PAGES: &str = "docs/errors";
+
+/// The file in [`PAGES`] that holds the page template, not a page.
+const PAGE_TEMPLATE: &str = "README.md";
 
 /// The pending list: each example's id and the deliverable that makes it
 /// pass, as the file lists them.
@@ -220,7 +226,7 @@ fn run_example(example: &Example, compiler: &dyn Compiler) -> Vec<String> {
 /// Reads the spec, the error pages, the pending list and the roadmap.
 pub fn load(root: &Path) -> io::Result<Repo> {
     let mut examples = extract(SPEC, None, &fs::read_to_string(root.join(SPEC))?);
-    for (page, text) in error_codes::read_pages(root)? {
+    for (page, text) in read_pages(root)? {
         // The README holds the page template, not a page.
         let Some(code) = page.strip_suffix(".md").filter(|_| page != PAGE_TEMPLATE) else {
             continue;
@@ -240,12 +246,33 @@ pub fn load(root: &Path) -> io::Result<Repo> {
     })
 }
 
+/// File name and text of every file in [`PAGES`], sorted by name; none when
+/// the directory does not exist. `cargo xtask error-codes` keeps its own copy,
+/// `read_pages` in `xtask/src/error_codes.rs`, since xtask builds without the
+/// test kit.
+fn read_pages(root: &Path) -> io::Result<Vec<(String, String)>> {
+    let mut pages = Vec::new();
+    let dir = root.join(PAGES);
+    if dir.is_dir() {
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_file()
+                && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            {
+                pages.push((name.to_owned(), fs::read_to_string(&path)?));
+            }
+        }
+    }
+    pages.sort();
+    Ok(pages)
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::{Backend, Checked, Output, Profile, Unbuilt};
     use mora_diag::expectations::expects;
     use mora_diag::{Diagnostic, Files, Label};
     use mora_span::{Span, TextRange};
-    use mora_testkit::{Backend, Checked, FrontEnd, Output, Profile, Unbuilt};
 
     use super::*;
 
@@ -452,12 +479,22 @@ F();
     }
 
     #[test]
-    fn repository_passes() {
-        let repo = load(&crate::paths::root()).unwrap();
+    fn repository_loads() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = load(&root).unwrap();
         assert!(repo.examples.len() > 1);
         assert!(repo.deliverables.contains(&"M1.4".to_owned()));
-        let runner = crate::runner::build(&crate::paths::root()).unwrap();
-        let outcome = check(&repo, &FrontEnd::with_runner(runner));
-        assert_eq!(outcome.problems, []);
+        assert!(!repo.pending.entries.is_empty());
+        // The pages' examples come in file name order, and none from the
+        // template.
+        let pages: Vec<&str> = repo
+            .examples
+            .iter()
+            .filter_map(|example| example.at.strip_prefix("docs/errors/"))
+            .filter_map(|at| at.split(':').next())
+            .collect();
+        assert!(!pages.is_empty());
+        assert!(pages.is_sorted());
+        assert!(pages.iter().all(|at| at.starts_with("MR")));
     }
 }

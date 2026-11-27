@@ -30,6 +30,14 @@ harness = false
 name = "run"
 harness = false
 
+# The spec and error-page examples, with the report `cargo xtask spec-examples`
+# prints. Only that command runs them, by name: `test = false` keeps them out
+# of `cargo test --workspace`.
+[[test]]
+name = "spec_examples"
+harness = false
+test = false
+
 # Runs one program through the JIT in its own process, because a panic in the
 # program exits the process.
 [[bin]]

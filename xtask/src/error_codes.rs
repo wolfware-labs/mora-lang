@@ -421,7 +421,9 @@ pub fn load(root: &Path) -> io::Result<Repo> {
 }
 
 /// File name and text of every file in `docs/errors/`, sorted by name; none
-/// when the directory does not exist.
+/// when the directory does not exist. The spec-example check keeps its own
+/// copy, `read_pages` in `crates/mora-testkit/src/spec_examples.rs`, since
+/// xtask builds without the test kit.
 pub fn read_pages(root: &Path) -> io::Result<Vec<(String, String)>> {
     let mut pages = Vec::new();
     let dir = root.join(PAGES);
