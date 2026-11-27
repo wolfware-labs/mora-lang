@@ -189,7 +189,10 @@ mod tests {
         let db = TestDb::new();
         let project = program(&db, "let x: int = \"one\";\nreturn 0;\n");
         let error = jit(&db, project, Profile::Release).err();
-        assert!(matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0203"]));
+        assert!(
+            matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0203"]),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -197,15 +200,18 @@ mod tests {
         let db = TestDb::new();
         let project = program(&db, &format!("{}var t: S28;\nreturn 0;\n", doubling(28)));
         let error = jit(&db, project, Profile::Debug).err();
-        assert!(matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0156"]));
+        assert!(
+            matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0156"]),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn a_failure_of_code_generation_without_a_diagnostic_is_internal() {
         let error = BuildError::from_codegen(Vec::new(), CodegenError::NoEntryPoint);
-        assert!(matches!(
-            error,
-            BuildError::Internal(CodegenError::NoEntryPoint)
-        ));
+        assert!(
+            matches!(error, BuildError::Internal(CodegenError::NoEntryPoint)),
+            "{error:?}"
+        );
     }
 }
