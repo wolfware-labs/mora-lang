@@ -480,6 +480,26 @@ F();
     }
 
     #[test]
+    fn pages_are_the_files_in_the_pages_directory() {
+        let root = std::env::temp_dir().join(format!("mora-testkit-{}-pages", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(read_pages(&root).unwrap(), Vec::<(String, String)>::new());
+        let pages = root.join(PAGES);
+        fs::create_dir_all(pages.join("dir.md")).unwrap();
+        fs::write(pages.join("MR0002.md"), "two").unwrap();
+        fs::write(pages.join("MR0001.md"), "one").unwrap();
+        let found = read_pages(&root);
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            found.unwrap(),
+            [
+                ("MR0001.md".to_owned(), "one".to_owned()),
+                ("MR0002.md".to_owned(), "two".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
     fn repository_loads() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let repo = load(&root).unwrap();

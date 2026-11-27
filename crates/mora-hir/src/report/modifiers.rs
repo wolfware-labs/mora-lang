@@ -42,27 +42,25 @@ pub(super) fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnos
     let mut written = Vec::new();
     let mut stack = vec![WalkFrame::new(root, root.kind(), 0, 0)];
     let mut visited = 0;
-    while let Some(frame) = stack.last_mut() {
+    // The frame on top is taken off while the walk looks at it, and put
+    // back while it has children to walk.
+    while let Some(mut frame) = stack.pop() {
         let Some(child) = frame.children.next() else {
-            if let Some(frame) = stack.pop() {
-                let kind = frame.node.kind();
-                // Most nodes have no modifiers and no rule of `MR0115`
-                // to break: nothing to check.
-                if written.len() != frame.written_from
-                    || member_rule_may_apply(frame.container, kind)
-                {
-                    let checked = ModifierFrame {
-                        node: frame.node,
-                        container: frame.container,
-                        written: &written[frame.written_from..],
-                        owner: indexer_of(&stack, kind),
-                    };
-                    check_node(id, text, errors, &checked, |diagnostic| {
-                        found.push((frame.order, diagnostic));
-                    });
-                }
-                written.truncate(frame.written_from);
+            let kind = frame.node.kind();
+            // Most nodes have no modifiers and no rule of `MR0115` to break:
+            // nothing to check.
+            if written.len() != frame.written_from || member_rule_may_apply(frame.container, kind) {
+                let checked = ModifierFrame {
+                    node: frame.node,
+                    container: frame.container,
+                    written: &written[frame.written_from..],
+                    owner: indexer_of(&stack, kind),
+                };
+                check_node(id, text, errors, &checked, |diagnostic| {
+                    found.push((frame.order, diagnostic));
+                });
             }
+            written.truncate(frame.written_from);
             continue;
         };
         if let Some(modifier) = ast::Modifier::cast(child).and_then(written_modifier) {
@@ -75,6 +73,7 @@ pub(super) fn modifier_diagnostics(db: &dyn Db, file: SourceFile) -> Vec<Diagnos
             SyntaxKind::MemberList | SyntaxKind::UnionBody => frame.container,
             kind => kind,
         };
+        stack.push(frame);
         stack.push(WalkFrame::new(child, container, visited, written.len()));
     }
     // A stable sort keeps the diagnostics of one node in their order.
@@ -121,7 +120,9 @@ fn indexer_of<'a>(
     stack: &[WalkFrame<'a>],
     mut kind: SyntaxKind,
 ) -> Option<(SyntaxKind, SyntaxNode<'a>)> {
-    for parent in stack.iter().rev() {
+    let mut parents = stack.iter().rev();
+    loop {
+        let parent = parents.next()?;
         match parent.node.kind() {
             SyntaxKind::IndexerDecl if kind == SyntaxKind::AccessorList => {
                 return Some((parent.container, parent.node));
@@ -131,7 +132,6 @@ fn indexer_of<'a>(
             _ => return None,
         }
     }
-    None
 }
 
 /// A node of the walk of [`modifier_diagnostics`] whose children are all
@@ -1490,11 +1490,12 @@ mod tests {
             .collect()
     }
 
-    /// Whether applying every fix of the modifier and member checks of
-    /// `text` leaves one of their diagnostics that `text` did not report: a
-    /// fix must not trade one of them for another. A diagnostic is told
-    /// apart by its code, its message and the text it points at.
-    fn fixes_add_no_member_error(text: &str) -> Result<(), String> {
+    /// The diagnostics of the modifier and member checks that applying
+    /// every fix of theirs to `text` leaves and `text` did not report, with
+    /// both texts; `None` when there are none: a fix must not trade one of
+    /// them for another. A diagnostic is told apart by its code, its message
+    /// and the text it points at.
+    fn member_errors_the_fixes_add(text: &str) -> Option<String> {
         let reported = |text: &str| -> BTreeSet<(String, String, String)> {
             member_family(text)
                 .iter()
@@ -1511,11 +1512,7 @@ mod tests {
         let fixed = crate::test_support::apply_fixes(text, member_family).text;
         let after = reported(&fixed);
         let new: Vec<_> = after.difference(&before).collect();
-        if new.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("{text}\n=> {fixed}\n{new:#?}"))
-        }
+        (!new.is_empty()).then(|| format!("{text}\n=> {fixed}\n{new:#?}"))
     }
 
     #[test]
@@ -1557,9 +1554,7 @@ mod tests {
             for member in members {
                 for modifiers in ["const ", "const static ", "static const ", "public const "] {
                     let text = container.replace("{}", &format!("{modifiers}{member}"));
-                    if let Err(failure) = fixes_add_no_member_error(&text) {
-                        failures.push(failure);
-                    }
+                    failures.extend(member_errors_the_fixes_add(&text));
                 }
             }
         }
@@ -1580,9 +1575,9 @@ mod tests {
                 } else if path.extension().is_some_and(|ext| ext == "mr") {
                     let text = std::fs::read_to_string(&path).expect("a case");
                     cases += 1;
-                    if let Err(failure) = fixes_add_no_member_error(&text) {
-                        failures.push(format!("{}: {failure}", path.display()));
-                    }
+                    let name = path.display();
+                    let failure = member_errors_the_fixes_add(&text);
+                    failures.extend(failure.map(|failure| format!("{name}: {failure}")));
                 }
             }
         }

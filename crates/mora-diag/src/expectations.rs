@@ -353,4 +353,9 @@ F();
         let ids: Vec<_> = examples.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["0#1"]);
     }
+
+    #[test]
+    fn a_fence_on_the_last_line_holds_no_example() {
+        assert_eq!(extract("doc.md", None, "# 1. One\n\n```mora\n"), []);
+    }
 }

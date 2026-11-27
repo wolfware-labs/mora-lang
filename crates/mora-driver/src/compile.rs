@@ -51,20 +51,14 @@ pub fn check(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
 /// is the program's own, such as a function whose frame is too large;
 /// [`BuildError::Internal`] when code generation fails otherwise.
 pub fn jit(db: &dyn Db, project: Project, profile: Profile) -> Result<JitProgram, BuildError> {
-    let mut diagnostics = check(db, project);
+    let diagnostics = check(db, project);
     if diagnostics.iter().any(Diagnostic::is_error) {
         return Err(BuildError::Program(diagnostics));
     }
     let program = Program::collect(db, project).map_err(BuildError::Internal)?;
     Cranelift
         .jit(&program, profile)
-        .map_err(|error| match error.diagnostic() {
-            Some(diagnostic) => {
-                diagnostics.push(diagnostic);
-                BuildError::Program(diagnostics)
-            }
-            None => BuildError::Internal(error),
-        })
+        .map_err(|error| BuildError::from_codegen(diagnostics, error))
 }
 
 /// Why [`jit`] could not build a project.
@@ -75,6 +69,21 @@ pub enum BuildError {
     Program(Vec<Diagnostic>),
     /// A failure of the compiler or of the target.
     Internal(CodegenError),
+}
+
+impl BuildError {
+    /// The failure of code generation `error` in a project whose checks
+    /// reported `diagnostics`: the program's own, after them, when it has a
+    /// diagnostic; a failure of the compiler or of the target otherwise.
+    fn from_codegen(mut diagnostics: Vec<Diagnostic>, error: CodegenError) -> Self {
+        match error.diagnostic() {
+            Some(diagnostic) => {
+                diagnostics.push(diagnostic);
+                BuildError::Program(diagnostics)
+            }
+            None => BuildError::Internal(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -171,9 +180,7 @@ mod tests {
     fn a_valid_program_runs_and_gives_its_exit_code() {
         let db = TestDb::new();
         let project = program(&db, "let x = 4;\nreturn x - 1;\n");
-        let Ok(jit) = jit(&db, project, Profile::Debug) else {
-            panic!("the program does not build");
-        };
+        let jit = jit(&db, project, Profile::Debug).expect("the program builds");
         assert_eq!(jit.run_main(), 3);
     }
 
@@ -181,21 +188,24 @@ mod tests {
     fn a_program_with_an_error_does_not_build() {
         let db = TestDb::new();
         let project = program(&db, "let x: int = \"one\";\nreturn 0;\n");
-        match jit(&db, project, Profile::Release) {
-            Err(BuildError::Program(diagnostics)) => assert_eq!(codes(&diagnostics), ["MR0203"]),
-            Err(BuildError::Internal(error)) => panic!("an internal error: {error}"),
-            Ok(_) => panic!("the program built"),
-        }
+        let error = jit(&db, project, Profile::Release).err();
+        assert!(matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0203"]));
     }
 
     #[test]
     fn a_frame_too_large_is_the_program_s_error() {
         let db = TestDb::new();
         let project = program(&db, &format!("{}var t: S28;\nreturn 0;\n", doubling(28)));
-        match jit(&db, project, Profile::Debug) {
-            Err(BuildError::Program(diagnostics)) => assert_eq!(codes(&diagnostics), ["MR0156"]),
-            Err(BuildError::Internal(error)) => panic!("an internal error: {error}"),
-            Ok(_) => panic!("the program built"),
-        }
+        let error = jit(&db, project, Profile::Debug).err();
+        assert!(matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0156"]));
+    }
+
+    #[test]
+    fn a_failure_of_code_generation_without_a_diagnostic_is_internal() {
+        let error = BuildError::from_codegen(Vec::new(), CodegenError::NoEntryPoint);
+        assert!(matches!(
+            error,
+            BuildError::Internal(CodegenError::NoEntryPoint)
+        ));
     }
 }

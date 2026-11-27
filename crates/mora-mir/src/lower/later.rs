@@ -612,10 +612,10 @@ fn expressions_later(
         | Stmt::Return(_)
         | Stmt::Unsafe(_) => None,
         // A local function is a body of its own; `local_functions_later`
-        // decides when the body around it waits for it.
-        Stmt::Function(_) => None,
-        // Only in a body with a syntax error, which is never lowered.
-        Stmt::Missing => None,
+        // decides when the body around it waits for it. A missing
+        // statement is only in a body with a syntax error, which is never
+        // lowered.
+        Stmt::Function(_) | Stmt::Missing => None,
     });
     latest(exprs.chain(stmts))
 }
@@ -819,10 +819,10 @@ fn expression_later(
         // (`body_types_later`, and `ExprRules::creation_type_later` for
         // constant evaluation); an index of a struct with operators
         // (`operators_later`), and of an array or any other type a later
-        // milestone brings with that type (`body_types_later`).
-        Expr::Lambda(_) | Expr::New { .. } | Expr::Index { .. } => return None,
-        // Only in a body with a syntax error, which is never lowered.
-        Expr::Missing => return None,
+        // milestone brings with that type (`body_types_later`). A missing
+        // expression is only in a body with a syntax error, which is never
+        // lowered.
+        Expr::Lambda(_) | Expr::New { .. } | Expr::Index { .. } | Expr::Missing => return None,
     };
     later(what, milestone)
 }
