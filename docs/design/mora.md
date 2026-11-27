@@ -2244,7 +2244,7 @@ The standard library's `unsafe` functions carry hand-written summaries, which th
 
 ### 14.13 Cranelift lowering
 
-Code generation sits behind a `Backend` trait in `mora-codegen` that takes monomorphized, ARC-optimized MIR and a target description and produces code in the target's object format (§19.4): an ELF, Mach-O or COFF object file, or a WebAssembly module for the wasm backend. Running code in-process is a separate, optional capability (below). Cranelift is the MVP's only implementation; the wasm backend (§18.1) and an LLVM backend (M13, OQ-29) implement the same trait, so nothing before code generation changes when a backend is added.
+Code generation sits behind a `Backend` trait in `mora-codegen` that takes monomorphized, ARC-optimized MIR and a target description and produces code in the target's object format (§19.4): an ELF, Mach-O or COFF object file, or a WebAssembly module for the wasm backend. Running code in-process is a separate, optional capability (below). Cranelift is the MVP's only implementation; the wasm backend (§18.1) and an LLVM backend (M13: for 32-bit instruction sets, and for release builds if OQ-29 calls for one) implement the same trait, so nothing before code generation changes when a backend is added.
 
 Two rules keep a second backend from repeating or contradicting the first:
 
@@ -3320,7 +3320,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-10 | Attributes are compile-time only | draft | 6.11 |
 | D-11 | Generics are monomorphized; sequence operators compile to concrete iterator structs | draft | 8.1, 15.5 |
 | D-12 | Integer overflow panics in debug and wraps in release unless configured; `+%` family always wraps | draft, author | 7.12 |
-| D-13 | The MVP is native-first: Cranelift native code and JIT; the wasm backend and `.wasm` libraries are post-MVP. Cranelift because one Rust library gives both the object files and the JIT that macros, the REPL and the test harness run on, it generates code quickly for debug builds, and the compiler stays a Cargo build with no C++ code generator to pin and build. The costs are optimization one function at a time, which the MIR optimizer makes up for (D-74), and no 32-bit instruction sets (§19.4) | author | 1.5, 14.13, 18 |
+| D-13 | The MVP is native-first: Cranelift native code and JIT; the wasm backend and `.wasm` libraries are post-MVP. Cranelift because one code generator, written in Rust, gives both the object files and the JIT that macros, the REPL and the test harness run on, it generates code quickly for debug builds, and the compiler stays a Cargo build of Rust crates with no separate code generator to pin and build. The costs are optimization one function at a time, which MIR inlining offsets (D-74), no auto-vectorization (D-83), and no 32-bit instruction sets (§19.4) | author | 1.5, 14.13, 14.17, 18, 19.4 |
 | D-14 | `string` is UTF-8 with byte `Length`; `char` is a Unicode scalar value | author | 5.2, 5.3 |
 | D-15 | Fields are read-only unless marked `mut` (write scopes added by D-101) | draft | 6.3, 6.9 |
 | D-16 | Union case names resolve without the union prefix where the union is the expected type | author | 6.6 |
@@ -3496,7 +3496,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | OQ-26 | Is the boxed future spelled `Future<T>` or `any IFuture<T>`? | `Future<T>` | M6 |
 | OQ-27 | How does a singleton that holds a resource, such as a connection pool or a log file, shut down in order when the program exits, since singletons are immortal (§16.4)? | Singleton destructors never run; the operating system reclaims the resources at exit | M10 |
 | OQ-28 | Can an async child scope reach the services of an enclosing scope through a pointer, with no retain or release, when futures may move (D-28)? | One retain and one release per such service and child scope (§16.4) | M11 |
-| OQ-29 | Does Mora need an LLVM release backend, or do Cranelift's `speed` level and the MIR optimizer (D-74, M18) stay the release path? Settled by measuring, on Mora programs, how much faster LLVM's code runs against what a second backend costs in compile time, toolchain size and testing | Cranelift for every build; LLVM only for the 32-bit instruction sets Cranelift does not generate | M13 |
+| OQ-29 | Does Mora need an LLVM release backend, or do Cranelift's `speed` level and the MIR optimizer (D-74, M18) stay the release path? Settled by measuring, on Mora programs, how much faster LLVM's code runs, with `noalias` facts where the M13 aliasing model allows them, against what building the 64-bit targets with the M13 LLVM backend as well costs in compile time, toolchain size and testing | Cranelift for every build; LLVM only for the 32-bit instruction sets Cranelift does not generate | M13 |
 
 ## 25. References
 
