@@ -84,7 +84,7 @@ logos = "0.16.1"
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 mio = "1.2.4"
-object = "0.40.0"
+object = "0.41.0"
 reedline = "0.52.1"
 hashbrown = { version = "0.17.1", default-features = false }
 rustc-hash = "2.1.3"
