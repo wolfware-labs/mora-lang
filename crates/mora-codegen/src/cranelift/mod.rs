@@ -577,6 +577,10 @@ mod tests {
         freed: Arc<AtomicBool>,
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "the trait's `free_memory` is an `unsafe` method"
+    )]
     impl cranelift_jit::JITMemoryProvider for Recording {
         fn allocate(
             &mut self,
