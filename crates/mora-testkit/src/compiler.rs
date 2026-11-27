@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mora_diag::{Diagnostic, Files, Severity};
+use mora_diag::{Diagnostic, Files};
 use mora_span::{FileId, Project, SourceFile};
 
 use crate::Profile;
@@ -200,13 +200,6 @@ impl FrontEnd {
     }
 }
 
-/// Whether `diagnostics` holds an error.
-pub(crate) fn has_error(diagnostics: &[Diagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-}
-
 impl Compiler for FrontEnd {
     fn check(&self, path: &str, text: &str) -> Checked {
         self.analyzed(path, text, |analysis| analysis.checked)
@@ -228,7 +221,7 @@ impl Compiler for FrontEnd {
             unimplemented!("this front end has no runner");
         };
         let checked = self.analyzed(path, text, |analysis| analysis.checked);
-        if has_error(&checked.diagnostics) {
+        if checked.diagnostics.iter().any(Diagnostic::is_error) {
             return Err(checked);
         }
         match crate::runner::run_child(runner, path, text, profile, self.timeout) {
@@ -265,7 +258,12 @@ impl FrontEnd {
         dump: fn(&dyn mora_span::Db, Project, SourceFile) -> String,
     ) -> Result<String, Checked> {
         self.analyzed(path, text, |analysis| {
-            if has_error(&analysis.checked.diagnostics) {
+            if analysis
+                .checked
+                .diagnostics
+                .iter()
+                .any(Diagnostic::is_error)
+            {
                 return Err(analysis.checked);
             }
             let mut out = String::new();

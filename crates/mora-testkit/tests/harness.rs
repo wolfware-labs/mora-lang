@@ -124,11 +124,7 @@ impl Compiler for Fake {
 
     fn hir(&self, path: &str, text: &str) -> Result<String, Checked> {
         let checked = self.check(path, text);
-        if checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == mora_diag::Severity::Error)
-        {
+        if checked.diagnostics.iter().any(Diagnostic::is_error) {
             return Err(checked);
         }
         Ok(statements(text)
@@ -149,11 +145,7 @@ impl Compiler for Fake {
                 ));
             }
         }
-        if checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == mora_diag::Severity::Error)
-        {
+        if checked.diagnostics.iter().any(Diagnostic::is_error) {
             return Err(checked);
         }
         Ok(statements(text)

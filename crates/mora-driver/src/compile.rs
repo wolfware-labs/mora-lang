@@ -5,7 +5,7 @@
 //! error, then code generation for the JIT (§14.13, §14.16).
 
 use mora_codegen::{CodegenError, Cranelift, JitBackend, JitProgram, Profile, Program};
-use mora_diag::{Diagnostic, Severity};
+use mora_diag::Diagnostic;
 use mora_span::{Db, Project};
 
 /// The diagnostics of `project`, in the order the passes report them.
@@ -29,10 +29,10 @@ pub fn check(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
     }
     diagnostics.extend(mora_hir::diagnostics(db, project).iter().cloned());
     diagnostics.extend(mora_check::diagnostics(db, project).iter().cloned());
-    if !has_error(&diagnostics) {
+    if !diagnostics.iter().any(Diagnostic::is_error) {
         diagnostics.extend(mora_mir::diagnostics(db, project).iter().cloned());
     }
-    if !has_error(&diagnostics)
+    if !diagnostics.iter().any(Diagnostic::is_error)
         && let Err(error) = mora_codegen::check_sizes_on_host(db, project)
     {
         diagnostics.extend(error.diagnostic());
@@ -52,7 +52,7 @@ pub fn check(db: &dyn Db, project: Project) -> Vec<Diagnostic> {
 /// [`BuildError::Internal`] when code generation fails otherwise.
 pub fn jit(db: &dyn Db, project: Project, profile: Profile) -> Result<JitProgram, BuildError> {
     let mut diagnostics = check(db, project);
-    if has_error(&diagnostics) {
+    if diagnostics.iter().any(Diagnostic::is_error) {
         return Err(BuildError::Program(diagnostics));
     }
     let program = Program::collect(db, project).map_err(BuildError::Internal)?;
@@ -77,13 +77,6 @@ pub enum BuildError {
     Internal(CodegenError),
 }
 
-/// Whether `diagnostics` holds an error.
-fn has_error(diagnostics: &[Diagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-}
-
 #[cfg(test)]
 mod tests {
     use mora_hir::test_support::{TestDb, app, codes};
@@ -97,14 +90,20 @@ mod tests {
 
     /// Structs `S0` to `S{last}`: `S0` holds a `long`, and each other
     /// `S{i}` two of the one before it, so `S{i}` takes `8 << i` bytes and
-    /// `S29` is the first past the limit of 2^31 bytes.
+    /// `S29` is the first past the limit of 2^31 bytes. The same text as
+    /// `doubling` in mora-codegen's test helpers, which this crate cannot
+    /// reach.
     fn doubling(last: usize) -> String {
+        use std::fmt::Write;
+
+        // Writing to a `String` cannot fail.
         let mut text = "struct S0 { public A: long; }\n".to_owned();
         for i in 1..=last {
             let before = i - 1;
-            text.push_str(&format!(
-                "struct S{i} {{ public A: S{before}; public B: S{before}; }}\n"
-            ));
+            let _ = writeln!(
+                text,
+                "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
+            );
         }
         text
     }

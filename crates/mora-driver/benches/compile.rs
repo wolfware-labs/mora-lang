@@ -6,12 +6,13 @@
 //!   same passes, then code generation for this process in the debug
 //!   profile.
 //!
-//! Each file of the project declares structs with methods, a constant with
-//! an initializer that the helpers read, free functions that use integer
-//! loops, `if` and struct creation, and a function whose lambda captures a
-//! local. The top-level statements call every helper, so code generation
-//! reaches them; the functions with a lambda are checked but not called,
-//! since closures come with a later milestone.
+//! Each file of the project declares two constants, one read from the
+//! other, that the struct methods and the helpers read; structs with
+//! methods; free functions that use integer loops, `if` and struct
+//! creation; and as many functions whose lambda captures a local. The
+//! top-level statements call every helper, so code generation reaches them;
+//! the functions with a lambda are checked but not called, since closures
+//! come with a later milestone.
 //!
 //! `cargo bench -p mora-driver --bench compile`, or `cargo xtask bench-compare`
 //! to compare a branch with `origin/main`.

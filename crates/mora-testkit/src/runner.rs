@@ -117,7 +117,8 @@ pub(crate) fn build(path: &str, text: &str, profile: Profile) -> Result<JitProgr
 
 /// Compiles the analysis of [`build`] in `profile` with
 /// [`mora_driver::jit`], on the compiler's thread and in the analysis'
-/// database, where the passes the analysis ran keep their results.
+/// database, where the queries the analysis ran keep their results; only
+/// the size check, which is not a query, runs again.
 fn compile(analysis: Analysis, profile: Profile) -> Result<JitProgram, BuildError> {
     mora_driver::jit(&analysis.db, analysis.project, profile).map_err(|error| match error {
         mora_driver::BuildError::Program(diagnostics) => BuildError::Program(Checked {

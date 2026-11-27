@@ -2,7 +2,6 @@
 
 use std::fmt::Write;
 
-use mora_diag::Severity;
 use mora_hir::test_support::{TestDb, app};
 use mora_hir::{TupleElem, Ty};
 use mora_rt_core::string::{BYTES_OFFSET, CAPACITY_OFFSET, MoraString};
@@ -22,7 +21,7 @@ pub(crate) fn app_of(db: &TestDb, text: &str) -> Project {
     let errors: Vec<String> = mora_hir::diagnostics(db, project)
         .iter()
         .chain(mora_mir::diagnostics(db, project))
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.is_error())
         .map(|d| format!("{}: {}", d.code, d.message))
         .collect();
     assert_eq!(errors, Vec::<String>::new(), "{text}");

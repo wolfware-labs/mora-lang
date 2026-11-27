@@ -18,7 +18,6 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use mora_codegen::{Backend, Cranelift, Profile, Program};
-use mora_diag::Severity;
 use mora_hir::test_support::{TestDb, app};
 use mora_span::Project;
 use mora_target::Target;
@@ -124,7 +123,7 @@ fn project(db: &TestDb) -> Project {
     let errors: Vec<String> = mora_hir::diagnostics(db, project)
         .iter()
         .chain(mora_mir::diagnostics(db, project))
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.is_error())
         .map(|d| format!("{}: {}", d.code, d.message))
         .collect();
     assert!(errors.is_empty(), "{errors:#?}");

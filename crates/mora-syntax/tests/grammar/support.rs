@@ -5,16 +5,16 @@ use mora_syntax::{SyntaxKind, SyntaxNode, parse};
 use crate::common::assert_errors_hold_tokens;
 
 /// A node as nested node kinds, without tokens: `BinExpr(PathExpr, LiteralExpr)`.
-/// Paths in expressions are written `P`.
-fn render(node: &SyntaxNode) -> String {
-    let kind = format!("{:?}", node.kind());
+/// `path` writes each path in an expression.
+fn render(node: &SyntaxNode, path: fn(&SyntaxNode) -> String) -> String {
     if node.kind() == SyntaxKind::PathExpr {
-        return "P".into();
+        return path(node);
     }
+    let kind = format!("{:?}", node.kind());
     let children: Vec<String> = node
         .children()
         .filter(|c| c.kind() != SyntaxKind::ArgList)
-        .map(|c| render(&c))
+        .map(|c| render(&c, path))
         .collect();
     if children.is_empty() {
         kind
@@ -23,8 +23,14 @@ fn render(node: &SyntaxNode) -> String {
     }
 }
 
-/// The expression of `let _ = <text>;`, which must parse without errors.
-pub fn shape(text: &str) -> String {
+/// A path in an expression, written `P`.
+fn plain(_: &SyntaxNode) -> String {
+    "P".into()
+}
+
+/// The expression of `let _ = <text>;`, which must parse without errors,
+/// rendered with `path` for each path.
+fn shape_with(text: &str, path: fn(&SyntaxNode) -> String) -> String {
     let source = format!("let _ = {text};");
     let parse = parse(&source);
     assert!(parse.errors().is_empty(), "{text}: {:?}", parse.errors());
@@ -33,40 +39,23 @@ pub fn shape(text: &str) -> String {
         .descendants()
         .find(|n| n.kind() == SyntaxKind::VariableDeclarator)
         .unwrap();
-    render(&declarator.children().nth(1).unwrap())
+    render(&declarator.children().nth(1).unwrap(), path)
+}
+
+/// The expression of `let _ = <text>;`, which must parse without errors,
+/// with each path written `P`.
+pub fn shape(text: &str) -> String {
+    shape_with(text, plain)
 }
 
 /// [`shape`], with a path that holds generic arguments written `P<>`.
 pub fn shape_marking_generics(text: &str) -> String {
-    fn render(node: &SyntaxNode) -> String {
-        let kind = format!("{:?}", node.kind());
-        if kind == "PathExpr" {
-            let generic = node
-                .descendants()
-                .any(|n| n.kind() == SyntaxKind::GenericArgList);
-            return if generic { "P<>".into() } else { "P".into() };
-        }
-        let children: Vec<String> = node
-            .children()
-            .filter(|c| !matches!(c.kind(), SyntaxKind::ArgList))
-            .map(|c| render(&c))
-            .collect();
-        if children.is_empty() {
-            kind
-        } else {
-            format!("{kind}({})", children.join(", "))
-        }
-    }
-    let source = format!("let _ = {text};");
-    let parse = parse(&source);
-    assert!(parse.errors().is_empty(), "{text}: {:?}", parse.errors());
-    let declarator = parse
-        .syntax()
-        .descendants()
-        .find(|n| n.kind() == SyntaxKind::VariableDeclarator)
-        .unwrap();
-    let expr = declarator.children().nth(1).unwrap();
-    render(&expr)
+    shape_with(text, |path| {
+        let generic = path
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::GenericArgList);
+        if generic { "P<>".into() } else { "P".into() }
+    })
 }
 
 /// The whole file as nested node kinds, and the messages of its errors.
@@ -74,7 +63,7 @@ pub fn outline(text: &str) -> (String, Vec<String>) {
     let parse = parse(text);
     assert_eq!(parse.syntax().text(), text, "not lossless");
     let errors = parse.errors().iter().map(|e| e.message.clone()).collect();
-    (render(&parse.syntax()), errors)
+    (render(&parse.syntax(), plain), errors)
 }
 
 /// The messages of the errors in `text`, in the order of the text. The tree

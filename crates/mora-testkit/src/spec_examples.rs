@@ -12,11 +12,11 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use mora_diag::expectations::{Example, Expects, extract};
+
 use crate::Compiler;
 use crate::harness::guarded;
 use crate::run;
-use mora_diag::Severity;
-use mora_diag::expectations::{Example, Expects, extract};
 
 /// The list of examples that may fail, relative to the repository root.
 pub const PENDING: &str = "tests/spec-examples.pending";
@@ -213,7 +213,7 @@ fn run_example(example: &Example, compiler: &dyn Compiler) -> Vec<String> {
     for other in checked
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error && d.code != code)
+        .filter(|d| d.is_error() && d.code != code)
     {
         problems.push(format!(
             "unexpected error {}: {}",
@@ -269,10 +269,11 @@ fn read_pages(root: &Path) -> io::Result<Vec<(String, String)>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Backend, Checked, Output, Profile, Unbuilt};
     use mora_diag::expectations::expects;
-    use mora_diag::{Diagnostic, Files, Label};
+    use mora_diag::{Diagnostic, Files, Label, Severity};
     use mora_span::{Span, TextRange};
+
+    use crate::{Backend, Checked, Output, Profile, Unbuilt};
 
     use super::*;
 
