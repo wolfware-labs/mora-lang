@@ -599,7 +599,23 @@ fn expressions_later(
         Stmt::Match { .. } => later("a `match`", PATTERNS),
         Stmt::Deconstruct { .. } => later("a deconstruction", SMALLER_EXPRESSIONS),
         Stmt::Foreach { .. } => later("`foreach`", ENUMERATION),
-        _ => None,
+        // This milestone lowers these.
+        Stmt::Expr(_)
+        | Stmt::Local { .. }
+        | Stmt::Block(_)
+        | Stmt::If { .. }
+        | Stmt::While { .. }
+        | Stmt::DoWhile { .. }
+        | Stmt::For { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::Return(_)
+        | Stmt::Unsafe(_) => None,
+        // A local function is a body of its own; `local_functions_later`
+        // decides when the body around it waits for it.
+        Stmt::Function(_) => None,
+        // Only in a body with a syntax error, which is never lowered.
+        Stmt::Missing => None,
     });
     latest(exprs.chain(stmts))
 }
@@ -778,7 +794,35 @@ fn expression_later(
         Expr::Nameof(_) => ("`nameof`", SMALLER_EXPRESSIONS),
         Expr::Sizeof(_) => ("`sizeof`", SMALLER_EXPRESSIONS),
         Expr::Default(_) => ("`default`", SMALLER_EXPRESSIONS),
-        _ => return None,
+        // This milestone lowers these, in the forms the rows above let
+        // through. A discard is the place of an assignment, and a block
+        // the body of a function or a local function.
+        Expr::Literal(_)
+        | Expr::Interpolated(_)
+        | Expr::Local(_)
+        | Expr::Path(_)
+        | Expr::This
+        | Expr::Tuple(_)
+        | Expr::Discard
+        | Expr::Member { .. }
+        | Expr::Call { .. }
+        | Expr::Unary { .. }
+        | Expr::Postfix { .. }
+        | Expr::Binary { .. }
+        | Expr::Assign { .. }
+        | Expr::Cast { .. }
+        | Expr::Conditional { .. }
+        | Expr::Block(_) => return None,
+        // Other rules decide these: a lambda comes with closures
+        // (`lambdas_later`); a creation with `new` with its constructor
+        // (`creations_later`) and with the type it creates
+        // (`body_types_later`, and `ExprRules::creation_type_later` for
+        // constant evaluation); an index of a struct with operators
+        // (`operators_later`), and of an array or any other type a later
+        // milestone brings with that type (`body_types_later`).
+        Expr::Lambda(_) | Expr::New { .. } | Expr::Index { .. } => return None,
+        // Only in a body with a syntax error, which is never lowered.
+        Expr::Missing => return None,
     };
     later(what, milestone)
 }
