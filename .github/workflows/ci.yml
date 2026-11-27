@@ -81,6 +81,10 @@ jobs:
       - name: clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The spec-example target is `test = false`, so `--all-targets` skips it.
+      - name: clippy (spec examples)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p mora-testkit --test spec_examples --locked -- -D warnings
       - name: test
         if: ${{ !cancelled() }}
         run: cargo test --workspace --locked
@@ -148,6 +152,10 @@ jobs:
       - name: test
         if: ${{ !cancelled() }}
         run: cargo test --workspace --locked
+      # The spec examples run on every host, not only in the linux job.
+      - name: xtask spec-examples
+        if: ${{ !cancelled() }}
+        run: cargo xtask spec-examples
       - name: clippy (debug runtime)
         if: ${{ !cancelled() }}
         run: cargo clippy -p mora-rt -p mora-rt-core --all-targets --features mora-rt/debug --locked -- -D warnings
