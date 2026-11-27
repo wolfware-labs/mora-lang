@@ -48,8 +48,8 @@ pub trait Compiler: Sync {
     }
 }
 
-/// The compiler the suites and `cargo xtask spec-examples` use. It is
-/// [`FrontEnd`] until the driver can compile a file (M1.16).
+/// The compiler the suites and `cargo xtask spec-examples` use: [`FrontEnd`],
+/// which compiles through [`mora_driver::check`] and [`mora_driver::jit`].
 pub fn compiler() -> &'static dyn Compiler {
     static FRONT_END: FrontEnd = FrontEnd::new();
     &FRONT_END
@@ -74,9 +74,9 @@ impl Compiler for Unbuilt {
     }
 }
 
-/// Stands in for the driver until it can compile: checking a case loads its
-/// files into a project and reports what [`mora_driver::check`] reports for
-/// it. A case may describe several files (see [`crate::case`]). It
+/// The test kit's compiler, on the driver's pipeline: checking a case loads
+/// its files into a project and reports what [`mora_driver::check`] reports
+/// for it. A case may describe several files (see [`crate::case`]). It
 /// has no backend, unless it was given a `jit-runner` executable with
 /// [`FrontEnd::with_runner`]: then it runs programs through the JIT in a
 /// child process of it.
