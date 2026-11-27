@@ -117,8 +117,8 @@ impl Drop for Scratch {
 #[cfg(test)]
 pub fn scratch(name: &str) -> Scratch {
     let dir = env::temp_dir().join(format!("mora-xtask-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    // A new folder of our own: fails if the name is already taken.
+    fs::create_dir(&dir).unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
     Scratch(dir)
 }
 

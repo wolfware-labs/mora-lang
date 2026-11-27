@@ -2,6 +2,7 @@
 //! through the `test-support` feature.
 
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mora_diag::Diagnostic;
@@ -142,6 +143,29 @@ pub fn unsupported_of(construct: Construct, parts: Vec<Ty>) -> Ty {
     })
 }
 
+/// The text of structs `S0` to `S{last}`: `S0` holds a `long`, and each
+/// other `S{i}` two of the one before it in `A` and `B`, so `S{i}` takes
+/// `8 << i` bytes.
+pub fn doubling(last: usize) -> String {
+    doubling_from("    public A: long;\n", last)
+}
+
+/// [`doubling`] with `fields`, whole lines, as the fields of `S0`: with none,
+/// every struct is empty, and `S{last}` holds `2^last` of `S0` down its
+/// fields.
+pub fn doubling_from(fields: &str, last: usize) -> String {
+    // Writing to a `String` cannot fail.
+    let mut text = format!("struct S0 {{\n{fields}}}\n");
+    for i in 1..=last {
+        let before = i - 1;
+        let _ = writeln!(
+            text,
+            "struct S{i} {{\n    public A: S{before};\n    public B: S{before};\n}}"
+        );
+    }
+    text
+}
+
 /// The codes of `diagnostics`.
 pub fn codes(diagnostics: &[Diagnostic]) -> Vec<String> {
     diagnostics.iter().map(|d| d.code.to_string()).collect()
@@ -197,5 +221,24 @@ pub fn apply_fixes(text: &str, diagnostics_of: impl Fn(&str) -> Vec<Diagnostic>)
         edits: edits.len(),
         text: fixed,
         remaining,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doubling_gives_each_struct_two_of_the_one_before() {
+        assert_eq!(
+            doubling(2),
+            "struct S0 {\n    public A: long;\n}\n\
+             struct S1 {\n    public A: S0;\n    public B: S0;\n}\n\
+             struct S2 {\n    public A: S1;\n    public B: S1;\n}\n"
+        );
+        assert_eq!(
+            doubling_from("", 1),
+            "struct S0 {\n}\nstruct S1 {\n    public A: S0;\n    public B: S0;\n}\n"
+        );
     }
 }

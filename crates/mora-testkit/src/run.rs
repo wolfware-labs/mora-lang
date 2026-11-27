@@ -5,14 +5,12 @@
 //! written `// expect[debug]:`, `// stderr[release]:` and so on holds only
 //! for that profile.
 
+use mora_diag::expectations::{EXIT, EXPECT, STDERR, split_marker};
+
 use crate::Profile;
 use crate::compiler::{Compiler, PROFILES, profile_name, profile_named};
 use crate::diff::diff;
 use crate::ui::rendered;
-
-const EXPECT: &str = "// expect";
-const STDERR: &str = "// stderr";
-const EXIT: &str = "// exit";
 
 /// What a run test expects.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,28 +86,6 @@ fn marked<'a>(
         Some(named) => Ok((named == profile).then_some(rest)),
         None => Err(format!("line {number}: `{name}` is not a profile")),
     }
-}
-
-/// The name in `marker[name]:` at the start of `line`, `None` for a plain
-/// `marker:`, and the text after the colon; `None` for a line that starts
-/// with neither.
-fn split_marker<'a>(line: &'a str, marker: &str) -> Option<(Option<&'a str>, &'a str)> {
-    let rest = line.strip_prefix(marker)?;
-    if let Some(rest) = rest.strip_prefix(':') {
-        return Some((None, rest));
-    }
-    let (name, rest) = rest.strip_prefix('[')?.split_once("]:")?;
-    Some((Some(name), rest))
-}
-
-/// Whether `line` starts with the marker of a run expectation, plain or
-/// marked for a profile, as `// expect:` or `// exit[debug]:`. A name that
-/// is not a profile counts too, so that [`expected`] reports it.
-pub fn is_expectation(line: &str) -> bool {
-    let line = line.trim_start();
-    [EXPECT, STDERR, EXIT]
-        .iter()
-        .any(|marker| split_marker(line, marker).is_some())
 }
 
 /// Adds the line of output `rest`, the text after a marker, to `out`: less
@@ -310,28 +286,6 @@ mod tests {
         // Not markers: no colon after the name.
         let text = "// expect[debug] x\n// expected: y\n// expect[debug x\n";
         assert_eq!(expected(text, Profile::Debug).unwrap().stdout, "");
-    }
-
-    #[test]
-    fn expectation_markers_are_plain_or_marked() {
-        for line in [
-            "// expect: a",
-            "// stderr: a",
-            "// exit: 1",
-            "  // exit[debug]: 101",
-            "// expect[release]: a",
-            "// stderr[fast]: a",
-        ] {
-            assert!(is_expectation(line), "{line}");
-        }
-        for line in [
-            "// expected: a",
-            "// expect[debug] a",
-            "// error: MR0300",
-            "let x = 1;",
-        ] {
-            assert!(!is_expectation(line), "{line}");
-        }
     }
 
     #[test]

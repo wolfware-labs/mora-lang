@@ -13,13 +13,15 @@ workspace = true
 
 [dependencies]
 mora-codegen.workspace = true
-mora-check.workspace = true
 mora-diag.workspace = true
 mora-driver.workspace = true
 mora-hir.workspace = true
 mora-mir.workspace = true
 mora-span.workspace = true
 salsa.workspace = true
+
+[dev-dependencies]
+mora-hir = { workspace = true, features = ["test-support"] }
 
 # Both read the `tests/ui` and `tests/run` suites at the repository root, with
 # their own reports instead of the standard harness's.
@@ -30,6 +32,14 @@ harness = false
 [[test]]
 name = "run"
 harness = false
+
+# The spec and error-page examples, with the report `cargo xtask spec-examples`
+# prints. Only that command runs them, by name: `test = false` keeps them out
+# of `cargo test --workspace`.
+[[test]]
+name = "spec_examples"
+harness = false
+test = false
 
 # Runs one program through the JIT in its own process, because a panic in the
 # program exits the process.

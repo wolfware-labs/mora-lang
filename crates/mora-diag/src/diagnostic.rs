@@ -125,4 +125,22 @@ impl Diagnostic {
         self.fixes.push(fix);
         self
     }
+
+    /// Whether the diagnostic is an error, which stops the build.
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_error_is_an_error() {
+        let label = Label::unlabeled(Span::new(FileId::new(0), TextRange::default()));
+        let code: Code = "MR0300".parse().unwrap();
+        assert!(Diagnostic::error(code, "e", label.clone()).is_error());
+        assert!(!Diagnostic::warning(code, "w", label).is_error());
+    }
 }

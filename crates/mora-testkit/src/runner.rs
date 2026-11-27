@@ -16,11 +16,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mora_codegen::{Cranelift, JitBackend, JitProgram, Profile, Program};
+use mora_codegen::{JitProgram, Profile};
 
-use crate::compiler::{
-    Analysis, Checked, FrontEnd, Output, has_error, profile_name, profile_named,
-};
+use crate::compiler::{Analysis, Checked, FrontEnd, Output, profile_name, profile_named};
 use crate::harness::{panic_text, without_panic_output};
 use crate::ui::rendered;
 
@@ -117,23 +115,18 @@ pub(crate) fn build(path: &str, text: &str, profile: Profile) -> Result<JitProgr
     caught(|| FrontEnd::new().analyzed(path, text, |analysis| compile(analysis, profile)))
 }
 
-/// Compiles the analysis of [`build`] in `profile`, on the compiler's
-/// thread.
-fn compile(mut analysis: Analysis, profile: Profile) -> Result<JitProgram, BuildError> {
-    if has_error(&analysis.checked.diagnostics) {
-        return Err(BuildError::Program(analysis.checked));
-    }
-    let internal = |error: mora_codegen::CodegenError| BuildError::Internal(error.to_string());
-    let program = Program::collect(&analysis.db, analysis.project).map_err(internal)?;
-    Cranelift
-        .jit(&program, profile)
-        .map_err(|error| match error.diagnostic() {
-            Some(diagnostic) => {
-                analysis.checked.diagnostics.push(diagnostic);
-                BuildError::Program(analysis.checked)
-            }
-            None => internal(error),
-        })
+/// Compiles the analysis of [`build`] in `profile` with
+/// [`mora_driver::jit`], on the compiler's thread and in the analysis'
+/// database, where the queries the analysis ran keep their results; only
+/// the size check, which is not a query, runs again.
+fn compile(analysis: Analysis, profile: Profile) -> Result<JitProgram, BuildError> {
+    mora_driver::jit(&analysis.db, analysis.project, profile).map_err(|error| match error {
+        mora_driver::BuildError::Program(diagnostics) => BuildError::Program(Checked {
+            diagnostics,
+            ..analysis.checked
+        }),
+        mora_driver::BuildError::Internal(error) => BuildError::Internal(error.to_string()),
+    })
 }
 
 /// What `compile` gives, with a panic in it as an internal error: its

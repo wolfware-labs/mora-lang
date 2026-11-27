@@ -1,11 +1,11 @@
-//! The [`Compiler`] the harnesses drive, and the stand-ins used until the
-//! driver can compile.
+//! The [`Compiler`] the harnesses drive: [`FrontEnd`], on the driver's
+//! pipeline, and [`Unbuilt`], which the self-tests use.
 
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use mora_diag::{Diagnostic, Files, Severity};
+use mora_diag::{Diagnostic, Files};
 use mora_span::{FileId, Project, SourceFile};
 
 use crate::Profile;
@@ -48,8 +48,10 @@ pub trait Compiler: Sync {
     }
 }
 
-/// The compiler the suites and `cargo xtask spec-examples` use. It is
-/// [`FrontEnd`] until the driver can compile a file (M1.16).
+/// The compiler of the UI suite: a [`FrontEnd`] with no runner, which checks
+/// through [`mora_driver::check`]. The run suite and the spec-example check
+/// make theirs with [`FrontEnd::with_runner`], which also runs programs built
+/// by [`mora_driver::jit`].
 pub fn compiler() -> &'static dyn Compiler {
     static FRONT_END: FrontEnd = FrontEnd::new();
     &FRONT_END
@@ -74,14 +76,9 @@ impl Compiler for Unbuilt {
     }
 }
 
-/// Stands in for the driver until it can compile: checking a case reports
-/// its lexical and syntax errors and the errors of name resolution,
-/// signatures, types, control flow and entry points, and, when none of those
-/// is an error, the errors of constant evaluation, then those of the sizes of
-/// the types it declares (`MR0156`). A case may describe several files (see
-/// [`crate::case`]); the standard library is not loaded, so names under
-/// `Std`, the names of the prelude and names in a file with a `using`
-/// directive of `Std` are not checked when nothing else declares them. It
+/// The test kit's compiler, on the driver's pipeline: checking a case loads
+/// its files into a project and reports what [`mora_driver::check`] reports
+/// for it. A case may describe several files (see [`crate::case`]). It
 /// has no backend, unless it was given a `jit-runner` executable with
 /// [`FrontEnd::with_runner`]: then it runs programs through the JIT in a
 /// child process of it.
@@ -174,12 +171,9 @@ impl FrontEnd {
         let mut sources = Vec::new();
         let mut inputs = Vec::new();
         let mut shown = Vec::new();
-        let mut diagnostics = Vec::new();
         for file in case.files {
             let id = files.add(&file.shown, &file.text);
             let input = SourceFile::new(&db, id, file.path, file.text);
-            let parse = mora_hir::parse(&db, input);
-            diagnostics.extend(parse.errors().iter().map(|error| error.to_diagnostic(id)));
             sources.push(id);
             inputs.push(input);
             shown.push(file.shown);
@@ -193,16 +187,7 @@ impl FrontEnd {
             case.entry,
             Vec::new(),
         );
-        diagnostics.extend(mora_hir::diagnostics(&db, project).iter().cloned());
-        diagnostics.extend(mora_check::diagnostics(&db, project).iter().cloned());
-        if !has_error(&diagnostics) {
-            diagnostics.extend(mora_mir::diagnostics(&db, project).iter().cloned());
-        }
-        if !has_error(&diagnostics)
-            && let Err(error) = mora_codegen::check_sizes_on_host(&db, project)
-        {
-            diagnostics.extend(error.diagnostic());
-        }
+        let diagnostics = mora_driver::check(&db, project);
         Analysis {
             shown,
             db,
@@ -215,13 +200,6 @@ impl FrontEnd {
             },
         }
     }
-}
-
-/// Whether `diagnostics` holds an error.
-pub(crate) fn has_error(diagnostics: &[Diagnostic]) -> bool {
-    diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
 }
 
 impl Compiler for FrontEnd {
@@ -245,7 +223,7 @@ impl Compiler for FrontEnd {
             unimplemented!("this front end has no runner");
         };
         let checked = self.analyzed(path, text, |analysis| analysis.checked);
-        if has_error(&checked.diagnostics) {
+        if checked.diagnostics.iter().any(Diagnostic::is_error) {
             return Err(checked);
         }
         match crate::runner::run_child(runner, path, text, profile, self.timeout) {
@@ -282,7 +260,12 @@ impl FrontEnd {
         dump: fn(&dyn mora_span::Db, Project, SourceFile) -> String,
     ) -> Result<String, Checked> {
         self.analyzed(path, text, |analysis| {
-            if has_error(&analysis.checked.diagnostics) {
+            if analysis
+                .checked
+                .diagnostics
+                .iter()
+                .any(Diagnostic::is_error)
+            {
                 return Err(analysis.checked);
             }
             let mut out = String::new();

@@ -14,8 +14,8 @@ use mora_span::{Db, Project, SourceFile};
 use rustc_hash::FxHashSet;
 
 use crate::bodies::{
-    ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, InterpPart, LocalId,
-    LocalKind, Pat, PatId, Stmt, StmtId, UnaryOp, body, body_resolution,
+    ArgMode, Body, BodyOwner, BodyResolution, CaptureTarget, Expr, ExprId, LocalId, LocalKind, Pat,
+    PatId, Stmt, StmtId, UnaryOp, body, body_resolution,
 };
 use crate::inference::{Callee, Inference, infer};
 use crate::items::ValueMember;
@@ -346,7 +346,8 @@ impl Walk<'_> {
 
     fn expr(&mut self, expr: ExprId) {
         let hir = self.hir;
-        match &hir.exprs[expr] {
+        let node = &hir.exprs[expr];
+        match node {
             Expr::Missing
             | Expr::Literal(_)
             | Expr::Type(_)
@@ -361,20 +362,22 @@ impl Walk<'_> {
                     self.this(false);
                 }
             }
-            Expr::Interpolated(parts) => {
-                for part in parts {
-                    if let InterpPart::Hole {
-                        value, alignment, ..
-                    } = part
-                    {
-                        self.expr(*value);
-                        self.exprs(alignment.iter().copied());
-                    }
-                }
-            }
-            Expr::Tuple(elems) => self.exprs(elems.iter().map(|&(_, elem)| elem)),
-            Expr::Collection(elems) => self.exprs(elems.iter().map(|&(_, elem)| elem)),
-            Expr::Member { receiver, .. } => self.expr(*receiver),
+            Expr::Interpolated(_)
+            | Expr::Tuple(_)
+            | Expr::Collection(_)
+            | Expr::Member { .. }
+            | Expr::Index { .. }
+            | Expr::Binary { .. }
+            | Expr::Propagate(_)
+            | Expr::Cast { .. }
+            | Expr::Await(_)
+            | Expr::As { .. }
+            | Expr::Nameof(_)
+            | Expr::NewArray { .. }
+            | Expr::Range { .. }
+            | Expr::With { .. }
+            | Expr::Conditional { .. }
+            | Expr::New { .. } => node.for_each_child(|child| self.expr(child)),
             Expr::Call { callee, args } => {
                 self.expr(*callee);
                 self.exprs(args.iter().map(|arg| arg.expr));
@@ -382,10 +385,6 @@ impl Walk<'_> {
                     self.assigned(arg.expr);
                 }
                 self.receiver(expr, *callee);
-            }
-            Expr::Index { base, args, .. } => {
-                self.expr(*base);
-                self.exprs(args.iter().map(|arg| arg.expr));
             }
             Expr::Unary { op, expr: operand } => {
                 self.expr(*operand);
@@ -397,32 +396,15 @@ impl Walk<'_> {
                 self.expr(*operand);
                 self.assigned(*operand);
             }
-            Expr::Binary { lhs, rhs, .. } => self.exprs([*lhs, *rhs]),
             Expr::Assign { lhs, rhs, .. } => {
                 self.exprs([*lhs, *rhs]);
                 self.assigned(*lhs);
             }
-            Expr::Propagate(inner)
-            | Expr::Cast { expr: inner, .. }
-            | Expr::Await(inner)
-            | Expr::As { expr: inner, .. }
-            | Expr::Nameof(inner)
-            | Expr::NewArray { size: inner, .. } => self.expr(*inner),
-            Expr::Range { start, end } => self.exprs(start.iter().chain(end).copied()),
             Expr::Match { scrutinee, arms } => self.r#match(*scrutinee, arms),
-            Expr::With { expr: value, inits } => {
-                self.expr(*value);
-                self.exprs(inits.iter().map(|&(_, init)| init));
-            }
             Expr::Is { expr: value, pat } => {
                 self.expr(*value);
                 self.pat(*pat);
             }
-            Expr::Conditional {
-                condition,
-                then,
-                r#else,
-            } => self.exprs([*condition, *then, *r#else]),
             Expr::Lambda(lambda) => {
                 for capture in &lambda.captures {
                     match capture.target {
@@ -436,10 +418,6 @@ impl Walk<'_> {
                 }
                 self.exprs(lambda.defaults.iter().map(|&(_, default)| default));
                 self.expr(lambda.body);
-            }
-            Expr::New { args, inits, .. } => {
-                self.exprs(args.iter().flatten().map(|arg| arg.expr));
-                self.exprs(inits.iter().flatten().map(|&(_, init)| init));
             }
             Expr::Block(stmts) => self.stmts(stmts),
         }

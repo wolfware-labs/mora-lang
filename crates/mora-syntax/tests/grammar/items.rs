@@ -1,136 +1,12 @@
-// Test code may unwrap (CONTRIBUTING.md, Code rules).
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Declarations and members: attributes (§6.11), modifiers and
+//! contextual keywords (§3.4), `using` directives (§4.2), type parameters
+//! and constraints, indexers, operators and extension blocks (§6.9).
 
-//! Tests that pin parser behavior found untested by `cargo mutants` (§20.5).
-
+use mora_syntax::SyntaxKind as K;
 use mora_syntax::ast::{self, AstNode};
-use mora_syntax::{SyntaxKind as K, SyntaxNode, parse};
+use mora_syntax::parse;
 
-/// The error messages, in the order of the text.
-fn messages(text: &str) -> Vec<String> {
-    parse(text)
-        .errors()
-        .iter()
-        .map(|error| error.message.clone())
-        .collect()
-}
-
-fn count(text: &str, kind: K) -> usize {
-    parse(text)
-        .syntax()
-        .descendants()
-        .filter(|n| n.kind() == kind)
-        .count()
-}
-
-fn has(text: &str, kind: K) -> bool {
-    count(text, kind) > 0
-}
-
-/// Whether a token of `kind` is in the tree.
-fn has_token(text: &str, kind: K) -> bool {
-    parse(text)
-        .syntax()
-        .debug_tree()
-        .contains(&format!("{kind:?}@"))
-}
-
-/// The first node of `kind`, which must be there. The parse is leaked, so
-/// the node can outlive the call.
-fn node(text: &str, kind: K) -> SyntaxNode<'static> {
-    Box::leak(Box::new(parse(text)))
-        .syntax()
-        .descendants()
-        .find(|n| n.kind() == kind)
-        .unwrap_or_else(|| panic!("no {kind:?} in {text:?}"))
-}
-
-/// Parses without errors and holds a node of `kind`.
-fn assert_clean_with(text: &str, kind: K) {
-    assert_eq!(messages(text), Vec::<String>::new(), "{text:?}");
-    assert!(has(text, kind), "no {kind:?} in {text:?}");
-}
-
-/// A getter of type `ty` parses without errors: the member's shape
-/// needs `scan_type` to find the end of the type.
-fn assert_getter_type(ty: &str) -> String {
-    let text = format!("class A {{ P: {ty} => x; }}");
-    assert_clean_with(&text, K::GetterDecl);
-    text
-}
-
-// `ty`: `weak T` is a type of its own.
-
-#[test]
-fn a_weak_field_type_parses() {
-    let text = "class A { Parent: weak Node?; }";
-    assert_clean_with(text, K::WeakType);
-    assert!(has(text, K::FieldDecl));
-}
-
-// `scan_type`: a splice type, a tuple type, a nested or array type before
-// `=>` makes a getter.
-
-#[test]
-fn a_spread_splice_type_makes_a_getter() {
-    assert_getter_type("$..ts");
-}
-
-#[test]
-fn a_parenthesized_splice_type_makes_a_getter() {
-    assert_getter_type("$(T)");
-    assert_getter_type("$(f())");
-}
-
-#[test]
-fn an_unclosed_splice_type_ends_at_the_end_of_the_file() {
-    assert_eq!(
-        messages("F() { $(a"),
-        ["expected `)`", "expected `;`", "expected `}`"]
-    );
-}
-
-#[test]
-fn a_weak_or_unit_type_makes_a_getter() {
-    let text = assert_getter_type("weak Node?");
-    assert!(has(&text, K::WeakType));
-    assert_getter_type("()");
-}
-
-#[test]
-fn a_tuple_type_makes_a_getter() {
-    assert_getter_type("(a: int, b: string)");
-    assert_getter_type("(int, string)");
-    assert_getter_type("(int, string,)");
-}
-
-#[test]
-fn a_nested_generic_type_makes_a_getter() {
-    assert_getter_type("Outer<int>.Inner");
-}
-
-#[test]
-fn an_array_type_makes_a_getter() {
-    let text = assert_getter_type("int[]");
-    assert!(has(&text, K::ArrayType));
-}
-
-#[test]
-fn an_unclosed_index_is_not_an_array_type() {
-    let text = "F() { T[0 x; }";
-    assert!(!has(text, K::LocalDeclStmt));
-    assert!(has(text, K::IndexExpr));
-    assert_eq!(messages(text), ["expected `]`", "expected `;`"]);
-}
-
-#[test]
-fn an_unclosed_array_suffix_ends_the_member_type() {
-    // The type of `P` is `int`, and the `=>` inside the brackets does not
-    // make a getter of it.
-    let text = "class A { P: int[x => 0; }";
-    assert!(has(text, K::FieldDecl));
-    assert!(!has(text, K::GetterDecl));
-}
+use crate::support::{assert_clean_with, count, has, has_token, messages, node};
 
 // `shape`: a member starts with its name.
 
@@ -147,35 +23,11 @@ fn a_member_without_a_name_is_an_error() {
     }
 }
 
-// `child_between`: the parts of `a ? b : c` are found across whitespace.
-
-#[test]
-fn conditional_parts_skip_whitespace() {
-    let parsed = parse("var x = a ? b : c;");
-    let cond = parsed
-        .syntax()
-        .descendants()
-        .find_map(ast::ConditionalExpr::cast)
-        .unwrap();
-    assert_eq!(cond.condition().unwrap().syntax().text(), "a");
-    assert_eq!(cond.then().unwrap().syntax().text(), "b");
-    assert_eq!(cond.r#else().unwrap().syntax().text(), "c");
-}
-
 // `describe`: how errors name an identifier.
 
 #[test]
 fn a_missing_name_is_an_identifier() {
     assert_eq!(messages("class { }"), ["expected an identifier"]);
-}
-
-// `nth_text`: `and` after a type in a pattern combines patterns.
-
-#[test]
-fn and_after_a_type_pattern_combines_patterns() {
-    let text = "let b: bool = x is Foo and Bar;";
-    assert_clean_with(text, K::BinPattern);
-    assert!(!has(text, K::DeclarationPattern));
 }
 
 // `attached_comments`: comments directly above a declaration belong to it,
@@ -304,6 +156,13 @@ fn record_is_a_name() {
     assert_clean_with("record = 5;", K::ExprStmt);
 }
 
+#[test]
+fn required_is_not_a_modifier() {
+    let text = "class A { required X: Name; }";
+    assert!(!has(text, K::Modifier));
+    assert!(!messages(text).is_empty());
+}
+
 // `at_contextual_modifier`: `file` before a keyword or a name is a modifier.
 
 #[test]
@@ -381,17 +240,6 @@ fn accessors_on_a_field_are_one_error() {
     );
 }
 
-#[test]
-fn garbage_braces_in_a_member_list_are_skipped_whole() {
-    let text = "class A { { get; } Q: int; }";
-    assert_eq!(messages(text), ["expected a member"]);
-    assert!(has(text, K::FieldDecl));
-    // Recovery stops at the next member's modifiers.
-    let text = "class A { { get; } mut Q: int; }";
-    assert_eq!(messages(text), ["expected a member"]);
-    assert_eq!(node(text, K::FieldDecl).text(), "mut Q: int;");
-}
-
 // `shape` in an interface: `Name: T;` is a getter without a default.
 
 #[test]
@@ -404,26 +252,6 @@ fn an_interface_member_without_a_body_is_a_getter() {
         assert!(!has(text, K::FieldDecl), "{text:?}");
     }
     assert!(has("class A { Sides: int; }", K::FieldDecl));
-}
-
-// `scan_uses`: a `uses` bound inside a member's function type.
-
-#[test]
-fn a_getter_of_a_bounded_function_type_parses() {
-    for text in [
-        "class A { F: ((int) => int uses none) => G; }",
-        "class A { F: ((int) => int uses fs.read) => G; }",
-        "class A { F: ((int) => int uses (clock, env)) => G; }",
-    ] {
-        assert_clean_with(text, K::GetterDecl);
-        assert!(has(text, K::UsesClause), "{text:?}");
-    }
-    assert_clean_with("class A { F: ((int) => int uses none); }", K::FieldDecl);
-    // A bound without parentheses ends at a comma.
-    assert_clean_with(
-        "class A { F: ((int) => int uses clock, int) => G; }",
-        K::GetterDecl,
-    );
 }
 
 // `uses_clause` and `at_function`: a bound after a signature or a function type.
@@ -464,23 +292,6 @@ fn a_uses_bound_needs_a_capability() {
         ["expected `none`, a capability or `(`"]
     );
     assert_eq!(messages("Run() uses () { }"), ["expected a capability"]);
-}
-
-// `statement_inner`: `unsafe` starts a statement only before a block.
-
-#[test]
-fn unsafe_takes_a_block() {
-    assert_clean_with("F() { unsafe { Free(p); } }", K::UnsafeStmt);
-    let text = "F() { unsafe x; }";
-    assert!(!has(text, K::UnsafeStmt));
-    assert!(!messages(text).is_empty());
-}
-
-#[test]
-fn required_is_not_a_modifier() {
-    let text = "class A { required X: Name; }";
-    assert!(!has(text, K::Modifier));
-    assert!(!messages(text).is_empty());
 }
 
 // `attribute`: trailing commas and arguments without a name.
@@ -668,17 +479,6 @@ fn a_field_needs_a_plain_name_and_a_place_for_fields() {
     assert!(!has("@A x: int;", K::FieldDecl));
 }
 
-// `at_any`: `any` starts a boxed interface type only before a name.
-
-#[test]
-fn any_alone_is_a_type_name() {
-    for text in ["struct S { X: any; }", "struct S { X: List<any>; }"] {
-        assert_clean_with(text, K::PathType);
-        assert!(!has(text, K::AnyType), "{text}");
-    }
-    assert_clean_with("struct S { X: any IShape; }", K::AnyType);
-}
-
 // `at_extension` and `extension_decl`: an extension block is a top-level
 // declaration with one receiver (§6.9).
 
@@ -736,16 +536,6 @@ fn a_using_after_a_declaration_is_reported() {
         messages("F();\nglobal using A;"),
         ["`using` directives come before the declarations"]
     );
-}
-
-// A `:` at the top level of a hole starts its format (§3.5), so `::`
-// there is format text.
-
-#[test]
-fn a_double_colon_in_a_hole_is_format_text() {
-    let text = r#"let s = $"{Core::Parse(1)}";"#;
-    assert_eq!(messages(text), Vec::<String>::new());
-    assert_eq!(node(text, K::InterpHole).text(), "{Core::Parse(1)}");
 }
 
 // Removed forms are ordinary syntax errors (D-96, D-98).

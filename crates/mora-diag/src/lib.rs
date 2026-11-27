@@ -6,10 +6,12 @@
 //! in the terminal layout of §17.6, and [`to_json_line`] prints it for
 //! `--message-format json`. Both read file paths and texts through
 //! [`Sources`]. Codes come from [`codes`], generated from the
-//! [`registry`].
+//! [`registry`]. [`expectations`] reads what tests and examples expect the
+//! compiler to report or a program to print (§20.1, §20.4).
 
 mod code;
 mod diagnostic;
+pub mod expectations;
 mod json;
 pub mod registry;
 mod render;

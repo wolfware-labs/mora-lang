@@ -340,6 +340,124 @@ pub enum Expr {
     Macro,
 }
 
+impl Expr {
+    /// Calls `f` on each expression this one holds directly, in the order
+    /// of the text: a `match` gives its scrutinee, then the guard and the
+    /// value of each arm, and a lambda the defaults of its parameters, then
+    /// its body. Patterns and statements are not expressions and are left
+    /// out, so an `is` gives its operand alone and a block nothing.
+    ///
+    /// Each walk over a body decides on top of this which children it
+    /// visits, and in which order it evaluates them.
+    pub fn for_each_child(&self, mut f: impl FnMut(ExprId)) {
+        match self {
+            Expr::Missing
+            | Expr::Literal(_)
+            | Expr::Local(_)
+            | Expr::Path(_)
+            | Expr::This
+            | Expr::Type(_)
+            | Expr::Discard
+            | Expr::Default(_)
+            | Expr::Sizeof(_)
+            | Expr::Block(_)
+            | Expr::Macro => {}
+            Expr::Interpolated(parts) => {
+                for part in parts {
+                    if let InterpPart::Hole {
+                        value, alignment, ..
+                    } = part
+                    {
+                        f(*value);
+                        if let Some(alignment) = alignment {
+                            f(*alignment);
+                        }
+                    }
+                }
+            }
+            Expr::Tuple(elems) => {
+                for &(_, elem) in elems {
+                    f(elem);
+                }
+            }
+            Expr::Collection(elems) => {
+                for &(_, elem) in elems {
+                    f(elem);
+                }
+            }
+            Expr::Member { receiver, .. } => f(*receiver),
+            Expr::Call { callee, args } => {
+                f(*callee);
+                for arg in args {
+                    f(arg.expr);
+                }
+            }
+            Expr::Index { base, args, .. } => {
+                f(*base);
+                for arg in args {
+                    f(arg.expr);
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Postfix { expr, .. }
+            | Expr::Propagate(expr)
+            | Expr::Cast { expr, .. }
+            | Expr::Await(expr)
+            | Expr::Is { expr, .. }
+            | Expr::As { expr, .. }
+            | Expr::Nameof(expr)
+            | Expr::NewArray { size: expr, .. } => f(*expr),
+            Expr::Binary { lhs, rhs, .. } | Expr::Assign { lhs, rhs, .. } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Expr::Range { start, end } => {
+                for &part in start.iter().chain(end) {
+                    f(part);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                f(*scrutinee);
+                for arm in arms {
+                    if let Some(guard) = arm.guard {
+                        f(guard);
+                    }
+                    f(arm.body);
+                }
+            }
+            Expr::With { expr, inits } => {
+                f(*expr);
+                for &(_, init) in inits {
+                    f(init);
+                }
+            }
+            Expr::Conditional {
+                condition,
+                then,
+                r#else,
+            } => {
+                f(*condition);
+                f(*then);
+                f(*r#else);
+            }
+            Expr::Lambda(lambda) => {
+                for &(_, default) in &lambda.defaults {
+                    f(default);
+                }
+                f(lambda.body);
+            }
+            Expr::New { args, inits, .. } => {
+                for arg in args.iter().flatten() {
+                    f(arg.expr);
+                }
+                for &(_, init) in inits.iter().flatten() {
+                    f(init);
+                }
+            }
+        }
+    }
+}
+
 /// A literal as written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Literal {
@@ -2261,5 +2379,68 @@ get extension#0.Empty(items#0) => items#0[0];
             .map(BinaryOp::text)
             .collect();
         assert_eq!(ordering, ["<", ">", "<=", ">="]);
+    }
+
+    #[test]
+    fn an_expression_lists_its_children_in_the_order_of_the_text() {
+        let db = TestDb::new();
+        let text = "var a = 1;\nvar b = 2;\nvar c = 3;\nvar d = 4;\n\
+                    let s = $\"{a,b:x} {c}\";\nlet t = (a, b);\nlet l = [a, ..b];\n\
+                    let m = a.M;\nlet f = F(a, b);\nlet i = a[b, c];\nlet u = -a;\na++;\n\
+                    let o = a + b;\na = b;\nc += d;\nlet p = a?;\nlet k = (int)a;\n\
+                    let w = await a;\nlet r = a..b;\nlet h = ..c;\n\
+                    let x = match (a) { 0 when b => c, _ => d };\n\
+                    let y = a with { X = b };\nlet z = a is 0;\nlet e = a as int;\n\
+                    let g = a ? b : c;\nlet n = (q: int = a) => b;\n\
+                    let v = new P(a) { X = b };\nlet j = new int[a];\nlet q = nameof(a);\n\
+                    let th = this;\nlet de = default(int);\nlet si = sizeof(int);\n\
+                    let bl = () => { return d; };\n";
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let map = body_source_map(&db, file, BodyOwner::TopLevel);
+        let source = |expr| &text[std::ops::Range::<usize>::from(map.expr(expr))];
+        let cases: [(&str, &[&str]); 30] = [
+            ("$\"{a,b:x} {c}\"", &["a", "b", "c"]),
+            ("(a, b)", &["a", "b"]),
+            ("[a, ..b]", &["a", "b"]),
+            ("a.M", &["a"]),
+            ("F(a, b)", &["F", "a", "b"]),
+            ("a[b, c]", &["a", "b", "c"]),
+            ("-a", &["a"]),
+            ("a++", &["a"]),
+            ("a + b", &["a", "b"]),
+            ("a = b", &["a", "b"]),
+            ("c += d", &["c", "d"]),
+            ("a?", &["a"]),
+            ("(int)a", &["a"]),
+            ("await a", &["a"]),
+            ("a..b", &["a", "b"]),
+            ("..c", &["c"]),
+            ("match (a) { 0 when b => c, _ => d }", &["a", "b", "c", "d"]),
+            ("a with { X = b }", &["a", "b"]),
+            ("a is 0", &["a"]),
+            ("a as int", &["a"]),
+            ("a ? b : c", &["a", "b", "c"]),
+            ("(q: int = a) => b", &["a", "b"]),
+            ("new P(a) { X = b }", &["a", "b"]),
+            ("new int[a]", &["a"]),
+            ("nameof(a)", &["a"]),
+            ("this", &[]),
+            ("default(int)", &[]),
+            ("sizeof(int)", &[]),
+            ("{ return d; }", &[]),
+            ("() => { return d; }", &["{ return d; }"]),
+        ];
+        for (written, children) in cases {
+            let (_, node) = body
+                .exprs
+                .iter()
+                .find(|&(expr, _)| source(expr) == written)
+                .unwrap_or_else(|| panic!("no expression is written `{written}`"));
+            let mut found = Vec::new();
+            node.for_each_child(|child| found.push(source(child)));
+            assert_eq!(found, children, "{written}");
+        }
     }
 }

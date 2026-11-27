@@ -1,16 +1,21 @@
 //! The `Backend` trait and its Cranelift implementation: object files, JIT and debug info (§14.13).
-// One of the crates allowed to contain `unsafe` code (CONTRIBUTING.md).
-#![allow(unsafe_code)]
 
 mod abi;
 mod cranelift;
 mod error;
+// One of the crates allowed to contain `unsafe` code (CONTRIBUTING.md), and
+// only where it calls JIT-compiled code.
+#[expect(unsafe_code, reason = "runs JIT-compiled code and frees its memory")]
 mod jit;
 mod layout;
 mod mangle;
 mod program;
 mod size;
 #[cfg(test)]
+#[expect(
+    unsafe_code,
+    reason = "calls JIT-compiled functions and reads string objects"
+)]
 mod test_util;
 
 pub use abi::{FnAbi, PassMode};

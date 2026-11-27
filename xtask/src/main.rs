@@ -1,6 +1,9 @@
-//! Repository tooling, run as `cargo xtask <command>`: the layering, error
-//! code and spec example checks, code generation, the fuzz lockfile, the
-//! runtime and sysroot builds, and benchmark comparison. See [`USAGE`].
+//! Repository tooling, run as `cargo xtask <command>`: the layering and
+//! error code checks, the spec example check (a test target of mora-testkit,
+//! which this command runs), code generation, the fuzz lockfile, the runtime
+//! and sysroot builds, and benchmark comparison. See [`USAGE`]. No command
+//! builds the compiler into xtask, so a generator bug that leaves the
+//! compiler unbuildable never locks `cargo xtask codegen` out.
 
 // Test and tooling code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -12,20 +15,16 @@ mod error_codes;
 mod fuzz_lock;
 mod layers;
 mod paths;
-mod runner;
 mod runtime;
-mod spec_examples;
 mod sysroot;
 mod target_names;
 mod tools;
 
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use cargo_metadata::MetadataCommand;
 use mora_diag::registry;
-use mora_testkit::FrontEnd;
-use mora_testkit::harness::without_panic_output;
 
 use crate::paths::root;
 
@@ -89,28 +88,27 @@ fn run_error_codes() -> CommandResult {
     }
 }
 
+/// Runs the spec-example check, a test target of mora-testkit that only
+/// runs when named, so that xtask builds without the compiler. Cargo builds
+/// `jit-runner` for it and the target prints the report.
 fn run_spec_examples() -> CommandResult {
-    let repo = spec_examples::load(&root()).map_err(|err| err.to_string())?;
-    let front_end = FrontEnd::with_runner(runner::build(&root())?);
-    // An example that panics, as a pending one whose construct is not lowered
-    // yet does, reports the message in its problem; the default hook would
-    // print it as well, on every run.
-    let outcome = without_panic_output(|| spec_examples::check(&repo, &front_end));
-    for problem in &outcome.problems {
-        eprintln!("{problem}");
-    }
-    if outcome.problems.is_empty() {
-        println!(
-            "spec-examples: {} examples, {} passed, {} pending, ok",
-            repo.examples.len(),
-            outcome.passed,
-            outcome.pending
-        );
-        Ok(ExitCode::SUCCESS)
+    let status = Command::new(tools::cargo())
+        .args([
+            "test",
+            "-p",
+            "mora-testkit",
+            "--test",
+            "spec_examples",
+            "--locked",
+        ])
+        .current_dir(root())
+        .status()
+        .map_err(|err| format!("cannot run cargo: {err}"))?;
+    Ok(if status.success() {
+        ExitCode::SUCCESS
     } else {
-        eprintln!("spec-examples: {} problem(s)", outcome.problems.len());
-        Ok(ExitCode::FAILURE)
-    }
+        ExitCode::FAILURE
+    })
 }
 
 /// Builds both runtime variants for each target, the host when none is

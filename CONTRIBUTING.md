@@ -23,7 +23,7 @@ These are the checks CI runs on every pull request (§20.5 of the spec). They ar
 | Check | Command |
 | --- | --- |
 | Formatting | `cargo fmt --all --check` |
-| Lints | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| Lints | `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo clippy -p mora-testkit --test spec_examples --locked -- -D warnings` for the spec-example target, which `--all-targets` leaves out |
 | Tests | `cargo test --workspace --locked` |
 | Docs | `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings` |
 | Crate layers and target names (§14.2, §19.4) | `cargo xtask layers` |
