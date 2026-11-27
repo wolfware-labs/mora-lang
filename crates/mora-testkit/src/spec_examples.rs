@@ -485,7 +485,8 @@ F();
         let repo = load(&root).unwrap();
         assert!(repo.examples.len() > 1);
         assert!(repo.deliverables.contains(&"M1.4".to_owned()));
-        assert!(!repo.pending.entries.is_empty());
+        // The pending list may shrink to nothing; it must stay well formed.
+        assert_eq!(repo.pending.malformed, Vec::<usize>::new());
         // The pages' examples come in file name order, and none from the
         // template.
         let pages: Vec<&str> = repo

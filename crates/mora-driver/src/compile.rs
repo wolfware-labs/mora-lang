@@ -187,4 +187,15 @@ mod tests {
             Ok(_) => panic!("the program built"),
         }
     }
+
+    #[test]
+    fn a_frame_too_large_is_the_program_s_error() {
+        let db = TestDb::new();
+        let project = program(&db, &format!("{}var t: S28;\nreturn 0;\n", doubling(28)));
+        match jit(&db, project, Profile::Debug) {
+            Err(BuildError::Program(diagnostics)) => assert_eq!(codes(&diagnostics), ["MR0156"]),
+            Err(BuildError::Internal(error)) => panic!("an internal error: {error}"),
+            Ok(_) => panic!("the program built"),
+        }
+    }
 }
