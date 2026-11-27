@@ -410,6 +410,7 @@ Reading `mora.toml` (the `[project]` keys and profiles; unknown keys are `MR0500
 Done when:
 
 - CLI tests build and run a temporary hello-world project in both profiles.
+- The UI, run and spec-example suites compile through the driver's own pipeline (`mora_driver::check` and `mora_driver::jit`), the one `mora build` and `mora check` run, and the test kit holds no pass sequence of its own.
 - A second build reuses the standard-library cache (asserted through a cache-hit counter in `--verbose` output).
 - A construct the compiler cannot lower yet reports an error that names the milestone bringing it, never an internal error; `F(xs: int[])` is one such case.
 - A build of several projects reports a diagnostic once when two of them report the same one, as two sibling projects that run one library field initializer do (§14.6).
