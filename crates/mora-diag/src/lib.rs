@@ -10,6 +10,7 @@
 
 mod code;
 mod diagnostic;
+pub mod expectations;
 mod json;
 pub mod registry;
 mod render;

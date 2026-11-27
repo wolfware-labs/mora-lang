@@ -12,11 +12,10 @@ use std::io;
 use std::path::Path;
 
 use mora_diag::Code;
+use mora_diag::expectations::{self, Expects};
 use mora_diag::registry::{CodeRange, Entry};
-use mora_testkit::ui;
 
 use crate::paths::{self, PAGE_TEMPLATE, PAGES, SPEC};
-use crate::spec_examples::{self, Expects};
 
 /// A code at a place in the repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,7 +299,7 @@ pub fn codes_in(line: &str) -> Vec<Code> {
 /// Codes expected by the executable examples of a Markdown file: `mora`
 /// blocks whose first line is `// error: MRnnnn` or `// warning: MRnnnn`.
 fn examples(path: &str, text: &str) -> Vec<Use> {
-    spec_examples::extract(path, None, text)
+    expectations::extract(path, None, text)
         .into_iter()
         .filter_map(|example| match example.expects {
             Expects::Diagnostic(_, code) => Some(Use {
@@ -340,7 +339,7 @@ fn check_page(code: Code, text: &str) -> Result<(), String> {
     };
     let failing = first_line(&sections[0].1);
     if !matches!(
-        failing.as_deref().and_then(spec_examples::expects),
+        failing.as_deref().and_then(expectations::expects),
         Some(Expects::Diagnostic(_, found)) if found == code
     ) {
         return Err(format!(
@@ -407,7 +406,7 @@ pub fn load(root: &Path) -> io::Result<Repo> {
     for file in paths::files_with_extension(&root.join("tests/ui"), "mr")? {
         let text = fs::read_to_string(&file)?;
         scan(&paths::relative(root, &file), &text, &mut uses, |line| {
-            ui::line_annotations(line)
+            expectations::line_annotations(line)
                 .into_iter()
                 .filter_map(|annotation| annotation.ok().map(|(_, code)| code))
                 .collect()

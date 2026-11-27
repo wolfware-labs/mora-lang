@@ -2,6 +2,7 @@
 //! `//~ WARNING MRnnnn` where a diagnostic must be reported, next to a
 //! `.stderr` snapshot of the rendered output.
 
+use mora_diag::expectations::line_annotations;
 use mora_diag::{Code, Severity, Sources, render};
 use mora_span::FileId;
 
@@ -17,33 +18,6 @@ pub struct Annotation {
     pub severity: Severity,
     /// The code the diagnostic must have.
     pub code: Code,
-}
-
-/// The annotations of one line, in order. Text after the code is a comment.
-/// A `//~` that is not followed by `ERROR` or `WARNING` and a code gives an
-/// error naming what it found.
-pub fn line_annotations(line: &str) -> Vec<Result<(Severity, Code), String>> {
-    line.match_indices("//~")
-        .map(|(at, _)| {
-            let mut words = line[at + 3..].split_whitespace();
-            let severity = match words.next() {
-                Some("ERROR") => Severity::Error,
-                Some("WARNING") => Severity::Warning,
-                other => {
-                    return Err(format!(
-                        "`//~` must be followed by ERROR or WARNING, not `{}`",
-                        other.unwrap_or("")
-                    ));
-                }
-            };
-            let Some(code) = words.next() else {
-                return Err("`//~` needs a code after the severity".to_owned());
-            };
-            code.parse::<Code>()
-                .map(|code| (severity, code))
-                .map_err(|error| error.to_string())
-        })
-        .collect()
 }
 
 /// The annotations of a file, or the problems with malformed ones.
