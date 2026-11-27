@@ -482,7 +482,8 @@ F();
     #[test]
     fn pages_are_the_files_in_the_pages_directory() {
         let root = std::env::temp_dir().join(format!("mora-testkit-{}-pages", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        // A new folder of our own: fails if the name is already taken.
+        fs::create_dir(&root).unwrap();
         assert_eq!(read_pages(&root).unwrap(), Vec::<(String, String)>::new());
         let pages = root.join(PAGES);
         fs::create_dir_all(pages.join("dir.md")).unwrap();
