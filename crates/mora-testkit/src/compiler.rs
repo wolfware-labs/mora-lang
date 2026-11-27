@@ -1,5 +1,5 @@
-//! The [`Compiler`] the harnesses drive, and the stand-ins used until the
-//! driver can compile.
+//! The [`Compiler`] the harnesses drive: [`FrontEnd`], on the driver's
+//! pipeline, and [`Unbuilt`], which the self-tests use.
 
 use std::fmt::Write;
 use std::path::PathBuf;
@@ -48,8 +48,10 @@ pub trait Compiler: Sync {
     }
 }
 
-/// The compiler the suites and `cargo xtask spec-examples` use: [`FrontEnd`],
-/// which compiles through [`mora_driver::check`] and [`mora_driver::jit`].
+/// The compiler of the UI suite: a [`FrontEnd`] with no runner, which checks
+/// through [`mora_driver::check`]. The run suite and the spec-example check
+/// make theirs with [`FrontEnd::with_runner`], which also runs programs built
+/// by [`mora_driver::jit`].
 pub fn compiler() -> &'static dyn Compiler {
     static FRONT_END: FrontEnd = FrontEnd::new();
     &FRONT_END
