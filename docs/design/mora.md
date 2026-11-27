@@ -78,7 +78,7 @@ The release lines follow from that:
 | **v0.2** | M8, M9, M16 | WebAssembly target and `.wasm` libraries, a stable plugin ABI, packages from URL and git sources, capability enforcement, semantic diff and semver checks (contracts join in v0.3), editions, `mora query`, `mora context` and `mora mcp`, WASI 0.3 and `mora bindgen wit`, typed holes, grammar export, `mora query complete` |
 | **v0.3** | M14, M15, M17 | Contract sections, property tests, unit algebra, compile-time evaluation, the simulated World, test caching, record and replay, hot reload, time zones, `@Config`, retry policies, mutation testing, coverage and fuzzing, PCT scheduling, error return traces, `Task.Race`, `Task.Quorum` and collect-all completion |
 | **v0.4** | M10, M11, M18 | Threads and `shared` classes, worker processes, class inheritance, `async?`, more macro kinds, arenas, `decimal`, general reuse, vector types, devirtualization, sending object graphs between threads, `Parallel.For` and `Parallel.Map`, value parameters for generics, must-consume classes, acyclic types |
-| **v0.5** | M12, M13 | Registry, registry dependencies and signing, rebuild verification of releases, LLVM release backend with `noalias` facts, Component Model, embedded targets |
+| **v0.5** | M12, M13 | Registry, registry dependencies and signing, rebuild verification of releases, Component Model, embedded targets through an LLVM backend for 32-bit instruction sets, and an LLVM release backend with `noalias` facts if OQ-29 calls for one |
 
 ### 1.6 How to read this document
 
@@ -2244,7 +2244,7 @@ The standard library's `unsafe` functions carry hand-written summaries, which th
 
 ### 14.13 Cranelift lowering
 
-Code generation sits behind a `Backend` trait in `mora-codegen` that takes monomorphized, ARC-optimized MIR and a target description and produces code in the target's object format (§19.4): an ELF, Mach-O or COFF object file, or a WebAssembly module for the wasm backend. Running code in-process is a separate, optional capability (below). Cranelift is the MVP's only implementation; the wasm backend (§18.1) and the LLVM backend (M13) implement the same trait, so nothing before code generation changes when a backend is added.
+Code generation sits behind a `Backend` trait in `mora-codegen` that takes monomorphized, ARC-optimized MIR and a target description and produces code in the target's object format (§19.4): an ELF, Mach-O or COFF object file, or a WebAssembly module for the wasm backend. Running code in-process is a separate, optional capability (below). Cranelift is the MVP's only implementation; the wasm backend (§18.1) and an LLVM backend (M13: for 32-bit instruction sets, and for release builds if OQ-29 calls for one) implement the same trait, so nothing before code generation changes when a backend is added.
 
 Two rules keep a second backend from repeating or contradicting the first:
 
@@ -3295,7 +3295,7 @@ Mora is built in thin vertical slices: each milestone runs real programs end to 
 | M10: Threads | §12.6, OQ-1, OQ-6, OQ-7, supervised worker processes, sending a freshly built object graph to another thread, `Parallel.For` and `Parallel.Map` with effect-checked bodies | post-MVP |
 | M11: Language growth | Inheritance, variance, iterators, retroactive implementations, arenas, unsafe, `decimal`, `async?`, more macro kinds (OQ-3, 4, 5, 9, 10, 11, 12, 13; §9.10), value parameters for generics, must-consume unique classes | post-MVP |
 | M12: Registry and signing | §18.7, registry dependency sources, rebuild verification of releases | post-MVP |
-| M13: Backends and targets | LLVM release backend, Component Model, Windows debug info, embedded targets, an aliasing model with `noalias` facts | post-MVP |
+| M13: Backends and targets | Component Model, Windows debug info, embedded targets through an LLVM backend for 32-bit instruction sets, and, if OQ-29 calls for one, an LLVM release backend with an aliasing model for `noalias` facts | post-MVP |
 | M14: Contracts and checked types | §6.13, `where` predicates, property tests, unit algebra, compile-time evaluation | post-MVP |
 | M15: Test and run tooling | Simulated World, test caching, record and replay, hot reload, mutation testing, coverage and coverage-guided fuzzing, PCT scheduling, error return traces | post-MVP |
 | M16: Agent tooling and API evolution | `mora query`, `mora context` and `mora mcp`, JSON Schema, semantic diff and semver (contract changes from M14), editions, typed holes, grammar export, `mora query complete` | post-MVP |
@@ -3320,7 +3320,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | D-10 | Attributes are compile-time only | draft | 6.11 |
 | D-11 | Generics are monomorphized; sequence operators compile to concrete iterator structs | draft | 8.1, 15.5 |
 | D-12 | Integer overflow panics in debug and wraps in release unless configured; `+%` family always wraps | draft, author | 7.12 |
-| D-13 | The MVP is native-first: Cranelift native code and JIT; the wasm backend and `.wasm` libraries are post-MVP | author | 1.5, 18 |
+| D-13 | The MVP is native-first: Cranelift native code and JIT; the wasm backend and `.wasm` libraries are post-MVP. Cranelift because one code generator, written in Rust, gives both the object files and the JIT that macros, the REPL and the test harness run on, it generates code quickly for debug builds, and the compiler stays a Cargo build of Rust crates with no separate code generator to pin and build. The costs are optimization one function at a time, which MIR inlining offsets (D-74), no auto-vectorization (D-83), and no 32-bit instruction sets (§19.4) | author | 1.5, 14.13, 14.17, 18, 19.4 |
 | D-14 | `string` is UTF-8 with byte `Length`; `char` is a Unicode scalar value | author | 5.2, 5.3 |
 | D-15 | Fields are read-only unless marked `mut` (write scopes added by D-101) | draft | 6.3, 6.9 |
 | D-16 | Union case names resolve without the union prefix where the union is the expected type | author | 6.6 |
@@ -3496,6 +3496,7 @@ Source: **user** means decided by the project owner in the design discussion; **
 | OQ-26 | Is the boxed future spelled `Future<T>` or `any IFuture<T>`? | `Future<T>` | M6 |
 | OQ-27 | How does a singleton that holds a resource, such as a connection pool or a log file, shut down in order when the program exits, since singletons are immortal (§16.4)? | Singleton destructors never run; the operating system reclaims the resources at exit | M10 |
 | OQ-28 | Can an async child scope reach the services of an enclosing scope through a pointer, with no retain or release, when futures may move (D-28)? | One retain and one release per such service and child scope (§16.4) | M11 |
+| OQ-29 | Does Mora need an LLVM release backend, or do Cranelift's `speed` level and the MIR optimizer (D-74, M18) stay the release path? Settled by measuring, on Mora programs, how much faster LLVM's code runs, with `noalias` facts where the M13 aliasing model allows them, against what building the 64-bit targets with the M13 LLVM backend as well costs in compile time, toolchain size and testing | Cranelift for every build; LLVM only for the 32-bit instruction sets Cranelift does not generate | M13 |
 
 ## 25. References
 
