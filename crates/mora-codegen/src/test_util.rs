@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 use mora_hir::test_support::{TestDb, app};
+pub(crate) use mora_hir::test_support::{doubling, doubling_from};
 use mora_hir::{TupleElem, Ty};
 use mora_rt_core::string::{BYTES_OFFSET, CAPACITY_OFFSET, MoraString};
 use mora_span::Project;
@@ -55,29 +56,6 @@ pub(crate) fn struct_chain(count: usize) -> String {
         let _ = writeln!(text, "struct S{n} {{\n    public X: S{};\n}}", n + 1);
     }
     let _ = writeln!(text, "struct S{count} {{\n    public X: int;\n}}");
-    text
-}
-
-/// The text of structs `S0` to `S{last}`: `S0` holds a `long`, and each
-/// other `S{i}` two of the one before it in `A` and `B`, so `S{i}` takes
-/// `8 << i` bytes.
-pub(crate) fn doubling(last: usize) -> String {
-    doubling_from("    public A: long;\n", last)
-}
-
-/// [`doubling`] with `fields`, whole lines, as the fields of `S0`: with none,
-/// every struct is empty, and `S{last}` holds `2^last` of `S0` down its
-/// fields.
-pub(crate) fn doubling_from(fields: &str, last: usize) -> String {
-    // Writing to a `String` cannot fail.
-    let mut text = format!("struct S0 {{\n{fields}}}\n");
-    for i in 1..=last {
-        let before = i - 1;
-        let _ = writeln!(
-            text,
-            "struct S{i} {{\n    public A: S{before};\n    public B: S{before};\n}}"
-        );
-    }
     text
 }
 

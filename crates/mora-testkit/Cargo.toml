@@ -20,6 +20,9 @@ mora-mir.workspace = true
 mora-span.workspace = true
 salsa.workspace = true
 
+[dev-dependencies]
+mora-hir = { workspace = true, features = ["test-support"] }
+
 # Both read the `tests/ui` and `tests/run` suites at the repository root, with
 # their own reports instead of the standard harness's.
 [[test]]

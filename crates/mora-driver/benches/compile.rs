@@ -31,7 +31,7 @@ use std::time::Duration;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use mora_codegen::Profile;
 use mora_driver::BuildError;
-use mora_hir::test_support::{TestDb, app, codes};
+use mora_hir::test_support::{TestDb, app, codes, doubling};
 use mora_span::Project;
 
 /// Files of structs, constants and functions in the generated project.
@@ -121,24 +121,16 @@ fn entry_text(too_large: bool) -> String {
     text
 }
 
-/// The last of the structs in [`too_large_text`], and the first whose size
-/// passes the frame limit of 2^31 bytes once a local holds one.
+/// The last of the structs in [`too_large_text`]: `S28` takes 2^31 bytes,
+/// the most a type may take, and more than the stack slots of one function
+/// may (about 2^30 bytes).
 const TOO_LARGE: usize = 28;
 
-/// Structs `S0` to `S{TOO_LARGE}`, where `S0` holds a `long` and each
-/// other `S{i}` two of the one before it, so `S{i}` takes `8 << i` bytes;
-/// and a function `TooLarge` whose local of the last one makes its frame
-/// too large for code generation.
+/// The structs of `doubling` up to `S{TOO_LARGE}`, and a function
+/// `TooLarge` whose local of the last one makes its frame too large for code
+/// generation.
 fn too_large_text() -> String {
-    let mut text = "struct S0 { public A: long; }\n".to_owned();
-    for i in 1..=TOO_LARGE {
-        let before = i - 1;
-        writeln!(
-            text,
-            "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
-        )
-        .unwrap();
-    }
+    let mut text = doubling(TOO_LARGE);
     writeln!(
         text,
         "public TooLarge(): int {{\n\

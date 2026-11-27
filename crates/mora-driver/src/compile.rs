@@ -88,33 +88,13 @@ impl BuildError {
 
 #[cfg(test)]
 mod tests {
-    use mora_hir::test_support::{TestDb, app, codes};
+    use mora_hir::test_support::{TestDb, app, codes, doubling};
 
     use super::*;
 
     /// `text` as `src/Program.mr`, alone in an app.
     fn program(db: &TestDb, text: &str) -> mora_span::Project {
         app(db, &[("src/Program.mr", text)])
-    }
-
-    /// Structs `S0` to `S{last}`: `S0` holds a `long`, and each other
-    /// `S{i}` two of the one before it, so `S{i}` takes `8 << i` bytes and
-    /// `S29` is the first past the limit of 2^31 bytes. The same text as
-    /// `doubling` in mora-codegen's test helpers, which this crate cannot
-    /// reach.
-    fn doubling(last: usize) -> String {
-        use std::fmt::Write;
-
-        // Writing to a `String` cannot fail.
-        let mut text = "struct S0 { public A: long; }\n".to_owned();
-        for i in 1..=last {
-            let before = i - 1;
-            let _ = writeln!(
-                text,
-                "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
-            );
-        }
-        text
     }
 
     #[test]

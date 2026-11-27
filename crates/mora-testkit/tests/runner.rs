@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use mora_hir::test_support::doubling;
 use mora_testkit::{Backend, Compiler, FrontEnd, Profile};
 
 fn front_end() -> FrontEnd {
@@ -28,17 +29,7 @@ fn runner_with(input: &[u8]) -> std::process::Output {
 /// A program with a local tuple of two 1 GiB structs, too large, which
 /// only code generation sees.
 fn tuple_too_large() -> String {
-    use std::fmt::Write;
-
-    // Writing to a `String` cannot fail.
-    let mut text = "struct S0 { public A: long; }\n".to_owned();
-    for i in 1..=28 {
-        let before = i - 1;
-        let _ = writeln!(
-            text,
-            "struct S{i} {{ public A: S{before}; public B: S{before}; }}"
-        );
-    }
+    let mut text = doubling(28);
     text.push_str("var t: (S28, S28);\n");
     text
 }
