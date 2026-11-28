@@ -1,0 +1,23 @@
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/recovery/mismatched_argument.mr:6:16
+  |
+6 | let n = Length(1); //~ ERROR MR0203
+  |                ^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+6 | let n = Length($"{1}"); //~ ERROR MR0203
+  |                +++ ++
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/recovery/mismatched_argument.mr:7:21
+  |
+7 | let label: string = n; //~ ERROR MR0203
+  |                     ^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+7 | let label: string = $"{n}"; //~ ERROR MR0203
+  |                     +++ ++

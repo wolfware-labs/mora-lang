@@ -1,0 +1,20 @@
+error[MR0206]: the call of `Scale` is ambiguous
+ --> tests/ui/recovery/ambiguous_call.mr:6:9
+  |
+3 | Scale(x: int, factor: long): int => x;
+  | ----- `Scale(x: int, factor: long): int`
+4 | Scale(x: long, factor: int): int => 0;
+  | ----- `Scale(x: long, factor: int): int`
+5 |
+6 | let a = Scale(2, 3); //~ ERROR MR0206
+  |         ^^^^^^^^^^^ 2 overloads fit equally well
+  |
+  = note: convert an argument explicitly, as with a cast `(T)x`, to choose one
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> tests/ui/recovery/ambiguous_call.mr:7:15
+  |
+7 | let b: bool = a; //~ ERROR MR0203
+  |               ^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `bool`

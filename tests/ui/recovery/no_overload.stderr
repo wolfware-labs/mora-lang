@@ -1,0 +1,41 @@
+error[MR0205]: no overload of `Show` takes these arguments
+ --> tests/ui/recovery/no_overload.mr:9:9
+  |
+4 | Show(x: int, width: int): int => x;
+  | ---- `Show(x: int, width: int): int`
+5 | Show(x: string, width: int): string => x;
+  | ---- `Show(x: string, width: int): string`
+...
+9 | let a = Show(1, "wide"); //~ ERROR MR0205
+  |         ^^^^^^^^^^^^^^^ none of the 2 overloads fits
+  |
+  = note: an overload fits when every argument goes to a parameter, by position or by name, converts to its type and has the marker its mode needs
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+  --> tests/ui/recovery/no_overload.mr:10:15
+   |
+10 | let b: bool = a; //~ ERROR MR0203
+   |               ^ this is `int`
+   |
+   = note: there is no implicit conversion to or from `bool`
+
+error[MR0205]: no overload of `Count` takes these arguments
+  --> tests/ui/recovery/no_overload.mr:11:9
+   |
+ 6 | Count(x: int): int => x;
+   | ----- `Count(x: int): int`
+ 7 | Count(x: string): int => 0;
+   | ----- `Count(x: string): int`
+...
+11 | let c = Count(); //~ ERROR MR0205
+   |         ^^^^^^^ none of the 2 overloads fits
+   |
+   = note: an overload fits when every argument goes to a parameter, by position or by name, converts to its type and has the marker its mode needs
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+  --> tests/ui/recovery/no_overload.mr:12:15
+   |
+12 | let d: bool = c; //~ ERROR MR0203
+   |               ^ this is `int`
+   |
+   = note: there is no implicit conversion to or from `bool`

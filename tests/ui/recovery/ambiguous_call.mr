@@ -1,0 +1,7 @@
+// An ambiguous call keeps the return type its tied overloads share
+// (§14.5, D-158), so a later mistake that uses it is reported too.
+Scale(x: int, factor: long): int => x;
+Scale(x: long, factor: int): int => 0;
+
+let a = Scale(2, 3); //~ ERROR MR0206
+let b: bool = a; //~ ERROR MR0203

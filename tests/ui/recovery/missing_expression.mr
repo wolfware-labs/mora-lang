@@ -1,0 +1,5 @@
+// A missing expression is reported once, by the parser, and the local
+// keeps its declared type (§14.5), so a later mistake in the same body is
+// reported too.
+let count: int = 1 + ; //~ ERROR MR0110
+let label: string = count; //~ ERROR MR0203

@@ -1,0 +1,6 @@
+// A call of a value that is not a function takes the type expected at
+// its position (§14.5, D-159), so a later mistake in the same body is
+// reported too.
+let n = 1;
+let m: int = n(); //~ ERROR MR0208
+let label: string = m; //~ ERROR MR0203

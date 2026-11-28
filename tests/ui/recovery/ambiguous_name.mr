@@ -1,0 +1,13 @@
+// An ambiguous name takes the type expected at its position (§14.5,
+// D-159), so a later mistake that uses it is reported too.
+//@ project name=users-api
+//@ file src/Program.mr
+using UsersApi.Billing;
+using UsersApi.Shipping;
+
+let limit: int = Limit; //~ ERROR MR0128
+let label: string = limit; //~ ERROR MR0203
+//@ file src/Billing/Limits.mr
+public const Limit: int = 1;
+//@ file src/Shipping/Limits.mr
+public const Limit: int = 2;

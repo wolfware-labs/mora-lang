@@ -1,0 +1,17 @@
+error[MR0110]: expected an expression
+ --> tests/ui/recovery/missing_expression.mr:4:21
+  |
+4 | let count: int = 1 + ; //~ ERROR MR0110
+  |                     ^
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/recovery/missing_expression.mr:5:21
+  |
+5 | let label: string = count; //~ ERROR MR0203
+  |                     ^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+5 | let label: string = $"{count}"; //~ ERROR MR0203
+  |                     +++     ++

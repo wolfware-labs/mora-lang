@@ -1,0 +1,21 @@
+// A name that only invisible declarations have takes the type expected
+// at its position (§14.5, D-159), and a call of methods none of which is
+// visible the type they all return (D-158), so a later mistake that uses
+// either is reported too.
+//@ project name=users-api
+//@ file src/Program.mr
+F(s: UsersApi.Store.Counter) {
+    let limit: int = UsersApi.Store.Limit; //~ ERROR MR0129
+    let label: string = limit; //~ ERROR MR0203
+    let total = s.Total(); //~ ERROR MR0129
+    let flag: bool = total; //~ ERROR MR0203
+}
+//@ file src/Store/Counter.mr
+const Limit: int = 1;
+
+public struct Counter {
+    public N: int;
+
+    private Total(): int => N;
+    private Total(by: int): int => N * by;
+}
