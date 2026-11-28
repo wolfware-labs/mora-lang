@@ -1061,38 +1061,6 @@ mod tests {
     }
 
     #[test]
-    fn a_literal_argument_of_a_call_left_to_a_static_overload_keeps_its_own_type() {
-        // A literal, or an operation made only of literals, takes the type
-        // of the parameter it goes to (§3.5); a call left to statics goes to
-        // none, so it has the type it has with no target, and the operation
-        // no value of its own. A call the instance method takes gives the
-        // parameter's type.
-        let decls = "public struct S {\n    public X: int;\n    \
-                     public M(a: long, b: int): long => a;\n    \
-                     public static M(a: string, b: int): string => a;\n}\n\
-                     let s = new S { X = 0 };\n";
-        for (call, literal, ty, constant) in [
-            ("s.M(7, Console.ReadLine())", "7", "int", false),
-            ("s.M(7 + 1, Console.ReadLine())", "7 + 1", "int", false),
-            ("s.M(7, 1)", "7", "long", false),
-            ("s.M(7 + 1, 1)", "7 + 1", "long", true),
-        ] {
-            let text = format!("{decls}let p = {call};\n");
-            assert_eq!(type_at(&text, literal), ty, "{call}");
-            let db = TestDb::new();
-            let project = app(&db, &[("src/Program.mr", &text)]);
-            let file = file_named(&db, project, "src/Program.mr");
-            let body = body(&db, file, BodyOwner::TopLevel);
-            let map = body_source_map(&db, file, BodyOwner::TopLevel);
-            let inference = infer(&db, project, file, BodyOwner::TopLevel);
-            let has_constant = body.exprs.iter().any(|(expr, _)| {
-                &text[map.expr(expr)] == literal && inference.constant(expr).is_some()
-            });
-            assert_eq!(has_constant, constant, "{call}");
-        }
-    }
-
-    #[test]
     fn records_coerce_widening() {
         assert_eq!(
             conversions("let n: int = 1;\nlet x: long = n;\n"),

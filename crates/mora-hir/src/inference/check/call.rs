@@ -296,8 +296,7 @@ impl<'a> Check<'a> {
     /// argument or the parameter of `candidates` it goes to has a type not
     /// known yet, which fits anything (D-137). Then what the call reported
     /// is dropped, and it calls nothing, converts none of its `args` to an
-    /// instance parameter, leaves its literal arguments the types they have
-    /// without a target, and has no type.
+    /// instance parameter, and has no type.
     #[expect(
         clippy::too_many_arguments,
         reason = "the call as `call` checked it, which this only finishes"
@@ -321,14 +320,8 @@ impl<'a> Check<'a> {
         self.errors.truncate(reported);
         self.calls.remove(&expr);
         self.arguments.remove(&expr);
-        for (arg, argument) in args.iter().zip(arguments) {
+        for arg in args {
             self.conversions.remove(&arg.expr);
-            // A literal took the parameter's type; it has its own again.
-            if matches!(argument, Argument::Literal(_)) {
-                self.literals.remove(arg.expr);
-                self.constants.remove(&arg.expr);
-                self.infer(arg.expr);
-            }
         }
         None
     }
