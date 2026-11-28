@@ -1045,6 +1045,22 @@ mod tests {
     }
 
     #[test]
+    fn a_call_left_to_a_static_overload_keeps_no_conversion_of_its_arguments() {
+        // A call through a value that a static overload may take calls no
+        // instance method, so no argument converts to an instance
+        // parameter: here an argument of a type not known yet, and a
+        // mismatch on another argument, leave the call to statics. A call
+        // with every type known that the instance method takes converts.
+        let text = "public struct S {\n    public X: int;\n    \
+                    public M(a: long, b: int): long => a;\n    \
+                    public static M(a: string, b: int): string => a;\n}\n\
+                    let s = new S { X = 1 };\nlet n: int = 1;\n\
+                    let p = s.M(n, Console.ReadLine());\nlet q = s.M(n, \"x\");\n\
+                    let r = s.M(n, 1);\n";
+        assert_eq!(conversions(text), ["n: Implicit long"]);
+    }
+
+    #[test]
     fn records_coerce_widening() {
         assert_eq!(
             conversions("let n: int = 1;\nlet x: long = n;\n"),

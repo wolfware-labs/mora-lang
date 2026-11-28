@@ -259,6 +259,7 @@ impl<'a> Check<'a> {
                 callee,
                 reported,
                 &candidates,
+                args,
                 &arguments,
                 ty,
             );
@@ -284,7 +285,7 @@ impl<'a> Check<'a> {
                 });
             }
         }
-        self.unless_static_overload(expr, callee, reported, &candidates, &arguments, ty)
+        self.unless_static_overload(expr, callee, reported, &candidates, args, &arguments, ty)
     }
 
     /// The type `ty` of the call `expr`, unless a static method of the
@@ -294,13 +295,19 @@ impl<'a> Check<'a> {
     /// not, as what the call reported since `reported` says, or when an
     /// argument or the parameter of `candidates` it goes to has a type not
     /// known yet, which fits anything (D-137). Then what the call reported
-    /// is dropped, and it calls nothing and has no type.
+    /// is dropped, and it calls nothing, converts none of its `args` to an
+    /// instance parameter, and has no type.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the call as `call` checked it, which this only finishes"
+    )]
     fn unless_static_overload(
         &mut self,
         expr: ExprId,
         callee: ExprId,
         reported: usize,
         candidates: &[Candidate<'_>],
+        args: &[Arg],
         arguments: &[Argument],
         ty: Option<Ty>,
     ) -> Option<Ty> {
@@ -313,6 +320,9 @@ impl<'a> Check<'a> {
         self.errors.truncate(reported);
         self.calls.remove(&expr);
         self.arguments.remove(&expr);
+        for arg in args {
+            self.conversions.remove(&arg.expr);
+        }
         None
     }
 
