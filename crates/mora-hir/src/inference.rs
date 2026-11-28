@@ -1885,13 +1885,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_call_of_hidden_methods_keeps_the_type_they_return() {
-        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
-                     private Secret(a: int): int => a;\n    private Mixed(): int => 1;\n    \
-                     private Mixed(a: int): string => \"\";\n}\n";
-        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Secret();\n    let b = s.Mixed();\n    \
-                       let c: bool = a;\n    let d: bool = b;\n}\n";
+    /// The locals of the function `F` of `program`, as [`types_of_locals`]
+    /// shows them, and the codes the app reports, with `store` beside it as
+    /// `src/Store/S.mr`, whose types `program` names as `UsersApi.Store`.
+    fn locals_beside_store(program: &str, store: &str) -> (Vec<String>, Vec<String>) {
         let db = TestDb::new();
         let project = app(
             &db,
@@ -1903,14 +1900,25 @@ mod tests {
             .find(|(_, data)| data.name == "F")
             .map(|(item, _)| item)
             .unwrap();
-        assert_eq!(
+        (
             types_of_locals(&db, project, file, BodyOwner::Item(f)),
+            codes(diagnostics(&db, project)),
+        )
+    }
+
+    #[test]
+    fn a_call_of_hidden_methods_keeps_the_type_they_return() {
+        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
+                     private Secret(a: int): int => a;\n    private Mixed(): int => 1;\n    \
+                     private Mixed(a: int): string => \"\";\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Secret();\n    let b = s.Mixed();\n    \
+                       let c: bool = a;\n    let d: bool = b;\n}\n";
+        let (locals, found) = locals_beside_store(program, store);
+        assert_eq!(
+            locals,
             ["s: S", "a: int", "b: {error}", "c: bool", "d: bool"]
         );
-        assert_eq!(
-            codes(diagnostics(&db, project)),
-            ["MR0129", "MR0129", "MR0203"]
-        );
+        assert_eq!(found, ["MR0129", "MR0129", "MR0203"]);
     }
 
     #[test]
@@ -1922,22 +1930,12 @@ mod tests {
                      private async Load(): int => 1;\n    private Id<T>(x: T): T => x;\n}\n";
         let program = "F(s: UsersApi.Store.S) {\n    let a = s.Load();\n    let b = s.Id(1);\n    \
                        let c: string = a;\n    let d: string = b;\n}\n";
-        let db = TestDb::new();
-        let project = app(
-            &db,
-            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
-        );
-        let file = file_named(&db, project, "src/Program.mr");
-        let f = item_tree(&db, file)
-            .items()
-            .find(|(_, data)| data.name == "F")
-            .map(|(item, _)| item)
-            .unwrap();
+        let (locals, found) = locals_beside_store(program, store);
         assert_eq!(
-            types_of_locals(&db, project, file, BodyOwner::Item(f)),
+            locals,
             ["s: S", "a: {error}", "b: {error}", "c: string", "d: string"]
         );
-        assert_eq!(codes(diagnostics(&db, project)), ["MR0129", "MR0129"]);
+        assert_eq!(found, ["MR0129", "MR0129"]);
     }
 
     #[test]
@@ -1955,23 +1953,9 @@ mod tests {
         ] {
             let program =
                 format!("F(s: UsersApi.Store.S) {{\n    {line}\n    let q: string = p;\n}}\n");
-            let db = TestDb::new();
-            let project = app(
-                &db,
-                &[("src/Program.mr", &program), ("src/Store/S.mr", store)],
-            );
-            let file = file_named(&db, project, "src/Program.mr");
-            let f = item_tree(&db, file)
-                .items()
-                .find(|(_, data)| data.name == "F")
-                .map(|(item, _)| item)
-                .unwrap();
-            assert_eq!(
-                types_of_locals(&db, project, file, BodyOwner::Item(f))[1],
-                local,
-                "{line}"
-            );
-            assert_eq!(codes(diagnostics(&db, project)), [code], "{line}");
+            let (locals, found) = locals_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{line}");
+            assert_eq!(found, [code], "{line}");
         }
     }
 

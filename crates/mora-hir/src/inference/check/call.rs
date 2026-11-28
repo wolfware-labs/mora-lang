@@ -303,13 +303,17 @@ impl<'a> Check<'a> {
 
     /// The type a call of `candidates` through `callee` that calls none of
     /// them keeps (D-158): the one they all return, or the error type when
-    /// they do not agree or a static overload may be what the call calls,
-    /// which is not checked before statics (D-152).
+    /// they do not agree, when one of them is not checked yet (D-137), since
+    /// its call gives what its declared return type does not say, as an
+    /// `async` function's future, or when a static overload may be what the
+    /// call calls, which is not checked before statics (D-152).
     fn uncalled_return(&self, callee: ExprId, candidates: &[Candidate<'_>]) -> Ty {
-        if self.has_static_overload(callee) {
+        if candidates.iter().any(|candidate| candidate.unchecked)
+            || self.has_static_overload(callee)
+        {
             return Ty::Error;
         }
-        shared_return(candidates).unwrap_or(Ty::Error)
+        common_return(candidates.iter()).unwrap_or(Ty::Error)
     }
 
     /// Whether `callee` names a method of a struct value that has a static
@@ -733,11 +737,11 @@ impl<'a> Check<'a> {
             if tied.is_empty() {
                 tied = applicable.iter().map(|&(index, _)| index).collect();
             }
-            let listed = listed(self, &mut tied.iter().copied());
+            let tied_signatures = listed(self, &mut tied.iter().copied());
             self.errors.push(TypeError::Ambiguous {
                 expr,
                 name: candidates[0].name.to_owned(),
-                candidates: listed,
+                candidates: tied_signatures,
             });
             let ret = common_return(tied.iter().map(|&index| &candidates[index]));
             return Some(ret.unwrap_or(Ty::Error));
@@ -822,17 +826,6 @@ fn common_return<'c, 'a: 'c>(
     candidates
         .all(|candidate| same(&candidate.ret, &first.ret))
         .then(|| Ty::clone(&first.ret))
-}
-
-/// The type a call of `candidates` keeps when it calls none of them
-/// (D-158): the one they all return, and none when one of them is not
-/// checked yet (D-137), since its call gives what its declared return type
-/// does not say, as an `async` function's future.
-fn shared_return(candidates: &[Candidate<'_>]) -> Option<Ty> {
-    if candidates.iter().any(|candidate| candidate.unchecked) {
-        return None;
-    }
-    common_return(candidates.iter())
 }
 
 /// The type a call of `candidates` that none of them takes keeps (D-158):
