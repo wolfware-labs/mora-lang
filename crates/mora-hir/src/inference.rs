@@ -1756,6 +1756,30 @@ mod tests {
     }
 
     #[test]
+    fn only_the_mistake_itself_gets_a_type() {
+        // §14.5: an expression built on a mistake has no type, whatever is
+        // expected of it, and an argument that takes no type from its
+        // parameter has the error type; nothing is reported but the names.
+        let text = "Len(x: int): int => x;\nlet n = 1;\nlet a = cout.Length;\n\
+                    let b = n + cout;\nlet e: int = n + cout;\nlet y = cout;\n\
+                    let c = y.Foo();\nlet d = Len(cout);\n";
+        let shown = expr_types(text);
+        let types_of = |written: &str| -> Vec<&str> {
+            let prefix = format!("{written}: ");
+            shown
+                .iter()
+                .filter_map(|shown| shown.strip_prefix(&prefix))
+                .collect()
+        };
+        assert_eq!(types_of("cout.Length"), ["?"]);
+        assert_eq!(types_of("n + cout"), ["?", "?"]);
+        assert_eq!(types_of("y.Foo()"), ["?"]);
+        assert_eq!(types_of("Len(cout)"), ["int"]);
+        assert_eq!(types_of("cout"), ["{error}"; 5]);
+        assert_eq!(reported(text), ["MR0127"; 5]);
+    }
+
+    #[test]
     fn a_call_that_is_an_error_keeps_the_type_its_candidates_lead_to() {
         // D-158: the overloads the correct arguments still allow, or all of
         // them when none is left, give the type they all return.
