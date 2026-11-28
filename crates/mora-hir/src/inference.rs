@@ -729,8 +729,31 @@ mod tests {
         types_of_locals(&db, project, file, BodyOwner::TopLevel)
     }
 
+    /// `ty` as [`super::ty_name`] shows it, but with the error type as
+    /// `{error}`, a marker no type spells, so that a test tells it apart
+    /// from a type not supported yet (`_`).
+    fn shown(db: &dyn mora_span::Db, ty: &Ty) -> String {
+        match ty {
+            Ty::Error => "{error}".to_owned(),
+            Ty::Tuple(elems) => {
+                let mut parts: Vec<String> = elems
+                    .iter()
+                    .map(|elem| match &elem.name {
+                        Some(name) => format!("{name}: {}", shown(db, &elem.ty)),
+                        None => shown(db, &elem.ty),
+                    })
+                    .collect();
+                if let [only] = parts.as_mut_slice() {
+                    only.push(',');
+                }
+                format!("({})", parts.join(", "))
+            }
+            _ => super::ty_name(db, ty),
+        }
+    }
+
     /// Each local of the body of `owner` in `file`, as `name: type`, `?`
-    /// for a type that is unknown.
+    /// for a type that is unknown and `{error}` for the error type.
     fn types_of_locals(
         db: &TestDb,
         project: Project,
@@ -744,7 +767,7 @@ mod tests {
             .map(|(local, data)| {
                 let ty = inference
                     .local(local)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(db, ty));
+                    .map_or_else(|| "?".to_owned(), |ty| shown(db, ty));
                 format!("{}: {ty}", data.name)
             })
             .collect()
@@ -1659,7 +1682,8 @@ mod tests {
     }
 
     /// Each expression of the top-level statements of `text`, as written,
-    /// with its type, `?` for one that is unknown.
+    /// with its type, `?` for one that is unknown and `{error}` for the
+    /// error type.
     fn expr_types(text: &str) -> Vec<String> {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", text)]);
@@ -1672,10 +1696,20 @@ mod tests {
             .map(|(expr, _)| {
                 let ty = inference
                     .expr(expr)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
+                    .map_or_else(|| "?".to_owned(), |ty| shown(&db, ty));
                 format!("{}: {ty}", &text[map.expr(expr)])
             })
             .collect()
+    }
+
+    #[test]
+    fn the_error_type_shows_apart_from_an_unsupported_one() {
+        let text = "let y = cout;\nlet g: int? = 1;\nlet t = (1, cout);\n";
+        assert_eq!(
+            local_types(text),
+            ["y: {error}", "g: _", "t: (int, {error})"]
+        );
+        assert_eq!(expr_types(text)[0], "cout: {error}");
     }
 
     #[test]
