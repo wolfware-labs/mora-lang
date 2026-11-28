@@ -18,25 +18,17 @@ impl Check<'_> {
     /// type named through a value is reported wherever it stands, and so is
     /// a type keyword anywhere but as a receiver, as `int` in `int.Parse`.
     pub(super) fn types_as_values(&mut self) {
-        let body = self.body;
-        for (expr, node) in body.exprs.iter() {
-            if !self.is_type_as_value(expr) {
-                continue;
+        for (expr, _) in self.body.exprs.iter() {
+            if let Some(error) = self.named_as_value(expr) {
+                self.errors.push(error);
             }
-            let error = match node {
-                Expr::Type(_) => TypeError::TypeKeywordAsValue { expr },
-                _ => match self.named_type(expr) {
-                    Some(named) => TypeError::TypeAsValue { expr, named },
-                    None => continue,
-                },
-            };
-            self.errors.push(error);
         }
     }
 
-    /// Whether `expr` names a type, a type keyword or a namespace where a
-    /// value is expected, which [`Check::types_as_values`] reports.
-    pub(super) fn is_type_as_value(&self, expr: ExprId) -> bool {
+    /// The error of `expr` when it names a type, a type keyword or a
+    /// namespace where a value is expected, which
+    /// [`Check::types_as_values`] reports.
+    pub(super) fn named_as_value(&self, expr: ExprId) -> Option<TypeError> {
         // Where a type may stand is looked up only once an expression names
         // a type or is a type keyword.
         let allowed = |expr: ExprId| {
@@ -44,12 +36,16 @@ impl Check<'_> {
                 .get_or_init(|| type_positions(self.body))[arena_index(expr)]
         };
         match &self.body.exprs[expr] {
-            Expr::Type(_) => !allowed(expr),
+            Expr::Type(_) if !allowed(expr) => Some(TypeError::TypeKeywordAsValue { expr }),
             // Only a path or a member names a type or a namespace.
             Expr::Path(_) | Expr::Member { .. } => {
-                self.named_type(expr).is_some() && (!allowed(expr) || self.member_of_value(expr))
+                let named = self.named_type(expr)?;
+                if allowed(expr) && !self.member_of_value(expr) {
+                    return None;
+                }
+                Some(TypeError::TypeAsValue { expr, named })
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -62,10 +58,7 @@ impl Check<'_> {
 
     /// The type or namespace that `expr`, a path or a member, names as a
     /// whole: through a path, or as a nested type of a struct value.
-    pub(super) fn named_type(&self, expr: ExprId) -> Option<Resolved> {
-        if !matches!(self.body.exprs[expr], Expr::Path(_) | Expr::Member { .. }) {
-            return None;
-        }
+    fn named_type(&self, expr: ExprId) -> Option<Resolved> {
         // A path in an expression is one segment, the parser making later
         // dots member accesses, so a resolution names the whole of `expr`.
         if let Some(resolution) = self.resolution.paths.get(&expr) {

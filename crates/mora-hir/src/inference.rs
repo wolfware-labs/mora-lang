@@ -36,7 +36,7 @@ use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeI
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::ty::{ParamMode, Primitive, Ty};
+use crate::ty::{ParamMode, Primitive, TupleElem, Ty};
 
 pub use constant::literal_constant;
 pub(crate) use diagnostic::{Source, type_error};
@@ -686,23 +686,27 @@ pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
     match ty {
         Ty::Primitive(primitive) => primitive.keyword().to_owned(),
         Ty::String => "string".to_owned(),
-        Ty::Tuple(elems) => {
-            let mut parts: Vec<String> = elems
-                .iter()
-                .map(|elem| match &elem.name {
-                    Some(name) => format!("{name}: {}", ty_name(db, &elem.ty)),
-                    None => ty_name(db, &elem.ty),
-                })
-                .collect();
-            if let [only] = parts.as_mut_slice() {
-                only.push(',');
-            }
-            format!("({})", parts.join(", "))
-        }
+        Ty::Tuple(elems) => tuple_name(elems, |ty| ty_name(db, ty)),
         Ty::Struct(item) => item_data(db, *item).name.clone(),
         Ty::Unsupported(_) | Ty::Error => "_".to_owned(),
         Ty::Never => "!".to_owned(),
     }
+}
+
+/// The tuple type of `elems` as code writes it, each element's type as
+/// `name` shows it.
+fn tuple_name(elems: &[TupleElem], name: impl Fn(&Ty) -> String) -> String {
+    let mut parts: Vec<String> = elems
+        .iter()
+        .map(|elem| match &elem.name {
+            Some(label) => format!("{label}: {}", name(&elem.ty)),
+            None => name(&elem.ty),
+        })
+        .collect();
+    if let [only] = parts.as_mut_slice() {
+        only.push(',');
+    }
+    format!("({})", parts.join(", "))
 }
 
 #[cfg(test)]
@@ -735,19 +739,7 @@ mod tests {
     fn shown(db: &dyn mora_span::Db, ty: &Ty) -> String {
         match ty {
             Ty::Error => "{error}".to_owned(),
-            Ty::Tuple(elems) => {
-                let mut parts: Vec<String> = elems
-                    .iter()
-                    .map(|elem| match &elem.name {
-                        Some(name) => format!("{name}: {}", shown(db, &elem.ty)),
-                        None => shown(db, &elem.ty),
-                    })
-                    .collect();
-                if let [only] = parts.as_mut_slice() {
-                    only.push(',');
-                }
-                format!("({})", parts.join(", "))
-            }
+            Ty::Tuple(elems) => super::tuple_name(elems, |ty| shown(db, ty)),
             _ => super::ty_name(db, ty),
         }
     }
@@ -1789,6 +1781,19 @@ mod tests {
             assert_eq!(local_types(&text)[0], format!("a: {ty}"), "{line}");
             assert_eq!(reported(&text), expected, "{line}");
         }
+        // An argument list the parser recovered from, which the parser
+        // reports, leaves the overloads unchecked: the call has the type
+        // they share, or else the error type, which takes the type expected
+        // of the call.
+        for (line, written, ty) in [
+            ("let a = Two(, 1);", "Two(, 1)", "int"),
+            ("let a = O(, true);", "O(, true)", "{error}"),
+            ("let a: int = O(, true);", "O(, true)", "int"),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(type_at(&text, written), ty, "{line}");
+            assert_eq!(reported(&text), Vec::<String>::new(), "{line}");
+        }
     }
 
     #[test]
@@ -1843,6 +1848,33 @@ mod tests {
             codes(diagnostics(&db, project)),
             ["MR0129", "MR0129", "MR0203"]
         );
+    }
+
+    #[test]
+    fn a_call_of_hidden_methods_not_checked_yet_keeps_no_type() {
+        // An `async` or a generic method's call gives what its declared
+        // return type does not say (D-137), so the call keeps no type, and
+        // nothing is reported that making the methods visible would drop.
+        let store = "public struct S {\n    public X: int;\n    \
+                     private async Load(): int => 1;\n    private Id<T>(x: T): T => x;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Load();\n    let b = s.Id(1);\n    \
+                       let c: string = a;\n    let d: string = b;\n}\n";
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let f = item_tree(&db, file)
+            .items()
+            .find(|(_, data)| data.name == "F")
+            .map(|(item, _)| item)
+            .unwrap();
+        assert_eq!(
+            types_of_locals(&db, project, file, BodyOwner::Item(f)),
+            ["s: S", "a: {error}", "b: {error}", "c: string", "d: string"]
+        );
+        assert_eq!(codes(diagnostics(&db, project)), ["MR0129", "MR0129"]);
     }
 
     #[test]
@@ -3155,7 +3187,9 @@ mod tests {
         let text = "F(a: int, b: int): int => a;\nO(x: int): int => 1;\nO(x: string): string => \"\";\n\
                     let a = F(,1);\nlet o = O(,1);\n";
         assert_eq!(reported(text), Vec::<String>::new());
-        assert_eq!(local_types(text), ["a: int", "o: ?"]);
+        // The parser reported the call's mistake, so the call of overloads
+        // that return different types has the error type (§14.5).
+        assert_eq!(local_types(text), ["a: int", "o: {error}"]);
         // The order of named arguments and what is called are checked still.
         assert_eq!(reported("F(a: int, b: int) {}\nF(b: 1, 2,\n"), ["MR0207"]);
         assert_eq!(

@@ -163,31 +163,25 @@ impl<'a> Check<'a> {
                     from: self.scope,
                 });
                 self.unchecked_call(args);
-                return Some(common_return(methods.iter()).unwrap_or(Ty::Error));
+                return Some(shared_return(&methods).unwrap_or(Ty::Error));
             }
             Callees::Functions(candidates) => candidates,
         };
-        let unchecked = candidates.iter().any(|candidate| candidate.unchecked);
         // Named arguments out of order leave no function chosen; the call
         // keeps the type all its candidates return (D-158).
         if !ordered {
             self.unchecked_call(args);
-            let ret = if unchecked {
-                None
-            } else {
-                common_return(candidates.iter())
-            };
-            return Some(ret.unwrap_or(Ty::Error));
+            return Some(shared_return(&candidates).unwrap_or(Ty::Error));
         }
-        if candidates.is_empty() || unchecked {
+        if candidates.is_empty() || candidates.iter().any(|candidate| candidate.unchecked) {
             return self.unchecked_call(args);
         }
         // The parser reported an argument list it recovered from: its
         // arguments are not checked, and the call keeps the type that all
-        // of its candidates return.
+        // of its candidates return (D-158).
         if args.iter().any(|arg| self.body.is_missing(arg.expr)) {
             self.args(args);
-            return common_return(candidates.iter());
+            return Some(common_return(candidates.iter()).unwrap_or(Ty::Error));
         }
         // The arguments that take no type from their parameter come first,
         // so that the overloads they cannot go to are ruled out before a
@@ -807,6 +801,17 @@ fn common_return<'c, 'a: 'c>(
         .then(|| Ty::clone(&first.ret))
 }
 
+/// The type a call of `candidates` keeps when it calls none of them
+/// (D-158): the one they all return, and none when one of them is not
+/// checked yet (D-137), since its call gives what its declared return type
+/// does not say, as an `async` function's future.
+fn shared_return(candidates: &[Candidate<'_>]) -> Option<Ty> {
+    if candidates.iter().any(|candidate| candidate.unchecked) {
+        return None;
+    }
+    common_return(candidates.iter())
+}
+
 /// The type a call of `candidates` that none of them takes keeps (D-158):
 /// the one shared by the overloads that take the call's count and names,
 /// as `bindings` give them, and every argument that at least one of those
@@ -823,8 +828,11 @@ fn recovered_return(
         .filter_map(|(candidate, binding)| Some((candidate, binding.as_ref().ok()?.as_slice())))
         .collect();
     let takes = |&(candidate, params): &(&Candidate<'_>, &[usize]), index: usize| {
-        let parameter = &candidate.params[params[index]];
-        mode_fits(parameter.mode, args[index].mode) && fits(&arguments[index], parameter)
+        takes_argument(
+            &candidate.params[params[index]],
+            &args[index],
+            Some(&arguments[index]),
+        )
     };
     let correct: Vec<usize> = (0..args.len())
         .filter(|&index| bound.iter().any(|candidate| takes(candidate, index)))
@@ -957,11 +965,14 @@ fn takes_arguments<'b>(
     args.iter()
         .zip(arguments)
         .zip(params)
-        .all(|((arg, argument), &param)| {
-            let parameter = &candidate.params[param];
-            mode_fits(parameter.mode, arg.mode)
-                && argument.is_none_or(|argument| fits(argument, parameter))
-        })
+        .all(|((arg, argument), &param)| takes_argument(&candidate.params[param], arg, argument))
+}
+
+/// Whether `parameter` takes the argument `arg`, of type `argument` when it
+/// is known: the argument fits the parameter's mode and, when typed, its
+/// type.
+fn takes_argument(parameter: &Parameter<'_>, arg: &Arg, argument: Option<&Argument>) -> bool {
+    mode_fits(parameter.mode, arg.mode) && argument.is_none_or(|argument| fits(argument, parameter))
 }
 
 /// Whether an argument written with `given` before it suits a parameter of

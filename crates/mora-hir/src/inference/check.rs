@@ -785,7 +785,7 @@ impl Check<'_> {
         }
         let mut ty = self.expr_kind(expr, expect);
         // A type or a namespace is no value (`MR0127`, D-154).
-        if ty.is_none() && self.is_type_as_value(expr) {
+        if ty.is_none() && self.named_as_value(expr).is_some() {
             ty = Some(Ty::Error);
         }
         if let Expect::Target(target) = expect
@@ -1531,11 +1531,12 @@ impl Check<'_> {
         });
     }
 
-    /// Whether an element of the tuple `tuple`, at any depth, is a mistake
-    /// reported on its own: a name that did not resolve, of the error type,
-    /// or a type, a type keyword or a namespace (`MR0127`, D-154). A
-    /// discarded element `_` is not one, nor is an element whose type is
-    /// not known yet, as a collection or a library call.
+    /// Whether an element of the tuple `tuple`, inferred without a target
+    /// type, at any depth, is a mistake reported on its own: an element of
+    /// the error type, as a name that did not resolve or a type, a type
+    /// keyword or a namespace (`MR0127`, D-154), which [`Check::expr`]
+    /// gives it. A discarded element `_` is not one, nor is an element
+    /// whose type is not known yet, as a collection or a library call.
     fn has_element_error(&self, tuple: ExprId) -> bool {
         let Expr::Tuple(elems) = &self.body.exprs[tuple] else {
             return false;
@@ -1543,11 +1544,7 @@ impl Check<'_> {
         elems.iter().any(|&(_, elem)| match &self.body.exprs[elem] {
             Expr::Tuple(_) => self.has_element_error(elem),
             Expr::Discard => false,
-            Expr::Type(_) => true,
-            _ => match &self.exprs[arena_index(elem)] {
-                Some(ty) => *ty == Ty::Error,
-                None => self.named_type(elem).is_some(),
-            },
+            _ => self.exprs[arena_index(elem)] == Some(Ty::Error),
         })
     }
 
