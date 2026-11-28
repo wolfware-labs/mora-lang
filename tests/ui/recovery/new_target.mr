@@ -1,0 +1,8 @@
+// A `new` of a type it cannot create is reported once and takes the
+// type expected at its position (§14.5, D-159), so a later mistake in the
+// same body is reported too.
+struct Point {
+    public X: int;
+}
+let p: Point = new int(); //~ ERROR MR0154
+let label: string = p; //~ ERROR MR0203

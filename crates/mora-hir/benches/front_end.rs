@@ -146,7 +146,8 @@ fn mistakes_text(folder: usize, file: usize) -> String {
          \x20   let g = Over{n}(y: 1, 2);\n\
          \x20   let l = Measure{n}(1);\n\
          \x20   let h = secret.Hidden();\n\
-         \x20   return c + m + q + o + k + w + t + g + l + h;\n\
+         \x20   let s: Secret{n} = new int();\n\
+         \x20   return c + m + q + o + k + w + t + g + l + h + s.V;\n\
          }}\n"
     )
 }
@@ -462,7 +463,7 @@ fn check_recovery(_: &mut Criterion) {
         *found.entry(diagnostic.code.to_string()).or_default() += 1;
     }
     let expected: BTreeMap<String, usize> = [
-        "MR0127", "MR0129", "MR0203", "MR0204", "MR0205", "MR0206", "MR0207", "MR0208",
+        "MR0127", "MR0129", "MR0154", "MR0203", "MR0204", "MR0205", "MR0206", "MR0207", "MR0208",
     ]
     .iter()
     .map(|code| ((*code).to_owned(), generated))

@@ -1651,9 +1651,10 @@ impl Check<'_> {
     /// assigns the fields itself, and the names after it are plain
     /// assignments. `new() { .. }` without a type does the same where
     /// `expect` gives the target type. The type written or taken from the
-    /// target must be one `new` creates (`MR0154`). A class or a generic
-    /// struct has its type, and nothing more is checked until classes and
-    /// generic code.
+    /// target must be one `new` creates (`MR0154`); without one, the
+    /// expression has the error type, which takes the target type where
+    /// there is one (§14.5). A class or a generic struct has its type, and
+    /// nothing more is checked until classes and generic code.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1674,20 +1675,20 @@ impl Check<'_> {
                     expr,
                     problem: NewTarget::Missing,
                 });
-                None
+                Some(Ty::Error)
             }
         };
-        // What `new` cannot create has no type.
-        let written = written.and_then(|written| {
+        // What `new` cannot create has the error type.
+        let written = written.map(|written| {
             if self.creatable(&written) {
-                return Some(written);
+                return written;
             }
             let problem = match ty {
                 Some(_) => NewTarget::Written(written),
                 None => NewTarget::NotCreatable(written),
             };
             self.errors.push(TypeError::NewTarget { expr, problem });
-            None
+            Ty::Error
         });
         // A struct type names a struct that is not generic. A class and a
         // generic struct have their type, and a later milestone checks

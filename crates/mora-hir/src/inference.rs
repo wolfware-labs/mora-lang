@@ -1733,6 +1733,8 @@ mod tests {
             ("let x: int = n();", "n()", "int"),
             ("let x: (int, string) = (cout, s);", "cout", "int"),
             ("let x: bool = n == 1 ? cout : true;", "cout", "bool"),
+            ("let x: P = new int();", "new int()", "P"),
+            ("let x: P = new();", "new()", "P"),
             ("let y = cout;", "cout", "{error}"),
             ("let y = Lenght(s);", "Lenght(s)", "{error}"),
             ("let y = s - 1;", "s - 1", "{error}"),
@@ -1743,6 +1745,10 @@ mod tests {
         // A missing expression, which the parser reports: here the one in
         // the parentheses, whose range starts at `(`.
         assert_eq!(type_at("let x: int = (;\n", "("), "int");
+        // A `new` of a type it cannot create is reported once, and takes
+        // its target type as well.
+        let text = format!("{decls}let x: P = new int();\nlet y: string = x;\n");
+        assert_eq!(reported(&text), ["MR0154", "MR0203"]);
     }
 
     #[test]
@@ -4151,7 +4157,7 @@ mod tests {
             found[0].message,
             "`new` without a type needs a target type to create"
         );
-        assert_eq!(local_types(text), ["x: ?", "y: ?"]);
+        assert_eq!(local_types(text), ["x: {error}", "y: {error}"]);
     }
 
     #[test]
@@ -4498,7 +4504,7 @@ mod tests {
         assert_eq!(codes(&found), ["MR0154"]);
         assert_eq!(&text[found[0].primary.span.range], "new int()");
         assert_eq!(found[0].message, "`new` cannot create a value of `int`");
-        assert_eq!(local_types(text), ["a: ?"]);
+        assert_eq!(local_types(text), ["a: {error}"]);
         // A type with no item of its own is named by its kind.
         let found = diagnostics_of("let a = new int?();\n");
         assert_eq!(
