@@ -1,0 +1,12 @@
+// A call that no overload takes keeps the return type of the overloads
+// its correct arguments still allow, or of all of them when none is left
+// (§14.5, D-158), so a later mistake that uses it is reported too.
+Show(x: int, width: int): int => x;
+Show(x: string, width: int): string => x;
+Count(x: int): int => x;
+Count(x: string): int => 0;
+
+let a = Show(1, "wide"); //~ ERROR MR0205
+let b: bool = a; //~ ERROR MR0203
+let c = Count(); //~ ERROR MR0205
+let d: bool = c; //~ ERROR MR0203

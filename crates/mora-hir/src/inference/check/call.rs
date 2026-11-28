@@ -69,9 +69,13 @@ enum Callees<'a> {
     Unknown,
     /// A value of a known type that is not a function (`MR0208`).
     NotCallable(Ty),
-    /// Methods of the name, none of them visible from the call: the first
-    /// (`MR0129`).
-    Hidden(ItemId),
+    /// Methods of the name, none of them visible from the call (`MR0129`):
+    /// the first, which the error names, and all of them, whose common
+    /// return type the call keeps (D-158).
+    Hidden {
+        first: ItemId,
+        methods: Vec<Candidate<'a>>,
+    },
     /// Functions, one of which the call calls.
     Functions(Vec<Candidate<'a>>),
 }
@@ -136,6 +140,12 @@ impl<'a> Check<'a> {
                 self.unchecked_call(args);
                 return Some(Ty::Never);
             }
+            // A callee that is a mistake, as a name that is not found, says
+            // so itself; the call has the type expected of it (D-159).
+            Callees::Unknown if self.exprs[arena_index(callee)] == Some(Ty::Error) => {
+                self.unchecked_call(args);
+                return Some(Ty::Error);
+            }
             // Nothing gives an argument of a function of the standard
             // library a target type while the library is not loaded.
             Callees::Unknown if self.is_external(callee) => return self.external_call(args),
@@ -146,29 +156,32 @@ impl<'a> Check<'a> {
                 self.unchecked_call(args);
                 return Some(Ty::Error);
             }
-            Callees::Hidden(item) => {
+            Callees::Hidden { first, methods } => {
                 self.errors.push(TypeError::NotVisible {
                     expr: callee,
-                    item,
+                    item: first,
                     from: self.scope,
                 });
                 self.unchecked_call(args);
-                return Some(Ty::Error);
+                return Some(self.uncalled_return(callee, &methods));
             }
             Callees::Functions(candidates) => candidates,
         };
-        if !ordered
-            || candidates.is_empty()
-            || candidates.iter().any(|candidate| candidate.unchecked)
-        {
+        // Named arguments out of order leave no function chosen; the call
+        // keeps the type all its candidates return (D-158).
+        if !ordered {
+            self.unchecked_call(args);
+            return Some(self.uncalled_return(callee, &candidates));
+        }
+        if candidates.is_empty() || candidates.iter().any(|candidate| candidate.unchecked) {
             return self.unchecked_call(args);
         }
         // The parser reported an argument list it recovered from: its
         // arguments are not checked, and the call keeps the type that all
-        // of its candidates return.
+        // of its candidates return (D-158).
         if args.iter().any(|arg| self.body.is_missing(arg.expr)) {
             self.args(args);
-            return common_return(candidates.iter());
+            return Some(self.uncalled_return(callee, &candidates));
         }
         // The arguments that take no type from their parameter come first,
         // so that the overloads they cannot go to are ruled out before a
@@ -241,7 +254,15 @@ impl<'a> Check<'a> {
         if let [candidate] = candidates.as_slice() {
             let reported = self.errors.len();
             let ty = self.call_one(expr, candidate, args, &arguments);
-            return self.unless_static_overload(expr, callee, reported, ty);
+            return self.unless_static_overload(
+                expr,
+                callee,
+                reported,
+                &candidates,
+                args,
+                &arguments,
+                ty,
+            );
         }
         let reported = self.errors.len();
         let ty = self.call_overloads(expr, &candidates, args, &arguments);
@@ -264,28 +285,89 @@ impl<'a> Check<'a> {
                 });
             }
         }
-        self.unless_static_overload(expr, callee, reported, ty)
+        self.unless_static_overload(expr, callee, reported, &candidates, args, &arguments, ty)
     }
 
-    /// The type `ty` of the call `expr`, unless the instance methods it
-    /// called through a value do not take it and a static method of the
-    /// name may: that is a static member named through a value, which is
-    /// not checked before statics (D-152), so what the call reported since
-    /// `reported` is dropped and the call has no callee.
+    /// The type `ty` of the call `expr`, unless a static method of the
+    /// name may be what it calls through a value: that is a static member
+    /// named through a value, which is not checked before statics (D-152).
+    /// A static overload may take the call when the instance methods do
+    /// not, as what the call reported since `reported` says, or when an
+    /// argument or the parameter of `candidates` it goes to has a type not
+    /// known yet, which fits anything (D-137). Then what the call reported
+    /// is dropped, and it calls nothing, converts none of its `args` to an
+    /// instance parameter, and has no type.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the call as `call` checked it, which this only finishes"
+    )]
     fn unless_static_overload(
         &mut self,
         expr: ExprId,
         callee: ExprId,
         reported: usize,
+        candidates: &[Candidate<'_>],
+        args: &[Arg],
+        arguments: &[Argument],
         ty: Option<Ty>,
     ) -> Option<Ty> {
-        if self.errors.len() == reported || !self.has_static_overload(callee) {
+        let instance_fails = self.errors.len() > reported;
+        if !(instance_fails || self.takes_unknown(expr, candidates, arguments))
+            || !self.has_static_overload(callee)
+        {
             return ty;
         }
         self.errors.truncate(reported);
         self.calls.remove(&expr);
         self.arguments.remove(&expr);
+        for arg in args {
+            self.conversions.remove(&arg.expr);
+        }
         None
+    }
+
+    /// Whether the call `expr` of `candidates`, which reported nothing,
+    /// takes its `arguments` only through a type not known yet: one of
+    /// them has one, or the parameter it goes to in the function called
+    /// does. A call that calls nothing without a report is one that such a
+    /// type leaves unresolved (D-137).
+    fn takes_unknown(
+        &self,
+        expr: ExprId,
+        candidates: &[Candidate<'_>],
+        arguments: &[Argument],
+    ) -> bool {
+        if arguments.iter().any(Argument::is_unknown) {
+            return true;
+        }
+        let Some(&called) = self.calls.get(&expr) else {
+            return true;
+        };
+        self.arguments.get(&expr).is_some_and(|params| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.origin == called)
+                .any(|candidate| {
+                    params
+                        .iter()
+                        .any(|&param| !is_known(&candidate.params[param].ty))
+                })
+        })
+    }
+
+    /// The type a call of `candidates` through `callee` that calls none of
+    /// them keeps (D-158): the one they all return, or the error type when
+    /// they do not agree, when one of them is not checked yet (D-137), since
+    /// its call gives what its declared return type does not say, as an
+    /// `async` function's future, or when a static overload may be what the
+    /// call calls, which is not checked before statics (D-152).
+    fn uncalled_return(&self, callee: ExprId, candidates: &[Candidate<'_>]) -> Ty {
+        if candidates.iter().any(|candidate| candidate.unchecked)
+            || self.has_static_overload(callee)
+        {
+            return Ty::Error;
+        }
+        common_return(candidates.iter()).unwrap_or(Ty::Error)
     }
 
     /// Whether `callee` names a method of a struct value that has a static
@@ -454,13 +536,21 @@ impl<'a> Check<'a> {
         };
         // Only the methods visible from the call are candidates, as name
         // resolution sees only visible declarations (§4.5).
-        let methods: Vec<_> = named
+        let (visible, hidden): (Vec<_>, Vec<_>) = named
             .into_iter()
-            .filter(|&method| is_visible(self.db, method, self.scope))
-            .filter_map(|method| self.item_candidate(method))
-            .collect();
+            .partition(|&method| is_visible(self.db, method, self.scope));
+        let candidates = |methods: Vec<ItemId>| -> Vec<Candidate<'a>> {
+            methods
+                .into_iter()
+                .filter_map(|method| self.item_candidate(method))
+                .collect()
+        };
+        let methods = candidates(visible);
         if methods.is_empty() {
-            return Callees::Hidden(first);
+            return Callees::Hidden {
+                first,
+                methods: candidates(hidden),
+            };
         }
         Callees::Functions(methods)
     }
@@ -659,7 +749,9 @@ impl<'a> Check<'a> {
                     candidates: listed(self, &mut (0..candidates.len())),
                 },
             });
-            return None;
+            return Some(
+                recovered_return(candidates, &bindings, args, arguments).unwrap_or(Ty::Error),
+            );
         }
         // An argument or a parameter of a type not known yet may be what
         // decides between the overloads, so they are not ranked; the call
@@ -686,13 +778,27 @@ impl<'a> Check<'a> {
             .find(|a| applicable.iter().all(|b| a.0 == b.0 || beats(a, b)));
         let Some(&(index, params)) = best else {
             self.infer_literals(args, arguments);
-            let tied = listed(self, &mut applicable.iter().map(|&(index, _)| index));
+            // The tied overloads, those no other applicable one beats, are
+            // the candidates of the error, and lead to the type they all
+            // return (D-158). Overloads can beat each other in a cycle, as
+            // types that do not convert either way compare equal: then
+            // none is unbeaten, and every applicable one is tied.
+            let mut tied: Vec<usize> = applicable
+                .iter()
+                .filter(|a| !applicable.iter().any(|b| a.0 != b.0 && beats(b, a)))
+                .map(|&(index, _)| index)
+                .collect();
+            if tied.is_empty() {
+                tied = applicable.iter().map(|&(index, _)| index).collect();
+            }
+            let tied_signatures = listed(self, &mut tied.iter().copied());
             self.errors.push(TypeError::Ambiguous {
                 expr,
                 name: candidates[0].name.to_owned(),
-                candidates: tied,
+                candidates: tied_signatures,
             });
-            return None;
+            let ret = common_return(tied.iter().map(|&index| &candidates[index]));
+            return Some(ret.unwrap_or(Ty::Error));
         };
         let candidate = &candidates[index];
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {
@@ -774,6 +880,42 @@ fn common_return<'c, 'a: 'c>(
     candidates
         .all(|candidate| same(&candidate.ret, &first.ret))
         .then(|| Ty::clone(&first.ret))
+}
+
+/// The type a call of `candidates` that none of them takes keeps (D-158):
+/// the one shared by the overloads that take the call's count and names,
+/// as `bindings` give them, and every argument that at least one of those
+/// takes, or by all of `candidates` when none is left.
+fn recovered_return(
+    candidates: &[Candidate<'_>],
+    bindings: &[Result<Vec<usize>, Unbound>],
+    args: &[Arg],
+    arguments: &[Argument],
+) -> Option<Ty> {
+    let bound: Vec<(&Candidate<'_>, &[usize])> = candidates
+        .iter()
+        .zip(bindings)
+        .filter_map(|(candidate, binding)| Some((candidate, binding.as_ref().ok()?.as_slice())))
+        .collect();
+    let takes = |&(candidate, params): &(&Candidate<'_>, &[usize]), index: usize| {
+        takes_argument(
+            &candidate.params[params[index]],
+            &args[index],
+            Some(&arguments[index]),
+        )
+    };
+    let correct: Vec<usize> = (0..args.len())
+        .filter(|&index| bound.iter().any(|candidate| takes(candidate, index)))
+        .collect();
+    let mut left = bound
+        .iter()
+        .filter(|candidate| correct.iter().all(|&index| takes(candidate, index)))
+        .map(|&(candidate, _)| candidate)
+        .peekable();
+    if left.peek().is_none() {
+        return common_return(candidates.iter());
+    }
+    common_return(left)
 }
 
 /// `MR0207` for the named argument `arg`, whose parameter a positional
@@ -893,11 +1035,14 @@ fn takes_arguments<'b>(
     args.iter()
         .zip(arguments)
         .zip(params)
-        .all(|((arg, argument), &param)| {
-            let parameter = &candidate.params[param];
-            mode_fits(parameter.mode, arg.mode)
-                && argument.is_none_or(|argument| fits(argument, parameter))
-        })
+        .all(|((arg, argument), &param)| takes_argument(&candidate.params[param], arg, argument))
+}
+
+/// Whether `parameter` takes the argument `arg`, of type `argument` when it
+/// is known: the argument fits the parameter's mode and, when typed, its
+/// type.
+fn takes_argument(parameter: &Parameter<'_>, arg: &Arg, argument: Option<&Argument>) -> bool {
+    mode_fits(parameter.mode, arg.mode) && argument.is_none_or(|argument| fits(argument, parameter))
 }
 
 /// Whether an argument written with `given` before it suits a parameter of

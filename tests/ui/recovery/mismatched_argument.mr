@@ -1,0 +1,7 @@
+// A call of one function with a wrong argument is reported once and keeps
+// the function's declared return type (§14.5), so a later mistake that
+// uses it is reported too.
+Length(text: string): int => 0;
+
+let n = Length(1); //~ ERROR MR0203
+let label: string = n; //~ ERROR MR0203

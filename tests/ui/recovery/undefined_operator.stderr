@@ -1,0 +1,20 @@
+error[MR0204]: `-` is not defined for `string` and `int`
+ --> tests/ui/recovery/undefined_operator.mr:4:18
+  |
+4 | let total: int = "a" - 1; //~ ERROR MR0204
+  |                  ---^^^-
+  |                  |     |
+  |                  |     this is `int`
+  |                  this is `string`
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/recovery/undefined_operator.mr:5:21
+  |
+5 | let label: string = total; //~ ERROR MR0203
+  |                     ^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+5 | let label: string = $"{total}"; //~ ERROR MR0203
+  |                     +++     ++

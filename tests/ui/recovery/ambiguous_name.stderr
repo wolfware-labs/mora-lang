@@ -1,0 +1,29 @@
+error[MR0128]: `Limit` is ambiguous
+ --> src/Program.mr:4:18
+  |
+4 | let limit: int = Limit; //~ ERROR MR0128
+  |                  ^^^^^ `Limit` names 2 declarations
+  |
+ ::: src/Billing/Limits.mr:1:14
+  |
+1 | public const Limit: int = 1;
+  |              ----- declared here
+  |
+ ::: src/Shipping/Limits.mr:1:14
+  |
+1 | public const Limit: int = 2;
+  |              ----- declared here
+  |
+  = note: it could be the value `UsersApi.Billing.Limit` or the value `UsersApi.Shipping.Limit`; write more of the path to choose one
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> src/Program.mr:5:21
+  |
+5 | let label: string = limit; //~ ERROR MR0203
+  |                     ^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+5 | let label: string = $"{limit}"; //~ ERROR MR0203
+  |                     +++     ++

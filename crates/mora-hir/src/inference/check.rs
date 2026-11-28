@@ -4,7 +4,7 @@ mod call;
 mod places;
 mod static_member;
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 
 use la_arena::ArenaMap;
 use mora_span::{Db, Project, SourceFile};
@@ -162,6 +162,7 @@ pub(super) fn infer_body(
         item: None,
         tree: Cell::new(None),
         signature: Cell::new(None),
+        type_positions: OnceCell::new(),
     };
     check.locals = body
         .locals
@@ -319,6 +320,10 @@ struct Check<'a> {
     /// The signature read last, with its item: the members a body uses
     /// are mostly those of one struct.
     signature: Cell<Option<(ItemId, &'a Signature)>>,
+    /// Whether each expression, by its index, stands where a type may,
+    /// found once an expression names a type, which most bodies have none
+    /// of.
+    type_positions: OnceCell<Vec<bool>>,
 }
 
 impl<'a> Check<'a> {
@@ -767,7 +772,10 @@ impl Check<'_> {
         }
     }
 
-    /// The type of `expr`, recorded for it.
+    /// The type of `expr`, recorded for it. A mistake keeps the type
+    /// expected at its position (§14.5, D-159): an expression of the error
+    /// type, which a diagnostic explains, has its target type when it has
+    /// one.
     fn expr(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
         if let Expect::Target(target) = expect
             && let Some(target) = numeric::as_numeric(target)
@@ -775,7 +783,16 @@ impl Check<'_> {
         {
             return Some(ty);
         }
-        let ty = self.expr_kind(expr, expect);
+        let mut ty = self.expr_kind(expr, expect);
+        // A type or a namespace is no value (`MR0127`, D-154).
+        if ty.is_none() && self.named_as_value(expr).is_some() {
+            ty = Some(Ty::Error);
+        }
+        if let Expect::Target(target) = expect
+            && ty == Some(Ty::Error)
+        {
+            ty = Some(target.clone());
+        }
         self.exprs[arena_index(expr)].clone_from(&ty);
         ty
     }
@@ -1513,11 +1530,12 @@ impl Check<'_> {
         });
     }
 
-    /// Whether an element of the tuple `tuple`, at any depth, is a mistake
-    /// reported on its own: a name that did not resolve, of the error type,
-    /// or a type, a type keyword or a namespace (`MR0127`, D-154). A
-    /// discarded element `_` is not one, nor is an element whose type is
-    /// not known yet, as a collection or a library call.
+    /// Whether an element of the tuple `tuple`, inferred without a target
+    /// type, at any depth, is a mistake reported on its own: an element of
+    /// the error type, as a name that did not resolve or a type, a type
+    /// keyword or a namespace (`MR0127`, D-154), which [`Check::expr`]
+    /// gives it. A discarded element `_` is not one, nor is an element
+    /// whose type is not known yet, as a collection or a library call.
     fn has_element_error(&self, tuple: ExprId) -> bool {
         let Expr::Tuple(elems) = &self.body.exprs[tuple] else {
             return false;
@@ -1525,11 +1543,7 @@ impl Check<'_> {
         elems.iter().any(|&(_, elem)| match &self.body.exprs[elem] {
             Expr::Tuple(_) => self.has_element_error(elem),
             Expr::Discard => false,
-            Expr::Type(_) => true,
-            _ => match &self.exprs[arena_index(elem)] {
-                Some(ty) => *ty == Ty::Error,
-                None => self.named_type(elem).is_some(),
-            },
+            _ => self.exprs[arena_index(elem)] == Some(Ty::Error),
         })
     }
 
@@ -1636,9 +1650,10 @@ impl Check<'_> {
     /// assigns the fields itself, and the names after it are plain
     /// assignments. `new() { .. }` without a type does the same where
     /// `expect` gives the target type. The type written or taken from the
-    /// target must be one `new` creates (`MR0154`). A class or a generic
-    /// struct has its type, and nothing more is checked until classes and
-    /// generic code.
+    /// target must be one `new` creates (`MR0154`); without one, the
+    /// expression has the error type, which takes the target type where
+    /// there is one (§14.5). A class or a generic struct has its type, and
+    /// nothing more is checked until classes and generic code.
     fn new_expr(
         &mut self,
         expr: ExprId,
@@ -1659,20 +1674,20 @@ impl Check<'_> {
                     expr,
                     problem: NewTarget::Missing,
                 });
-                None
+                Some(Ty::Error)
             }
         };
-        // What `new` cannot create has no type.
-        let written = written.and_then(|written| {
+        // What `new` cannot create has the error type.
+        let written = written.map(|written| {
             if self.creatable(&written) {
-                return Some(written);
+                return written;
             }
             let problem = match ty {
                 Some(_) => NewTarget::Written(written),
                 None => NewTarget::NotCreatable(written),
             };
             self.errors.push(TypeError::NewTarget { expr, problem });
-            None
+            Ty::Error
         });
         // A struct type names a struct that is not generic. A class and a
         // generic struct have their type, and a later milestone checks

@@ -1,0 +1,19 @@
+error[MR0208]: cannot call a value of type `int`
+ --> tests/ui/recovery/not_callable.mr:5:14
+  |
+5 | let m: int = n(); //~ ERROR MR0208
+  |              ^ this is `int`, not a function
+  |
+  = note: only a function, a method or a value of a function type can be called
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> tests/ui/recovery/not_callable.mr:6:21
+  |
+6 | let label: string = m; //~ ERROR MR0203
+  |                     ^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+6 | let label: string = $"{m}"; //~ ERROR MR0203
+  |                     +++ ++

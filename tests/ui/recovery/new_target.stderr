@@ -1,0 +1,15 @@
+error[MR0154]: `new` cannot create a value of `int`
+ --> tests/ui/recovery/new_target.mr:7:16
+  |
+7 | let p: Point = new int(); //~ ERROR MR0154
+  |                ^^^^^^^^^ `int` is not a struct or a class
+  |
+  = note: `new` creates a struct or a class; write a value of this type another way
+
+error[MR0203]: mismatched types: expected `string`, found `Point`
+ --> tests/ui/recovery/new_target.mr:8:21
+  |
+8 | let label: string = p; //~ ERROR MR0203
+  |                     ^ this is `Point`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text

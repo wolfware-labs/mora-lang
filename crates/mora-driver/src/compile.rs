@@ -176,6 +176,35 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_method_beside_a_visible_static_one_is_reported_and_not_built() {
+        // The call of the hidden instance method is the one mistake: the
+        // static overload may be what it calls, so the call has no type and
+        // nothing after it is reported, and the program is not lowered.
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[
+                (
+                    "src/Program.mr",
+                    "F(s: UsersApi.Store.S): int {\n    let p = s.N();\n    \
+                     let q: string = p;\n    return 0;\n}\nreturn 0;\n",
+                ),
+                (
+                    "src/Store/S.mr",
+                    "public struct S {\n    public X: int;\n    private N(): int => 1;\n    \
+                     public static N(): string => \"\";\n}\n",
+                ),
+            ],
+        );
+        assert_eq!(codes(&check(&db, project)), ["MR0129"]);
+        let error = jit(&db, project, Profile::Debug).err();
+        assert!(
+            matches!(&error, Some(BuildError::Program(d)) if codes(d) == ["MR0129"]),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn a_frame_too_large_is_the_program_s_error() {
         let db = TestDb::new();
         let project = program(&db, &format!("{}var t: S28;\nreturn 0;\n", doubling(28)));

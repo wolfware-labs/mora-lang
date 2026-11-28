@@ -4,7 +4,9 @@
 //!   layers below it, so each time is that layer's own: `item_tree` and
 //!   `bodies` exclude parsing, `signatures` excludes the def map, and
 //!   `body_resolution` excludes lowering the bodies, and `infer` excludes
-//!   resolving them. `cold/diagnostics`
+//!   resolving them. `infer-recovery` is `infer` on the same project with
+//!   one more function per file, whose body holds each mistake that keeps
+//!   a recovered type (§14.5). `cold/diagnostics`
 //!   starts from a fresh database and is the whole front end.
 //! - `edit/*` change one file of a checked project and check it again.
 //!
@@ -14,6 +16,7 @@
 // Benchmark code may unwrap (CONTRIBUTING.md, Code rules).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::hint::black_box;
 use std::time::Duration;
@@ -115,6 +118,40 @@ fn file_text(folder: usize, file: usize, edit: u32) -> String {
     text
 }
 
+/// A function per file, added to [`file_text`], whose body holds each
+/// mistake that keeps a recovered type (§14.5), with the declarations its
+/// calls need. [`check_recovery`] lists the codes it reports.
+fn mistakes_text(folder: usize, file: usize) -> String {
+    let n = format!("{folder}_{file}");
+    format!(
+        "public struct Secret{n} {{\n\
+         \x20   public V: int;\n\
+         \n\
+         \x20   private Hidden(): int => V;\n\
+         }}\n\
+         public Over{n}(x: int, y: int): int => x;\n\
+         public Over{n}(x: string, y: int): int => y;\n\
+         public Scale{n}(x: int, f: long): int => x;\n\
+         public Scale{n}(x: long, f: int): int => f;\n\
+         public Measure{n}(t: string): int => 0;\n\
+         public Broken{n}(a: int, secret: Secret{n}): int {{\n\
+         \x20   let c: int = cout;\n\
+         \x20   let m: int = 0x;\n\
+         \x20   let d: double = 1e400;\n\
+         \x20   let q: int = 1 + ;\n\
+         \x20   let o: int = \"a\" - a;\n\
+         \x20   let k: int = a();\n\
+         \x20   let w = Over{n}(a, true);\n\
+         \x20   let t = Scale{n}(2, 3);\n\
+         \x20   let g = Over{n}(y: 1, 2);\n\
+         \x20   let l = Measure{n}(1);\n\
+         \x20   let h = secret.Hidden();\n\
+         \x20   let s: Secret{n} = new int();\n\
+         \x20   return c + m + q + o + k + w + t + g + l + h + s.V;\n\
+         }}\n"
+    )
+}
+
 /// The generated project: 101 files, about 17,000 lines.
 struct Generated {
     db: Database,
@@ -123,6 +160,16 @@ struct Generated {
 }
 
 fn generate() -> Generated {
+    generate_with(|folder, file| file_text(folder, file, 1))
+}
+
+/// The generated project with [`mistakes_text`] added to each file.
+fn generate_with_mistakes() -> Generated {
+    generate_with(|folder, file| file_text(folder, file, 1) + &mistakes_text(folder, file))
+}
+
+/// The generated project, with `text` giving each file's text.
+fn generate_with(text: fn(usize, usize) -> String) -> Generated {
     let db = Database::default();
     let mut files = Vec::new();
     let mut next = 0;
@@ -139,7 +186,7 @@ fn generate() -> Generated {
     for folder in 0..FOLDERS {
         for file in 0..FILES {
             let path = format!("src/Feature{folder}/File{file}.mr");
-            files.push(add(&db, path, file_text(folder, file, 1)));
+            files.push(add(&db, path, text(folder, file)));
         }
     }
     let project = Project::new(
@@ -165,7 +212,10 @@ fn parsed() -> Generated {
 
 /// Runs `item_tree` on every file.
 fn lowered() -> Generated {
-    let g = generate();
+    lower(generate())
+}
+
+fn lower(g: Generated) -> Generated {
     for &file in &g.files {
         black_box(item_tree(&g.db, file));
     }
@@ -174,7 +224,10 @@ fn lowered() -> Generated {
 
 /// Runs `def_map` and lowers every body, for the resolution benchmark.
 fn bodies_lowered() -> Generated {
-    let g = lowered();
+    lower_bodies(lowered())
+}
+
+fn lower_bodies(g: Generated) -> Generated {
     black_box(def_map(&g.db, g.project));
     for &file in &g.files {
         for owner in body_owners(&g.db, file) {
@@ -187,7 +240,15 @@ fn bodies_lowered() -> Generated {
 /// Resolves every body and lowers every signature, for the inference
 /// benchmark.
 fn bodies_resolved() -> Generated {
-    let g = bodies_lowered();
+    resolve_bodies(bodies_lowered())
+}
+
+/// [`bodies_resolved`] for the project with [`mistakes_text`] added.
+fn bodies_resolved_with_mistakes() -> Generated {
+    resolve_bodies(lower_bodies(lower(generate_with_mistakes())))
+}
+
+fn resolve_bodies(g: Generated) -> Generated {
     for item in items(&g) {
         black_box(signature(&g.db, item));
     }
@@ -313,6 +374,20 @@ fn cold(c: &mut Criterion) {
             BatchSize::LargeInput,
         );
     });
+    group.bench_function("infer-recovery", |b| {
+        b.iter_batched(
+            bodies_resolved_with_mistakes,
+            |g| {
+                for &file in &g.files {
+                    for owner in body_owners(&g.db, file) {
+                        black_box(infer(&g.db, g.project, file, owner));
+                    }
+                }
+                g
+            },
+            BatchSize::LargeInput,
+        );
+    });
     group.bench_function("diagnostics", |b| {
         b.iter_batched(
             generate,
@@ -369,5 +444,32 @@ fn check_generated(_: &mut Criterion) {
     assert!(found.is_empty(), "{found:#?}");
 }
 
-criterion_group!(benches, check_generated, cold, incremental);
+/// The project with [`mistakes_text`] added reports each mistake once in
+/// every file, and nothing else, so `infer-recovery` measures recovery and
+/// not a cascade of errors. The lexer and the parser report the unreadable
+/// literal (`MR0014`), the literal too large for a `double` (`MR0010`) and
+/// the missing operand (`MR0110`); the checks of the bodies the rest.
+fn check_recovery(_: &mut Criterion) {
+    let g = generate_with_mistakes();
+    let generated = FOLDERS * FILES;
+    let syntax: usize = g
+        .files
+        .iter()
+        .map(|&file| parse(&g.db, file).errors().len())
+        .sum();
+    assert_eq!(syntax, 3 * generated);
+    let mut found: BTreeMap<String, usize> = BTreeMap::new();
+    for diagnostic in diagnostics(&g.db, g.project) {
+        *found.entry(diagnostic.code.to_string()).or_default() += 1;
+    }
+    let expected: BTreeMap<String, usize> = [
+        "MR0127", "MR0129", "MR0154", "MR0203", "MR0204", "MR0205", "MR0206", "MR0207", "MR0208",
+    ]
+    .iter()
+    .map(|code| ((*code).to_owned(), generated))
+    .collect();
+    assert_eq!(found, expected);
+}
+
+criterion_group!(benches, check_generated, check_recovery, cold, incremental);
 criterion_main!(benches);

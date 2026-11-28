@@ -1,0 +1,31 @@
+error[MR0207]: a positional argument after a named one
+ --> tests/ui/recovery/named_arguments.mr:8:31
+  |
+8 | let a = Greet(greeting: "Hi", "Ada"); //~ ERROR MR0207
+  |                               ^^^^^ name this argument too, or move it before the named ones
+  |
+  = note: arguments come by position first; after the first named one, every argument is named, each name once
+
+error[MR0203]: mismatched types: expected `bool`, found `string`
+ --> tests/ui/recovery/named_arguments.mr:9:15
+  |
+9 | let b: bool = a; //~ ERROR MR0203
+  |               ^ this is `string`
+  |
+  = note: there is no implicit conversion to or from `bool`
+
+error[MR0207]: a positional argument after a named one
+  --> tests/ui/recovery/named_arguments.mr:10:21
+   |
+10 | let c = Count(y: 1, 2); //~ ERROR MR0207
+   |                     ^ name this argument too, or move it before the named ones
+   |
+   = note: arguments come by position first; after the first named one, every argument is named, each name once
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+  --> tests/ui/recovery/named_arguments.mr:11:15
+   |
+11 | let d: bool = c; //~ ERROR MR0203
+   |               ^ this is `int`
+   |
+   = note: there is no implicit conversion to or from `bool`

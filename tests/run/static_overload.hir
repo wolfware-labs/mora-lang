@@ -1,0 +1,8 @@
+top-level {
+    let c#0: Counter = new Counter { N = 4 };
+    Console{external}.WriteLine{external}(c#0.Add(3));
+}
+
+fn App.Counter.Add(by#0) => N{field App.Counter.N} + by#0;
+
+fn App.Counter.Add(by#0) => 0;

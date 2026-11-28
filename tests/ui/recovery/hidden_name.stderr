@@ -1,0 +1,56 @@
+error[MR0129]: `Limit` is visible only in `UsersApi.Store`, not in `UsersApi`
+ --> src/Program.mr:2:37
+  |
+2 |     let limit: int = UsersApi.Store.Limit; //~ ERROR MR0129
+  |                                     ^^^^^ not visible here
+  |
+ ::: src/Store/Counter.mr:1:7
+  |
+1 | const Limit: int = 1;
+  |       ----- declared here
+  |
+  = note: a declaration without a visibility modifier is visible only in its folder; mark it `internal` to use it from `UsersApi`
+help: mark `Limit` `internal`
+ --> src/Store/Counter.mr:1:1
+  |
+1 | internal const Limit: int = 1;
+  | ++++++++
+
+error[MR0203]: mismatched types: expected `string`, found `int`
+ --> src/Program.mr:3:25
+  |
+3 |     let label: string = limit; //~ ERROR MR0203
+  |                         ^^^^^ this is `int`
+  |
+  = note: nothing converts to `string` implicitly; interpolation formats a value as text
+help: format it with interpolation
+  |
+3 |     let label: string = $"{limit}"; //~ ERROR MR0203
+  |                         +++     ++
+
+error[MR0129]: `Total` is private to the type that declares it
+ --> src/Program.mr:4:19
+  |
+4 |     let total = s.Total(); //~ ERROR MR0129
+  |                   ^^^^^ not visible here
+  |
+ ::: src/Store/Counter.mr:6:13
+  |
+6 |     private Total(): int => N;
+  |             ----- declared here
+  |
+  = note: a `private` member is visible only inside its type
+help: mark `Total` `internal`
+ --> src/Store/Counter.mr:6:5
+  |
+6 -     private Total(): int => N;
+6 +     internal Total(): int => N;
+  |
+
+error[MR0203]: mismatched types: expected `bool`, found `int`
+ --> src/Program.mr:5:22
+  |
+5 |     let flag: bool = total; //~ ERROR MR0203
+  |                      ^^^^^ this is `int`
+  |
+  = note: there is no implicit conversion to or from `bool`

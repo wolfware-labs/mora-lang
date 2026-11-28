@@ -1,0 +1,13 @@
+// expect: 7
+// A call through a value whose argument types are all known calls the
+// instance method, though a static method shares its name.
+public struct Counter {
+    public N: int;
+
+    public Add(by: int): int => N + by;
+
+    public static Add(by: string): int => 0;
+}
+
+let c = new Counter { N = 4 };
+Console.WriteLine(c.Add(3));

@@ -1,0 +1,11 @@
+// A call with named arguments out of order keeps the return type its
+// candidates share (§14.5, D-158), so a later mistake that uses it is
+// reported too.
+Greet(name: string, greeting: string = "Hello"): string => greeting;
+Count(x: int, y: int): int => x;
+Count(x: string, y: int): int => y;
+
+let a = Greet(greeting: "Hi", "Ada"); //~ ERROR MR0207
+let b: bool = a; //~ ERROR MR0203
+let c = Count(y: 1, 2); //~ ERROR MR0207
+let d: bool = c; //~ ERROR MR0203

@@ -14,6 +14,16 @@
 //! `None` for it. An expression of unknown type, or of [`Ty::Error`], is
 //! never the cause of a diagnostic, so nothing is reported twice and
 //! nothing is reported about code this milestone does not check.
+//!
+//! An expression with a mistake keeps its diagnostic and gets a recovered
+//! type when one is known without guessing (§14.5, D-158, D-159): the type
+//! its call's candidates lead to, or else the type expected at its
+//! position; with neither it has [`Ty::Error`]. A member, an operator or
+//! a call of a member built on the mistake, as `cout.Length` or
+//! `n + cout`, has no type, while a call of a function keeps its return
+//! type and a tuple or a conditional takes its target type. A recovered
+//! type is never the cause of a diagnostic of its own either: what it
+//! leads to would be reported once the first mistake is fixed.
 
 mod check;
 mod constant;
@@ -29,7 +39,7 @@ use crate::bodies::{ArgMode, BinaryOp, BodyOwner, ExprId, LocalId, StmtId, TypeI
 use crate::defs::ItemId;
 use crate::items::Visibility;
 use crate::resolve::{Resolved, Scope, item_data};
-use crate::ty::{ParamMode, Primitive, Ty};
+use crate::ty::{ParamMode, Primitive, TupleElem, Ty};
 
 pub use constant::literal_constant;
 pub(crate) use diagnostic::{Source, type_error};
@@ -193,8 +203,10 @@ impl Inference {
     }
 
     /// The type of `expr`: `None` while it is unknown, because a later
-    /// milestone gives it meaning, and [`Ty::Error`] when a diagnostic says
-    /// why it has none.
+    /// milestone gives it meaning or it is a member or an operator built on
+    /// a mistake, as `cout.Length` is, and [`Ty::Error`] when a diagnostic
+    /// says why it has none. An expression with a diagnostic may also have a known
+    /// type, the one recovered for it (§14.5).
     pub fn expr(&self, expr: ExprId) -> Option<&Ty> {
         self.exprs.get(arena_index(expr))?.as_ref()
     }
@@ -409,7 +421,9 @@ pub(crate) enum TypeError {
         candidates: Vec<(ItemId, String)>,
     },
     /// Of the overloads named `name` applicable to the call `expr`, none is
-    /// better than the others; each of them with its signature (`MR0206`).
+    /// better than the others; each tied one, which no other applicable
+    /// overload beats, or each applicable one when they beat each other in
+    /// a cycle, with its signature (`MR0206`).
     Ambiguous {
         expr: ExprId,
         name: String,
@@ -678,23 +692,27 @@ pub fn ty_name(db: &dyn Db, ty: &Ty) -> String {
     match ty {
         Ty::Primitive(primitive) => primitive.keyword().to_owned(),
         Ty::String => "string".to_owned(),
-        Ty::Tuple(elems) => {
-            let mut parts: Vec<String> = elems
-                .iter()
-                .map(|elem| match &elem.name {
-                    Some(name) => format!("{name}: {}", ty_name(db, &elem.ty)),
-                    None => ty_name(db, &elem.ty),
-                })
-                .collect();
-            if let [only] = parts.as_mut_slice() {
-                only.push(',');
-            }
-            format!("({})", parts.join(", "))
-        }
+        Ty::Tuple(elems) => tuple_name(elems, |ty| ty_name(db, ty)),
         Ty::Struct(item) => item_data(db, *item).name.clone(),
         Ty::Unsupported(_) | Ty::Error => "_".to_owned(),
         Ty::Never => "!".to_owned(),
     }
+}
+
+/// The tuple type of `elems` as code writes it, each element's type as
+/// `name` shows it.
+fn tuple_name(elems: &[TupleElem], name: impl Fn(&Ty) -> String) -> String {
+    let mut parts: Vec<String> = elems
+        .iter()
+        .map(|elem| match &elem.name {
+            Some(label) => format!("{label}: {}", name(&elem.ty)),
+            None => name(&elem.ty),
+        })
+        .collect();
+    if let [only] = parts.as_mut_slice() {
+        only.push(',');
+    }
+    format!("({})", parts.join(", "))
 }
 
 #[cfg(test)]
@@ -721,8 +739,19 @@ mod tests {
         types_of_locals(&db, project, file, BodyOwner::TopLevel)
     }
 
+    /// `ty` as [`super::ty_name`] shows it, but with the error type as
+    /// `{error}`, a marker no type spells, so that a test tells it apart
+    /// from a type not supported yet (`_`).
+    fn shown(db: &dyn mora_span::Db, ty: &Ty) -> String {
+        match ty {
+            Ty::Error => "{error}".to_owned(),
+            Ty::Tuple(elems) => super::tuple_name(elems, |ty| shown(db, ty)),
+            _ => super::ty_name(db, ty),
+        }
+    }
+
     /// Each local of the body of `owner` in `file`, as `name: type`, `?`
-    /// for a type that is unknown.
+    /// for a type that is unknown and `{error}` for the error type.
     fn types_of_locals(
         db: &TestDb,
         project: Project,
@@ -736,7 +765,7 @@ mod tests {
             .map(|(local, data)| {
                 let ty = inference
                     .local(local)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(db, ty));
+                    .map_or_else(|| "?".to_owned(), |ty| shown(db, ty));
                 format!("{}: {ty}", data.name)
             })
             .collect()
@@ -1013,6 +1042,22 @@ mod tests {
             [None, Some("long".to_owned()), Some("double".to_owned())]
         );
         assert_eq!(whole, None);
+    }
+
+    #[test]
+    fn a_call_left_to_a_static_overload_keeps_no_conversion_of_its_arguments() {
+        // A call through a value that a static overload may take calls no
+        // instance method, so no argument converts to an instance
+        // parameter: here an argument of a type not known yet, and a
+        // mismatch on another argument, leave the call to statics. A call
+        // with every type known that the instance method takes converts.
+        let text = "public struct S {\n    public X: int;\n    \
+                    public M(a: long, b: int): long => a;\n    \
+                    public static M(a: string, b: int): string => a;\n}\n\
+                    let s = new S { X = 1 };\nlet n: int = 1;\n\
+                    let p = s.M(n, Console.ReadLine());\nlet q = s.M(n, \"x\");\n\
+                    let r = s.M(n, 1);\n";
+        assert_eq!(conversions(text), ["n: Implicit long"]);
     }
 
     #[test]
@@ -1469,6 +1514,7 @@ mod tests {
             // A name that did not resolve in the left tuple is the mistake
             // too, as one in the right operand is.
             ("(x, Nope) += (1, 2);", vec!["MR0127"]),
+            ("(x, Nope()) += (1, 2);", vec!["MR0127"]),
             ("(int, x) += 1;", vec!["MR0127"]),
             ("((x, Nope), y) += ((1, 2), 3);", vec!["MR0127"]),
             ("(x, _) += One(1);", vec!["MR0205"]),
@@ -1651,7 +1697,8 @@ mod tests {
     }
 
     /// Each expression of the top-level statements of `text`, as written,
-    /// with its type, `?` for one that is unknown.
+    /// with its type, `?` for one that is unknown and `{error}` for the
+    /// error type.
     fn expr_types(text: &str) -> Vec<String> {
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", text)]);
@@ -1664,10 +1711,465 @@ mod tests {
             .map(|(expr, _)| {
                 let ty = inference
                     .expr(expr)
-                    .map_or_else(|| "?".to_owned(), |ty| super::ty_name(&db, ty));
+                    .map_or_else(|| "?".to_owned(), |ty| shown(&db, ty));
                 format!("{}: {ty}", &text[map.expr(expr)])
             })
             .collect()
+    }
+
+    #[test]
+    fn the_error_type_shows_apart_from_an_unsupported_one() {
+        let text = "let y = cout;\nlet g: int? = 1;\nlet t = (1, cout);\n";
+        assert_eq!(
+            local_types(text),
+            ["y: {error}", "g: _", "t: (int, {error})"]
+        );
+        assert_eq!(expr_types(text)[0], "cout: {error}");
+    }
+
+    /// The type of the first expression of the top-level statements of
+    /// `text` written as `written`, as [`expr_types`] shows it.
+    fn type_at(text: &str, written: &str) -> String {
+        let prefix = format!("{written}: ");
+        expr_types(text)
+            .into_iter()
+            .find_map(|shown| shown.strip_prefix(&prefix).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no expression `{written}` in {text}"))
+    }
+
+    #[test]
+    fn a_mistake_takes_the_type_expected_at_its_position() {
+        // D-159: whatever the mistake, the expression has the type its
+        // position expects, and the error type where none is expected.
+        let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
+        for (line, written, ty) in [
+            ("let x: int = cout;", "cout", "int"),
+            ("let x: int = Lenght(s);", "Lenght(s)", "int"),
+            ("let x: int = int;", "int", "int"),
+            ("let x: int = P;", "P", "int"),
+            ("let x: int = P();", "P()", "int"),
+            ("let x: int = UsersApi;", "UsersApi", "int"),
+            ("let x: int = 0x;", "0x", "int"),
+            ("let x: double = 1e400;", "1e400", "double"),
+            ("let x: int = s - 1;", "s - 1", "int"),
+            ("let x: int = -s;", "-s", "int"),
+            ("let x: int = n();", "n()", "int"),
+            ("let x: (int, string) = (cout, s);", "cout", "int"),
+            ("let x: bool = n == 1 ? cout : true;", "cout", "bool"),
+            ("let x: P = new int();", "new int()", "P"),
+            ("let x: P = new();", "new()", "P"),
+            ("let y = cout;", "cout", "{error}"),
+            ("let y = Lenght(s);", "Lenght(s)", "{error}"),
+            ("let y = s - 1;", "s - 1", "{error}"),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(type_at(&text, written), ty, "{line}");
+        }
+        // A missing expression, which the parser reports: here the one in
+        // the parentheses, whose range starts at `(`.
+        assert_eq!(type_at("let x: int = (;\n", "("), "int");
+        // A `new` of a type it cannot create is reported once, and takes
+        // its target type as well.
+        let text = format!("{decls}let x: P = new int();\nlet y: string = x;\n");
+        assert_eq!(reported(&text), ["MR0154", "MR0203"]);
+    }
+
+    #[test]
+    fn a_member_or_an_operator_built_on_a_mistake_has_no_type() {
+        // §14.5: a member, an operator or a call of a member built on a
+        // mistake has no type, whatever is expected of it. A call of a
+        // function keeps its return type, and a tuple or a conditional
+        // under a target type takes it; an argument that takes no type from
+        // its parameter has the error type. Only the names are reported.
+        let text = "Len(x: int): int => x;\nlet n = 1;\nlet a = cout.Length;\n\
+                    let b = n + cout;\nlet e: int = n + cout;\nlet y = cout;\n\
+                    let c = y.Foo();\nlet d = Len(cout);\n\
+                    let t: (int, bool) = (cout, true);\n\
+                    let k: bool = n == 1 ? cout : true;\n";
+        let shown = expr_types(text);
+        let types_of = |written: &str| -> Vec<&str> {
+            let prefix = format!("{written}: ");
+            shown
+                .iter()
+                .filter_map(|shown| shown.strip_prefix(&prefix))
+                .collect()
+        };
+        assert_eq!(types_of("cout.Length"), ["?"]);
+        assert_eq!(types_of("n + cout"), ["?", "?"]);
+        assert_eq!(types_of("y.Foo()"), ["?"]);
+        assert_eq!(types_of("Len(cout)"), ["int"]);
+        assert_eq!(types_of("(cout, true)"), ["(int, bool)"]);
+        assert_eq!(types_of("n == 1 ? cout : true"), ["bool"]);
+        assert_eq!(
+            types_of("cout"),
+            [
+                "{error}", "{error}", "{error}", "{error}", "{error}", "int", "bool"
+            ]
+        );
+        assert_eq!(reported(text), ["MR0127"; 7]);
+    }
+
+    #[test]
+    fn a_call_that_is_an_error_keeps_the_type_its_candidates_lead_to() {
+        // D-158: the overloads the correct arguments still allow, or all of
+        // them when none is left, give the type they all return.
+        let decls = "O(x: int, flag: bool): int => 1;\nO(x: string, flag: bool): string => \"\";\n\
+                     Two(x: int): int => 1;\nTwo(x: string): int => 2;\n\
+                     Scale(x: int, factor: long): int => 1;\nScale(x: long, factor: int): int => 2;\n\
+                     Mixed(x: int, y: long): int => 1;\nMixed(x: long, y: int): string => \"\";\n\
+                     Tie(x: int, f: long): int => 1;\nTie(x: long, f: int): int => 2;\n\
+                     Tie(x: long, f: long): string => \"\";\n\
+                     Greet(name: string, greeting: string = \"Hello\"): string => greeting;\n";
+        for (line, ty, expected) in [
+            // The first argument rules out the second overload.
+            ("let a = O(1, 2);", "int", vec!["MR0205", "MR0203"]),
+            ("let a = O(\"s\", 2);", "string", vec!["MR0205", "MR0203"]),
+            // No overload takes one argument as the other does.
+            ("let a = O(true, 2);", "{error}", vec!["MR0205"]),
+            // Nothing is left: a wrong count, an unknown name, a name given
+            // by position too, named arguments out of order.
+            ("let a = Two();", "int", vec!["MR0205", "MR0203"]),
+            ("let a = Two(1, z: 2);", "int", vec!["MR0205", "MR0203"]),
+            ("let a = Two(1, x: 2);", "int", vec!["MR0207", "MR0203"]),
+            ("let a = Two(x: 1, 2);", "int", vec!["MR0207", "MR0203"]),
+            ("let a = O();", "{error}", vec!["MR0205"]),
+            // The tied overloads of an ambiguous call.
+            ("let a = Scale(2, 3);", "int", vec!["MR0206", "MR0203"]),
+            ("let a = Mixed(2, 3);", "{error}", vec!["MR0206"]),
+            // An applicable overload that both tied ones beat is not tied.
+            ("let a = Tie(2, 3);", "int", vec!["MR0206", "MR0203"]),
+            // One declaration gives its return type.
+            (
+                "let a = Greet(greeting: \"Hi\", \"Ada\");",
+                "string",
+                vec!["MR0207", "MR0203"],
+            ),
+        ] {
+            let text = format!("{decls}{line}\nlet later: bool = a;\n");
+            assert_eq!(local_types(&text)[0], format!("a: {ty}"), "{line}");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
+        // An `async` overload gives a future, which its declared return
+        // type does not say (D-137), so named arguments out of order leave
+        // the call no type.
+        let text = "F(a: int, b: int): int => a;\nasync F(a: string, b: int): int => b;\n\
+                    let x = F(a: 1, 2);\nlet y: string = x;\n";
+        assert_eq!(local_types(text)[0], "x: {error}");
+        assert_eq!(reported(text), ["MR0207"]);
+        // A recovered call's type is the generated `Main`'s return type, so
+        // a later `return` of another type is the second mistake.
+        let text = format!("{decls}return O(1, 2);\nreturn \"s\";\n");
+        assert_eq!(reported(&text), ["MR0205", "MR0203"]);
+        // An argument list the parser recovered from, which the parser
+        // reports, leaves the overloads unchecked: the call has the type
+        // they share, or else the error type, which takes the type expected
+        // of the call.
+        for (line, written, ty) in [
+            ("let a = Two(, 1);", "Two(, 1)", "int"),
+            ("let a = O(, true);", "O(, true)", "{error}"),
+            ("let a: int = O(, true);", "O(, true)", "int"),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(type_at(&text, written), ty, "{line}");
+            assert_eq!(reported(&text), Vec::<String>::new(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_recovered_call_calls_nothing_and_shows_its_type() {
+        // The HIR dump shows the recovered type of a local, and the call
+        // records no callee, so nothing after inference reads one.
+        let text = "Two(x: int): int => 1;\nTwo(x: string): int => 2;\n\
+                    One(x: int): int => x;\nlet a = Two();\nlet b = One(x: 1, 2);\n";
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let dumped = hir_dump(&db, project, file);
+        assert!(dumped.contains("let a#0: int = Two{"), "{dumped}");
+        assert!(dumped.contains("let b#1: int = One{"), "{dumped}");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let calls: Vec<_> = body
+            .exprs
+            .iter()
+            .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
+            .map(|(call, _)| call)
+            .collect();
+        assert_eq!(calls.len(), 2);
+        for call in calls {
+            assert_eq!(inference.callee(call), None);
+        }
+    }
+
+    /// The locals of the function `F` of `program`, as [`types_of_locals`]
+    /// shows them, and the codes the app reports, with `store` beside it as
+    /// `src/Store/S.mr`, whose types `program` names as `UsersApi.Store`.
+    fn locals_beside_store(program: &str, store: &str) -> (Vec<String>, Vec<String>) {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let f = item_tree(&db, file)
+            .items()
+            .find(|(_, data)| data.name == "F")
+            .map(|(item, _)| item)
+            .unwrap();
+        (
+            types_of_locals(&db, project, file, BodyOwner::Item(f)),
+            codes(diagnostics(&db, project)),
+        )
+    }
+
+    #[test]
+    fn a_call_of_hidden_methods_keeps_the_type_they_return() {
+        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
+                     private Secret(a: int): int => a;\n    private Mixed(): int => 1;\n    \
+                     private Mixed(a: int): string => \"\";\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Secret();\n    let b = s.Mixed();\n    \
+                       let c: bool = a;\n    let d: bool = b;\n}\n";
+        let (locals, found) = locals_beside_store(program, store);
+        assert_eq!(
+            locals,
+            ["s: S", "a: int", "b: {error}", "c: bool", "d: bool"]
+        );
+        assert_eq!(found, ["MR0129", "MR0129", "MR0203"]);
+    }
+
+    #[test]
+    fn a_call_of_hidden_methods_not_checked_yet_keeps_no_type() {
+        // An `async` or a generic method's call gives what its declared
+        // return type does not say (D-137), so the call keeps no type, and
+        // nothing is reported that making the methods visible would drop.
+        let store = "public struct S {\n    public X: int;\n    \
+                     private async Load(): int => 1;\n    private Id<T>(x: T): T => x;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Load();\n    let b = s.Id(1);\n    \
+                       let c: string = a;\n    let d: string = b;\n}\n";
+        let (locals, found) = locals_beside_store(program, store);
+        assert_eq!(
+            locals,
+            ["s: S", "a: {error}", "b: {error}", "c: string", "d: string"]
+        );
+        assert_eq!(found, ["MR0129", "MR0129"]);
+    }
+
+    #[test]
+    fn a_call_through_a_value_with_a_static_overload_keeps_no_type() {
+        // A static method of the name may be what the call calls, which is
+        // not checked before statics (D-137, D-152): the instance methods'
+        // return type is not the call's, so nothing is reported through it.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public static M(a: string, b: int): string => a;\n    \
+                     private N(): int => 1;\n    public static N(): string => \"\";\n}\n";
+        for (line, local, expected) in [
+            ("let p = s.M(b: 1, \"x\");", "p: {error}", vec!["MR0207"]),
+            ("let p = s.N();", "p: {error}", vec!["MR0129"]),
+            // The parser reports the missing argument itself.
+            ("let p = s.M(, 1);", "p: {error}", vec![]),
+        ] {
+            let program =
+                format!("F(s: UsersApi.Store.S) {{\n    {line}\n    let q: string = p;\n}}\n");
+            let (locals, found) = locals_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{line}");
+            assert_eq!(found, expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn an_unresolved_call_through_a_value_with_a_static_overload_has_no_type() {
+        // An argument of a type not known yet leaves the instance overloads
+        // unresolved (D-137), and a static overload may take it too
+        // (D-152): the return type the instance overloads share is not the
+        // call's.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public M(a: bool, b: int): int => b;\n    \
+                     public static M(a: string, b: int): string => a;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(Console.ReadLine(), 1);\n    \
+                       let q: string = p;\n}\n";
+        let (locals, found) = locals_beside_store(program, store);
+        assert_eq!(locals[1], "p: ?");
+        assert_eq!(found, Vec::<String>::new());
+        // One instance method that takes the call only because an
+        // argument's type is not known yet leaves it to statics as well;
+        // with every argument's type known, the instance method is called.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public static M(a: string, b: int): string => a;\n}\n";
+        for (call, local, expected) in [
+            ("s.M(Console.ReadLine(), 1)", "p: ?", vec![]),
+            ("s.M(1, 1)", "p: int", vec!["MR0203"]),
+        ] {
+            let program = format!(
+                "F(s: UsersApi.Store.S) {{\n    let p = {call};\n    let q: string = p;\n}}\n"
+            );
+            let (locals, found) = locals_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{call}");
+            assert_eq!(found, expected, "{call}");
+        }
+    }
+
+    #[test]
+    fn a_call_through_a_value_waits_for_a_static_one_on_an_unknown_parameter() {
+        // A parameter of a type not known yet, as an option today, fits any
+        // argument (D-137): an instance overload that takes the call only
+        // through one leaves it to a static overload too (D-152).
+        let statics = "    public static M(a: string, b: int): string => a;\n}\n";
+        for (methods, local) in [
+            // Both overloads take the call, and are not ranked.
+            (
+                "    public M(a: int?, b: int): int => b;\n    \
+                 public M(a: string?, b: int): int => b;\n",
+                "p: ?",
+            ),
+            // The second argument leaves one, which takes the first through
+            // its option parameter.
+            (
+                "    public M(a: int?, b: int): int => b;\n    \
+                 public M(a: int?, b: bool): int => 1;\n",
+                "p: ?",
+            ),
+        ] {
+            let store = format!("public struct S {{\n    public X: int;\n{methods}{statics}");
+            let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(1, 1);\n    \
+                           let q: string = p;\n}\n";
+            let (locals, found) = locals_beside_store(program, &store);
+            assert_eq!(locals[1], local, "{methods}");
+            assert_eq!(found, Vec::<String>::new(), "{methods}");
+        }
+    }
+
+    /// Each local of `F` in `program` beside `store` (as
+    /// [`locals_beside_store`]), whether each call in `F` has a callee, and
+    /// the codes the project reports.
+    fn calls_beside_store(program: &str, store: &str) -> (Vec<String>, Vec<bool>, Vec<String>) {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let f = item_tree(&db, file)
+            .items()
+            .find(|(_, data)| data.name == "F")
+            .map(|(item, _)| item)
+            .unwrap();
+        let owner = BodyOwner::Item(f);
+        let body = body(&db, file, owner);
+        let inference = infer(&db, project, file, owner);
+        let calls = body
+            .exprs
+            .iter()
+            .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
+            .map(|(call, _)| inference.callee(call).is_some())
+            .collect();
+        (
+            types_of_locals(&db, project, file, owner),
+            calls,
+            codes(diagnostics(&db, project)),
+        )
+    }
+
+    #[test]
+    fn a_chosen_overload_through_a_value_waits_for_a_static_one_on_an_unknown_argument() {
+        // An argument of the error type rules no overload out: the one
+        // instance overload the other argument leaves is not called while a
+        // static overload may take the call (D-152).
+        let store = "public struct S {\n    public X: int;\n    \
+                     public K(x: int, y: string): int => x;\n    \
+                     public K(x: int, y: bool): int => x;\n    \
+                     public static K(x: string, y: string): string => x;\n}\n";
+        for (call, local, called, expected) in [
+            ("s.K(cout, \"a\")", "a: ?", false, vec!["MR0127"]),
+            ("s.K(1, \"a\")", "a: int", true, vec!["MR0203"]),
+        ] {
+            let program = format!(
+                "F(s: UsersApi.Store.S) {{\n    let a = {call};\n    let b: string = a;\n}}\n"
+            );
+            let (locals, calls, found) = calls_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{call}");
+            assert_eq!(calls, [called], "{call}");
+            assert_eq!(found, expected, "{call}");
+        }
+    }
+
+    #[test]
+    fn an_instance_method_that_does_not_take_a_known_argument_leaves_it_to_statics() {
+        // Every type is known and the instance method is chosen, but its
+        // parameter does not take the argument: the static overload may, so
+        // the mistake is the static member named through a value, reported
+        // with statics (D-152), and the call calls nothing.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int): int => a;\n    \
+                     public static M(a: string): string => a;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(\"x\");\n    \
+                       let q: string = p;\n}\n";
+        let (locals, calls, found) = calls_beside_store(program, store);
+        assert_eq!(locals[1], "p: ?");
+        assert_eq!(calls, [false]);
+        assert_eq!(found, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_literal_operation_of_a_call_left_to_statics_is_checked_once() {
+        // An operation made only of literals whose parts the instance
+        // parameter converts, in a call a static overload may take: the
+        // call calls nothing and has no type, and what the instance check
+        // recorded on the operation's parts is not recorded twice.
+        let int_m = "public M(x: int): int => x;\n    \
+                     public static M(x: string): string => x;";
+        let k = "public K(x: int, y: string): int => x;\n    \
+                 public K(x: int, y: bool): int => x;\n    \
+                 public static K(x: string, y: string): string => x;";
+        let string_m = "public M(a: string): int => 1;\n    \
+                        public static M(a: bool): string => \"\";";
+        let cases = [
+            (int_m, "s.M(1 + 2.5)"),
+            (k, "s.K(1 + 2.5, true)"),
+            (k, "s.K(1 + 2.5, cout)"),
+            (string_m, "s.M(1 + 1.5)"),
+            (string_m, "s.M(3000000000 + 1)"),
+        ];
+        let found: Vec<_> = cases
+            .iter()
+            .map(|(methods, call)| {
+                let store = format!("public struct S {{\n    public X: int;\n    {methods}\n}}\n");
+                let program = format!("F(s: UsersApi.Store.S) {{\n    let a = {call};\n}}\n");
+                let (locals, calls, codes) = calls_beside_store(&program, &store);
+                format!("{call}: {} {calls:?} {codes:?}", locals[1])
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "s.M(1 + 2.5): a: ? [false] []",
+                "s.K(1 + 2.5, true): a: ? [false] []",
+                "s.K(1 + 2.5, cout): a: ? [false] [\"MR0127\"]",
+                "s.M(1 + 1.5): a: ? [false] []",
+                "s.M(3000000000 + 1): a: ? [false] []",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recovered_type_adds_no_diagnostic() {
+        // Each mistake is reported once, and only once.
+        let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
+        for (line, expected) in [
+            ("let x: int = cout;", vec!["MR0127"]),
+            ("let x: int = Lenght(s);", vec!["MR0127"]),
+            ("let x: int = P;", vec!["MR0127"]),
+            ("let x: int = P();", vec!["MR0127"]),
+            ("let x: int = int;", vec!["MR0127"]),
+            ("let x: int = s - 1;", vec!["MR0204"]),
+            ("let x: int = n();", vec!["MR0208"]),
+            ("var a = 1;\n(a, cout) += (1, 2);", vec!["MR0127"]),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
     }
 
     #[test]
@@ -2570,6 +3072,47 @@ mod tests {
         assert_eq!(reported[1].secondary.len(), 2);
     }
 
+    #[test]
+    fn an_ambiguous_call_lists_only_the_tied_overloads() {
+        // An applicable overload that both tied ones beat is no candidate
+        // of the ambiguity.
+        let text = "Tie(x: int, f: long): int => 1;\nTie(x: long, f: int): int => 2;\n\
+                    Tie(x: long, f: long): string => \"\";\nlet a = Tie(2, 3);\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(codes(&reported), ["MR0206"]);
+        assert_eq!(
+            reported[0].primary.message.as_deref(),
+            Some("2 overloads fit equally well")
+        );
+        let listed: Vec<_> = reported[0]
+            .secondary
+            .iter()
+            .filter_map(|label| label.message.as_deref())
+            .collect();
+        assert_eq!(
+            listed,
+            ["`Tie(x: int, f: long): int`", "`Tie(x: long, f: int): int`"]
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_call_whose_overloads_beat_each_other_in_a_cycle_lists_them_all() {
+        // Each overload beats the next and loses to the one before, so none
+        // is unbeaten: every applicable one is tied.
+        let text = "F(a: byte, b: sbyte, c: ushort): int => 1;\n\
+                    F(a: ushort, b: byte, c: sbyte): int => 2;\n\
+                    F(a: sbyte, b: ushort, c: byte): int => 3;\n\
+                    let x = F(1, 1, 1);\nlet y: bool = x;\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(codes(&reported), ["MR0206", "MR0203"]);
+        assert_eq!(
+            reported[0].primary.message.as_deref(),
+            Some("3 overloads fit equally well")
+        );
+        assert_eq!(reported[0].secondary.len(), 3);
+        assert_eq!(local_types(text)[0], "x: int");
+    }
+
     /// Which declaration of `O`, counted from 0, the call of `O` in the
     /// top-level statements of `text` calls, `None` when it is unresolved.
     fn called_overload(text: &str) -> Option<usize> {
@@ -2961,7 +3504,9 @@ mod tests {
         let text = "F(a: int, b: int): int => a;\nO(x: int): int => 1;\nO(x: string): string => \"\";\n\
                     let a = F(,1);\nlet o = O(,1);\n";
         assert_eq!(reported(text), Vec::<String>::new());
-        assert_eq!(local_types(text), ["a: int", "o: ?"]);
+        // The parser reported the call's mistake, so the call of overloads
+        // that return different types has the error type (§14.5).
+        assert_eq!(local_types(text), ["a: int", "o: {error}"]);
         // The order of named arguments and what is called are checked still.
         assert_eq!(reported("F(a: int, b: int) {}\nF(b: 1, 2,\n"), ["MR0207"]);
         assert_eq!(
@@ -2998,12 +3543,17 @@ mod tests {
             &[("src/Program.mr", program), ("src/Store/S.mr", store)],
         );
         let found = diagnostics(&db, project);
-        assert_eq!(codes(found), ["MR0129", "MR0129", "MR0203"]);
+        // A hidden method's call keeps its return type (D-158), so the
+        // `int` it gives a `string` is reported too.
         assert_eq!(
-            found[0].message,
+            codes(found),
+            ["MR0203", "MR0129", "MR0203", "MR0129", "MR0203"]
+        );
+        assert_eq!(
+            found[1].message,
             "`Secret` is private to the type that declares it"
         );
-        assert_eq!(&program[found[0].primary.span.range], "Secret");
+        assert_eq!(&program[found[1].primary.span.range], "Secret");
         // Inside its type, a private method is visible.
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", store)]);
@@ -3918,7 +4468,7 @@ mod tests {
             found[0].message,
             "`new` without a type needs a target type to create"
         );
-        assert_eq!(local_types(text), ["x: ?", "y: ?"]);
+        assert_eq!(local_types(text), ["x: {error}", "y: {error}"]);
     }
 
     #[test]
@@ -4265,7 +4815,7 @@ mod tests {
         assert_eq!(codes(&found), ["MR0154"]);
         assert_eq!(&text[found[0].primary.span.range], "new int()");
         assert_eq!(found[0].message, "`new` cannot create a value of `int`");
-        assert_eq!(local_types(text), ["a: ?"]);
+        assert_eq!(local_types(text), ["a: {error}"]);
         // A type with no item of its own is named by its kind.
         let found = diagnostics_of("let a = new int?();\n");
         assert_eq!(
