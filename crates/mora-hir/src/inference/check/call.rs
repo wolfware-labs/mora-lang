@@ -254,21 +254,10 @@ impl<'a> Check<'a> {
         if let [candidate] = candidates.as_slice() {
             let reported = self.errors.len();
             let ty = self.call_one(expr, candidate, args, &arguments);
-            // An argument of a type not known yet fits the instance method
-            // and may fit a static overload as well, which is checked later
-            // (D-137, D-152): the call calls neither yet.
-            if static_overload
-                && self.errors.len() == reported
-                && arguments.iter().any(Argument::is_unknown)
-            {
-                self.calls.remove(&expr);
-                self.arguments.remove(&expr);
-                return None;
-            }
-            return self.unless_static_overload(expr, callee, reported, ty);
+            return self.unless_static_overload(expr, callee, reported, &arguments, ty);
         }
         let reported = self.errors.len();
-        let ty = self.call_overloads(expr, &candidates, args, &arguments, static_overload);
+        let ty = self.call_overloads(expr, &candidates, args, &arguments);
         // A call that is an error already says what is wrong with it.
         let call_error = self.errors[reported..].iter().any(|error| {
             matches!(
@@ -288,22 +277,29 @@ impl<'a> Check<'a> {
                 });
             }
         }
-        self.unless_static_overload(expr, callee, reported, ty)
+        self.unless_static_overload(expr, callee, reported, &arguments, ty)
     }
 
-    /// The type `ty` of the call `expr`, unless the instance methods it
-    /// called through a value do not take it and a static method of the
-    /// name may: that is a static member named through a value, which is
-    /// not checked before statics (D-152), so what the call reported since
-    /// `reported` is dropped and the call has no callee.
+    /// The type `ty` of the call `expr`, unless a static method of the
+    /// name may be what it calls through a value: that is a static member
+    /// named through a value, which is not checked before statics (D-152).
+    /// A static overload may take the call when the instance methods do
+    /// not, as what the call reported since `reported` says, or when one of
+    /// its `arguments` has a type not known yet, which fits any parameter
+    /// (D-137). Then what the call reported is dropped, and it calls
+    /// nothing and has no type.
     fn unless_static_overload(
         &mut self,
         expr: ExprId,
         callee: ExprId,
         reported: usize,
+        arguments: &[Argument],
         ty: Option<Ty>,
     ) -> Option<Ty> {
-        if self.errors.len() == reported || !self.has_static_overload(callee) {
+        let instance_fails = self.errors.len() > reported;
+        if !(instance_fails || arguments.iter().any(Argument::is_unknown))
+            || !self.has_static_overload(callee)
+        {
             return ty;
         }
         self.errors.truncate(reported);
@@ -654,15 +650,12 @@ impl<'a> Check<'a> {
     }
 
     /// A call of overloads: the best applicable one is called (§6.9).
-    /// `static_overload` says that the call names, through a value, a
-    /// method with a static overload (D-152).
     fn call_overloads(
         &mut self,
         expr: ExprId,
         candidates: &[Candidate<'_>],
         args: &[Arg],
         arguments: &[Argument],
-        static_overload: bool,
     ) -> Option<Ty> {
         let bindings: Vec<_> = candidates
             .iter()
@@ -715,9 +708,7 @@ impl<'a> Check<'a> {
         }
         // An argument or a parameter of a type not known yet may be what
         // decides between the overloads, so they are not ranked; the call
-        // keeps a type only when they all return it (D-137), and none when
-        // a static overload may take it too, since statics are checked
-        // later (D-152).
+        // keeps a type only when they all return it (D-137).
         let unknown_parameter = applicable.iter().any(|&(index, params)| {
             params
                 .iter()
@@ -726,9 +717,6 @@ impl<'a> Check<'a> {
         if applicable.len() > 1 && (unknown_parameter || arguments.iter().any(Argument::is_unknown))
         {
             self.infer_literals(args, arguments);
-            if static_overload {
-                return None;
-            }
             return common_return(applicable.iter().map(|&(index, _)| &candidates[index]));
         }
         let beats = |&(a, a_params): &(usize, &[usize]), &(b, b_params): &(usize, &[usize])| {

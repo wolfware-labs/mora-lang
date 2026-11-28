@@ -1996,6 +1996,52 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_overload_through_a_value_waits_for_a_static_one_on_an_unknown_argument() {
+        // An argument of the error type rules no overload out: the one
+        // instance overload the other argument leaves is not called while a
+        // static overload may take the call (D-152).
+        let store = "public struct S {\n    public X: int;\n    \
+                     public K(x: int, y: string): int => x;\n    \
+                     public K(x: int, y: bool): int => x;\n    \
+                     public static K(x: string, y: string): string => x;\n}\n";
+        for (call, local, called, expected) in [
+            ("s.K(cout, \"a\")", "a: ?", false, vec!["MR0127"]),
+            ("s.K(1, \"a\")", "a: int", true, vec!["MR0203"]),
+        ] {
+            let program = format!(
+                "F(s: UsersApi.Store.S) {{\n    let a = {call};\n    let b: string = a;\n}}\n"
+            );
+            let db = TestDb::new();
+            let project = app(
+                &db,
+                &[("src/Program.mr", &program), ("src/Store/S.mr", store)],
+            );
+            let file = file_named(&db, project, "src/Program.mr");
+            let f = item_tree(&db, file)
+                .items()
+                .find(|(_, data)| data.name == "F")
+                .map(|(item, _)| item)
+                .unwrap();
+            let owner = BodyOwner::Item(f);
+            assert_eq!(
+                types_of_locals(&db, project, file, owner)[1],
+                local,
+                "{call}"
+            );
+            let body = body(&db, file, owner);
+            let inference = infer(&db, project, file, owner);
+            let calls: Vec<_> = body
+                .exprs
+                .iter()
+                .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
+                .map(|(call, _)| inference.callee(call).is_some())
+                .collect();
+            assert_eq!(calls, [called], "{call}");
+            assert_eq!(codes(diagnostics(&db, project)), expected, "{call}");
+        }
+    }
+
+    #[test]
     fn a_recovered_type_adds_no_diagnostic() {
         // Each mistake is reported once, and only once.
         let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
