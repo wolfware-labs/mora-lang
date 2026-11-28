@@ -163,7 +163,7 @@ impl<'a> Check<'a> {
                     from: self.scope,
                 });
                 self.unchecked_call(args);
-                return Some(shared_return(&methods).unwrap_or(Ty::Error));
+                return Some(self.uncalled_return(callee, &methods));
             }
             Callees::Functions(candidates) => candidates,
         };
@@ -171,7 +171,7 @@ impl<'a> Check<'a> {
         // keeps the type all its candidates return (D-158).
         if !ordered {
             self.unchecked_call(args);
-            return Some(shared_return(&candidates).unwrap_or(Ty::Error));
+            return Some(self.uncalled_return(callee, &candidates));
         }
         if candidates.is_empty() || candidates.iter().any(|candidate| candidate.unchecked) {
             return self.unchecked_call(args);
@@ -299,6 +299,17 @@ impl<'a> Check<'a> {
         self.calls.remove(&expr);
         self.arguments.remove(&expr);
         None
+    }
+
+    /// The type a call of `candidates` through `callee` that calls none of
+    /// them keeps (D-158): the one they all return, or the error type when
+    /// they do not agree or a static overload may be what the call calls,
+    /// which is not checked before statics (D-152).
+    fn uncalled_return(&self, callee: ExprId, candidates: &[Candidate<'_>]) -> Ty {
+        if self.has_static_overload(callee) {
+            return Ty::Error;
+        }
+        shared_return(candidates).unwrap_or(Ty::Error)
     }
 
     /// Whether `callee` names a method of a struct value that has a static

@@ -1884,6 +1884,41 @@ mod tests {
     }
 
     #[test]
+    fn a_call_through_a_value_with_a_static_overload_keeps_no_type() {
+        // A static method of the name may be what the call calls, which is
+        // not checked before statics (D-137, D-152): the instance methods'
+        // return type is not the call's, so nothing is reported through it.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public static M(a: string, b: int): string => a;\n    \
+                     private N(): int => 1;\n    public static N(): string => \"\";\n}\n";
+        for (line, local, code) in [
+            ("let p = s.M(b: 1, \"x\");", "p: {error}", "MR0207"),
+            ("let p = s.N();", "p: {error}", "MR0129"),
+        ] {
+            let program =
+                format!("F(s: UsersApi.Store.S) {{\n    {line}\n    let q: string = p;\n}}\n");
+            let db = TestDb::new();
+            let project = app(
+                &db,
+                &[("src/Program.mr", &program), ("src/Store/S.mr", store)],
+            );
+            let file = file_named(&db, project, "src/Program.mr");
+            let f = item_tree(&db, file)
+                .items()
+                .find(|(_, data)| data.name == "F")
+                .map(|(item, _)| item)
+                .unwrap();
+            assert_eq!(
+                types_of_locals(&db, project, file, BodyOwner::Item(f))[1],
+                local,
+                "{line}"
+            );
+            assert_eq!(codes(diagnostics(&db, project)), [code], "{line}");
+        }
+    }
+
+    #[test]
     fn a_recovered_type_adds_no_diagnostic() {
         // Each mistake is reported once, and only once.
         let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
