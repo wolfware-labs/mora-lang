@@ -1962,6 +1962,23 @@ mod tests {
     }
 
     #[test]
+    fn an_unresolved_call_through_a_value_with_a_static_overload_has_no_type() {
+        // An argument of a type not known yet leaves the instance overloads
+        // unresolved (D-137), and a static overload may take it too
+        // (D-152): the return type the instance overloads share is not the
+        // call's.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public M(a: bool, b: int): int => b;\n    \
+                     public static M(a: string, b: int): string => a;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(Console.ReadLine(), 1);\n    \
+                       let q: string = p;\n}\n";
+        let (locals, found) = locals_beside_store(program, store);
+        assert_eq!(locals[1], "p: ?");
+        assert_eq!(found, Vec::<String>::new());
+    }
+
+    #[test]
     fn a_recovered_type_adds_no_diagnostic() {
         // Each mistake is reported once, and only once.
         let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";

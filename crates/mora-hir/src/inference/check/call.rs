@@ -257,7 +257,7 @@ impl<'a> Check<'a> {
             return self.unless_static_overload(expr, callee, reported, ty);
         }
         let reported = self.errors.len();
-        let ty = self.call_overloads(expr, &candidates, args, &arguments);
+        let ty = self.call_overloads(expr, &candidates, args, &arguments, static_overload);
         // A call that is an error already says what is wrong with it.
         let call_error = self.errors[reported..].iter().any(|error| {
             matches!(
@@ -643,12 +643,15 @@ impl<'a> Check<'a> {
     }
 
     /// A call of overloads: the best applicable one is called (§6.9).
+    /// `static_overload` says that the call names, through a value, a
+    /// method with a static overload (D-152).
     fn call_overloads(
         &mut self,
         expr: ExprId,
         candidates: &[Candidate<'_>],
         args: &[Arg],
         arguments: &[Argument],
+        static_overload: bool,
     ) -> Option<Ty> {
         let bindings: Vec<_> = candidates
             .iter()
@@ -701,7 +704,9 @@ impl<'a> Check<'a> {
         }
         // An argument or a parameter of a type not known yet may be what
         // decides between the overloads, so they are not ranked; the call
-        // keeps a type only when they all return it (D-137).
+        // keeps a type only when they all return it (D-137), and none when
+        // a static overload may take it too, since statics are checked
+        // later (D-152).
         let unknown_parameter = applicable.iter().any(|&(index, params)| {
             params
                 .iter()
@@ -710,6 +715,9 @@ impl<'a> Check<'a> {
         if applicable.len() > 1 && (unknown_parameter || arguments.iter().any(Argument::is_unknown))
         {
             self.infer_literals(args, arguments);
+            if static_overload {
+                return None;
+            }
             return common_return(applicable.iter().map(|&(index, _)| &candidates[index]));
         }
         let beats = |&(a, a_params): &(usize, &[usize]), &(b, b_params): &(usize, &[usize])| {
