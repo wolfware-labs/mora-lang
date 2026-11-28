@@ -1791,6 +1791,13 @@ mod tests {
             assert_eq!(local_types(&text)[0], format!("a: {ty}"), "{line}");
             assert_eq!(reported(&text), expected, "{line}");
         }
+        // An `async` overload gives a future, which its declared return
+        // type does not say (D-137), so named arguments out of order leave
+        // the call no type.
+        let text = "F(a: int, b: int): int => a;\nasync F(a: string, b: int): int => b;\n\
+                    let x = F(a: 1, 2);\nlet y: string = x;\n";
+        assert_eq!(local_types(text)[0], "x: {error}");
+        assert_eq!(reported(text), ["MR0207"]);
         // An argument list the parser recovered from, which the parser
         // reports, leaves the overloads unchecked: the call has the type
         // they share, or else the error type, which takes the type expected
