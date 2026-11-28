@@ -1792,6 +1792,32 @@ mod tests {
     }
 
     #[test]
+    fn a_recovered_call_calls_nothing_and_shows_its_type() {
+        // The HIR dump shows the recovered type of a local, and the call
+        // records no callee, so nothing after inference reads one.
+        let text = "Two(x: int): int => 1;\nTwo(x: string): int => 2;\n\
+                    One(x: int): int => x;\nlet a = Two();\nlet b = One(x: 1, 2);\n";
+        let db = TestDb::new();
+        let project = app(&db, &[("src/Program.mr", text)]);
+        let file = file_named(&db, project, "src/Program.mr");
+        let dumped = hir_dump(&db, project, file);
+        assert!(dumped.contains("let a#0: int = Two{"), "{dumped}");
+        assert!(dumped.contains("let b#1: int = One{"), "{dumped}");
+        let body = body(&db, file, BodyOwner::TopLevel);
+        let inference = infer(&db, project, file, BodyOwner::TopLevel);
+        let calls: Vec<_> = body
+            .exprs
+            .iter()
+            .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
+            .map(|(call, _)| call)
+            .collect();
+        assert_eq!(calls.len(), 2);
+        for call in calls {
+            assert_eq!(inference.callee(call), None);
+        }
+    }
+
+    #[test]
     fn a_call_of_hidden_methods_keeps_the_type_they_return() {
         let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
                      private Secret(a: int): int => a;\n    private Mixed(): int => 1;\n    \
