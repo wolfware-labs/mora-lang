@@ -14,6 +14,13 @@
 //! `None` for it. An expression of unknown type, or of [`Ty::Error`], is
 //! never the cause of a diagnostic, so nothing is reported twice and
 //! nothing is reported about code this milestone does not check.
+//!
+//! An expression with a mistake keeps its diagnostic and gets a recovered
+//! type when one is known without guessing (§14.5, D-158, D-159): the type
+//! its call's candidates lead to, or else the type expected at its
+//! position. Only an expression with neither has [`Ty::Error`]. A
+//! recovered type is never the cause of a diagnostic of its own either:
+//! what it leads to would be reported once the first mistake is fixed.
 
 mod check;
 mod constant;
@@ -194,7 +201,8 @@ impl Inference {
 
     /// The type of `expr`: `None` while it is unknown, because a later
     /// milestone gives it meaning, and [`Ty::Error`] when a diagnostic says
-    /// why it has none.
+    /// why it has none. An expression with a diagnostic may also have a
+    /// known type, the one recovered for it (§14.5).
     pub fn expr(&self, expr: ExprId) -> Option<&Ty> {
         self.exprs.get(arena_index(expr))?.as_ref()
     }
