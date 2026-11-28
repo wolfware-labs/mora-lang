@@ -775,7 +775,7 @@ impl Check<'_> {
     /// The type of `expr`, recorded for it. A mistake keeps the type
     /// expected at its position (§14.5, D-159): an expression of the error
     /// type, which a diagnostic explains, has its target type when it has
-    /// one. A discarded element takes any type, so it keeps none.
+    /// one.
     fn expr(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
         if let Expect::Target(target) = expect
             && let Some(target) = numeric::as_numeric(target)
@@ -790,7 +790,6 @@ impl Check<'_> {
         }
         if let Expect::Target(target) = expect
             && ty == Some(Ty::Error)
-            && !matches!(self.body.exprs[expr], Expr::Discard)
         {
             ty = Some(target.clone());
         }
