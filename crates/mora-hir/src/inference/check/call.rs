@@ -333,16 +333,15 @@ impl<'a> Check<'a> {
         let Some(&called) = self.calls.get(&expr) else {
             return true;
         };
-        let Some(candidate) = candidates
-            .iter()
-            .find(|candidate| candidate.origin == called)
-        else {
-            return false;
-        };
         self.arguments.get(&expr).is_some_and(|params| {
-            params
+            candidates
                 .iter()
-                .any(|&param| !is_known(&candidate.params[param].ty))
+                .filter(|candidate| candidate.origin == called)
+                .any(|candidate| {
+                    params
+                        .iter()
+                        .any(|&param| !is_known(&candidate.params[param].ty))
+                })
         })
     }
 
