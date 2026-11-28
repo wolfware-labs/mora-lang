@@ -3643,6 +3643,80 @@ fn an_argument_left_without_a_type_leaves_the_call_to_statics() {
 }
 
 #[test]
+fn a_call_a_static_overload_may_take_through_a_type_not_known_yet_waits_for_statics() {
+    // A call through a value whose method has a static overload, with an
+    // argument or the parameter it goes to of a type not known yet, may be
+    // the static one's (D-137, D-152): inference leaves it uncalled, and
+    // the body waits for statics instead of calling an instance method.
+    let one = "public M(a: int, b: int): int => b;\n    \
+               public static M(a: string, b: int): string => a;";
+    let options = "public M(a: int?, b: int): int => b;\n    \
+                   public M(a: string?, b: int): int => b;\n    \
+                   public static M(a: string, b: int): string => a;";
+    let two = "public K(x: int, y: string): int => x;\n    \
+               public K(x: int, y: bool): int => x;\n    \
+               public static K(x: string, y: string): string => x;";
+    for (methods, call) in [
+        // An argument of a type not known yet, to one instance method.
+        (one, "s.M(Console.ReadLine(), 1)"),
+        // Every argument known, both instance overloads taking the first
+        // through an option parameter.
+        (options, "s.M(1, 1)"),
+        // One instance overload left by the known argument, the other
+        // argument of a type not known yet.
+        (two, "s.K(Console.ReadLine(), \"a\")"),
+    ] {
+        let text = format!(
+            "struct S {{\n    public X: int;\n    {methods}\n}}\n\
+             F(s: S) {{\n    let p = {call};\n}}\n"
+        );
+        assert_eq!(
+            later_error(&text, |l| l.owner("F")),
+            "internal error lowering UsersApi.F: a static member named through a value is not lowered until M3.13",
+            "{call}"
+        );
+    }
+}
+
+#[test]
+fn a_call_with_every_type_known_calls_the_instance_method_beside_a_static_one() {
+    // The first declaration of the name is the instance method the call
+    // takes: `M(a: int, b: int)` and `K(x: int, y: string)`.
+    for (methods, call, name) in [
+        (
+            "public M(a: int, b: int): int => b;\n    \
+             public static M(a: string, b: int): string => a;",
+            "s.M(1, 1)",
+            "M",
+        ),
+        (
+            "public K(x: int, y: string): int => x;\n    \
+             public K(x: int, y: bool): int => x;\n    \
+             public static K(x: string, y: string): string => x;",
+            "s.K(1, \"a\")",
+            "K",
+        ),
+    ] {
+        let text = format!(
+            "struct S {{\n    public X: int;\n    {methods}\n}}\n\
+             F(s: S) {{\n    let p = {call};\n}}\n"
+        );
+        let lowered = lowered(&text);
+        let callees: Vec<&Callee> = lowered.mir("F").bodies[0]
+            .blocks
+            .iter()
+            .filter_map(|block| match &block.terminator.kind {
+                TerminatorKind::Call { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(callees, [&Callee::Item(lowered.item(name))], "{call}");
+        // The receiver is the call's first argument.
+        assert_in_order(&lowered.code("F"), &["_7 = &in (*s#0);"]);
+    }
+}
+
+#[test]
 fn a_discarded_value_is_evaluated_and_dropped() {
     let lowered =
         lowered("F(a: int) {\n    _ = a + 1;\n}\nG(): int => 1;\nH() {\n    _ = G();\n}\n");
