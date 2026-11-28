@@ -254,7 +254,14 @@ impl<'a> Check<'a> {
         if let [candidate] = candidates.as_slice() {
             let reported = self.errors.len();
             let ty = self.call_one(expr, candidate, args, &arguments);
-            return self.unless_static_overload(expr, callee, reported, &arguments, ty);
+            return self.unless_static_overload(
+                expr,
+                callee,
+                reported,
+                &candidates,
+                &arguments,
+                ty,
+            );
         }
         let reported = self.errors.len();
         let ty = self.call_overloads(expr, &candidates, args, &arguments);
@@ -277,27 +284,28 @@ impl<'a> Check<'a> {
                 });
             }
         }
-        self.unless_static_overload(expr, callee, reported, &arguments, ty)
+        self.unless_static_overload(expr, callee, reported, &candidates, &arguments, ty)
     }
 
     /// The type `ty` of the call `expr`, unless a static method of the
     /// name may be what it calls through a value: that is a static member
     /// named through a value, which is not checked before statics (D-152).
     /// A static overload may take the call when the instance methods do
-    /// not, as what the call reported since `reported` says, or when one of
-    /// its `arguments` has a type not known yet, which fits any parameter
-    /// (D-137). Then what the call reported is dropped, and it calls
-    /// nothing and has no type.
+    /// not, as what the call reported since `reported` says, or when an
+    /// argument or the parameter of `candidates` it goes to has a type not
+    /// known yet, which fits anything (D-137). Then what the call reported
+    /// is dropped, and it calls nothing and has no type.
     fn unless_static_overload(
         &mut self,
         expr: ExprId,
         callee: ExprId,
         reported: usize,
+        candidates: &[Candidate<'_>],
         arguments: &[Argument],
         ty: Option<Ty>,
     ) -> Option<Ty> {
         let instance_fails = self.errors.len() > reported;
-        if !(instance_fails || arguments.iter().any(Argument::is_unknown))
+        if !(instance_fails || self.takes_unknown(expr, candidates, arguments))
             || !self.has_static_overload(callee)
         {
             return ty;
@@ -306,6 +314,36 @@ impl<'a> Check<'a> {
         self.calls.remove(&expr);
         self.arguments.remove(&expr);
         None
+    }
+
+    /// Whether the call `expr` of `candidates`, which reported nothing,
+    /// takes its `arguments` only through a type not known yet: one of
+    /// them has one, or the parameter it goes to in the function called
+    /// does. A call that calls nothing without a report is one that such a
+    /// type leaves unresolved (D-137).
+    fn takes_unknown(
+        &self,
+        expr: ExprId,
+        candidates: &[Candidate<'_>],
+        arguments: &[Argument],
+    ) -> bool {
+        if arguments.iter().any(Argument::is_unknown) {
+            return true;
+        }
+        let Some(&called) = self.calls.get(&expr) else {
+            return true;
+        };
+        let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.origin == called)
+        else {
+            return false;
+        };
+        self.arguments.get(&expr).is_some_and(|params| {
+            params
+                .iter()
+                .any(|&param| !is_known(&candidate.params[param].ty))
+        })
     }
 
     /// The type a call of `candidates` through `callee` that calls none of

@@ -1996,6 +1996,36 @@ mod tests {
     }
 
     #[test]
+    fn a_call_through_a_value_waits_for_a_static_one_on_an_unknown_parameter() {
+        // A parameter of a type not known yet, as an option today, fits any
+        // argument (D-137): an instance overload that takes the call only
+        // through one leaves it to a static overload too (D-152).
+        let statics = "    public static M(a: string, b: int): string => a;\n}\n";
+        for (methods, local) in [
+            // Both overloads take the call, and are not ranked.
+            (
+                "    public M(a: int?, b: int): int => b;\n    \
+                 public M(a: string?, b: int): int => b;\n",
+                "p: ?",
+            ),
+            // The second argument leaves one, which takes the first through
+            // its option parameter.
+            (
+                "    public M(a: int?, b: int): int => b;\n    \
+                 public M(a: int?, b: bool): int => 1;\n",
+                "p: ?",
+            ),
+        ] {
+            let store = format!("public struct S {{\n    public X: int;\n{methods}{statics}");
+            let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(1, 1);\n    \
+                           let q: string = p;\n}\n";
+            let (locals, found) = locals_beside_store(program, &store);
+            assert_eq!(locals[1], local, "{methods}");
+            assert_eq!(found, Vec::<String>::new(), "{methods}");
+        }
+    }
+
+    #[test]
     fn a_chosen_overload_through_a_value_waits_for_a_static_one_on_an_unknown_argument() {
         // An argument of the error type rules no overload out: the one
         // instance overload the other argument leaves is not called while a
