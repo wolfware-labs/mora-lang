@@ -1759,6 +1759,8 @@ mod tests {
                      Two(x: int): int => 1;\nTwo(x: string): int => 2;\n\
                      Scale(x: int, factor: long): int => 1;\nScale(x: long, factor: int): int => 2;\n\
                      Mixed(x: int, y: long): int => 1;\nMixed(x: long, y: int): string => \"\";\n\
+                     Tie(x: int, f: long): int => 1;\nTie(x: long, f: int): int => 2;\n\
+                     Tie(x: long, f: long): string => \"\";\n\
                      Greet(name: string, greeting: string = \"Hello\"): string => greeting;\n";
         for (line, ty, expected) in [
             // The first argument rules out the second overload.
@@ -1776,6 +1778,8 @@ mod tests {
             // The tied overloads of an ambiguous call.
             ("let a = Scale(2, 3);", "int", vec!["MR0206", "MR0203"]),
             ("let a = Mixed(2, 3);", "{error}", vec!["MR0206"]),
+            // An applicable overload that both tied ones beat is not tied.
+            ("let a = Tie(2, 3);", "int", vec!["MR0206", "MR0203"]),
             // One declaration gives its return type.
             (
                 "let a = Greet(greeting: \"Hi\", \"Ada\");",

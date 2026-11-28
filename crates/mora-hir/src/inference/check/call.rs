@@ -720,14 +720,18 @@ impl<'a> Check<'a> {
             .find(|a| applicable.iter().all(|b| a.0 == b.0 || beats(a, b)));
         let Some(&(index, params)) = best else {
             self.infer_literals(args, arguments);
-            let tied = listed(self, &mut applicable.iter().map(|&(index, _)| index));
+            let listed = listed(self, &mut applicable.iter().map(|&(index, _)| index));
             self.errors.push(TypeError::Ambiguous {
                 expr,
                 name: candidates[0].name.to_owned(),
-                candidates: tied,
+                candidates: listed,
             });
-            // The tied overloads lead to the type they all return (D-158).
-            let tied = applicable.iter().map(|&(index, _)| &candidates[index]);
+            // The tied overloads, those no other applicable one beats, lead
+            // to the type they all return (D-158).
+            let tied = applicable
+                .iter()
+                .filter(|a| !applicable.iter().any(|b| a.0 != b.0 && beats(b, a)))
+                .map(|&(index, _)| &candidates[index]);
             return Some(common_return(tied).unwrap_or(Ty::Error));
         };
         let candidate = &candidates[index];
