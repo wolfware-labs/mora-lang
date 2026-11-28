@@ -2,7 +2,7 @@
 
 Version 0.1 (draft). Status: under review.
 
-Mora is a programming language with familiar curly-brace syntax, memory managed by reference counting and single ownership instead of a garbage collector, and compilation to a single native executable. This document is the design the MVP is built against. It defines the language, its memory model, the runtime, the standard library surface the MVP ships, the compiler architecture and the toolchain. Work that comes after the MVP is specified at the level needed to keep MVP decisions compatible with it.
+Mora is a programming language that compiles to a single native executable, with memory managed by reference counting and single ownership instead of a garbage collector. This document is the design the MVP is built against. It defines the language, its memory model, the runtime, the standard library surface the MVP ships, the compiler architecture and the toolchain. Work that comes after the MVP is specified at the level needed to keep MVP decisions compatible with it.
 
 In linguistics a *mora* is the unit of timing that decides a syllable's weight, written μ. In Spanish, *mora* is a blackberry.
 
