@@ -722,12 +722,17 @@ impl<'a> Check<'a> {
             self.infer_literals(args, arguments);
             // The tied overloads, those no other applicable one beats, are
             // the candidates of the error, and lead to the type they all
-            // return (D-158).
-            let tied: Vec<usize> = applicable
+            // return (D-158). Overloads can beat each other in a cycle, as
+            // types that do not convert either way compare equal: then
+            // none is unbeaten, and every applicable one is tied.
+            let mut tied: Vec<usize> = applicable
                 .iter()
                 .filter(|a| !applicable.iter().any(|b| a.0 != b.0 && beats(b, a)))
                 .map(|&(index, _)| index)
                 .collect();
+            if tied.is_empty() {
+                tied = applicable.iter().map(|&(index, _)| index).collect();
+            }
             let listed = listed(self, &mut tied.iter().copied());
             self.errors.push(TypeError::Ambiguous {
                 expr,

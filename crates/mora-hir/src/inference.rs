@@ -420,7 +420,8 @@ pub(crate) enum TypeError {
     },
     /// Of the overloads named `name` applicable to the call `expr`, none is
     /// better than the others; each tied one, which no other applicable
-    /// overload beats, with its signature (`MR0206`).
+    /// overload beats, or each applicable one when they beat each other in
+    /// a cycle, with its signature (`MR0206`).
     Ambiguous {
         expr: ExprId,
         name: String,
@@ -2901,6 +2902,24 @@ mod tests {
             listed,
             ["`Tie(x: int, f: long): int`", "`Tie(x: long, f: int): int`"]
         );
+    }
+
+    #[test]
+    fn an_ambiguous_call_whose_overloads_beat_each_other_in_a_cycle_lists_them_all() {
+        // Each overload beats the next and loses to the one before, so none
+        // is unbeaten: every applicable one is tied.
+        let text = "F(a: byte, b: sbyte, c: ushort): int => 1;\n\
+                    F(a: ushort, b: byte, c: sbyte): int => 2;\n\
+                    F(a: sbyte, b: ushort, c: byte): int => 3;\n\
+                    let x = F(1, 1, 1);\nlet y: bool = x;\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(codes(&reported), ["MR0206", "MR0203"]);
+        assert_eq!(
+            reported[0].primary.message.as_deref(),
+            Some("3 overloads fit equally well")
+        );
+        assert_eq!(reported[0].secondary.len(), 3);
+        assert_eq!(local_types(text)[0], "x: int");
     }
 
     /// Which declaration of `O`, counted from 0, the call of `O` in the
