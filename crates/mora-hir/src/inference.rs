@@ -2113,6 +2113,47 @@ mod tests {
     }
 
     #[test]
+    fn a_literal_operation_of_a_call_left_to_statics_is_checked_once() {
+        // An operation made only of literals whose parts the instance
+        // parameter converts, in a call a static overload may take: the
+        // call calls nothing and has no type, and what the instance check
+        // recorded on the operation's parts is not recorded twice.
+        let int_m = "public M(x: int): int => x;\n    \
+                     public static M(x: string): string => x;";
+        let k = "public K(x: int, y: string): int => x;\n    \
+                 public K(x: int, y: bool): int => x;\n    \
+                 public static K(x: string, y: string): string => x;";
+        let string_m = "public M(a: string): int => 1;\n    \
+                        public static M(a: bool): string => \"\";";
+        let cases = [
+            (int_m, "s.M(1 + 2.5)"),
+            (k, "s.K(1 + 2.5, true)"),
+            (k, "s.K(1 + 2.5, cout)"),
+            (string_m, "s.M(1 + 1.5)"),
+            (string_m, "s.M(3000000000 + 1)"),
+        ];
+        let found: Vec<_> = cases
+            .iter()
+            .map(|(methods, call)| {
+                let store = format!("public struct S {{\n    public X: int;\n    {methods}\n}}\n");
+                let program = format!("F(s: UsersApi.Store.S) {{\n    let a = {call};\n}}\n");
+                let (locals, calls, codes) = calls_beside_store(&program, &store);
+                format!("{call}: {} {calls:?} {codes:?}", locals[1])
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "s.M(1 + 2.5): a: ? [false] []",
+                "s.K(1 + 2.5, true): a: ? [false] []",
+                "s.K(1 + 2.5, cout): a: ? [false] [\"MR0127\"]",
+                "s.M(1 + 1.5): a: ? [false] []",
+                "s.M(3000000000 + 1): a: ? [false] []",
+            ]
+        );
+    }
+
+    #[test]
     fn a_recovered_type_adds_no_diagnostic() {
         // Each mistake is reported once, and only once.
         let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
