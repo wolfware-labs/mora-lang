@@ -1947,15 +1947,17 @@ mod tests {
                      public M(a: int, b: int): int => a;\n    \
                      public static M(a: string, b: int): string => a;\n    \
                      private N(): int => 1;\n    public static N(): string => \"\";\n}\n";
-        for (line, local, code) in [
-            ("let p = s.M(b: 1, \"x\");", "p: {error}", "MR0207"),
-            ("let p = s.N();", "p: {error}", "MR0129"),
+        for (line, local, expected) in [
+            ("let p = s.M(b: 1, \"x\");", "p: {error}", vec!["MR0207"]),
+            ("let p = s.N();", "p: {error}", vec!["MR0129"]),
+            // The parser reports the missing argument itself.
+            ("let p = s.M(, 1);", "p: {error}", vec![]),
         ] {
             let program =
                 format!("F(s: UsersApi.Store.S) {{\n    {line}\n    let q: string = p;\n}}\n");
             let (locals, found) = locals_beside_store(&program, store);
             assert_eq!(locals[1], local, "{line}");
-            assert_eq!(found, [code], "{line}");
+            assert_eq!(found, expected, "{line}");
         }
     }
 

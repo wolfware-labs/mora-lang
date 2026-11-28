@@ -181,7 +181,7 @@ impl<'a> Check<'a> {
         // of its candidates return (D-158).
         if args.iter().any(|arg| self.body.is_missing(arg.expr)) {
             self.args(args);
-            return Some(common_return(candidates.iter()).unwrap_or(Ty::Error));
+            return Some(self.uncalled_return(callee, &candidates));
         }
         // The arguments that take no type from their parameter come first,
         // so that the overloads they cannot go to are ruled out before a
