@@ -1712,6 +1712,66 @@ mod tests {
         assert_eq!(expr_types(text)[0], "cout: {error}");
     }
 
+    /// The type of the first expression of the top-level statements of
+    /// `text` written as `written`, as [`expr_types`] shows it.
+    fn type_at(text: &str, written: &str) -> String {
+        let prefix = format!("{written}: ");
+        expr_types(text)
+            .into_iter()
+            .find_map(|shown| shown.strip_prefix(&prefix).map(str::to_owned))
+            .unwrap_or_else(|| panic!("no expression `{written}` in {text}"))
+    }
+
+    #[test]
+    fn a_mistake_takes_the_type_expected_at_its_position() {
+        // D-159: whatever the mistake, the expression has the type its
+        // position expects, and the error type where none is expected.
+        let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
+        for (line, written, ty) in [
+            ("let x: int = cout;", "cout", "int"),
+            ("let x: int = Lenght(s);", "Lenght(s)", "int"),
+            ("let x: int = int;", "int", "int"),
+            ("let x: int = P;", "P", "int"),
+            ("let x: int = P();", "P()", "int"),
+            ("let x: int = UsersApi;", "UsersApi", "int"),
+            ("let x: int = 0x;", "0x", "int"),
+            ("let x: double = 1e400;", "1e400", "double"),
+            ("let x: int = s - 1;", "s - 1", "int"),
+            ("let x: int = -s;", "-s", "int"),
+            ("let x: int = n();", "n()", "int"),
+            ("let x: (int, string) = (cout, s);", "cout", "int"),
+            ("let x: bool = n == 1 ? cout : true;", "cout", "bool"),
+            ("let y = cout;", "cout", "{error}"),
+            ("let y = Lenght(s);", "Lenght(s)", "{error}"),
+            ("let y = s - 1;", "s - 1", "{error}"),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(type_at(&text, written), ty, "{line}");
+        }
+        // A missing expression, which the parser reports: here the one in
+        // the parentheses, whose range starts at `(`.
+        assert_eq!(type_at("let x: int = (;\n", "("), "int");
+    }
+
+    #[test]
+    fn a_recovered_type_adds_no_diagnostic() {
+        // Each mistake is reported once, and only once.
+        let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
+        for (line, expected) in [
+            ("let x: int = cout;", vec!["MR0127"]),
+            ("let x: int = Lenght(s);", vec!["MR0127"]),
+            ("let x: int = P;", vec!["MR0127"]),
+            ("let x: int = P();", vec!["MR0127"]),
+            ("let x: int = int;", vec!["MR0127"]),
+            ("let x: int = s - 1;", vec!["MR0204"]),
+            ("let x: int = n();", vec!["MR0208"]),
+            ("var a = 1;\n(a, cout) += (1, 2);", vec!["MR0127"]),
+        ] {
+            let text = format!("{decls}{line}\n");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
+    }
+
     #[test]
     fn equality_and_ordering_cover_bool_char_and_string() {
         let text = "let a = \"a\" == \"b\";\nlet b = 'a' != 'b';\nlet c = true == false;\n\

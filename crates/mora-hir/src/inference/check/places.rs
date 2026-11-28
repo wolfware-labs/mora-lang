@@ -19,31 +19,37 @@ impl Check<'_> {
     /// a type keyword anywhere but as a receiver, as `int` in `int.Parse`.
     pub(super) fn types_as_values(&mut self) {
         let body = self.body;
-        // Where a type may stand is looked up only once an expression names
-        // a type or is a type keyword, which most bodies have none of.
-        let mut type_allowed: Option<Vec<bool>> = None;
-        let mut allowed = |expr: ExprId| {
-            type_allowed.get_or_insert_with(|| type_positions(body))[arena_index(expr)]
-        };
         for (expr, node) in body.exprs.iter() {
-            match node {
-                Expr::Type(_) => {
-                    if !allowed(expr) {
-                        self.errors.push(TypeError::TypeKeywordAsValue { expr });
-                    }
-                    continue;
-                }
-                // Only a path or a member names a type or a namespace.
-                Expr::Path(_) | Expr::Member { .. } => {}
-                _ => continue,
-            }
-            let Some(named) = self.named_type(expr) else {
+            if !self.is_type_as_value(expr) {
                 continue;
+            }
+            let error = match node {
+                Expr::Type(_) => TypeError::TypeKeywordAsValue { expr },
+                _ => match self.named_type(expr) {
+                    Some(named) => TypeError::TypeAsValue { expr, named },
+                    None => continue,
+                },
             };
-            if allowed(expr) && !self.member_of_value(expr) {
-                continue;
+            self.errors.push(error);
+        }
+    }
+
+    /// Whether `expr` names a type, a type keyword or a namespace where a
+    /// value is expected, which [`Check::types_as_values`] reports.
+    pub(super) fn is_type_as_value(&self, expr: ExprId) -> bool {
+        // Where a type may stand is looked up only once an expression names
+        // a type or is a type keyword.
+        let allowed = |expr: ExprId| {
+            self.type_positions
+                .get_or_init(|| type_positions(self.body))[arena_index(expr)]
+        };
+        match &self.body.exprs[expr] {
+            Expr::Type(_) => !allowed(expr),
+            // Only a path or a member names a type or a namespace.
+            Expr::Path(_) | Expr::Member { .. } => {
+                self.named_type(expr).is_some() && (!allowed(expr) || self.member_of_value(expr))
             }
-            self.errors.push(TypeError::TypeAsValue { expr, named });
+            _ => false,
         }
     }
 

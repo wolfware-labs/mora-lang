@@ -136,6 +136,12 @@ impl<'a> Check<'a> {
                 self.unchecked_call(args);
                 return Some(Ty::Never);
             }
+            // A callee that is a mistake, as a name that is not found, says
+            // so itself; the call has the type expected of it (D-159).
+            Callees::Unknown if self.exprs[arena_index(callee)] == Some(Ty::Error) => {
+                self.unchecked_call(args);
+                return Some(Ty::Error);
+            }
             // Nothing gives an argument of a function of the standard
             // library a target type while the library is not loaded.
             Callees::Unknown if self.is_external(callee) => return self.external_call(args),

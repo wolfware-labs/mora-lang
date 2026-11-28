@@ -4,7 +4,7 @@ mod call;
 mod places;
 mod static_member;
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 
 use la_arena::ArenaMap;
 use mora_span::{Db, Project, SourceFile};
@@ -162,6 +162,7 @@ pub(super) fn infer_body(
         item: None,
         tree: Cell::new(None),
         signature: Cell::new(None),
+        type_positions: OnceCell::new(),
     };
     check.locals = body
         .locals
@@ -319,6 +320,10 @@ struct Check<'a> {
     /// The signature read last, with its item: the members a body uses
     /// are mostly those of one struct.
     signature: Cell<Option<(ItemId, &'a Signature)>>,
+    /// Whether each expression, by its index, stands where a type may,
+    /// found once an expression names a type, which most bodies have none
+    /// of.
+    type_positions: OnceCell<Vec<bool>>,
 }
 
 impl<'a> Check<'a> {
@@ -767,7 +772,10 @@ impl Check<'_> {
         }
     }
 
-    /// The type of `expr`, recorded for it.
+    /// The type of `expr`, recorded for it. A mistake keeps the type
+    /// expected at its position (§14.5, D-159): an expression of the error
+    /// type, which a diagnostic explains, has its target type when it has
+    /// one. A discarded element takes any type, so it keeps none.
     fn expr(&mut self, expr: ExprId, expect: Expect<'_>) -> Option<Ty> {
         if let Expect::Target(target) = expect
             && let Some(target) = numeric::as_numeric(target)
@@ -775,7 +783,17 @@ impl Check<'_> {
         {
             return Some(ty);
         }
-        let ty = self.expr_kind(expr, expect);
+        let mut ty = self.expr_kind(expr, expect);
+        // A type or a namespace is no value (`MR0127`, D-154).
+        if ty.is_none() && self.is_type_as_value(expr) {
+            ty = Some(Ty::Error);
+        }
+        if let Expect::Target(target) = expect
+            && ty == Some(Ty::Error)
+            && !matches!(self.body.exprs[expr], Expr::Discard)
+        {
+            ty = Some(target.clone());
+        }
         self.exprs[arena_index(expr)].clone_from(&ty);
         ty
     }
