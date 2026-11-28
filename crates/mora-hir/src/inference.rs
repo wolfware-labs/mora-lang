@@ -1494,6 +1494,7 @@ mod tests {
             // A name that did not resolve in the left tuple is the mistake
             // too, as one in the right operand is.
             ("(x, Nope) += (1, 2);", vec!["MR0127"]),
+            ("(x, Nope()) += (1, 2);", vec!["MR0127"]),
             ("(int, x) += 1;", vec!["MR0127"]),
             ("((x, Nope), y) += ((1, 2), 3);", vec!["MR0127"]),
             ("(x, _) += One(1);", vec!["MR0205"]),
@@ -1800,6 +1801,10 @@ mod tests {
                     let x = F(a: 1, 2);\nlet y: string = x;\n";
         assert_eq!(local_types(text)[0], "x: {error}");
         assert_eq!(reported(text), ["MR0207"]);
+        // A recovered call's type is the generated `Main`'s return type, so
+        // a later `return` of another type is the second mistake.
+        let text = format!("{decls}return O(1, 2);\nreturn \"s\";\n");
+        assert_eq!(reported(&text), ["MR0205", "MR0203"]);
         // An argument list the parser recovered from, which the parser
         // reports, leaves the overloads unchecked: the call has the type
         // they share, or else the error type, which takes the type expected
