@@ -1754,6 +1754,72 @@ mod tests {
     }
 
     #[test]
+    fn a_call_that_is_an_error_keeps_the_type_its_candidates_lead_to() {
+        // D-158: the overloads the correct arguments still allow, or all of
+        // them when none is left, give the type they all return.
+        let decls = "O(x: int, flag: bool): int => 1;\nO(x: string, flag: bool): string => \"\";\n\
+                     Two(x: int): int => 1;\nTwo(x: string): int => 2;\n\
+                     Scale(x: int, factor: long): int => 1;\nScale(x: long, factor: int): int => 2;\n\
+                     Mixed(x: int, y: long): int => 1;\nMixed(x: long, y: int): string => \"\";\n\
+                     Greet(name: string, greeting: string = \"Hello\"): string => greeting;\n";
+        for (line, ty, expected) in [
+            // The first argument rules out the second overload.
+            ("let a = O(1, 2);", "int", vec!["MR0205", "MR0203"]),
+            ("let a = O(\"s\", 2);", "string", vec!["MR0205", "MR0203"]),
+            // No overload takes one argument as the other does.
+            ("let a = O(true, 2);", "{error}", vec!["MR0205"]),
+            // Nothing is left: a wrong count, an unknown name, a name given
+            // by position too, named arguments out of order.
+            ("let a = Two();", "int", vec!["MR0205", "MR0203"]),
+            ("let a = Two(1, z: 2);", "int", vec!["MR0205", "MR0203"]),
+            ("let a = Two(1, x: 2);", "int", vec!["MR0207", "MR0203"]),
+            ("let a = Two(x: 1, 2);", "int", vec!["MR0207", "MR0203"]),
+            ("let a = O();", "{error}", vec!["MR0205"]),
+            // The tied overloads of an ambiguous call.
+            ("let a = Scale(2, 3);", "int", vec!["MR0206", "MR0203"]),
+            ("let a = Mixed(2, 3);", "{error}", vec!["MR0206"]),
+            // One declaration gives its return type.
+            (
+                "let a = Greet(greeting: \"Hi\", \"Ada\");",
+                "string",
+                vec!["MR0207", "MR0203"],
+            ),
+        ] {
+            let text = format!("{decls}{line}\nlet later: bool = a;\n");
+            assert_eq!(local_types(&text)[0], format!("a: {ty}"), "{line}");
+            assert_eq!(reported(&text), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_call_of_hidden_methods_keeps_the_type_they_return() {
+        let store = "public struct S {\n    public X: int;\n    private Secret(): int => 1;\n    \
+                     private Secret(a: int): int => a;\n    private Mixed(): int => 1;\n    \
+                     private Mixed(a: int): string => \"\";\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let a = s.Secret();\n    let b = s.Mixed();\n    \
+                       let c: bool = a;\n    let d: bool = b;\n}\n";
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let f = item_tree(&db, file)
+            .items()
+            .find(|(_, data)| data.name == "F")
+            .map(|(item, _)| item)
+            .unwrap();
+        assert_eq!(
+            types_of_locals(&db, project, file, BodyOwner::Item(f)),
+            ["s: S", "a: int", "b: {error}", "c: bool", "d: bool"]
+        );
+        assert_eq!(
+            codes(diagnostics(&db, project)),
+            ["MR0129", "MR0129", "MR0203"]
+        );
+    }
+
+    #[test]
     fn a_recovered_type_adds_no_diagnostic() {
         // Each mistake is reported once, and only once.
         let decls = "public struct P {\n    public X: int;\n}\nlet s = \"a\";\nlet n = 1;\n";
@@ -3100,12 +3166,17 @@ mod tests {
             &[("src/Program.mr", program), ("src/Store/S.mr", store)],
         );
         let found = diagnostics(&db, project);
-        assert_eq!(codes(found), ["MR0129", "MR0129", "MR0203"]);
+        // A hidden method's call keeps its return type (D-158), so the
+        // `int` it gives a `string` is reported too.
         assert_eq!(
-            found[0].message,
+            codes(found),
+            ["MR0203", "MR0129", "MR0203", "MR0129", "MR0203"]
+        );
+        assert_eq!(
+            found[1].message,
             "`Secret` is private to the type that declares it"
         );
-        assert_eq!(&program[found[0].primary.span.range], "Secret");
+        assert_eq!(&program[found[1].primary.span.range], "Secret");
         // Inside its type, a private method is visible.
         let db = TestDb::new();
         let project = app(&db, &[("src/Program.mr", store)]);
