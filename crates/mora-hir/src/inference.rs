@@ -1976,6 +1976,23 @@ mod tests {
         let (locals, found) = locals_beside_store(program, store);
         assert_eq!(locals[1], "p: ?");
         assert_eq!(found, Vec::<String>::new());
+        // One instance method that takes the call only because an
+        // argument's type is not known yet leaves it to statics as well;
+        // with every argument's type known, the instance method is called.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int, b: int): int => a;\n    \
+                     public static M(a: string, b: int): string => a;\n}\n";
+        for (call, local, expected) in [
+            ("s.M(Console.ReadLine(), 1)", "p: ?", vec![]),
+            ("s.M(1, 1)", "p: int", vec!["MR0203"]),
+        ] {
+            let program = format!(
+                "F(s: UsersApi.Store.S) {{\n    let p = {call};\n    let q: string = p;\n}}\n"
+            );
+            let (locals, found) = locals_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{call}");
+            assert_eq!(found, expected, "{call}");
+        }
     }
 
     #[test]

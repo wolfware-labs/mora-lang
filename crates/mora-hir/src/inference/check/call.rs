@@ -254,6 +254,17 @@ impl<'a> Check<'a> {
         if let [candidate] = candidates.as_slice() {
             let reported = self.errors.len();
             let ty = self.call_one(expr, candidate, args, &arguments);
+            // An argument of a type not known yet fits the instance method
+            // and may fit a static overload as well, which is checked later
+            // (D-137, D-152): the call calls neither yet.
+            if static_overload
+                && self.errors.len() == reported
+                && arguments.iter().any(Argument::is_unknown)
+            {
+                self.calls.remove(&expr);
+                self.arguments.remove(&expr);
+                return None;
+            }
             return self.unless_static_overload(expr, callee, reported, ty);
         }
         let reported = self.errors.len();
