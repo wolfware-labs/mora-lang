@@ -1,5 +1,5 @@
-// An operator that its operands do not have takes the type expected at
-// its position (§14.5, D-159), so a later mistake in the same body is
-// reported too.
+// An operator that its operands do not have is reported once, and the
+// local keeps its declared type (§14.5), so a later mistake in the same
+// body is reported too.
 let total: int = "a" - 1; //~ ERROR MR0204
 let label: string = total; //~ ERROR MR0203

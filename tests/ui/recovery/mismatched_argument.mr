@@ -1,6 +1,6 @@
-// A call of one function with a wrong argument keeps the function's
-// return type (§14.5, D-158), so a later mistake that uses it is reported
-// too.
+// A call of one function with a wrong argument is reported once and keeps
+// the function's declared return type (§14.5), so a later mistake that
+// uses it is reported too.
 Length(text: string): int => 0;
 
 let n = Length(1); //~ ERROR MR0203
