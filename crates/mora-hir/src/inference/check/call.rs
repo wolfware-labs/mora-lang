@@ -720,19 +720,22 @@ impl<'a> Check<'a> {
             .find(|a| applicable.iter().all(|b| a.0 == b.0 || beats(a, b)));
         let Some(&(index, params)) = best else {
             self.infer_literals(args, arguments);
-            let listed = listed(self, &mut applicable.iter().map(|&(index, _)| index));
+            // The tied overloads, those no other applicable one beats, are
+            // the candidates of the error, and lead to the type they all
+            // return (D-158).
+            let tied: Vec<usize> = applicable
+                .iter()
+                .filter(|a| !applicable.iter().any(|b| a.0 != b.0 && beats(b, a)))
+                .map(|&(index, _)| index)
+                .collect();
+            let listed = listed(self, &mut tied.iter().copied());
             self.errors.push(TypeError::Ambiguous {
                 expr,
                 name: candidates[0].name.to_owned(),
                 candidates: listed,
             });
-            // The tied overloads, those no other applicable one beats, lead
-            // to the type they all return (D-158).
-            let tied = applicable
-                .iter()
-                .filter(|a| !applicable.iter().any(|b| a.0 != b.0 && beats(b, a)))
-                .map(|&(index, _)| &candidates[index]);
-            return Some(common_return(tied).unwrap_or(Ty::Error));
+            let ret = common_return(tied.iter().map(|&index| &candidates[index]));
+            return Some(ret.unwrap_or(Ty::Error));
         };
         let candidate = &candidates[index];
         for ((arg, argument), &param) in args.iter().zip(arguments).zip(params) {

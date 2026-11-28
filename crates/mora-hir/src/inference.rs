@@ -419,7 +419,8 @@ pub(crate) enum TypeError {
         candidates: Vec<(ItemId, String)>,
     },
     /// Of the overloads named `name` applicable to the call `expr`, none is
-    /// better than the others; each of them with its signature (`MR0206`).
+    /// better than the others; each tied one, which no other applicable
+    /// overload beats, with its signature (`MR0206`).
     Ambiguous {
         expr: ExprId,
         name: String,
@@ -2853,6 +2854,29 @@ mod tests {
         assert_eq!(reported[0].secondary.len(), 2);
         assert_eq!(reported[1].message, "the call of `Q` is ambiguous");
         assert_eq!(reported[1].secondary.len(), 2);
+    }
+
+    #[test]
+    fn an_ambiguous_call_lists_only_the_tied_overloads() {
+        // An applicable overload that both tied ones beat is no candidate
+        // of the ambiguity.
+        let text = "Tie(x: int, f: long): int => 1;\nTie(x: long, f: int): int => 2;\n\
+                    Tie(x: long, f: long): string => \"\";\nlet a = Tie(2, 3);\n";
+        let reported = diagnostics_of(text);
+        assert_eq!(codes(&reported), ["MR0206"]);
+        assert_eq!(
+            reported[0].primary.message.as_deref(),
+            Some("2 overloads fit equally well")
+        );
+        let listed: Vec<_> = reported[0]
+            .secondary
+            .iter()
+            .filter_map(|label| label.message.as_deref())
+            .collect();
+        assert_eq!(
+            listed,
+            ["`Tie(x: int, f: long): int`", "`Tie(x: long, f: int): int`"]
+        );
     }
 
     /// Which declaration of `O`, counted from 0, the call of `O` in the
