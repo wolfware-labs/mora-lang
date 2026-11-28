@@ -2025,6 +2025,37 @@ mod tests {
         }
     }
 
+    /// Each local of `F` in `program` beside `store` (as
+    /// [`locals_beside_store`]), whether each call in `F` has a callee, and
+    /// the codes the project reports.
+    fn calls_beside_store(program: &str, store: &str) -> (Vec<String>, Vec<bool>, Vec<String>) {
+        let db = TestDb::new();
+        let project = app(
+            &db,
+            &[("src/Program.mr", program), ("src/Store/S.mr", store)],
+        );
+        let file = file_named(&db, project, "src/Program.mr");
+        let f = item_tree(&db, file)
+            .items()
+            .find(|(_, data)| data.name == "F")
+            .map(|(item, _)| item)
+            .unwrap();
+        let owner = BodyOwner::Item(f);
+        let body = body(&db, file, owner);
+        let inference = infer(&db, project, file, owner);
+        let calls = body
+            .exprs
+            .iter()
+            .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
+            .map(|(call, _)| inference.callee(call).is_some())
+            .collect();
+        (
+            types_of_locals(&db, project, file, owner),
+            calls,
+            codes(diagnostics(&db, project)),
+        )
+    }
+
     #[test]
     fn a_chosen_overload_through_a_value_waits_for_a_static_one_on_an_unknown_argument() {
         // An argument of the error type rules no overload out: the one
@@ -2041,34 +2072,28 @@ mod tests {
             let program = format!(
                 "F(s: UsersApi.Store.S) {{\n    let a = {call};\n    let b: string = a;\n}}\n"
             );
-            let db = TestDb::new();
-            let project = app(
-                &db,
-                &[("src/Program.mr", &program), ("src/Store/S.mr", store)],
-            );
-            let file = file_named(&db, project, "src/Program.mr");
-            let f = item_tree(&db, file)
-                .items()
-                .find(|(_, data)| data.name == "F")
-                .map(|(item, _)| item)
-                .unwrap();
-            let owner = BodyOwner::Item(f);
-            assert_eq!(
-                types_of_locals(&db, project, file, owner)[1],
-                local,
-                "{call}"
-            );
-            let body = body(&db, file, owner);
-            let inference = infer(&db, project, file, owner);
-            let calls: Vec<_> = body
-                .exprs
-                .iter()
-                .filter(|(_, expr)| matches!(expr, Expr::Call { .. }))
-                .map(|(call, _)| inference.callee(call).is_some())
-                .collect();
+            let (locals, calls, found) = calls_beside_store(&program, store);
+            assert_eq!(locals[1], local, "{call}");
             assert_eq!(calls, [called], "{call}");
-            assert_eq!(codes(diagnostics(&db, project)), expected, "{call}");
+            assert_eq!(found, expected, "{call}");
         }
+    }
+
+    #[test]
+    fn an_instance_method_that_does_not_take_a_known_argument_leaves_it_to_statics() {
+        // Every type is known and the instance method is chosen, but its
+        // parameter does not take the argument: the static overload may, so
+        // the mistake is the static member named through a value, reported
+        // with statics (D-152), and the call calls nothing.
+        let store = "public struct S {\n    public X: int;\n    \
+                     public M(a: int): int => a;\n    \
+                     public static M(a: string): string => a;\n}\n";
+        let program = "F(s: UsersApi.Store.S) {\n    let p = s.M(\"x\");\n    \
+                       let q: string = p;\n}\n";
+        let (locals, calls, found) = calls_beside_store(program, store);
+        assert_eq!(locals[1], "p: ?");
+        assert_eq!(calls, [false]);
+        assert_eq!(found, Vec::<String>::new());
     }
 
     #[test]
