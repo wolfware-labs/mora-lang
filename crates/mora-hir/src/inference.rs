@@ -18,8 +18,10 @@
 //! An expression with a mistake keeps its diagnostic and gets a recovered
 //! type when one is known without guessing (§14.5, D-158, D-159): the type
 //! its call's candidates lead to, or else the type expected at its
-//! position; with neither it has [`Ty::Error`]. An expression built on
-//! the mistake, as `cout.Length` or `n + cout`, has no type. A recovered
+//! position; with neither it has [`Ty::Error`]. A member, an operator or
+//! a call of a member built on the mistake, as `cout.Length` or
+//! `n + cout`, has no type, while a call of a function keeps its return
+//! type and a tuple or a conditional takes its target type. A recovered
 //! type is never the cause of a diagnostic of its own either: what it
 //! leads to would be reported once the first mistake is fixed.
 
@@ -201,9 +203,9 @@ impl Inference {
     }
 
     /// The type of `expr`: `None` while it is unknown, because a later
-    /// milestone gives it meaning or it is built on a mistake, as
-    /// `cout.Length` is, and [`Ty::Error`] when a diagnostic says why it
-    /// has none. An expression with a diagnostic may also have a known
+    /// milestone gives it meaning or it is a member or an operator built on
+    /// a mistake, as `cout.Length` is, and [`Ty::Error`] when a diagnostic
+    /// says why it has none. An expression with a diagnostic may also have a known
     /// type, the one recovered for it (§14.5).
     pub fn expr(&self, expr: ExprId) -> Option<&Ty> {
         self.exprs.get(arena_index(expr))?.as_ref()
@@ -1757,13 +1759,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_mistake_itself_gets_a_type() {
-        // §14.5: an expression built on a mistake has no type, whatever is
-        // expected of it, and an argument that takes no type from its
-        // parameter has the error type; nothing is reported but the names.
+    fn a_member_or_an_operator_built_on_a_mistake_has_no_type() {
+        // §14.5: a member, an operator or a call of a member built on a
+        // mistake has no type, whatever is expected of it. A call of a
+        // function keeps its return type, and a tuple or a conditional
+        // under a target type takes it; an argument that takes no type from
+        // its parameter has the error type. Only the names are reported.
         let text = "Len(x: int): int => x;\nlet n = 1;\nlet a = cout.Length;\n\
                     let b = n + cout;\nlet e: int = n + cout;\nlet y = cout;\n\
-                    let c = y.Foo();\nlet d = Len(cout);\n";
+                    let c = y.Foo();\nlet d = Len(cout);\n\
+                    let t: (int, bool) = (cout, true);\n\
+                    let k: bool = n == 1 ? cout : true;\n";
         let shown = expr_types(text);
         let types_of = |written: &str| -> Vec<&str> {
             let prefix = format!("{written}: ");
@@ -1776,8 +1782,15 @@ mod tests {
         assert_eq!(types_of("n + cout"), ["?", "?"]);
         assert_eq!(types_of("y.Foo()"), ["?"]);
         assert_eq!(types_of("Len(cout)"), ["int"]);
-        assert_eq!(types_of("cout"), ["{error}"; 5]);
-        assert_eq!(reported(text), ["MR0127"; 5]);
+        assert_eq!(types_of("(cout, true)"), ["(int, bool)"]);
+        assert_eq!(types_of("n == 1 ? cout : true"), ["bool"]);
+        assert_eq!(
+            types_of("cout"),
+            [
+                "{error}", "{error}", "{error}", "{error}", "{error}", "int", "bool"
+            ]
+        );
+        assert_eq!(reported(text), ["MR0127"; 7]);
     }
 
     #[test]
